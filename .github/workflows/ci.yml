@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: Test, Typecheck & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Run domain unit tests
+        run: npm test
+
+      - name: Verify App Improvements Registry
+        run: npm run verify:improvements
+
+      - name: Run TypeScript typecheck (lint)
+        run: npm run lint
+
+      - name: Build production bundle (root path)
+        run: npm run build
+
+      - name: Verify GitHub Pages subpath build
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name || 'Pedigree' }}/
+        run: npm run build

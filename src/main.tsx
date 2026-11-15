@@ -6,7 +6,25 @@ import './index.css';
 import { installGlobalCrashHandlers } from './storage/crashLogger.ts';
 
 installGlobalCrashHandlers();
-registerSW({ immediate: true });
+
+if (import.meta.env.PROD) {
+  registerSW({ immediate: true });
+} else if (typeof window !== 'undefined') {
+  if ('serviceWorker' in navigator) {
+    void navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const reg of regs) {
+        void reg.unregister();
+      }
+    });
+  }
+  if ('caches' in window) {
+    void caches.keys().then((keys) => {
+      for (const key of keys) {
+        void caches.delete(key);
+      }
+    });
+  }
+}
 
 createRoot(document.getElementById('root')!).render(
   <CrashErrorBoundary>

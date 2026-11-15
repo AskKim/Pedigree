@@ -164,7 +164,7 @@ class CoancestryEngine {
     return rank;
   }
 
-  inbreeding(id: string): number {
+  inbreeding(id: string, activeCalls: Set<string> = new Set()): number {
     if (!id) return 0;
     const cached = this.fMemo.get(id);
     if (cached !== undefined) return cached;
@@ -173,7 +173,7 @@ class CoancestryEngine {
     const f =
       !animal || !animal.sireId || !animal.damId
         ? 0
-        : this.kinship(animal.sireId, animal.damId);
+        : this.kinship(animal.sireId, animal.damId, activeCalls);
     this.fMemo.set(id, f);
     return f;
   }
@@ -191,7 +191,7 @@ class CoancestryEngine {
     let result = 0;
 
     if (a === b) {
-      result = 0.5 * (1 + this.inbreeding(a));
+      result = 0.5 * (1 + this.inbreeding(a, activeCalls));
     } else {
       const rA = this.rankOf(a);
       const rB = this.rankOf(b);

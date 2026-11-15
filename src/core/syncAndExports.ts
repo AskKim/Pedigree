@@ -26,8 +26,10 @@ import {
   formatSexForSpecies,
   formatWeight,
   generateUuid,
+  isAnimalArchived,
   isSameSpecies,
   millisToDateIso,
+  normalizeAnimalStatus,
   normalizeBiologicalSex,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -36,6 +38,7 @@ import {
   SpeciesProfile,
   TaskCategory,
   TaskPriority,
+  todayDateIso,
 } from './models';
 import {
   buildPedigreeSlots,
@@ -146,18 +149,142 @@ export function mergeBarnSnapshots(
   };
 }
 
+export type SpeciesBackupReason =
+  | 'manual'
+  | 'pre-remove-species'
+  | 'pre-remove-non-testing'
+  | 'pre-delete-all';
+
+function slugifyFileSegment(value: string, fallback: string): string {
+  const clean = (value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return clean || fallback;
+}
+
 /**
- * Serializes the entire database into an open, human-readable JSON backup (`version: 5`).
+ * Builds clean, human-readable filenames for external backups.
+ * Default `"My Barn"` normalizes to `"pedigree"` so downloads look tidy.
  */
-export function exportBarnBackupJson(snapshot: BarnDatabaseSnapshot): string {
+export function buildCleanBackupFileName(
+  barnName: string | undefined,
+  format: 'json' | 'sqlite',
+  dateSlug?: string
+): string {
+  const trimmed = (barnName || '').trim();
+  const isDefault = !trimmed || trimmed.toLowerCase() === 'my barn';
+  const prefix = isDefault ? 'pedigree' : slugifyFileSegment(trimmed, 'pedigree');
+  const stamp = dateSlug || todayDateIso();
+  if (format === 'sqlite') {
+    return `${prefix}-${stamp}.sqlite`;
+  }
+  return `${prefix}-backup-${stamp}.json`;
+}
+
+/**
+ * Builds a collision-free timestamped safety backup filename for targeted species operations.
+ */
+export function buildSpeciesSafetyBackupFileName(
+  barnName: string | undefined,
+  speciesName: string,
+  reason: SpeciesBackupReason = 'manual',
+  timestampSlug?: string
+): string {
+  const trimmed = (barnName || '').trim();
+  const isDefault = !trimmed || trimmed.toLowerCase() === 'my barn';
+  const prefix = isDefault ? 'pedigree' : slugifyFileSegment(trimmed, 'pedigree');
+  const spSlug = slugifyFileSegment(speciesName, 'species');
+  const reasonSlug =
+    reason === 'pre-remove-non-testing'
+      ? 'pre-clear-non-testing'
+      : reason === 'pre-remove-species'
+      ? 'pre-remove-species'
+      : reason === 'pre-delete-all'
+      ? 'pre-delete-all'
+      : 'backup';
+  const stamp = timestampSlug || formatTimestampedBackupSlug();
+  return `${prefix}-${spSlug}-${reasonSlug}-${stamp}.json`;
+}
+
+/**
+ * Serializes the entire database into an open, human-readable JSON backup (`version: 5`)
+ * with summary metadata and deterministic sorting.
+ */
+export function exportBarnBackupJson(
+  snapshot: BarnDatabaseSnapshot,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
+): string {
+  const sortedAnimals = [...snapshot.animals].sort((a, b) => {
+    const spCmp = (a.species || '').localeCompare(b.species || '');
+    if (spCmp !== 0) return spCmp;
+    const archDiff = (isAnimalArchived(a) ? 1 : 0) - (isAnimalArchived(b) ? 1 : 0);
+    if (archDiff !== 0) return archDiff;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  const activeAnimalsCount = sortedAnimals.filter((a) => !isAnimalArchived(a)).length;
+  const archivedAnimalsCount = sortedAnimals.length - activeAnimalsCount;
+
+  const bySpeciesMap = new Map<
+    string,
+    { species: string; totalAnimals: number; activeAnimals: number; archivedAnimals: number }
+  >();
+  for (const sp of snapshot.speciesProfiles) {
+    bySpeciesMap.set(sp.name.trim().toLowerCase(), {
+      species: sp.name,
+      totalAnimals: 0,
+      activeAnimals: 0,
+      archivedAnimals: 0,
+    });
+  }
+  for (const a of sortedAnimals) {
+    const key = (a.species || 'Other').trim().toLowerCase();
+    const bucket = bySpeciesMap.get(key) || {
+      species: a.species || 'Other',
+      totalAnimals: 0,
+      activeAnimals: 0,
+      archivedAnimals: 0,
+    };
+    bucket.totalAnimals += 1;
+    if (isAnimalArchived(a)) {
+      bucket.archivedAnimals += 1;
+    } else {
+      bucket.activeAnimals += 1;
+    }
+    bySpeciesMap.set(key, bucket);
+  }
+
+  const exportedAtIsoUtc = nowIsoUtc();
   const payload = {
     format: 'community-pedigree-backup',
     package: 'Pedigree',
     version: 5,
-    exportedAtIsoUtc: nowIsoUtc(),
+    exportedAtIsoUtc,
+    exportedAtLocal: new Date(exportedAtIsoUtc).toLocaleString(),
+    ...(extraMeta ?? {}),
+    barnSummary: {
+      barnName: snapshot.settings.barnName,
+      breederName: snapshot.settings.breederName,
+      counts: {
+        animals: sortedAnimals.length,
+        activeAnimals: activeAnimalsCount,
+        archivedAnimals: archivedAnimalsCount,
+        speciesProfiles: snapshot.speciesProfiles.length,
+        animalPhotos: (snapshot.animalPhotos ?? []).length,
+        breedings: snapshot.breedings.length,
+        tasks: snapshot.tasks.length,
+      },
+      bySpecies: Array.from(bySpeciesMap.values()),
+    },
     settings: snapshot.settings,
     speciesProfiles: snapshot.speciesProfiles,
-    animals: snapshot.animals,
+    animals: sortedAnimals,
     animalPhotos: snapshot.animalPhotos ?? [],
     cages: snapshot.cages,
     breedings: snapshot.breedings,
@@ -303,11 +430,11 @@ export function parseBarnBackupJson(
       breed: a.breed || '',
       variety: a.variety || '',
       sex: normalizeBiologicalSex(a.sex || 'Unknown'),
-      status: a.status || 'Active',
+      status: normalizeAnimalStatus(a.status, a.archived),
       archived:
         typeof a.archived === 'boolean'
           ? a.archived
-          : a.status === 'Deceased' || a.status === 'Sold',
+          : isAnimalArchived({ status: normalizeAnimalStatus(a.status, a.archived) }),
       birthDateIso: a.birthDateIso || millisToDateIso(Number(a.birthDateMillis) || 0),
       weightGrams: Number(a.weightGrams) || 0,
       genotype: genoArray,
@@ -649,9 +776,9 @@ export function generateEvansHtmPedigree(
     '<th>Grandparents (Gen 2)</th>',
     '<th>Great-Grandparents (Gen 3)</th>',
   ];
-  if (generations >= 4) genHeaders.push('<th>4th Gen (G4)</th>');
-  if (generations >= 5) genHeaders.push('<th>5th Gen (G5)</th>');
-  if (generations >= 6) genHeaders.push('<th>6th Gen (G6)</th>');
+  if (generations >= 4) genHeaders.push('<th>4th Generation (Gen 4)</th>');
+  if (generations >= 5) genHeaders.push('<th>5th Generation (Gen 5)</th>');
+  if (generations >= 6) genHeaders.push('<th>6th Generation (Gen 6)</th>');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -736,7 +863,8 @@ export function formatTimestampedBackupSlug(date: Date = new Date()): string {
  */
 export function exportSpeciesBackupJson(
   snapshot: BarnDatabaseSnapshot,
-  speciesName: string
+  speciesName: string,
+  options?: { reason?: SpeciesBackupReason }
 ): string {
   const speciesProfile = snapshot.speciesProfiles.find((sp) =>
     isSameSpecies(sp.name, speciesName)
@@ -754,17 +882,24 @@ export function exportSpeciesBackupJson(
   );
   const shows = snapshot.shows.filter((s) => isSameSpecies(s.species, speciesName));
 
-  return exportBarnBackupJson({
-    settings: snapshot.settings,
-    speciesProfiles: speciesProfile ? [speciesProfile] : [],
-    animals,
-    animalPhotos,
-    cages,
-    breedings,
-    tasks,
-    careLogs,
-    shows,
-  });
+  return exportBarnBackupJson(
+    {
+      settings: snapshot.settings,
+      speciesProfiles: speciesProfile ? [speciesProfile] : [],
+      animals,
+      animalPhotos,
+      cages,
+      breedings,
+      tasks,
+      careLogs,
+      shows,
+    },
+    {
+      backupScope: 'species',
+      backupReason: options?.reason || 'manual',
+      targetSpecies: speciesProfile?.name || speciesName,
+    }
+  );
 }
 
 /**

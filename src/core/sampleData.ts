@@ -25,6 +25,7 @@ import {
   isSameSpecies,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
+  resolveSpeciesProfile,
   ShowEvent,
   SpeciesProfile,
   todayDateIso,
@@ -382,6 +383,21 @@ export function countAllSpeciesRecords(
 }
 
 /**
+ * Counts non-testing (real / imported / user-entered) records scoped to `speciesName`,
+ * strictly complementary to `countSpeciesTestingRecords`.
+ */
+export function countSpeciesNonTestingRecords(
+  snapshot: BarnDatabaseSnapshot,
+  speciesName: string
+): number {
+  return Math.max(
+    0,
+    countAllSpeciesRecords(snapshot, speciesName) -
+      countSpeciesTestingRecords(snapshot, speciesName)
+  );
+}
+
+/**
  * Pure helper: deletes ONLY seeded testing data (`seed-...`) inside `speciesName`,
  * keeping real/imported records in `speciesName` and leaving every other species untouched.
  */
@@ -474,6 +490,126 @@ export function purgeSpeciesTestingDataPure(
   const nextShows = snapshot.shows
     .filter((s) => {
       const remove = isSameSpecies(s.species, speciesName) && isSampleTestingId(s.id);
+      if (remove) removedTotalRecords++;
+      return !remove;
+    })
+    .map((s) => {
+      if (!isSameSpecies(s.species, speciesName)) return s;
+      const filteredIds = s.enteredAnimalIds.filter((id) => !removedAnimalIds.has(id));
+      if (filteredIds.length === s.enteredAnimalIds.length) return s;
+      return { ...s, enteredAnimalIds: filteredIds, updatedAt: ts };
+    });
+
+  return {
+    nextSnapshot: {
+      ...snapshot,
+      animals: nextAnimals,
+      animalPhotos: nextPhotos,
+      cages: nextCages,
+      breedings: nextBreedings,
+      tasks: nextTasks,
+      careLogs: nextCareLogs,
+      shows: nextShows,
+    },
+    removedAnimals: removedAnimalIds.size,
+    removedTotalRecords,
+    removedAnimalIds,
+  };
+}
+
+/**
+ * Pure helper: deletes ONLY non-testing (user-entered / imported) records inside `speciesName`,
+ * preserving any seeded testing records (`seed-...`), the `SpeciesProfile`, and all other species.
+ */
+export function purgeSpeciesNonTestingDataPure(
+  snapshot: BarnDatabaseSnapshot,
+  speciesName: string
+): {
+  nextSnapshot: BarnDatabaseSnapshot;
+  removedAnimals: number;
+  removedTotalRecords: number;
+  removedAnimalIds: Set<string>;
+} {
+  const ts = nowIsoUtc();
+  const removedAnimalIds = new Set<string>();
+  const removedBreedingIds = new Set<string>();
+  let removedTotalRecords = 0;
+
+  for (const a of snapshot.animals) {
+    if (isSameSpecies(a.species, speciesName) && !isSampleTestingId(a.id)) {
+      removedAnimalIds.add(a.id);
+    }
+  }
+  for (const b of snapshot.breedings) {
+    if (isSameSpecies(b.species, speciesName) && !isSampleTestingId(b.id)) {
+      removedBreedingIds.add(b.id);
+    }
+  }
+
+  const nextAnimals = snapshot.animals
+    .filter((a) => {
+      if (removedAnimalIds.has(a.id)) {
+        removedTotalRecords++;
+        return false;
+      }
+      return true;
+    })
+    .map((a) => {
+      if (!isSameSpecies(a.species, speciesName)) return a;
+      const clearSire = a.sireId && removedAnimalIds.has(a.sireId);
+      const clearDam = a.damId && removedAnimalIds.has(a.damId);
+      if (!clearSire && !clearDam) return a;
+      return {
+        ...a,
+        sireId: clearSire ? '' : a.sireId,
+        damId: clearDam ? '' : a.damId,
+        updatedAt: ts,
+      };
+    });
+
+  const nextPhotos = (snapshot.animalPhotos ?? []).filter((p) => {
+    const remove =
+      isSameSpecies(p.species, speciesName) &&
+      (!isSampleTestingId(p.id) || removedAnimalIds.has(p.animalId));
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextCages = snapshot.cages.filter((c) => {
+    const remove = isSameSpecies(c.species, speciesName) && !isSampleTestingId(c.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextBreedings = snapshot.breedings.filter((b) => {
+    if (removedBreedingIds.has(b.id)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextTasks = snapshot.tasks.filter((t) => {
+    const remove =
+      isSameSpecies(t.species, speciesName) &&
+      (!isSampleTestingId(t.id) ||
+        removedAnimalIds.has(t.linkedAnimalId) ||
+        removedBreedingIds.has(t.linkedBreedingId));
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextCareLogs = snapshot.careLogs.filter((l) => {
+    const remove =
+      isSameSpecies(l.species, speciesName) &&
+      (!isSampleTestingId(l.id) || removedAnimalIds.has(l.animalId));
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextShows = snapshot.shows
+    .filter((s) => {
+      const remove = isSameSpecies(s.species, speciesName) && !isSampleTestingId(s.id);
       if (remove) removedTotalRecords++;
       return !remove;
     })
@@ -603,22 +739,51 @@ export interface SpeciesSeedBundle {
 
 /**
  * Builds a complete 3-generation sample herd, cages, active breeding, cascaded Master Task List
- * chores, weight/show care logs, and upcoming show for a single predefined species.
+ * chores, weight/show care logs, and upcoming show for any predefined or custom species.
  */
-export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundle | null {
-  const spec = SPECIES_SEED_SPECS.find((s) => isSameSpecies(s.species, speciesName));
-  const preset = PREDEFINED_SPECIES_PRESETS.find((p) => isSameSpecies(p.name, speciesName));
-  if (!spec || !preset) return null;
-
+export function buildSampleDataForSpecies(
+  speciesName: string,
+  speciesProfileOverride?: SpeciesProfile
+): SpeciesSeedBundle | null {
   const ts = nowIsoUtc();
   const today = todayDateIso();
-  const slug = spec.species.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const matchedSpec = SPECIES_SEED_SPECS.find((s) => isSameSpecies(s.species, speciesName));
+  const matchedPreset = PREDEFINED_SPECIES_PRESETS.find((p) => isSameSpecies(p.name, speciesName));
 
-  const speciesProfile: SpeciesProfile = {
-    ...preset,
-    createdAt: ts,
-    updatedAt: ts,
+  const speciesProfile: SpeciesProfile = speciesProfileOverride
+    ? { ...speciesProfileOverride, updatedAt: ts }
+    : matchedPreset
+    ? { ...matchedPreset, createdAt: ts, updatedAt: ts }
+    : resolveSpeciesProfile(speciesName, []);
+
+  const codePrefix = (speciesProfile.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 3) || 'SP').toUpperCase();
+  const spec: SeedFamilySpec = matchedSpec ?? {
+    species: speciesProfile.name,
+    breed: speciesProfile.exampleBreeds[0] || `Heritage ${speciesProfile.name}`,
+    varietyA: 'Chestnut',
+    varietyB: 'Black',
+    tagPrefix: codePrefix,
+    breederName: 'Community Barn',
+    cagePrefix: `Pen ${codePrefix}`,
+    avgAdultGrams: 5400,
+    juniorGrams: 2200,
+    names: {
+      pgs: `Foundation ${speciesProfile.maleLabel} Atlas`,
+      pgd: `Foundation ${speciesProfile.femaleLabel} Willow`,
+      mgs: `Outcross ${speciesProfile.maleLabel} Rowan`,
+      mgd: `Outcross ${speciesProfile.femaleLabel} Clover`,
+      sire: `Herd ${speciesProfile.maleLabel} Cedar`,
+      dam: `Herd ${speciesProfile.femaleLabel} Meadow`,
+      juniorFemale: `Keeper ${speciesProfile.offspringLabel} Hazel`,
+      juniorMale: `Prospect ${speciesProfile.offspringLabel} Birch`,
+    },
+    showTitle: `${speciesProfile.name} Specialty Club Show`,
+    showLocation: 'County Fairgrounds',
+    sanctionBody: 'Specialty Club',
+    shareGrandsireForLinebreeding: false,
   };
+
+  const slug = spec.species.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
   const pgsId = seedId(slug, 'pgs');
   const pgdId = seedId(slug, 'pgd');
@@ -833,9 +998,12 @@ export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundl
   const projectedCoi = calculatePairingCoi(sire.id, dam.id, herdMap).coiPercent;
 
   // Set bred date so next upcoming milestone falls within the next few days!
-  const bredDaysAgo = Math.max(4, Math.min(spec.species === 'Rabbit' ? 25 : 28, preset.gestationDays - 6));
+  const bredDaysAgo = Math.max(
+    4,
+    Math.min(spec.species === 'Rabbit' ? 25 : 28, speciesProfile.gestationDays - 6)
+  );
   const bredDateIso = addDaysIso(today, -bredDaysAgo);
-  const expectedDueDateIso = addDaysIso(bredDateIso, preset.gestationDays);
+  const expectedDueDateIso = addDaysIso(bredDateIso, speciesProfile.gestationDays);
 
   const activeBreeding: BreedingRecord = {
     id: seedId(slug, 'breeding-active'),

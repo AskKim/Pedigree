@@ -516,6 +516,14 @@ export class WebSqliteAdapter implements StorageAdapter {
               ? extraSettings.dismissedTaskGroupKeys
               : {},
           includePhotoOnPedigree: Boolean(extraSettings.includePhotoOnPedigree),
+          lastBackupMeta:
+            extraSettings.lastBackupMeta && typeof extraSettings.lastBackupMeta === 'object'
+              ? extraSettings.lastBackupMeta
+              : undefined,
+          backupReminderSnoozedUntilMs:
+            typeof extraSettings.backupReminderSnoozedUntilMs === 'number'
+              ? extraSettings.backupReminderSnoozedUntilMs
+              : undefined,
           updatedAt: String(sRow.updated_at || nowIsoUtc()),
         }
       : {
@@ -750,6 +758,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       ignoredTaskIds: s.ignoredTaskIds ?? [],
       dismissedTaskGroupKeys: s.dismissedTaskGroupKeys ?? {},
       includePhotoOnPedigree: s.includePhotoOnPedigree ?? false,
+      lastBackupMeta: s.lastBackupMeta ?? undefined,
+      backupReminderSnoozedUntilMs: s.backupReminderSnoozedUntilMs ?? undefined,
     });
     this.db?.run(
       `INSERT OR REPLACE INTO barn_settings
@@ -1028,6 +1038,27 @@ export class WebSqliteAdapter implements StorageAdapter {
     await this.persistToDisk();
   }
 
+  async saveAnimalsBatch(animals: Animal[]): Promise<void> {
+    if (animals.length === 0) return;
+    if (this.db) {
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const a of animals) this.upsertAnimalRow(a);
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
+    } else if (this.fallbackSnapshot) {
+      for (const a of animals) {
+        const idx = this.fallbackSnapshot.animals.findIndex((x) => x.id === a.id);
+        if (idx >= 0) this.fallbackSnapshot.animals[idx] = a;
+        else this.fallbackSnapshot.animals.push(a);
+      }
+    }
+    await this.persistToDisk();
+  }
+
   async deleteAnimal(id: string): Promise<void> {
     if (this.db) {
       this.db.run('DELETE FROM animals WHERE id = ?', [id]);
@@ -1040,6 +1071,34 @@ export class WebSqliteAdapter implements StorageAdapter {
       );
       this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
         (l) => l.animalId !== id
+      );
+    }
+    await this.persistToDisk();
+  }
+
+  async deleteAnimalsBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    if (this.db) {
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const id of ids) {
+          this.db.run('DELETE FROM animals WHERE id = ?', [id]);
+          this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
+          this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
+        }
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
+    } else if (this.fallbackSnapshot) {
+      this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => !idSet.has(a.id));
+      this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
+        (p) => !idSet.has(p.animalId)
+      );
+      this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
+        (l) => !idSet.has(l.animalId)
       );
     }
     await this.persistToDisk();
@@ -1173,6 +1232,26 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
     } else if (this.fallbackSnapshot) {
       this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => t.id !== id);
+    }
+    await this.persistToDisk();
+  }
+
+  async deleteTasksBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    if (this.db) {
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const id of ids) {
+          this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
+        }
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
+    } else if (this.fallbackSnapshot) {
+      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => !idSet.has(t.id));
     }
     await this.persistToDisk();
   }

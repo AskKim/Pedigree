@@ -17,7 +17,7 @@ import type { CustomThemeColors } from './themePalette';
 
 export type BiologicalSex = 'Male' | 'Female' | 'Unknown';
 
-export type AnimalStatus = 'Active' | 'Junior' | 'Retired' | 'Sold' | 'Deceased';
+export type AnimalStatus = 'Active' | 'Junior' | 'Retired' | 'Archived' | 'Sold' | 'Deceased';
 
 export type BreedingStatus =
   | 'Planned'
@@ -82,8 +82,14 @@ export interface BarnSettings {
   showHomeSummaryGrid?: boolean;
   barnNameOnboarded?: boolean;
   ignoredTaskIds?: string[];
-  dismissedTaskGroupKeys?: Record<string, string[]>;
+  dismissedTaskGroupKeys?: Record<string, string | string[]>;
   includePhotoOnPedigree?: boolean;
+  lastBackupMeta?: {
+    exportedAtIso: string;
+    format: 'zip' | 'sqlite' | 'json';
+    fileName?: string;
+  };
+  backupReminderSnoozedUntilMs?: number;
   updatedAt: string;
 }
 
@@ -286,6 +292,7 @@ export const ANIMAL_STATUSES: AnimalStatus[] = [
   'Active',
   'Junior',
   'Retired',
+  'Archived',
   'Sold',
   'Deceased',
 ];
@@ -445,28 +452,107 @@ export function isSameSpecies(a: string | undefined, b: string | undefined): boo
 }
 
 /**
- * Returns true when an animal is archived (out of active herd tasks/tasks while kept for pedigree history).
+ * Returns true when an animal is archived (out of active herd tasks while kept for pedigree history).
  */
 export function isAnimalArchived(
-  animal: Pick<Animal, 'archived' | 'status'> | undefined | null
+  animal: Partial<Pick<Animal, 'archived' | 'status'>> | undefined | null
 ): boolean {
   if (!animal) return false;
-  if (typeof animal.archived === 'boolean') return animal.archived;
-  return animal.status === 'Deceased' || animal.status === 'Sold';
+  if (
+    animal.status === 'Archived' ||
+    animal.status === 'Deceased' ||
+    animal.status === 'Sold' ||
+    animal.status === 'Retired'
+  ) {
+    return true;
+  }
+  return Boolean(animal.archived);
+}
+
+/**
+ * Returns true when an animal is considered active (not archived/sold/deceased/retired).
+ */
+export function isAnimalActive(
+  animal: Partial<Pick<Animal, 'archived' | 'status'>> | undefined | null
+): boolean {
+  if (!animal) return false;
+  return !isAnimalArchived(animal);
+}
+
+/**
+ * Normalizes imported or legacy livestock status strings and boolean flags into canonical `AnimalStatus`.
+ */
+export function normalizeAnimalStatus(
+  rawStatus?: string,
+  archivedFlag?: unknown,
+  activeFlag?: unknown
+): AnimalStatus {
+  const s = (rawStatus || '').trim().toLowerCase();
+  if (s) {
+    if (/\b(?:dead|deceased|died|culled|cull|butchered|harvested|euthanized|lost)\b/.test(s)) {
+      return 'Deceased';
+    }
+    if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
+      return 'Sold';
+    }
+    if (/\b(?:ref|reference|ancestor|pedigree|retired|historical|external)\b/.test(s)) {
+      return 'Retired';
+    }
+    if (/\b(?:archived|inactive|not active|non-active|gone|pet)\b/.test(s)) {
+      return 'Archived';
+    }
+    if (/\b(?:junior|weanling|nursing|jr)\b/.test(s)) {
+      return 'Junior';
+    }
+    if (s === 'active') {
+      return 'Active';
+    }
+  }
+
+  if (archivedFlag === true || /^(?:1|true|yes|y)$/i.test(String(archivedFlag ?? '').trim())) {
+    return 'Archived';
+  }
+  if (activeFlag === false || /^(?:0|false|no|n)$/i.test(String(activeFlag ?? '').trim())) {
+    return 'Archived';
+  }
+  return 'Active';
+}
+
+/**
+ * Pluralizes singular offspring/species labels cleanly (e.g., Puppy -> Puppies, Kit -> Kits, Calf -> Calves).
+ */
+export function pluralizeSpeciesLabel(label: string): string {
+  const clean = (label || 'Baby').trim();
+  if (!clean) return 'Babies';
+  const lower = clean.toLowerCase();
+  if (lower.endsWith('s') || lower.endsWith('x') || lower.endsWith('ch') || lower.endsWith('sh')) {
+    return `${clean}es`;
+  }
+  if (lower.endsWith('calf')) {
+    return `${clean.slice(0, -1)}ves`;
+  }
+  if (lower.endsWith('y') && !/[aeiou]y$/i.test(clean)) {
+    return `${clean.slice(0, -1)}ies`;
+  }
+  return `${clean}s`;
 }
 
 /**
  * Prepends an optional species default prefix to a new animal name unless it already starts with it.
+ * Honors delimiter-terminated prefixes such as `OR-` or `CC:` without inserting an unwanted space.
  */
-export function applySpeciesNamePrefix(name: string, prefix?: string): string {
+export function applyAnimalNamePrefix(name: string, prefix?: string): string {
   const cleanName = (name || '').trim();
   const cleanPrefix = (prefix || '').trim();
   if (!cleanPrefix || !cleanName) return cleanName;
   if (cleanName.toLowerCase().startsWith(cleanPrefix.toLowerCase())) {
     return cleanName;
   }
-  return `${cleanPrefix} ${cleanName}`;
+  const endsWithPunct = /[-_:/#']$/.test(cleanPrefix);
+  return endsWithPunct ? `${cleanPrefix}${cleanName}` : `${cleanPrefix} ${cleanName}`;
 }
+
+export const applySpeciesNamePrefix = applyAnimalNamePrefix;
 
 /**
  * Formats weight in `lbs_oz`, decimal `lbs`, or `grams`.

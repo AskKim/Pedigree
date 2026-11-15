@@ -1,14 +1,59 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+function normalizeBasePath(raw?: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed || trimmed === '/') return '/';
+  const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+}
+
+function devServiceWorkerCleanupPlugin(): Plugin {
+  const selfDestructSw = `
+self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+    await self.registration.unregister();
+    const clientsList = await self.clients.matchAll({ type: 'window' });
+    for (const client of clientsList) {
+      client.postMessage({ type: 'DEV_SW_UNREGISTERED' });
+    }
+  })());
+});
+`;
   return {
+    name: 'dev-sw-cleanup',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split('?')[0] || '';
+        if (url.endsWith('/dev-sw.js') || url.endsWith('/sw.js')) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(selfDestructSw);
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
+export default defineConfig(() => {
+  const basePath = normalizeBasePath(process.env.VITE_BASE_PATH);
+
+  return {
+    base: basePath,
     plugins: [
       react(),
       tailwindcss(),
+      devServiceWorkerCleanupPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
@@ -19,7 +64,7 @@ export default defineConfig(() => {
           'pwa-maskable-512x512.png',
         ],
         manifest: {
-          id: '/',
+          id: basePath,
           name: 'Community Pedigree',
           short_name: 'Pedigree',
           description:
@@ -28,8 +73,8 @@ export default defineConfig(() => {
           background_color: '#141814',
           display: 'standalone',
           orientation: 'any',
-          scope: '/',
-          start_url: '/',
+          scope: basePath,
+          start_url: basePath,
           icons: [
             {
               src: 'pwa-192x192.png',
@@ -70,7 +115,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),

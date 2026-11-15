@@ -435,7 +435,9 @@ function parseHerdBossAnimalStatus(
   rawStatus: string | undefined,
   rawSoldDate?: string,
   rawDeathDate?: string,
-  rawReferenceFlag?: string
+  rawReferenceFlag?: string,
+  rawArchivedFlag?: string,
+  rawActiveFlag?: string
 ): AnimalStatus {
   if (rawDeathDate && rawDeathDate.trim()) return 'Deceased';
   if (rawSoldDate && rawSoldDate.trim()) return 'Sold';
@@ -443,6 +445,16 @@ function parseHerdBossAnimalStatus(
   const ref = (rawReferenceFlag || '').trim().toLowerCase();
   if (ref === 'true' || ref === '1' || ref === 'yes' || ref === 'reference') {
     return 'Retired';
+  }
+
+  const arch = (rawArchivedFlag || '').trim().toLowerCase();
+  if (arch === 'true' || arch === '1' || arch === 'yes' || arch === 'y' || arch === 'archived') {
+    return 'Archived';
+  }
+
+  const act = (rawActiveFlag || '').trim().toLowerCase();
+  if (act === 'false' || act === '0' || act === 'no' || act === 'n' || act === 'inactive') {
+    return 'Archived';
   }
 
   const s = (rawStatus || '').trim().toLowerCase();
@@ -453,8 +465,11 @@ function parseHerdBossAnimalStatus(
   if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
     return 'Sold';
   }
-  if (/\b(?:ref|reference|ancestor|pedigree|retired|archived|inactive|historical|external)\b/.test(s)) {
+  if (/\b(?:ref|reference|ancestor|pedigree|retired|historical|external)\b/.test(s)) {
     return 'Retired';
+  }
+  if (/\b(?:archived|inactive|not active|non-active)\b/.test(s)) {
+    return 'Archived';
   }
   if (/\b(?:junior|weanling|nursing|kid|calf|lamb|kit|cria|foal|puppy|chick|feeder)\b/.test(s)) {
     return 'Junior';
@@ -1215,9 +1230,17 @@ export const HerdBossImporter: PlatformImporter = {
           'isreference',
           'reference',
           'pedigreeonly',
-          'archived',
         ]);
-        const status = parseHerdBossAnimalStatus(rawStatus, soldDate, deathDate, refFlag);
+        const archivedFlag = pickCell(row, table.normHeaderMap, usedCols, ['archived', 'isarchived']);
+        const activeFlag = pickCell(row, table.normHeaderMap, usedCols, ['active', 'isactive']);
+        const status = parseHerdBossAnimalStatus(
+          rawStatus,
+          soldDate,
+          deathDate,
+          refFlag,
+          archivedFlag,
+          activeFlag
+        );
 
         const birthDateIso = normalizeFlexibleDateIso(
           pickCell(row, table.normHeaderMap, usedCols, [
@@ -1342,15 +1365,20 @@ export const HerdBossImporter: PlatformImporter = {
         const ownerName =
           rawOwner || (preexistingMatch ? '' : existingSnapshot.settings.barnName);
 
-        const resolvedStatus =
-          rawStatus || soldDate || deathDate || refFlag
-            ? status
-            : preexistingMatch?.animal.status || status;
+        const hasExplicitStatusSignal = Boolean(
+          rawStatus || soldDate || deathDate || refFlag || archivedFlag || activeFlag
+        );
+        const resolvedStatus = hasExplicitStatusSignal
+          ? status
+          : preexistingMatch?.animal.status || status;
         const detectedArchived =
+          resolvedStatus === 'Archived' ||
           resolvedStatus === 'Deceased' ||
           resolvedStatus === 'Sold' ||
           resolvedStatus === 'Retired' ||
           /^(?:1|true|yes|y|archived|inactive|ref|reference)$/i.test(refFlag) ||
+          /^(?:1|true|yes|y|archived)$/i.test(archivedFlag) ||
+          /^(?:0|false|no|n|inactive)$/i.test(activeFlag) ||
           /^(?:archived|inactive|culled|harvested|butchered|dead|died|sold|pet|gone|retired|reference)$/i.test(
             rawStatus
           );
@@ -1364,10 +1392,9 @@ export const HerdBossImporter: PlatformImporter = {
           variety,
           sex,
           status: resolvedStatus,
-          archived:
-            rawStatus || soldDate || deathDate || refFlag
-              ? detectedArchived
-              : Boolean(preexistingMatch?.animal.archived),
+          archived: hasExplicitStatusSignal
+            ? detectedArchived
+            : Boolean(preexistingMatch?.animal.archived),
           birthDateIso,
           weightGrams: bestWeightGrams,
           genotype: parseGenotypeString(genotypeRaw),
