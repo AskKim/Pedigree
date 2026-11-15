@@ -11,6 +11,9 @@
  */
 
 import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
   ArrowRightLeft,
   CheckSquare,
   Edit3,
@@ -35,8 +38,11 @@ import {
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
+  isAnimalActive,
+  isAnimalArchived,
   isSameSpecies,
   parseWeightInputToGrams,
+  pluralizeSpeciesLabel,
   SpeciesProfile,
   todayDateIso,
 } from '../core/models';
@@ -79,6 +85,7 @@ interface HerdScreenProps {
   onDeleteAnimalPhoto: (photoId: string) => Promise<void> | void;
   onDeleteAnimal: (animal: Animal) => void;
   onDeleteAnimalsBatch: (animalIds: string[]) => Promise<void>;
+  onSetAnimalsArchiveState: (animalIds: string[], archived: boolean) => Promise<void> | void;
   onMigrateAnimals: (
     animalIds: string[],
     targetSpecies: string,
@@ -104,6 +111,7 @@ export function HerdScreen({
   onDeleteAnimalPhoto,
   onDeleteAnimal,
   onDeleteAnimalsBatch,
+  onSetAnimalsArchiveState,
   onMigrateAnimals,
   onAddCareLog,
   onDeleteCareLog,
@@ -120,9 +128,9 @@ export function HerdScreen({
   } = activeData;
 
   const [query, setQuery] = useState('');
-  const [filterKey, setFilterKey] = useState<'all' | 'Male' | 'Female' | 'Junior' | 'Active'>(
-    'all'
-  );
+  const [filterKey, setFilterKey] = useState<
+    'activeFemale' | 'activeMale' | 'inactive' | 'activeUnknown'
+  >('activeFemale');
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
 
@@ -150,6 +158,7 @@ export function HerdScreen({
     setSelectedIds(new Set());
     setConfirmBatchDelete(false);
     setMigrationDialog(null);
+    setFilterKey('activeFemale');
   }, [speciesProfile.name]);
 
   // Print preview state
@@ -168,13 +177,40 @@ export function HerdScreen({
   const [logShowLeg, setLogShowLeg] = useState(false);
   const [logNotes, setLogNotes] = useState('');
 
+  const herdTabCounts = useMemo(() => {
+    let activeFemale = 0;
+    let activeMale = 0;
+    let activeUnknown = 0;
+    let inactive = 0;
+    for (const a of animals) {
+      if (isAnimalArchived(a)) {
+        inactive++;
+      } else if (a.sex === 'Female') {
+        activeFemale++;
+      } else if (a.sex === 'Male') {
+        activeMale++;
+      } else {
+        activeUnknown++;
+      }
+    }
+    return { activeFemale, activeMale, activeUnknown, inactive };
+  }, [animals]);
+
   const filteredAnimals = useMemo(() => {
     const q = query.trim().toLowerCase();
     return animals.filter((a) => {
-      if (filterKey === 'Male' && a.sex !== 'Male') return false;
-      if (filterKey === 'Female' && a.sex !== 'Female') return false;
-      if (filterKey === 'Junior' && a.status !== 'Junior') return false;
-      if (filterKey === 'Active' && a.status !== 'Active') return false;
+      if (filterKey === 'activeFemale' && !(isAnimalActive(a) && a.sex === 'Female')) {
+        return false;
+      }
+      if (filterKey === 'activeMale' && !(isAnimalActive(a) && a.sex === 'Male')) {
+        return false;
+      }
+      if (filterKey === 'activeUnknown' && !(isAnimalActive(a) && a.sex === 'Unknown')) {
+        return false;
+      }
+      if (filterKey === 'inactive' && !isAnimalArchived(a)) {
+        return false;
+      }
 
       if (!q) return true;
       return (
@@ -191,8 +227,26 @@ export function HerdScreen({
     if (selectedAnimalId && herdById.has(selectedAnimalId)) {
       return herdById.get(selectedAnimalId)!;
     }
-    return filteredAnimals[0] ?? null;
-  }, [selectedAnimalId, herdById, filteredAnimals]);
+    return null;
+  }, [selectedAnimalId, herdById]);
+
+  const selectedActiveCount = useMemo(() => {
+    let count = 0;
+    for (const id of selectedIds) {
+      const found = herdById.get(id);
+      if (found && isAnimalActive(found)) count++;
+    }
+    return count;
+  }, [selectedIds, herdById]);
+
+  const selectedArchivedCount = useMemo(() => {
+    let count = 0;
+    for (const id of selectedIds) {
+      const found = herdById.get(id);
+      if (found && isAnimalArchived(found)) count++;
+    }
+    return count;
+  }, [selectedIds, herdById]);
 
   useEffect(() => {
     setShowLogForm(false);
@@ -201,6 +255,13 @@ export function HerdScreen({
     setLogShowLeg(false);
     setLogNotes('');
   }, [activeAnimal?.id]);
+
+  const openAnimalPage = (animalId: string) => {
+    onSelectAnimal(animalId);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   const activeAnimalLogs = useMemo(
     () => (activeAnimal ? careLogs.filter((l) => l.animalId === activeAnimal.id) : []),
@@ -270,11 +331,18 @@ export function HerdScreen({
           <div className="flex items-center gap-1 p-1 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] overflow-x-auto">
             {(
               [
-                ['all', `All (${animals.length})`],
-                ['Male', `${speciesProfile.maleLabel}s`],
-                ['Female', `${speciesProfile.femaleLabel}s`],
-                ['Junior', 'Juniors'],
-                ['Active', 'Active'],
+                [
+                  'activeFemale',
+                  `Active ${pluralizeSpeciesLabel(speciesProfile.femaleLabel)} (${herdTabCounts.activeFemale})`,
+                ],
+                [
+                  'activeMale',
+                  `Active ${pluralizeSpeciesLabel(speciesProfile.maleLabel)} (${herdTabCounts.activeMale})`,
+                ],
+                ['inactive', `Inactive (${herdTabCounts.inactive})`],
+                ...(herdTabCounts.activeUnknown > 0
+                  ? ([['activeUnknown', `Unsexed Active (${herdTabCounts.activeUnknown})`]] as const)
+                  : []),
               ] as const
             ).map(([key, label]) => (
               <button
@@ -376,6 +444,44 @@ export function HerdScreen({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {selectedActiveCount > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const ids = Array.from(selectedIds).filter((id) => {
+                    const a = herdById.get(id);
+                    return a ? isAnimalActive(a) : false;
+                  });
+                  await onSetAnimalsArchiveState(ids, true);
+                  setSelectedIds(new Set());
+                  setMultiSelectMode(false);
+                }}
+                className="min-h-[36px] px-3.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] font-semibold inline-flex items-center gap-1.5"
+              >
+                <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                Move to Archived ({selectedActiveCount})
+              </button>
+            )}
+
+            {selectedArchivedCount > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const ids = Array.from(selectedIds).filter((id) => {
+                    const a = herdById.get(id);
+                    return a ? isAnimalArchived(a) : false;
+                  });
+                  await onSetAnimalsArchiveState(ids, false);
+                  setSelectedIds(new Set());
+                  setMultiSelectMode(false);
+                }}
+                className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5"
+              >
+                <ArchiveRestore className="w-3.5 h-3.5" aria-hidden="true" />
+                Move Back to Active ({selectedArchivedCount})
+              </button>
+            )}
+
             <button
               type="button"
               disabled={selectedIds.size === 0}
@@ -433,34 +539,43 @@ export function HerdScreen({
         </div>
       )}
 
-      {/* Master-Detail Split Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 5 Columns: Species-Isolated Animal List */}
-        <div className="lg:col-span-5 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-hidden">
+      {/* Herd List OR Dedicated Single-Animal Page */}
+      {!activeAnimal ? (
+        <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-hidden">
           {filteredAnimals.length === 0 ? (
             <div className="p-8 text-center space-y-3">
               <p className="text-sm text-[var(--barn-muted)]">
-                No {speciesProfile.name.toLowerCase()} records match this filter.
+                {filterKey === 'inactive'
+                  ? `No inactive or archived ${speciesProfile.name.toLowerCase()} records match this search.`
+                  : `No active ${
+                      filterKey === 'activeFemale'
+                        ? pluralizeSpeciesLabel(speciesProfile.femaleLabel).toLowerCase()
+                        : filterKey === 'activeMale'
+                          ? pluralizeSpeciesLabel(speciesProfile.maleLabel).toLowerCase()
+                          : speciesProfile.name.toLowerCase()
+                    } match this filter.`}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingAnimal(null);
-                  setShowAnimalModal(true);
-                }}
-                className="min-h-[40px] px-4 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
-              >
-                Register First {speciesProfile.name}
-              </button>
+              {filterKey !== 'inactive' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingAnimal(null);
+                    setShowAnimalModal(true);
+                  }}
+                  className="min-h-[40px] px-4 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+                >
+                  Add {speciesProfile.name}
+                </button>
+              )}
             </div>
           ) : (
-            <div className="divide-y divide-[var(--barn-border)] max-h-[72vh] overflow-y-auto">
+            <div className="divide-y divide-[var(--barn-border)]">
               {filteredAnimals.map((a) => {
-                const isSelected = activeAnimal?.id === a.id;
                 const isChecked = selectedIds.has(a.id);
                 const coi = coiByAnimalId.get(a.id);
                 const coverPhoto = primaryPhotoByAnimalId.get(a.id);
                 const photoCount = photosByAnimalId.get(a.id)?.length || 0;
+                const archived = isAnimalArchived(a);
                 const sexColor =
                   a.sex === 'Male'
                     ? 'text-[var(--barn-slate)]'
@@ -469,102 +584,139 @@ export function HerdScreen({
                     : 'text-[var(--barn-muted)]';
 
                 return (
-                  <button
+                  <div
                     key={a.id}
-                    type="button"
-                    onClick={() => {
-                      if (multiSelectMode) {
-                        setSelectedIds((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(a.id)) next.delete(a.id);
-                          else next.add(a.id);
-                          return next;
-                        });
-                      } else {
-                        onSelectAnimal(a.id);
-                      }
-                    }}
-                    className={`w-full text-left px-4 py-3.5 transition-colors flex items-center justify-between gap-3 ${
+                    className={`w-full px-4 py-3.5 transition-colors flex items-center justify-between gap-3 ${
                       multiSelectMode && isChecked
                         ? 'bg-[var(--barn-sage-tint)]/65'
-                        : isSelected
-                          ? 'bg-[var(--barn-subtle)]/75'
-                          : 'hover:bg-[var(--barn-subtle)]/40'
+                        : 'hover:bg-[var(--barn-subtle)]/40'
                     }`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      {multiSelectMode && (
-                        <span className="text-[var(--barn-sage)] shrink-0" aria-hidden="true">
-                          {isChecked ? (
-                            <CheckSquare className="w-4 h-4" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (multiSelectMode) {
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(a.id)) next.delete(a.id);
+                            else next.add(a.id);
+                            return next;
+                          });
+                        } else {
+                          openAnimalPage(a.id);
+                        }
+                      }}
+                      className="flex-1 min-w-0 text-left flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {multiSelectMode && (
+                          <span className="text-[var(--barn-sage)] shrink-0" aria-hidden="true">
+                            {isChecked ? (
+                              <CheckSquare className="w-4 h-4" />
+                            ) : (
+                              <Square className="w-4 h-4 text-[var(--barn-muted)]" />
+                            )}
+                          </span>
+                        )}
+                        <div className="relative w-11 h-11 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
+                          {coverPhoto ? (
+                            <img
+                              src={coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl}
+                              alt={a.name}
+                              className="w-full h-full object-cover"
+                            />
                           ) : (
-                            <Square className="w-4 h-4 text-[var(--barn-muted)]" />
+                            <span className={`font-display text-sm font-semibold ${sexColor}`}>
+                              {(a.name || '?').charAt(0).toUpperCase()}
+                            </span>
                           )}
-                        </span>
-                      )}
-                      <div className="relative w-10 h-10 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
-                        {coverPhoto ? (
-                          <img
-                            src={coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl}
-                            alt={a.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <span className={`font-display text-sm font-semibold ${sexColor}`}>
-                            {(a.name || '?').charAt(0).toUpperCase()}
-                          </span>
-                        )}
-                        {photoCount > 1 && (
-                          <span className="absolute bottom-0 right-0 px-1 rounded-tl-md bg-black/75 text-white font-mono text-[9px] leading-tight">
-                            {photoCount}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-sm truncate">{a.name}</span>
-                          {a.tattoo && (
-                            <span className="font-mono text-xs text-[var(--barn-muted)] shrink-0">
-                              {a.tattoo}
+                          {photoCount > 1 && (
+                            <span className="absolute bottom-0 right-0 px-1 rounded-tl-md bg-black/75 text-white font-mono text-[9px] leading-tight">
+                              {photoCount}
                             </span>
                           )}
                         </div>
-                        <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
-                          <span className={`font-medium ${sexColor}`}>
-                            {formatSexForSpecies(a.sex, speciesProfile)}
-                          </span>{' '}
-                          · {a.breed} {a.variety} · {a.status}
-                          {a.cageLocation ? ` · ${a.cageLocation}` : ''}
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-sm truncate">{a.name}</span>
+                            {a.tattoo && (
+                              <span className="font-mono text-xs text-[var(--barn-muted)] shrink-0">
+                                {a.tattoo}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
+                            <span className={`font-medium ${sexColor}`}>
+                              {formatSexForSpecies(a.sex, speciesProfile)}
+                            </span>{' '}
+                            · {a.breed} {a.variety} · {a.status}
+                            {a.cageLocation ? ` · ${a.cageLocation}` : ''}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="text-right shrink-0 font-mono tabular-nums">
-                      <div className="text-xs font-medium">
-                        {formatWeight(a.weightGrams, settings.preferredUnit)}
+                      <div className="text-right shrink-0 font-mono tabular-nums">
+                        <div className="text-xs font-medium">
+                          {formatWeight(a.weightGrams, settings.preferredUnit)}
+                        </div>
+                        <div className="text-[11px] text-[var(--barn-muted)]">
+                          COI {(coi?.coiPercent ?? 0).toFixed(1)}%
+                        </div>
                       </div>
-                      <div className="text-[11px] text-[var(--barn-muted)]">
-                        COI {(coi?.coiPercent ?? 0).toFixed(1)}%
-                      </div>
-                    </div>
-                  </button>
+                    </button>
+
+                    {!multiSelectMode && (
+                      <button
+                        type="button"
+                        onClick={() => void onSetAnimalsArchiveState([a.id], !archived)}
+                        title={
+                          archived
+                            ? `Move ${a.name} back to Active herd`
+                            : `Move ${a.name} to Archived`
+                        }
+                        className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-medium text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 shrink-0 whitespace-nowrap"
+                      >
+                        {archived ? (
+                          <>
+                            <ArchiveRestore className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span className="hidden sm:inline">Restore</span>
+                          </>
+                        ) : (
+                          <>
+                            <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span className="hidden sm:inline">Archive</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>
           )}
         </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => onSelectAnimal(null)}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+              Back to {speciesProfile.name} Herd
+            </button>
 
-        {/* Right 7 Columns: Selected Animal Record, Lineage, Genetics & Weight Logs */}
-        <div className="lg:col-span-7">
-          {!activeAnimal ? (
-            <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)]">
-              Select a {speciesProfile.name.toLowerCase()} from the list to inspect its lineage,
-              coat genetics, weight logs, and cage card.
-            </div>
-          ) : (
-            <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-6">
-              {/* Header & Cage-Side Print/Tree Actions */}
+            {isAnimalArchived(activeAnimal) && (
+              <div className="text-xs px-3 py-1.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)]/50 text-[var(--barn-ink)] font-medium">
+                Inactive ({activeAnimal.status}) — kept in storage for pedigrees &amp; history
+              </div>
+            )}
+          </div>
+
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-6">
+              {/* Header & Cage-Side Print/Tree/Archive Actions */}
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-[var(--barn-border)] pb-5">
                 <div className="space-y-1">
                   <div className="text-xs text-[var(--barn-muted)] font-mono">
@@ -580,6 +732,32 @@ export function HerdScreen({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void onSetAnimalsArchiveState(
+                        [activeAnimal.id],
+                        isAnimalActive(activeAnimal)
+                      )
+                    }
+                    className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                      isAnimalArchived(activeAnimal)
+                        ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)] hover:opacity-90'
+                        : 'border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+                    }`}
+                  >
+                    {isAnimalArchived(activeAnimal) ? (
+                      <>
+                        <ArchiveRestore className="w-3.5 h-3.5" aria-hidden="true" />
+                        Move Back to Active
+                      </>
+                    ) : (
+                      <>
+                        <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                        Move to Archived
+                      </>
+                    )}
+                  </button>
                   <button
                     type="button"
                     onClick={() => onOpenPedigreeForAnimal(activeAnimal.id)}
@@ -709,7 +887,7 @@ export function HerdScreen({
                           {parent ? (
                             <button
                               type="button"
-                              onClick={() => onSelectAnimal(parent.id)}
+                              onClick={() => openAnimalPage(parent.id)}
                               className="font-medium text-sm underline hover:text-[var(--barn-sage)] truncate block mt-0.5"
                             >
                               {parent.name} ({parent.tattoo})
@@ -733,7 +911,7 @@ export function HerdScreen({
                         {idx > 0 && ' · '}
                         <button
                           type="button"
-                          onClick={() => onSelectAnimal(kid.id)}
+                          onClick={() => openAnimalPage(kid.id)}
                           className="underline text-[var(--barn-ink)] hover:text-[var(--barn-sage)]"
                         >
                           {kid.name} ({kid.tattoo})
@@ -946,10 +1124,9 @@ export function HerdScreen({
                   <strong className="text-[var(--barn-ink)]">Notes:</strong> {activeAnimal.notes}
                 </div>
               )}
-            </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       {showAnimalModal && (
         <AnimalEditorModal

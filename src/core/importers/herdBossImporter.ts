@@ -24,6 +24,7 @@ import {
   CareLog,
   CareLogType,
   isSameSpecies,
+  normalizeAnimalStatus,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -435,31 +436,29 @@ function parseHerdBossAnimalStatus(
   rawStatus: string | undefined,
   rawSoldDate?: string,
   rawDeathDate?: string,
-  rawReferenceFlag?: string
+  rawReferenceFlag?: string,
+  rawArchivedFlag?: string,
+  rawActiveFlag?: string
 ): AnimalStatus {
   if (rawDeathDate && rawDeathDate.trim()) return 'Deceased';
   if (rawSoldDate && rawSoldDate.trim()) return 'Sold';
+
+  const arch = (rawArchivedFlag || '').trim().toLowerCase();
+  if (arch === 'true' || arch === '1' || arch === 'yes' || arch === 'y' || arch === 'archived' || arch === 'inactive') {
+    return 'Archived';
+  }
+
+  const activeFlag = (rawActiveFlag || '').trim().toLowerCase();
+  if (activeFlag === 'false' || activeFlag === '0' || activeFlag === 'no' || activeFlag === 'n' || activeFlag === 'inactive' || activeFlag === 'archived') {
+    return 'Archived';
+  }
 
   const ref = (rawReferenceFlag || '').trim().toLowerCase();
   if (ref === 'true' || ref === '1' || ref === 'yes' || ref === 'reference') {
     return 'Retired';
   }
 
-  const s = (rawStatus || '').trim().toLowerCase();
-  if (!s) return 'Active';
-  if (/\b(?:dead|deceased|died|culled|cull|butchered|harvested|euthanized|lost)\b/.test(s)) {
-    return 'Deceased';
-  }
-  if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
-    return 'Sold';
-  }
-  if (/\b(?:ref|reference|ancestor|pedigree|retired|archived|inactive|historical|external)\b/.test(s)) {
-    return 'Retired';
-  }
-  if (/\b(?:junior|weanling|nursing|kid|calf|lamb|kit|cria|foal|puppy|chick|feeder)\b/.test(s)) {
-    return 'Junior';
-  }
-  return 'Active';
+  return normalizeAnimalStatus(rawStatus);
 }
 
 function buildNormalizedTablesFromEntry(entry: VirtualArchiveEntry): NormalizedTable[] {
@@ -1223,9 +1222,27 @@ export const HerdBossImporter: PlatformImporter = {
           'isreference',
           'reference',
           'pedigreeonly',
-          'archived',
         ]);
-        const status = parseHerdBossAnimalStatus(rawStatus, soldDate, deathDate, refFlag);
+        const archivedFlag = pickCell(row, table.normHeaderMap, usedCols, [
+          'archived',
+          'isarchived',
+          'inactive',
+          'isinactive',
+        ]);
+        const activeFlag = pickCell(row, table.normHeaderMap, usedCols, [
+          'isactive',
+          'active',
+          'inherd',
+          'current',
+        ]);
+        const status = parseHerdBossAnimalStatus(
+          rawStatus,
+          soldDate,
+          deathDate,
+          refFlag,
+          archivedFlag,
+          activeFlag
+        );
 
         const birthDateIso = normalizeFlexibleDateIso(
           pickCell(row, table.normHeaderMap, usedCols, [
@@ -1358,7 +1375,10 @@ export const HerdBossImporter: PlatformImporter = {
           breed,
           variety,
           sex,
-          status: rawStatus || soldDate || deathDate || refFlag ? status : preexistingMatch?.animal.status || status,
+          status:
+            rawStatus || soldDate || deathDate || refFlag || archivedFlag || activeFlag
+              ? status
+              : preexistingMatch?.animal.status || status,
           birthDateIso,
           weightGrams: bestWeightGrams,
           genotype: parseGenotypeString(genotypeRaw),

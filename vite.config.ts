@@ -11,6 +11,16 @@ export default defineConfig(() => {
         '@': path.resolve(import.meta.dirname, '.'),
       },
     },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'lucide-react',
+        'fflate',
+        'sql.js',
+      ],
+    },
     server: {
       host: '0.0.0.0',
       port: 3000,

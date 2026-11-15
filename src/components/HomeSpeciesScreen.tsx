@@ -29,6 +29,7 @@ import React, { useState } from 'react';
 import {
   BarnDatabaseSnapshot,
   BarnSettings,
+  isAnimalActive,
   isSameSpecies,
   SpeciesProfile,
   todayDateIso,
@@ -348,7 +349,10 @@ export function HomeSpeciesScreen({
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {snapshot.speciesProfiles.map((sp, index) => {
-            const count = snapshot.animals.filter((a) => isSameSpecies(a.species, sp.name)).length;
+            const speciesAnimals = snapshot.animals.filter((a) => isSameSpecies(a.species, sp.name));
+            const count = speciesAnimals.length;
+            const activeCount = speciesAnimals.filter((a) => isAnimalActive(a)).length;
+            const archivedCount = count - activeCount;
             const spDue = snapshot.breedings.filter(
               (b) =>
                 isSameSpecies(b.species, sp.name) &&
@@ -474,8 +478,8 @@ export function HomeSpeciesScreen({
                         onClick={() => onTogglePinSpecies(sp.name)}
                         title={
                           isPinned
-                            ? `Unpin ${sp.name} from startup landing`
-                            : `Pin ${sp.name} as startup landing page`
+                            ? `Unpin ${sp.name} Hub from startup landing`
+                            : `Pin ${sp.name} Hub as startup landing page`
                         }
                         className={`min-h-[36px] px-2.5 py-1 rounded-lg border text-xs font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
                           isPinned
@@ -503,8 +507,9 @@ export function HomeSpeciesScreen({
                   </div>
 
                   <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
-                    {count} {count === 1 ? 'animal' : 'animals'} · {spDue} active gestation
-                    {spDue === 1 ? '' : 's'} · {spTasks} open chore{spTasks === 1 ? '' : 's'}
+                    {activeCount} active{archivedCount > 0 ? ` · ${archivedCount} archived` : ''} ·{' '}
+                    {spDue} active gestation{spDue === 1 ? '' : 's'} · {spTasks} open chore
+                    {spTasks === 1 ? '' : 's'}
                   </div>
 
                   <div className="border-t border-b border-[var(--barn-border)] py-2.5 grid grid-cols-3 gap-2 text-xs">
@@ -611,7 +616,7 @@ export function HomeSpeciesScreen({
                         onClick={() => onOpenSpecies(sp.name, 'herd')}
                         className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] transition-colors whitespace-nowrap"
                       >
-                        Herd ({count})
+                        Herd ({activeCount})
                       </button>
                       {(count > 0 || spTotalRecords > 0) && (
                         <button

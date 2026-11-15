@@ -19,6 +19,8 @@ import {
   BreedingStatus,
   formatBreedingStatusForSpecies,
   formatReadableDate,
+  isAnimalActive,
+  isAnimalArchived,
   todayDateIso,
 } from '../core/models';
 import { calculatePairingCoi } from '../core/pedigreeCalculator';
@@ -59,14 +61,26 @@ export function BreedingScreen({
 }: BreedingScreenProps) {
   const { speciesProfile, animals, herdById, breedings } = activeData;
 
-  const males = useMemo(
-    () => animals.filter((a) => a.sex === 'Male' && a.status !== 'Deceased' && a.status !== 'Sold'),
+  const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
+
+  const archivedParentCount = useMemo(
+    () => animals.filter((a) => (a.sex === 'Male' || a.sex === 'Female') && isAnimalArchived(a)).length,
     [animals]
+  );
+
+  const males = useMemo(
+    () =>
+      animals.filter(
+        (a) => a.sex === 'Male' && (includeArchivedParents || isAnimalActive(a))
+      ),
+    [animals, includeArchivedParents]
   );
   const females = useMemo(
     () =>
-      animals.filter((a) => a.sex === 'Female' && a.status !== 'Deceased' && a.status !== 'Sold'),
-    [animals]
+      animals.filter(
+        (a) => a.sex === 'Female' && (includeArchivedParents || isAnimalActive(a))
+      ),
+    [animals, includeArchivedParents]
   );
 
   const [sireId, setSireId] = useState<string>(males[0]?.id || '');
@@ -91,6 +105,7 @@ export function BreedingScreen({
 
   useEffect(() => {
     setEditingRecord(null);
+    setIncludeArchivedParents(false);
   }, [speciesProfile.name]);
   const [outStatus, setOutStatus] = useState<BreedingStatus>('Born');
   const [outBirthIso, setOutBirthIso] = useState('');
@@ -197,10 +212,24 @@ export function BreedingScreen({
             </p>
           </div>
 
+          <label className="flex items-center gap-2 text-xs text-[var(--barn-muted)] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeArchivedParents}
+              onChange={(e) => setIncludeArchivedParents(e.target.checked)}
+              className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+            />
+            <span>
+              Include archived / inactive parents for COI &amp; historical pairings
+              {archivedParentCount > 0 ? ` (${archivedParentCount} archived)` : ''}
+            </span>
+          </label>
+
           {males.length === 0 || females.length === 0 ? (
             <p className="text-sm text-[var(--barn-muted)] py-3">
-              Add at least one active {speciesProfile.maleLabel} and one {speciesProfile.femaleLabel}{' '}
-              in the {speciesProfile.name} Herd tab to simulate and log pairings.
+              {!includeArchivedParents && archivedParentCount > 0
+                ? `No active ${speciesProfile.maleLabel} & ${speciesProfile.femaleLabel} pair found. Check "Include archived / inactive parents" above to preview historical pairings, or add active stock in the ${speciesProfile.name} Herd tab.`
+                : `Add at least one ${speciesProfile.maleLabel} and one ${speciesProfile.femaleLabel} in the ${speciesProfile.name} Herd tab to simulate and log pairings.`}
             </p>
           ) : (
             <form onSubmit={handleLogSubmit} className="space-y-4">
@@ -216,7 +245,7 @@ export function BreedingScreen({
                   >
                     {males.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.name} ({m.tattoo})
+                        {m.name} ({m.tattoo}){isAnimalArchived(m) ? ` [${m.status}]` : ''}
                       </option>
                     ))}
                   </select>
@@ -233,7 +262,7 @@ export function BreedingScreen({
                   >
                     {females.map((f) => (
                       <option key={f.id} value={f.id}>
-                        {f.name} ({f.tattoo})
+                        {f.name} ({f.tattoo}){isAnimalArchived(f) ? ` [${f.status}]` : ''}
                       </option>
                     ))}
                   </select>

@@ -297,7 +297,7 @@ export function useBarnStore() {
       await reloadFromAdapter();
       notify(
         nextPinned
-          ? `Pinned ${speciesName} hub as your startup landing page.`
+          ? `Pinned ${speciesName} Hub as your startup landing page.`
           : 'Unpinned startup species — app will open on All-Species Home.'
       );
     },
@@ -622,6 +622,39 @@ export function useBarnStore() {
       notify(`Deleted ${animalIds.length} selected animal${animalIds.length === 1 ? '' : 's'}.`);
     },
     [selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify]
+  );
+
+  const setAnimalsArchiveState = useCallback(
+    async (animalIds: string[], archived: boolean) => {
+      if (!snapshot || animalIds.length === 0) return;
+      const idSet = new Set(animalIds);
+      const ts = nowIsoUtc();
+      const targetStatus = archived ? ('Archived' as const) : ('Active' as const);
+      const targets = snapshot.animals
+        .filter((a) => idSet.has(a.id))
+        .map((a) => ({
+          ...a,
+          status: targetStatus,
+          updatedAt: ts,
+        }));
+      if (targets.length === 0) return;
+      await adapterRef.current!.saveAnimalsBatch(targets);
+      await reloadFromAdapter();
+      if (targets.length === 1) {
+        notify(
+          archived
+            ? `Moved ${targets[0].name} to Archived.`
+            : `Moved ${targets[0].name} back to Active herd.`
+        );
+      } else {
+        notify(
+          archived
+            ? `Moved ${targets.length} animals to Archived.`
+            : `Moved ${targets.length} animals back to Active herd.`
+        );
+      }
+    },
+    [snapshot, reloadFromAdapter, notify]
   );
 
   const migrateAnimalsSpecies = useCallback(
@@ -1249,6 +1282,7 @@ export function useBarnStore() {
     deleteAnimalPhoto,
     deleteAnimal,
     deleteAnimalsBatch,
+    setAnimalsArchiveState,
     migrateAnimalsSpecies,
     saveCage,
     deleteCage,

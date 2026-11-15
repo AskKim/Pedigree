@@ -30,25 +30,107 @@ import {
   Sun,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
-import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
-import { HerdScreen } from './components/HerdScreen';
+import { Component, ErrorInfo, ReactNode, useEffect, useMemo, useState } from 'react';
 import { BreedingScreen } from './components/BreedingScreen';
+import { HerdScreen } from './components/HerdScreen';
+import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { PedigreeScreen } from './components/PedigreeScreen';
 import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
+import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
 import { isSameSpecies } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
+
+interface ScreenErrorBoundaryProps {
+  routeKey: string;
+  onResetRoute: () => void;
+  children: ReactNode;
+}
+
+interface ScreenErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class ScreenErrorBoundary extends Component<
+  ScreenErrorBoundaryProps,
+  ScreenErrorBoundaryState
+> {
+  state: ScreenErrorBoundaryState = { hasError: false, errorMessage: '' };
+
+  static getDerivedStateFromError(error: Error): ScreenErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'Unexpected workspace rendering error.',
+    };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Workspace render error:', error, info);
+  }
+
+  componentDidUpdate(prevProps: ScreenErrorBoundaryProps) {
+    if (prevProps.routeKey !== this.props.routeKey && this.state.hasError) {
+      this.setState({ hasError: false, errorMessage: '' });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3">
+          <h2 className="font-display text-lg font-semibold">
+            This screen ran into an issue
+          </h2>
+          <p className="text-xs text-[var(--barn-muted)]">{this.state.errorMessage}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                this.setState({ hasError: false, errorMessage: '' });
+                this.props.onResetRoute();
+              }}
+              className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+            >
+              Return to All Species
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="min-h-[38px] px-4 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const store = useBarnStore();
   const [workspaceDeleteConfirm, setWorkspaceDeleteConfirm] = useState<
     'testing' | 'all' | null
   >(null);
+  const [focusAddSpeciesOnSettings, setFocusAddSpeciesOnSettings] = useState(false);
 
   useEffect(() => {
     setWorkspaceDeleteConfirm(null);
+    if (store.route !== 'settings') {
+      setFocusAddSpeciesOnSettings(false);
+    }
   }, [store.activeSpeciesName, store.route]);
+
+  const animalCountBySpecies = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!store.snapshot) return counts;
+    for (const animal of store.snapshot.animals) {
+      const key = animal.species.trim().toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [store.snapshot]);
 
   if (store.isLoading || !store.snapshot || !store.activeSpeciesData) {
     return (
@@ -156,7 +238,10 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setRoute(route === 'settings' ? 'dashboard' : 'settings')}
+            onClick={() => {
+              setFocusAddSpeciesOnSettings(false);
+              setRoute(route === 'settings' ? 'dashboard' : 'settings');
+            }}
             className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               route === 'settings'
                 ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
@@ -207,8 +292,7 @@ export default function App() {
                 >
                   {snapshot.speciesProfiles.map((sp) => (
                     <option key={sp.id} value={sp.name}>
-                      {sp.name} (
-                      {snapshot.animals.filter((a) => isSameSpecies(a.species, sp.name)).length})
+                      {sp.name} ({animalCountBySpecies.get(sp.name.trim().toLowerCase()) ?? 0})
                     </option>
                   ))}
                 </select>
@@ -255,8 +339,8 @@ export default function App() {
                 >
                   <Pin className="w-3.5 h-3.5" aria-hidden="true" />
                   {isActivePinned
-                    ? `Pinned as Startup Page`
-                    : `Pin ${activeSpeciesName} as Startup Page`}
+                    ? `Pinned ${activeSpeciesName} Hub as Startup Page`
+                    : `Pin ${activeSpeciesName} Hub as Startup Page`}
                 </button>
               </div>
             </div>
@@ -300,6 +384,7 @@ export default function App() {
         )}
 
         {/* Active Screen Viewport */}
+        <ScreenErrorBoundary routeKey={route} onResetRoute={() => setRoute('home')}>
         {route === 'home' && (
           <HomeSpeciesScreen
             snapshot={snapshot}
@@ -323,7 +408,10 @@ export default function App() {
             onMigrateAnimals={async (ids, target, options) => {
               await store.migrateAnimalsSpecies(ids, target, options);
             }}
-            onOpenSettings={() => setRoute('settings')}
+            onOpenSettings={() => {
+              setFocusAddSpeciesOnSettings(true);
+              setRoute('settings');
+            }}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
@@ -376,6 +464,7 @@ export default function App() {
               void store.deleteAnimal(animal);
             }}
             onDeleteAnimalsBatch={store.deleteAnimalsBatch}
+            onSetAnimalsArchiveState={store.setAnimalsArchiveState}
             onMigrateAnimals={async (ids, target, options) => {
               await store.migrateAnimalsSpecies(ids, target, options);
             }}
@@ -428,6 +517,8 @@ export default function App() {
             snapshot={snapshot}
             engineName={store.engineName}
             activeSpeciesName={activeSpeciesName}
+            focusAddSpecies={focusAddSpeciesOnSettings}
+            onFocusedAddSpecies={() => setFocusAddSpeciesOnSettings(false)}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
@@ -452,6 +543,7 @@ export default function App() {
             }}
           />
         )}
+        </ScreenErrorBoundary>
       </main>
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}

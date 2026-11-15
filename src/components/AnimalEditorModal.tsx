@@ -29,6 +29,8 @@ import {
   applyAnimalNamePrefix,
   BiologicalSex,
   CageLocation,
+  isAnimalActive,
+  isAnimalArchived,
   isSameSpecies,
   parseWeightInputToGrams,
   SpeciesProfile,
@@ -117,6 +119,7 @@ export function AnimalEditorModal({
   const [ownerName, setOwnerName] = useState(initialAnimal?.ownerName ?? defaultOwnerName);
   const [sireId, setSireId] = useState(initialAnimal?.sireId || '');
   const [damId, setDamId] = useState(initialAnimal?.damId || '');
+  const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
   const [notes, setNotes] = useState(initialAnimal?.notes || '');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -159,9 +162,10 @@ export function AnimalEditorModal({
           isSameSpecies(c.species, speciesProfile.name) &&
           (c.sex === 'Male' || c.sex === 'Unknown') &&
           c.id !== initialAnimal?.id &&
+          (includeArchivedParents || isAnimalActive(c) || c.id === sireId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
       ),
-    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById]
+    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById, includeArchivedParents, sireId]
   );
 
   const damCandidates = useMemo(
@@ -171,9 +175,10 @@ export function AnimalEditorModal({
           isSameSpecies(c.species, speciesProfile.name) &&
           (c.sex === 'Female' || c.sex === 'Unknown') &&
           c.id !== initialAnimal?.id &&
+          (includeArchivedParents || isAnimalActive(c) || c.id === damId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
       ),
-    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById]
+    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById, includeArchivedParents, damId]
   );
 
   const projectedCoi = useMemo(() => {
@@ -483,10 +488,21 @@ export function AnimalEditorModal({
           </div>
 
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-[var(--barn-muted)]">
-                Lineage Parents ({speciesProfile.name} Only)
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs font-medium text-[var(--barn-muted)]">
+                  Lineage Parents ({speciesProfile.name} Only)
+                </span>
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--barn-muted)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeArchivedParents}
+                    onChange={(e) => setIncludeArchivedParents(e.target.checked)}
+                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>Include archived parents</span>
+                </label>
+              </div>
               {projectedCoi && (
                 <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)]">
                   Projected COI: {projectedCoi.coiPercent.toFixed(2)}% ({projectedCoi.risk.label})
@@ -508,6 +524,7 @@ export function AnimalEditorModal({
                   {sireCandidates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
+                      {isAnimalArchived(c) ? ` [${c.status}]` : ''}
                     </option>
                   ))}
                 </select>
@@ -526,6 +543,7 @@ export function AnimalEditorModal({
                   {damCandidates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
+                      {isAnimalArchived(c) ? ` [${c.status}]` : ''}
                     </option>
                   ))}
                 </select>

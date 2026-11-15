@@ -53,6 +53,7 @@ import {
 import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
+  isAnimalActive,
   isSameSpecies,
   PREDEFINED_SPECIES_PRESETS,
 } from '../core/models';
@@ -672,10 +673,19 @@ export function ExternalImporterPanel({
                 {preview.animals.length}
               </div>
               <div className="text-[11px] text-[var(--barn-muted)]">
-                {preview.parentLinksResolved} parent links
-                {preview.matchedExistingAnimalsCount > 0
-                  ? ` · ${preview.matchedExistingAnimalsCount} existing`
-                  : ''}
+                {(() => {
+                  const activeCount = preview.animals.filter((a) => isAnimalActive(a)).length;
+                  const archivedCount = preview.animals.length - activeCount;
+                  const parts: string[] = [];
+                  if (archivedCount > 0) {
+                    parts.push(`${activeCount} active · ${archivedCount} archived`);
+                  }
+                  parts.push(`${preview.parentLinksResolved} parent links`);
+                  if (preview.matchedExistingAnimalsCount > 0) {
+                    parts.push(`${preview.matchedExistingAnimalsCount} existing`);
+                  }
+                  return parts.join(' · ');
+                })()}
               </div>
             </div>
 

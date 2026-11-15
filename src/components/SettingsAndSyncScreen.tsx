@@ -55,6 +55,8 @@ interface SettingsAndSyncScreenProps {
   snapshot: BarnDatabaseSnapshot;
   engineName: string;
   activeSpeciesName: string;
+  focusAddSpecies?: boolean;
+  onFocusedAddSpecies?: () => void;
   onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
   onSaveSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
@@ -75,6 +77,8 @@ export function SettingsAndSyncScreen({
   snapshot,
   engineName,
   activeSpeciesName,
+  focusAddSpecies = false,
+  onFocusedAddSpecies,
   onUpdateSettings,
   onSaveSpecies,
   onDeleteSpecies,
@@ -120,6 +124,14 @@ export function SettingsAndSyncScreen({
   const mergeFileRef = useRef<HTMLInputElement | null>(null);
   const replaceFileRef = useRef<HTMLInputElement | null>(null);
   const sqliteFileRef = useRef<HTMLInputElement | null>(null);
+  const addSpeciesSectionRef = useRef<HTMLFormElement | null>(null);
+
+  useEffect(() => {
+    if (focusAddSpecies) {
+      addSpeciesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      onFocusedAddSpecies?.();
+    }
+  }, [focusAddSpecies, onFocusedAddSpecies]);
 
   const isDark = settings.themeMode === 'dark';
   const customColors: CustomThemeColors = settings.customColors || {};
@@ -425,6 +437,8 @@ export function SettingsAndSyncScreen({
 
           {/* Barn Preferences, Image Optimization & Startup Pinning */}
           <form
+            id="settings-add-species-section"
+            ref={addSpeciesSectionRef}
             onSubmit={handleSavePreferences}
             className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-5"
           >

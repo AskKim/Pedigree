@@ -18,6 +18,8 @@ import {
   BarnSettings,
   formatSexForSpecies,
   formatWeight,
+  isAnimalActive,
+  isAnimalArchived,
   SpeciesProfile,
 } from '../core/models';
 import {
@@ -64,15 +66,21 @@ export function PedigreeScreen({
 
   const [zoom, setZoom] = useState<number>(1);
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
+  const [includeArchivedInLinkModal, setIncludeArchivedInLinkModal] = useState<boolean>(false);
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [includePrimaryPhoto, setIncludePrimaryPhoto] = useState<boolean>(false);
 
   useEffect(() => {
     setLinkingSlot(null);
+    setIncludeArchivedInLinkModal(false);
     setCreatingParentSlot(null);
     setShowPrintModal(false);
   }, [speciesProfile.name]);
+
+  useEffect(() => {
+    setIncludeArchivedInLinkModal(false);
+  }, [linkingSlot]);
 
   const subject = useMemo(() => {
     if (selectedSubjectId && herdById.has(selectedSubjectId)) {
@@ -103,9 +111,10 @@ export function PedigreeScreen({
       const sexOk = wantMale
         ? c.sex === 'Male' || c.sex === 'Unknown'
         : c.sex === 'Female' || c.sex === 'Unknown';
-      return sexOk && c.id !== childId && !wouldCreateCycle(childId, c.id, herdById);
+      const statusOk = includeArchivedInLinkModal || isAnimalActive(c);
+      return sexOk && statusOk && c.id !== childId && !wouldCreateCycle(childId, c.id, herdById);
     });
-  }, [linkingSlot, animals, herdById]);
+  }, [linkingSlot, animals, herdById, includeArchivedInLinkModal]);
 
   if (!subject) {
     return (
@@ -180,6 +189,7 @@ export function PedigreeScreen({
               {animals.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name} ({a.tattoo || 'No ID'}) — {formatSexForSpecies(a.sex, speciesProfile)}
+                  {isAnimalArchived(a) ? ` [${a.status}]` : ''}
                 </option>
               ))}
             </select>
@@ -421,10 +431,23 @@ export function PedigreeScreen({
               Showing cycle-safe {speciesProfile.name} candidates only.
             </p>
 
+            <label className="flex items-center gap-2 text-xs text-[var(--barn-muted)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeArchivedInLinkModal}
+                onChange={(e) => setIncludeArchivedInLinkModal(e.target.checked)}
+                className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>Include archived / inactive candidates</span>
+            </label>
+
             {linkCandidates.length === 0 ? (
               <p className="text-sm text-[var(--barn-muted)]">
-                No existing {speciesProfile.name.toLowerCase()} candidates available. Create a new
-                parent record below.
+                No {includeArchivedInLinkModal ? 'existing' : 'active'}{' '}
+                {speciesProfile.name.toLowerCase()} candidates available.{' '}
+                {!includeArchivedInLinkModal
+                  ? 'Toggle archived candidates above or create a new parent record below.'
+                  : 'Create a new parent record below.'}
               </p>
             ) : (
               <div className="max-h-56 overflow-y-auto divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl">
@@ -444,10 +467,19 @@ export function PedigreeScreen({
                       }
                       setLinkingSlot(null);
                     }}
-                    className="w-full text-left px-3.5 py-2.5 text-xs hover:bg-[var(--barn-subtle)] flex justify-between"
+                    className="w-full text-left px-3.5 py-2.5 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2"
                   >
-                    <span className="font-medium">{cand.name}</span>
-                    <span className="font-mono text-[var(--barn-muted)]">{cand.tattoo}</span>
+                    <span className="font-medium truncate">
+                      {cand.name}
+                      {isAnimalArchived(cand) ? (
+                        <span className="ml-1.5 text-[10px] text-[var(--barn-muted)]">
+                          [{cand.status}]
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="font-mono text-[var(--barn-muted)] shrink-0">
+                      {cand.tattoo}
+                    </span>
                   </button>
                 ))}
               </div>

@@ -17,7 +17,7 @@ import type { CustomThemeColors } from './themePalette';
 
 export type BiologicalSex = 'Male' | 'Female' | 'Unknown';
 
-export type AnimalStatus = 'Active' | 'Junior' | 'Retired' | 'Sold' | 'Deceased';
+export type AnimalStatus = 'Active' | 'Junior' | 'Archived' | 'Retired' | 'Sold' | 'Deceased';
 
 export type BreedingStatus =
   | 'Planned'
@@ -284,10 +284,68 @@ export interface BarnDatabaseSnapshot {
 export const ANIMAL_STATUSES: AnimalStatus[] = [
   'Active',
   'Junior',
+  'Archived',
   'Retired',
   'Sold',
   'Deceased',
 ];
+
+/**
+ * Returns `true` for animals in the active barn herd (`Active` or `Junior`).
+ */
+export function isAnimalActive(animal: Pick<Animal, 'status'>): boolean {
+  return animal.status === 'Active' || animal.status === 'Junior';
+}
+
+/**
+ * Returns `true` for non-active / archived animals (`Archived`, `Retired`, `Sold`, or `Deceased`)
+ * kept in storage for pedigree lookups and historical analysis.
+ */
+export function isAnimalArchived(animal: Pick<Animal, 'status'>): boolean {
+  return !isAnimalActive(animal);
+}
+
+/**
+ * Normalizes status strings (including legacy/external import values) into a canonical `AnimalStatus`.
+ */
+export function normalizeAnimalStatus(rawStatus: string | undefined): AnimalStatus {
+  const s = (rawStatus || '').trim().toLowerCase();
+  if (!s) return 'Active';
+  if (/\b(?:dead|deceased|died|culled|cull|butchered|harvested|euthanized|lost)\b/.test(s)) {
+    return 'Deceased';
+  }
+  if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
+    return 'Sold';
+  }
+  if (/\b(?:archived|archive|inactive|not active|non-active|former|past|off-farm|off farm)\b/.test(s)) {
+    return 'Archived';
+  }
+  if (/\b(?:ref|reference|ancestor|pedigree|retired|historical|external)\b/.test(s)) {
+    return 'Retired';
+  }
+  if (/\b(?:junior|jr|weanling|nursing|kid|calf|lamb|kit|cria|foal|puppy|chick|feeder)\b/.test(s)) {
+    return 'Junior';
+  }
+  return 'Active';
+}
+
+/**
+ * Pluralizes a species sex/offspring label (`Doe` -> `Does`, `Buck` -> `Bucks`, `Fox` -> `Foxes`).
+ */
+export function pluralizeSpeciesLabel(label: string): string {
+  const clean = (label || '').trim();
+  if (!clean) return 'Animals';
+  const lower = clean.toLowerCase();
+  if (lower === 'male') return 'Males';
+  if (lower === 'female') return 'Females';
+  if (lower.endsWith('s') || lower.endsWith('x') || lower.endsWith('z') || lower.endsWith('ch') || lower.endsWith('sh')) {
+    return `${clean}es`;
+  }
+  if (/[^aeiou]y$/i.test(clean)) {
+    return `${clean.slice(0, -1)}ies`;
+  }
+  return `${clean}s`;
+}
 
 export const BREEDING_STATUSES: BreedingStatus[] = [
   'Planned',

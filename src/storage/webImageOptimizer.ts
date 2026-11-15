@@ -80,33 +80,44 @@ function renderToDataUrl(
   quality: number
 ): { dataUrl: string; mimeType: string } {
   const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('2D Canvas context unavailable for image optimization.');
+  let jpegCanvas: HTMLCanvasElement | null = null;
+  try {
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('2D Canvas context unavailable for image optimization.');
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+
+    // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
+    const webpUrl = canvas.toDataURL('image/webp', quality);
+    if (webpUrl.startsWith('data:image/webp')) {
+      return { dataUrl: webpUrl, mimeType: 'image/webp' };
+    }
+
+    // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
+    jpegCanvas = document.createElement('canvas');
+    jpegCanvas.width = targetWidth;
+    jpegCanvas.height = targetHeight;
+    const jCtx = jpegCanvas.getContext('2d')!;
+    jCtx.fillStyle = '#F7F2E7';
+    jCtx.fillRect(0, 0, targetWidth, targetHeight);
+    jCtx.drawImage(canvas, 0, 0);
+    const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
+    return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
+  } finally {
+    // Release GPU/RAM canvas backing buffers immediately instead of waiting for GC
+    canvas.width = 0;
+    canvas.height = 0;
+    if (jpegCanvas) {
+      jpegCanvas.width = 0;
+      jpegCanvas.height = 0;
+    }
   }
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
-
-  // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
-  const webpUrl = canvas.toDataURL('image/webp', quality);
-  if (webpUrl.startsWith('data:image/webp')) {
-    return { dataUrl: webpUrl, mimeType: 'image/webp' };
-  }
-
-  // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
-  const jpegCanvas = document.createElement('canvas');
-  jpegCanvas.width = targetWidth;
-  jpegCanvas.height = targetHeight;
-  const jCtx = jpegCanvas.getContext('2d')!;
-  jCtx.fillStyle = '#F7F2E7';
-  jCtx.fillRect(0, 0, targetWidth, targetHeight);
-  jCtx.drawImage(canvas, 0, 0);
-  const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
-  return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -209,10 +220,14 @@ export async function optimizeImageBytes(
   mimeHint = 'image/jpeg',
   presetId?: ImageOptimizationPresetId
 ): Promise<OptimizedImagePayload> {
-  // Create a clean ArrayBuffer copy slice for Blob compatibility across strict TypeScript DOM libs
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  const blob = new Blob([copy.buffer], { type: mimeHint || 'image/jpeg' });
+  // Reuse the underlying ArrayBuffer directly when un-sliced, otherwise slice only the needed range
+  const bufferSlice =
+    bytes.buffer instanceof ArrayBuffer &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer
+      : bytes.slice().buffer;
+  const blob = new Blob([bufferSlice], { type: mimeHint || 'image/jpeg' });
   return optimizeImageBlob(blob, originalFileName, presetId);
 }
 

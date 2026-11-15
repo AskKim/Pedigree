@@ -411,11 +411,14 @@ export class WebSqliteAdapter implements StorageAdapter {
     if (!this.db) return [];
     const stmt = this.db.prepare(sql);
     const rows: Record<string, any>[] = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
+    try {
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      return rows;
+    } finally {
+      stmt.free();
     }
-    stmt.free();
-    return rows;
   }
 
   async loadSnapshot(): Promise<BarnDatabaseSnapshot> {

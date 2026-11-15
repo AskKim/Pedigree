@@ -28,6 +28,7 @@ import {
   generateUuid,
   isSameSpecies,
   millisToDateIso,
+  normalizeAnimalStatus,
   normalizeBiologicalSex,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -290,7 +291,10 @@ export function parseBarnBackupJson(
       breed: a.breed || '',
       variety: a.variety || '',
       sex: normalizeBiologicalSex(a.sex || 'Unknown'),
-      status: a.status || 'Active',
+      status:
+        a.archived === true || a.isArchived === true || a.isActive === false
+          ? 'Archived'
+          : normalizeAnimalStatus(a.status),
       birthDateIso: a.birthDateIso || millisToDateIso(Number(a.birthDateMillis) || 0),
       weightGrams: Number(a.weightGrams) || 0,
       genotype: genoArray,

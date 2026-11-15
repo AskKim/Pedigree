@@ -16,6 +16,9 @@ import {
   CageLocation,
   formatBreedingStatusForSpecies,
   formatReadableDate,
+  isAnimalActive,
+  isAnimalArchived,
+  pluralizeSpeciesLabel,
   SHOW_SANCTIONS,
   ShowEvent,
   TASK_CATEGORIES,
@@ -95,7 +98,10 @@ export function SpeciesDashboardScreen({
   const [showDeadlineIso, setShowDeadlineIso] = useState('');
   const [showAnimalIds, setShowAnimalIds] = useState<string[]>([]);
 
-  const activeBreedingStock = animals.filter((a) => a.status === 'Active').length;
+  const activeAnimals = animals.filter((a) => isAnimalActive(a));
+  const archivedAnimals = animals.filter((a) => isAnimalArchived(a));
+  const activeFemalesCount = activeAnimals.filter((a) => a.sex === 'Female').length;
+  const activeMalesCount = activeAnimals.filter((a) => a.sex === 'Male').length;
   const activeGestations = breedings.filter((b) =>
     ['Planned', 'Bred', 'Palpated Positive', 'Born'].includes(b.status)
   );
@@ -197,10 +203,14 @@ export function SpeciesDashboardScreen({
           onClick={() => onNavigate('herd')}
           className="text-left bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4 hover:bg-[var(--barn-subtle)]/50 transition-colors"
         >
-          <div className="text-xs text-[var(--barn-muted)]">{speciesProfile.name} Herd</div>
-          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">{animals.length}</div>
+          <div className="text-xs text-[var(--barn-muted)]">Active {speciesProfile.name} Herd</div>
+          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">
+            {activeAnimals.length}
+          </div>
           <div className="mt-1 text-xs text-[var(--barn-muted)]">
-            {activeBreedingStock} active breeding stock
+            {activeFemalesCount} {pluralizeSpeciesLabel(speciesProfile.femaleLabel)} ·{' '}
+            {activeMalesCount} {pluralizeSpeciesLabel(speciesProfile.maleLabel)}
+            {archivedAnimals.length > 0 ? ` · ${archivedAnimals.length} archived` : ''}
           </div>
         </button>
 
@@ -442,7 +452,7 @@ export function SpeciesDashboardScreen({
                     className="min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
                   >
                     <option value="">No linked animal</option>
-                    {animals.map((a) => (
+                    {activeAnimals.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.name} ({a.tattoo})
                       </option>
@@ -709,7 +719,7 @@ export function SpeciesDashboardScreen({
                   const occupants = animals.filter(
                     (a) =>
                       a.cageLocation.trim().toLowerCase() === c.label.trim().toLowerCase() &&
-                      (a.status === 'Active' || a.status === 'Junior' || a.status === 'Retired')
+                      isAnimalActive(a)
                   );
                   return (
                     <div
@@ -813,7 +823,7 @@ export function SpeciesDashboardScreen({
                     />
                   </div>
                 </div>
-                {animals.length > 0 && (
+                {activeAnimals.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-[var(--barn-muted)]">
@@ -822,10 +832,10 @@ export function SpeciesDashboardScreen({
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => setShowAnimalIds(animals.map((a) => a.id))}
+                          onClick={() => setShowAnimalIds(activeAnimals.map((a) => a.id))}
                           className="px-2 py-0.5 rounded border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]"
                         >
-                          Select All ({animals.length})
+                          Select All ({activeAnimals.length})
                         </button>
                         {showAnimalIds.length > 0 && (
                           <button
@@ -839,7 +849,7 @@ export function SpeciesDashboardScreen({
                       </div>
                     </div>
                     <div className="max-h-28 overflow-y-auto space-y-1 border border-[var(--barn-border)] rounded-lg p-2 bg-[var(--barn-canvas)]">
-                      {animals.map((a) => {
+                      {activeAnimals.map((a) => {
                         const checked = showAnimalIds.includes(a.id);
                         return (
                           <label key={a.id} className="flex items-center gap-2 cursor-pointer">
