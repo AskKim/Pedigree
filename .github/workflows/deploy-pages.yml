@@ -22,18 +22,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
         with:
           node-version: '22'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install --no-audit --no-fund
-          fi
+        run: bun install
 
       - name: Configure GitHub Pages
         id: pages
@@ -44,10 +39,10 @@ jobs:
           VITE_BASE_PATH: ${{ steps.pages.outputs.base_path || '/' }}
         run: npm run build
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./dist
+      - name: Build subpath-safe product
+        env:
+          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: bun run build
 
   deploy:
     environment:
