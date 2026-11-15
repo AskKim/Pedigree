@@ -44,9 +44,11 @@ export interface StorageAdapter {
   saveSpeciesProfilesBatch(profiles: SpeciesProfile[]): Promise<void>;
   deleteSpeciesProfile(id: string): Promise<void>;
 
-  /** Upserts or deletes an Animal record (deleting an animal cascades its photos & care logs). */
+  /** Upserts or deletes Animal records (single or batch; deleting cascades photos & care logs). */
   saveAnimal(animal: Animal): Promise<void>;
+  saveAnimalsBatch(animals: Animal[]): Promise<void>;
   deleteAnimal(id: string): Promise<void>;
+  deleteAnimalsBatch(ids: string[]): Promise<void>;
 
   /** Upserts or deletes optimized AnimalPhoto records (single or batch). */
   saveAnimalPhoto(photo: AnimalPhoto): Promise<void>;
@@ -61,10 +63,11 @@ export interface StorageAdapter {
   saveBreeding(breeding: BreedingRecord): Promise<void>;
   deleteBreeding(id: string): Promise<void>;
 
-  /** Upserts or deletes BarnTask records (single or batch for TaskMaster cascading). */
+  /** Upserts or deletes BarnTask records (single or batch for Master Task List cascading). */
   saveTask(task: BarnTask): Promise<void>;
   saveTasksBatch(tasks: BarnTask[]): Promise<void>;
   deleteTask(id: string): Promise<void>;
+  deleteTasksBatch(ids: string[]): Promise<void>;
 
   /** Upserts or deletes a CareLog entry. */
   saveCareLog(log: CareLog): Promise<void>;

@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Custom Livestock & Species Biological Schedule / TaskMaster Milestone Editor Modal.
+ * Custom Livestock & Species Biological Schedule / Master Task List Milestone Editor Modal.
  *
  * Portable UI Note: Maps cleanly to React Native `Modal` + `ScrollView` + `TextInput` + `Pressable`.
  */
@@ -22,7 +22,7 @@ import {
   TaskCategory,
   TaskPriority,
 } from '../core/models';
-import { describeMilestoneOffset } from '../core/taskMaster';
+import { describeMilestoneOffset } from '../core/masterTaskList';
 
 interface SpeciesEditorModalProps {
   initialProfile: SpeciesProfile | null;
@@ -88,6 +88,9 @@ export function SpeciesEditorModal({
   const [breedsCsv, setBreedsCsv] = useState(
     initialProfile?.exampleBreeds?.join(', ') || ''
   );
+  const [defaultAnimalNamePrefix, setDefaultAnimalNamePrefix] = useState(
+    initialProfile?.defaultAnimalNamePrefix || ''
+  );
   const [milestones, setMilestones] = useState<SpeciesMilestoneTemplate[]>(
     initialProfile?.milestones
       ? [...initialProfile.milestones]
@@ -114,6 +117,7 @@ export function SpeciesEditorModal({
     setFemaleLabel('Dam');
     setOffspringLabel('Offspring');
     setBreedsCsv('');
+    setDefaultAnimalNamePrefix('');
     setMilestones(DEFAULT_CUSTOM_MILESTONES.map((m) => ({ ...m })));
   };
 
@@ -131,6 +135,7 @@ export function SpeciesEditorModal({
     setFemaleLabel(preset.femaleLabel);
     setOffspringLabel(preset.offspringLabel);
     setBreedsCsv(preset.exampleBreeds.join(', '));
+    setDefaultAnimalNamePrefix(preset.defaultAnimalNamePrefix || '');
     setMilestones(preset.milestones.map((m) => ({ ...m })));
   };
 
@@ -187,6 +192,9 @@ export function SpeciesEditorModal({
       femaleLabel: femaleLabel.trim() || 'Female',
       offspringLabel: offspringLabel.trim() || 'Offspring',
       exampleBreeds: parsedBreeds,
+      defaultAnimalNamePrefix: defaultAnimalNamePrefix.trim()
+        ? defaultAnimalNamePrefix.trimStart()
+        : '',
       milestones,
       createdAt: initialProfile?.createdAt || ts,
       updatedAt: ts,
@@ -210,7 +218,7 @@ export function SpeciesEditorModal({
                 : 'Add Custom Livestock Species'}
             </h2>
             <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-              Define species name, gestation/weaning dates, sex terms, breeds, and TaskMaster rules
+              Define species name, gestation/weaning dates, sex terms, breeds, and Master Task List rules
             </p>
           </div>
           <button
@@ -412,10 +420,27 @@ export function SpeciesEditorModal({
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              Default Animal Name Prefix (optional)
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Oak Ridge  or  OR-"
+              value={defaultAnimalNamePrefix}
+              onChange={(e) => setDefaultAnimalNamePrefix(e.target.value)}
+              className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+            />
+            <p className="text-[11px] text-[var(--barn-muted)] mt-1">
+              Auto-prepended when adding new {name.trim() || 'species'} animals if the name
+              doesn&apos;t already start with it. Can be overridden per animal.
+            </p>
+          </div>
+
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">
-                Custom TaskMaster Milestone Dates ({milestones.length})
+                Custom Master Task List Milestone Dates ({milestones.length})
               </h3>
               <span className="text-xs text-[var(--barn-muted)]">
                 Auto-scheduled whenever a breeding is logged

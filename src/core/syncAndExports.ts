@@ -151,8 +151,8 @@ export function mergeBarnSnapshots(
  */
 export function exportBarnBackupJson(snapshot: BarnDatabaseSnapshot): string {
   const payload = {
-    format: 'community-pedigree-backup',
-    package: 'Pedigree',
+    format: 'pedigree-backup',
+    package: 'pedigree',
     version: 5,
     exportedAtIsoUtc: nowIsoUtc(),
     settings: snapshot.settings,
@@ -189,6 +189,7 @@ export function parseBarnBackupJson(
     id: 'barn_settings',
     barnName:
       rawSettings.barnName ||
+      rawSettings.pedigreeName ||
       rawSettings.warrenName ||
       fallbackSettings.barnName ||
       'My Barn',
@@ -212,6 +213,14 @@ export function parseBarnBackupJson(
       rawSettings.imageOptimizationPreset === 'high_detail'
         ? rawSettings.imageOptimizationPreset
         : fallbackSettings.imageOptimizationPreset || 'balanced',
+    barnNameSetupComplete:
+      typeof rawSettings.barnNameSetupComplete === 'boolean'
+        ? rawSettings.barnNameSetupComplete
+        : true,
+    showHomeSummaryStrip:
+      typeof rawSettings.showHomeSummaryStrip === 'boolean'
+        ? rawSettings.showHomeSummaryStrip
+        : fallbackSettings.showHomeSummaryStrip ?? true,
     updatedAt: rawSettings.updatedAt || ts,
   };
 
@@ -245,6 +254,10 @@ export function parseBarnBackupJson(
                   priority: (m.priority as TaskPriority) || 'Normal',
                 }))
               : [],
+            defaultAnimalNamePrefix:
+              typeof item.defaultAnimalNamePrefix === 'string'
+                ? item.defaultAnimalNamePrefix
+                : '',
             createdAt: item.createdAt || ts,
             updatedAt: item.updatedAt || ts,
           }))
@@ -437,7 +450,7 @@ export function parseBarnBackupJson(
 
 function escapeCsvCell(value: unknown): string {
   const s = String(value ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
@@ -521,6 +534,12 @@ function escapeHtml(raw: string): string {
     .replace(/"/g, '&quot;');
 }
 
+export interface EvansPedigreeOptions {
+  includePrimaryPhoto?: boolean;
+  primaryPhotoDataUrl?: string;
+  primaryPhotoCaption?: string;
+}
+
 /**
  * Generates a standardized, self-contained `.HTM` multi-generation pedigree file compatible
  * with Evans Rabbit Register / ARBA breeder sharing conventions and direct PDF printing.
@@ -530,7 +549,8 @@ export function generateEvansHtmPedigree(
   allAnimals: Animal[],
   speciesProfiles: SpeciesProfile[],
   settings: BarnSettings,
-  generations: 3 | 4 = 3
+  generations: 3 | 4 = 3,
+  options?: EvansPedigreeOptions
 ): string {
   const sp = resolveSpeciesProfile(subject.species, speciesProfiles);
   const herdById = buildSpeciesHerdMap(allAnimals, subject.species);
@@ -589,6 +609,12 @@ export function generateEvansHtmPedigree(
   }
 
   const subjectGeno = subject.genotypeRaw || formatGenotypeArray(subject.genotype);
+  const safePhotoUrl =
+    options?.includePrimaryPhoto &&
+    options.primaryPhotoDataUrl &&
+    options.primaryPhotoDataUrl.startsWith('data:image/')
+      ? options.primaryPhotoDataUrl
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -601,7 +627,9 @@ export function generateEvansHtmPedigree(
   .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2d5a3d; padding-bottom: 10px; margin-bottom: 12px; }
   .barn-title { font-size: 22px; font-weight: bold; color: #2d5a3d; }
   .sub-title { font-size: 12px; color: #535d52; }
-  .subject-box { border: 1px solid #bbb; padding: 10px 14px; margin-bottom: 12px; background: #faf7f2; display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; }
+  .subject-box { border: 1px solid #bbb; padding: 10px 14px; margin-bottom: 12px; background: #faf7f2; display: flex; align-items: center; gap: 16px; font-size: 13px; }
+  .subject-photo { width: 92px; height: 92px; object-fit: cover; border-radius: 6px; border: 1px solid #b5afa4; flex-shrink: 0; background: #fff; }
+  .subject-fields { display: flex; flex-wrap: wrap; gap: 10px 18px; flex: 1; }
   table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; }
   table.pedigree th { background: #2d5a3d; color: #fff; font-size: 12px; padding: 6px; text-align: left; border: 1px solid #2d5a3d; }
   td.cell { border: 1px solid #c5c0b5; padding: 6px 8px; vertical-align: middle; font-size: 11.5px; line-height: 1.35; }
@@ -624,16 +652,23 @@ export function generateEvansHtmPedigree(
   </div>
 
   <div class="subject-box">
-    <div><strong>Name:</strong> ${escapeHtml(subject.name)}</div>
-    <div><strong>Tattoo / ID:</strong> ${escapeHtml(subject.tattoo || 'Unmarked')}</div>
-    <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
-    <div><strong>Sex:</strong> ${escapeHtml(formatSexForSpecies(subject.sex, sp))}</div>
-    <div><strong>DOB:</strong> ${escapeHtml(formatReadableDate(subject.birthDateIso))}</div>
-    <div><strong>Weight:</strong> ${escapeHtml(formatWeight(subject.weightGrams, settings.preferredUnit))}</div>
-    ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
-    ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
-    ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
-    ${subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
+    ${
+      safePhotoUrl
+        ? `<img class="subject-photo" src="${escapeHtml(safePhotoUrl)}" alt="${escapeHtml(options?.primaryPhotoCaption || subject.name)}" />`
+        : ''
+    }
+    <div class="subject-fields">
+      <div><strong>Name:</strong> ${escapeHtml(subject.name)}</div>
+      <div><strong>Tattoo / ID:</strong> ${escapeHtml(subject.tattoo || 'Unmarked')}</div>
+      <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
+      <div><strong>Sex:</strong> ${escapeHtml(formatSexForSpecies(subject.sex, sp))}</div>
+      <div><strong>DOB:</strong> ${escapeHtml(formatReadableDate(subject.birthDateIso))}</div>
+      <div><strong>Weight:</strong> ${escapeHtml(formatWeight(subject.weightGrams, settings.preferredUnit))}</div>
+      ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
+      ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
+      ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
+      ${subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
+    </div>
   </div>
 
   <table class="pedigree">
@@ -760,6 +795,17 @@ export function buildPdfReadyBarnSnapshot(
     ? snapshot.breedings.filter((b) => isSameSpecies(b.species, filterSpecies))
     : snapshot.breedings;
 
+  const herdMapBySpecies = new Map<string, Map<string, Animal>>();
+  const getHerdMap = (speciesName: string) => {
+    const key = speciesName.trim().toLowerCase();
+    let map = herdMapBySpecies.get(key);
+    if (!map) {
+      map = buildSpeciesHerdMap(snapshot.animals, speciesName);
+      herdMapBySpecies.set(key, map);
+    }
+    return map;
+  };
+
   return {
     barnName: snapshot.settings.barnName,
     breederName: snapshot.settings.breederName,
@@ -772,7 +818,7 @@ export function buildPdfReadyBarnSnapshot(
     ).length,
     animals: scopedAnimals.map((a) => {
       const sp = resolveSpeciesProfile(a.species, snapshot.speciesProfiles);
-      const herdMap = buildSpeciesHerdMap(snapshot.animals, a.species);
+      const herdMap = getHerdMap(a.species);
       const coi = calculateAnimalCoi(a, herdMap);
       const sire = a.sireId ? herdMap.get(a.sireId) : undefined;
       const dam = a.damId ? herdMap.get(a.damId) : undefined;

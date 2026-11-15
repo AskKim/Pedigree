@@ -7,7 +7,7 @@
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * 100% pure TypeScript with zero browser DOM dependencies.
  *
- * Provides authentic 3-generation pedigree trees, active breedings, cascaded TaskMaster
+ * Provides authentic 3-generation pedigree trees, active breedings, cascaded Master Task List
  * chores, cage/pen locations, weight/leg logs, and show rosters for ALL 9 predefined
  * livestock species—led by an ARBA-standard New Zealand Red rabbitry.
  */
@@ -30,7 +30,7 @@ import {
   todayDateIso,
 } from './models';
 import { calculatePairingCoi } from './pedigreeCalculator';
-import { generateCascadedTasksForBreeding } from './taskMaster';
+import { generateCascadedTasksForBreeding } from './masterTaskList';
 
 interface SeedFamilySpec {
   species: string;
@@ -104,14 +104,14 @@ const SPECIES_SEED_SPECS: SeedFamilySpec[] = [
     varietyA: 'Gold & White',
     varietyB: 'Buckskin',
     tagPrefix: 'NDG',
-    breederName: ' Meadowbrook Dairy Goats',
+    breederName: 'Meadowbrook Dairy Goats',
     cagePrefix: 'Pen G',
     avgAdultGrams: 34000, // ~75 lbs
     juniorGrams: 16500,
     names: {
       pgs: 'Cedar Glen Orion *B',
       pgd: 'Willow Run Honeybee 2*M',
-      mgs: ' Cloverleaf Atlas *B',
+      mgs: 'Cloverleaf Atlas *B',
       mgd: 'Meadowbrook Marigold',
       sire: 'Meadowbrook Ranger *B',
       dam: 'Meadowbrook Sweet Clover 3*M',
@@ -602,7 +602,7 @@ export interface SpeciesSeedBundle {
 }
 
 /**
- * Builds a complete 3-generation sample herd, cages, active breeding, cascaded TaskMaster
+ * Builds a complete 3-generation sample herd, cages, active breeding, cascaded Master Task List
  * chores, weight/show care logs, and upcoming show for a single predefined species.
  */
 export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundle | null {
@@ -943,8 +943,8 @@ export function buildFullPredefinedSampleSnapshot(
   const ts = nowIsoUtc();
   const settings: BarnSettings = {
     id: 'barn_settings',
-    barnName: existingSettings?.barnName || 'Copper Creek Barn',
-    breederName: existingSettings?.breederName || 'Kimberly',
+    barnName: existingSettings?.barnName || 'My Barn',
+    breederName: existingSettings?.breederName || '',
     preferredUnit: existingSettings?.preferredUnit || 'lbs_oz',
     defaultSpecies: existingSettings?.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies: existingSettings?.pinnedLandingSpecies ?? '',
@@ -952,6 +952,8 @@ export function buildFullPredefinedSampleSnapshot(
     themeMode: existingSettings?.themeMode || 'dark',
     customColors: existingSettings?.customColors,
     imageOptimizationPreset: existingSettings?.imageOptimizationPreset || 'balanced',
+    barnNameSetupComplete: existingSettings?.barnNameSetupComplete ?? false,
+    showHomeSummaryStrip: existingSettings?.showHomeSummaryStrip ?? true,
     updatedAt: ts,
   };
 

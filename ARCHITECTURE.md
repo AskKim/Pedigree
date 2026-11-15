@@ -2,7 +2,8 @@
 
 - **Project Name:** Community Pedigree Project
 - **App Name:** Community Pedigree
-- **Package Name:** `Pedigree`
+- **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree)
+- **Package Name:** `pedigree`
 - **License:** Apache-2.0
 
 ## Cross-Platform & Expo Migration Guardrails
@@ -11,7 +12,7 @@
    - `models.ts`: Canonical entities (`BarnSettings`, `SpeciesProfile`, `Animal`, `CageLocation`, `BreedingRecord`, `BarnTask`, `CareLog`, `ShowEvent`) with globally unique `id` (UUID v4) and ISO-8601 UTC `updatedAt` timestamps.
    - `pedigreeCalculator.ts`: Recursive pedigree slot builder, topological Wright COI / coancestry engine, path contribution decomposition, and cycle prevention.
    - `geneticsEngine.ts`: ARBA coat color loci (`A, B, C, D, E, W, En, V, Du`), variety baseline auto-fill, parent/offspring recessive allele inference, and Punnett test-breeding simulator.
-   - `taskMaster.ts`: Automated TaskMaster chore cascading from configurable species milestone offsets.
+   - `masterTaskList.ts`: Automated Master Task List chore cascading from configurable species milestone offsets.
    - `syncAndExports.ts`: Deterministic UUID + ISO-8601 `updatedAt` multi-device merge engine, `.json` (v5 + legacy v3/v4 import), `.csv`, Evans-compatible `.HTM` pedigrees, 4"×2" thermal cage cards, and PDF-ready DTO snapshots.
    - **Zero Browser DOM Coupling:** None of the modules in `src/core/` touch `window` or `document`, so `src/core/` copies directly into an Expo / React Native codebase untouched.
 

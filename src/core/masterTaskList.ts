@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Automated Chore Cascading Engine (TaskMaster Pattern).
+ * Automated Chore Cascading Engine (Master Task List).
  *
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * 100% pure TypeScript with zero browser DOM dependencies.

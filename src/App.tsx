@@ -4,14 +4,15 @@
  *
  * Project Name: Community Pedigree Project
  * App Name: Community Pedigree
- * Package Name: Pedigree
+ * Repo: AskKim/Pedigree
+ * Package Name: pedigree
  *
  * Root Cross-Platform Application Shell.
  * Connects the offline-first SQLite / IndexedDB store (`useBarnStore`) to:
  * - Multi-Species Barn Home (`home`)
  * - Strictly Species-Isolated Barn Dashboard (`dashboard`)
  * - Strictly Species-Isolated Herd, Optimized Photo Galleries & Coat Genetics (`herd`)
- * - Strictly Species-Isolated Breeding, COI & TaskMaster Lab (`breeding`)
+ * - Strictly Species-Isolated Breeding, COI & Master Task List Lab (`breeding`)
  * - Strictly Species-Isolated 3/4-Gen Pedigree Explorer (`pedigree`)
  * - Barn Preferences, Photo Optimization, External Importers & Reset Controls (`settings`)
  */
@@ -56,7 +57,7 @@ export default function App() {
           <div className="h-5 w-44 rounded bg-[var(--barn-subtle)]" />
           <div className="h-4 w-64 rounded bg-[var(--barn-subtle)]" />
           <p className="text-xs text-[var(--barn-muted)] pt-1">
-            Opening local unencrypted SQLite database...
+            Opening your local offline barn database...
           </p>
         </div>
       </main>
@@ -319,7 +320,13 @@ export default function App() {
             onDeleteAllSpeciesRecords={(speciesName) => {
               void store.deleteAllSpeciesRecords(speciesName);
             }}
+            onMigrateAnimals={async (ids, target, options) => {
+              await store.migrateAnimalsSpecies(ids, target, options);
+            }}
             onOpenSettings={() => setRoute('settings')}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
+            }}
           />
         )}
 
@@ -333,8 +340,10 @@ export default function App() {
               setRoute('herd');
             }}
             onToggleTask={store.toggleTaskCompleted}
+            onSetTasksCompletedBatch={store.setTasksCompletedBatch}
             onSaveTask={store.saveTask}
             onDeleteTask={store.deleteTask}
+            onDeleteTasksBatch={store.deleteTasksBatch}
             onSaveCage={store.saveCage}
             onDeleteCage={store.deleteCage}
             onSaveShow={store.saveShow}
@@ -345,6 +354,7 @@ export default function App() {
 
         {route === 'herd' && (
           <HerdScreen
+            snapshot={snapshot}
             activeData={activeSpeciesData}
             allAnimals={snapshot.animals}
             speciesProfiles={snapshot.speciesProfiles}
@@ -364,6 +374,10 @@ export default function App() {
             onDeleteAnimalPhoto={store.deleteAnimalPhoto}
             onDeleteAnimal={(animal) => {
               void store.deleteAnimal(animal);
+            }}
+            onDeleteAnimalsBatch={store.deleteAnimalsBatch}
+            onMigrateAnimals={async (ids, target, options) => {
+              await store.migrateAnimalsSpecies(ids, target, options);
             }}
             onAddCareLog={(draft) => {
               void store.addCareLog(draft);

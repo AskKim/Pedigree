@@ -2,10 +2,10 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Species-Isolated Breeding Simulator, Coat Color Punnett Lab & TaskMaster Logger (`Breeding`).
+ * Species-Isolated Breeding Simulator, Coat Color Punnett Lab & Master Task List Logger (`Breeding`).
  *
  * Strictly filters Sire (`Male`) and Dam (`Female`) candidates to `activeData.speciesProfile.name`.
- * Logging a breeding automatically cascades downstream barn chores via `TaskMaster`.
+ * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
 import { Trash2 } from 'lucide-react';
@@ -22,7 +22,7 @@ import {
   todayDateIso,
 } from '../core/models';
 import { calculatePairingCoi } from '../core/pedigreeCalculator';
-import { generateCascadedTasksForBreeding } from '../core/taskMaster';
+import { generateCascadedTasksForBreeding } from '../core/masterTaskList';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 
 interface BreedingScreenProps {
@@ -88,6 +88,10 @@ export function BreedingScreen({
 
   // Outcome modal state
   const [editingRecord, setEditingRecord] = useState<BreedingRecord | null>(null);
+
+  useEffect(() => {
+    setEditingRecord(null);
+  }, [speciesProfile.name]);
   const [outStatus, setOutStatus] = useState<BreedingStatus>('Born');
   const [outBirthIso, setOutBirthIso] = useState('');
   const [outLive, setOutLive] = useState('0');
@@ -173,7 +177,7 @@ export function BreedingScreen({
       fosteredCount: Number(outFostered) || 0,
       weanedCount: Math.max(0, Number(outWeaned) || 0),
       notes: outNotes,
-      registerJuniorCount: Math.max(0, Number(outRegisterCount) || 0),
+      registerJuniorCount: Math.min(16, Math.max(0, Math.round(Number(outRegisterCount) || 0))),
     });
     setEditingRecord(null);
   };
@@ -181,7 +185,7 @@ export function BreedingScreen({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 6 Columns: Cage-Side Pairing Logger & TaskMaster Preview */}
+        {/* Left 6 Columns: Cage-Side Pairing Logger & Master Task List Preview */}
         <section className="lg:col-span-6 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-5">
           <div>
             <h2 className="font-display text-xl font-semibold">
@@ -282,7 +286,7 @@ export function BreedingScreen({
                   className="mt-0.5"
                 />
                 <span>
-                  <strong>Auto-cascade {previewTasks.length} TaskMaster barn chores</strong> (Expected{' '}
+                  <strong>Auto-cascade {previewTasks.length} Master Task List chores</strong> (Expected{' '}
                   {speciesProfile.birthEventLabel}:{' '}
                   {formatReadableDate(addDaysIso(bredDateIso, speciesProfile.gestationDays))})
                 </span>

@@ -10,7 +10,7 @@
  */
 
 import { FileText, Plus, ZoomIn, ZoomOut } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatGenotypeArray } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
@@ -59,12 +59,20 @@ export function PedigreeScreen({
   onOpenAnimalInHerd,
   onSaveAnimal,
 }: PedigreeScreenProps) {
-  const { speciesProfile, animals, herdById, coiByAnimalId, cages } = activeData;
+  const { speciesProfile, animals, herdById, coiByAnimalId, cages, primaryPhotoByAnimalId } =
+    activeData;
 
   const [zoom, setZoom] = useState<number>(1);
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [includePrimaryPhoto, setIncludePrimaryPhoto] = useState<boolean>(false);
+
+  useEffect(() => {
+    setLinkingSlot(null);
+    setCreatingParentSlot(null);
+    setShowPrintModal(false);
+  }, [speciesProfile.name]);
 
   const subject = useMemo(() => {
     if (selectedSubjectId && herdById.has(selectedSubjectId)) {
@@ -496,20 +504,33 @@ export function PedigreeScreen({
         />
       )}
 
-      {showPrintModal && (
-        <PrintPreviewModal
-          title={`${generations}-Generation Pedigree — ${subject.name}`}
-          filename={`pedigree-${subject.tattoo || subject.id}-${generations}gen.htm`}
-          htmlContent={generateEvansHtmPedigree(
-            subject,
-            allAnimals,
-            speciesProfiles,
-            settings,
-            generations
-          )}
-          onClose={() => setShowPrintModal(false)}
-        />
-      )}
+      {showPrintModal &&
+        (() => {
+          const subjectPrimaryPhoto = primaryPhotoByAnimalId.get(subject.id);
+          return (
+            <PrintPreviewModal
+              title={`${generations}-Generation Pedigree — ${subject.name}`}
+              filename={`pedigree-${subject.tattoo || subject.id}-${generations}gen.htm`}
+              htmlContent={generateEvansHtmPedigree(
+                subject,
+                allAnimals,
+                speciesProfiles,
+                settings,
+                generations,
+                {
+                  includePrimaryPhoto,
+                  primaryPhotoDataUrl: subjectPrimaryPhoto?.dataUrl,
+                  primaryPhotoCaption: subjectPrimaryPhoto?.caption,
+                }
+              )}
+              includePrimaryPhoto={includePrimaryPhoto}
+              onToggleIncludePrimaryPhoto={
+                subjectPrimaryPhoto ? setIncludePrimaryPhoto : undefined
+              }
+              onClose={() => setShowPrintModal(false)}
+            />
+          );
+        })()}
     </div>
   );
 }

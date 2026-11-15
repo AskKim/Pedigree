@@ -312,7 +312,14 @@ export function normalizeFlexibleDateIso(raw: string | undefined): string {
         day = tmp;
       }
       if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return `${String(year)}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const verify = new Date(Date.UTC(year, month - 1, day));
+        if (
+          verify.getUTCFullYear() === year &&
+          verify.getUTCMonth() === month - 1 &&
+          verify.getUTCDate() === day
+        ) {
+          return `${String(year)}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        }
       }
     }
   }
@@ -321,10 +328,11 @@ export function normalizeFlexibleDateIso(raw: string | undefined): string {
   const parsedMs = Date.parse(s);
   if (!Number.isNaN(parsedMs)) {
     const d = new Date(parsedMs);
-    const yyyy = d.getUTCFullYear();
+    const hasExplicitTz = /(?:GMT|UTC|Z|[+-]\d{2}:?\d{2})\s*$/i.test(s);
+    const yyyy = hasExplicitTz ? d.getUTCFullYear() : d.getFullYear();
     if (yyyy >= 1950 && yyyy <= 2100) {
-      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mm = String((hasExplicitTz ? d.getUTCMonth() : d.getMonth()) + 1).padStart(2, '0');
+      const dd = String(hasExplicitTz ? d.getUTCDate() : d.getDate()).padStart(2, '0');
       return `${yyyy}-${mm}-${dd}`;
     }
   }

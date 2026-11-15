@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Pure TypeScript Domain Models for the Community Pedigree Project (Package: Pedigree).
+ * Pure TypeScript Domain Models for the Community Pedigree Project (Repo: AskKim/Pedigree | Package: pedigree).
  *
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * This module has ZERO browser DOM (`window`, `document`) or framework dependencies.
@@ -79,12 +79,16 @@ export interface BarnSettings {
   themeMode: 'light' | 'dark';
   customColors?: CustomThemeColors;
   imageOptimizationPreset?: ImageOptimizationPresetId;
+  /** Whether the first-run barn/farm name prompt has been completed or skipped. */
+  barnNameSetupComplete?: boolean;
+  /** Whether to show the compact 4-metric summary strip on the Home screen. */
+  showHomeSummaryStrip?: boolean;
   updatedAt: string;
 }
 
 /**
  * Configurable care or biological milestone rule attached to a `SpeciesProfile`.
- * Used by the TaskMaster engine to automatically cascade barn chores when a breeding is logged.
+ * Used by the Master Task List engine to automatically cascade barn chores when a breeding is logged.
  */
 export interface SpeciesMilestoneTemplate {
   label: string;
@@ -95,7 +99,7 @@ export interface SpeciesMilestoneTemplate {
 }
 
 /**
- * Livestock species biological schedule, sex/offspring terminology, and TaskMaster templates.
+ * Livestock species biological schedule, sex/offspring terminology, and Master Task List templates.
  */
 export interface SpeciesProfile {
   id: string;
@@ -110,6 +114,8 @@ export interface SpeciesProfile {
   offspringLabel: string;
   exampleBreeds: string[];
   milestones: SpeciesMilestoneTemplate[];
+  /** Optional default naming prefix auto-prepended when adding new animals in this species. */
+  defaultAnimalNamePrefix?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -185,7 +191,7 @@ export interface BreedingRecord {
 }
 
 /**
- * Scheduled barn chore or TaskMaster cascaded task, strictly scoped to a `species`.
+ * Scheduled barn chore or Master Task List cascaded task, strictly scoped to a `species`.
  */
 export interface BarnTask {
   id: string;
@@ -487,7 +493,7 @@ export function formatReadableDate(dateIso: string): string {
 
 /**
  * Predefined starter livestock species with authentic gestation, weaning, rebreeding,
- * sex/birth terminology, and cascading TaskMaster care templates.
+ * sex/birth terminology, and cascading Master Task List care templates.
  */
 export const PREDEFINED_SPECIES_PRESETS: Omit<SpeciesProfile, 'createdAt' | 'updatedAt'>[] = [
   {
@@ -830,7 +836,28 @@ export function resolveSpeciesProfile(
         priority: 'High',
       },
     ],
+    defaultAnimalNamePrefix: '',
     createdAt: ts,
     updatedAt: ts,
   };
+}
+
+/**
+ * Prepends `prefix` to `rawName` if `rawName` does not already begin with that prefix
+ * (case-insensitive). Respects trailing punctuation/whitespace in `prefix`, or inserts a space.
+ */
+export function applyAnimalNamePrefix(rawName: string, prefix?: string): string {
+  const cleanName = rawName.trim();
+  const rawPrefix = prefix ?? '';
+  const trimmedPrefix = rawPrefix.trim();
+  if (!cleanName || !trimmedPrefix) return cleanName;
+
+  if (cleanName.toLowerCase().startsWith(trimmedPrefix.toLowerCase())) {
+    return cleanName;
+  }
+
+  if (/[\s\-_/:]$/.test(rawPrefix)) {
+    return `${rawPrefix.trimStart()}${cleanName}`;
+  }
+  return `${trimmedPrefix} ${cleanName}`;
 }

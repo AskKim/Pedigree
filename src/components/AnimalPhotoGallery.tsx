@@ -53,6 +53,7 @@ export function AnimalPhotoGallery({
   onDeletePhoto,
 }: AnimalPhotoGalleryProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const captionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [optimizeStatus, setOptimizeStatus] = useState<string>('');
@@ -62,6 +63,14 @@ export function AnimalPhotoGallery({
   const [lightboxOpen, setLightboxOpen] = useState<boolean>(false);
   const [captionDraft, setCaptionDraft] = useState<string>('');
   const [captionSavedPulse, setCaptionSavedPulse] = useState<boolean>(false);
+
+  useEffect(() => {
+    return () => {
+      if (captionPulseTimerRef.current) {
+        clearTimeout(captionPulseTimerRef.current);
+      }
+    };
+  }, []);
 
   const preset = resolveImageOptimizationPreset(optimizationPresetId);
 
@@ -151,7 +160,13 @@ export function AnimalPhotoGallery({
     if (trimmed === activePhoto.caption) return;
     await onUpdateCaption(activePhoto.id, trimmed);
     setCaptionSavedPulse(true);
-    setTimeout(() => setCaptionSavedPulse(false), 1800);
+    if (captionPulseTimerRef.current) {
+      clearTimeout(captionPulseTimerRef.current);
+    }
+    captionPulseTimerRef.current = setTimeout(() => {
+      setCaptionSavedPulse(false);
+      captionPulseTimerRef.current = null;
+    }, 1800);
   };
 
   return (
@@ -259,21 +274,21 @@ export function AnimalPhotoGallery({
                   className="max-h-72 w-auto object-contain cursor-zoom-in select-none"
                 />
 
-                {/* Top-Left Cover Status / Set Primary Action */}
+                {/* Top-Left Primary Status / Set Primary Action */}
                 <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
                   {activePhoto.isPrimary ? (
-                    <span className="px-2.5 py-1 rounded-lg bg-black/70 text-white text-[11px] font-semibold inline-flex items-center gap-1 backdrop-blur-xs">
+                    <span className="px-2.5 py-1 rounded-lg bg-black/75 text-white text-[11px] font-semibold inline-flex items-center gap-1 backdrop-blur-xs">
                       <Star className="w-3 h-3 fill-amber-400 text-amber-400" aria-hidden="true" />
-                      Cover Photo
+                      Primary Photo
                     </span>
                   ) : (
                     <button
                       type="button"
                       onClick={() => void onSetPrimary(activePhoto.id)}
-                      className="min-h-[28px] px-2.5 py-1 rounded-lg bg-black/70 hover:bg-black/85 text-white text-[11px] font-medium inline-flex items-center gap-1 backdrop-blur-xs"
+                      className="min-h-[28px] px-2.5 py-1 rounded-lg bg-black/75 hover:bg-black/90 text-white text-[11px] font-medium inline-flex items-center gap-1 backdrop-blur-xs"
                     >
                       <Star className="w-3 h-3" aria-hidden="true" />
-                      Set as Cover
+                      Set as Primary
                     </button>
                   )}
                 </div>
@@ -342,7 +357,18 @@ export function AnimalPhotoGallery({
                   )}
                 </div>
 
-                <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
+                  {photos.length > 1 && !activePhoto.isPrimary && (
+                    <button
+                      type="button"
+                      onClick={() => void onSetPrimary(activePhoto.id)}
+                      className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-[var(--barn-ink)] text-[11px] font-semibold hover:opacity-90 inline-flex items-center gap-1"
+                    >
+                      <Star className="w-3 h-3 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Set as Primary
+                    </button>
+                  )}
+
                   <span className="font-mono text-[11px] text-[var(--barn-muted)]">
                     {activePhoto.width > 0 ? `${activePhoto.width}×${activePhoto.height} · ` : ''}
                     {formatByteSizePure(activePhoto.storedBytes)}
@@ -390,36 +416,42 @@ export function AnimalPhotoGallery({
 
             {/* Multi-Photo Thumbnail Strip */}
             {photos.length > 1 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                {photos.map((p, idx) => {
-                  const isCurrent = p.id === activePhoto.id;
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setSelectedPhotoId(p.id)}
-                      className={`relative w-14 h-14 rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
-                        isCurrent
-                          ? 'border-[var(--barn-sage)] scale-[1.02]'
-                          : 'border-[var(--barn-border)] opacity-75 hover:opacity-100'
-                      }`}
-                    >
-                      <img
-                        src={p.thumbnailDataUrl || p.dataUrl}
-                        alt={p.caption || `Photo ${idx + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                      {p.isPrimary && (
-                        <span
-                          title="Cover photo"
-                          className="absolute bottom-0.5 right-0.5 w-4 h-4 rounded-full bg-black/75 flex items-center justify-center"
-                        >
-                          <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+              <div className="space-y-1.5">
+                <div className="text-[11px] text-[var(--barn-muted)]">
+                  Select any photo and click <strong>Set as Primary</strong> to choose which image
+                  appears on herd cards and optional printed/exported pedigrees.
+                </div>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {photos.map((p, idx) => {
+                    const isCurrent = p.id === activePhoto.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => setSelectedPhotoId(p.id)}
+                        className={`relative w-14 h-14 rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
+                          isCurrent
+                            ? 'border-[var(--barn-sage)] scale-[1.02]'
+                            : 'border-[var(--barn-border)] opacity-75 hover:opacity-100'
+                        }`}
+                      >
+                        <img
+                          src={p.thumbnailDataUrl || p.dataUrl}
+                          alt={p.caption || `Photo ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                        {p.isPrimary && (
+                          <span
+                            title="Primary photo"
+                            className="absolute bottom-0.5 right-0.5 w-4 h-4 rounded-full bg-black/75 flex items-center justify-center"
+                          >
+                            <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

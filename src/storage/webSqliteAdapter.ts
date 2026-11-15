@@ -28,7 +28,8 @@ import {
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { StorageAdapter } from './storageAdapter';
 
-const IDB_DB_NAME = 'community_pedigree_local_db';
+const IDB_DB_NAME = 'pedigree_local_db';
+const LEGACY_IDB_DB_NAME = 'community_pedigree_local_db';
 const IDB_STORE_NAME = 'sqlite_files';
 const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
@@ -48,6 +49,8 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     theme_mode TEXT NOT NULL,
     custom_colors_json TEXT NOT NULL DEFAULT '{}',
     image_optimization_preset TEXT NOT NULL DEFAULT 'balanced',
+    barn_name_setup_complete INTEGER NOT NULL DEFAULT 0,
+    show_home_summary_strip INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
   );
 
@@ -64,6 +67,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     offspring_label TEXT NOT NULL,
     example_breeds_json TEXT NOT NULL,
     milestones_json TEXT NOT NULL,
+    default_animal_name_prefix TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -192,9 +196,9 @@ export const PEDIGREE_SQLITE_SCHEMA = `
   );
 `;
 
-function openIdb(): Promise<IDBDatabase> {
+function openIdb(dbName: string = IDB_DB_NAME): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_DB_NAME, 1);
+    const req = indexedDB.open(dbName, 1);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
@@ -204,6 +208,53 @@ function openIdb(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function idbGetFrom<T>(dbName: string, key: string): Promise<T | undefined> {
+  const db = await openIdb(dbName);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE_NAME, 'readonly');
+    const req = tx.objectStore(IDB_STORE_NAME).get(key);
+    req.onsuccess = () => {
+      db.close();
+      resolve(req.result as T | undefined);
+    };
+    req.onerror = () => {
+      db.close();
+      reject(req.error);
+    };
+  });
+}
+
+async function migrateLegacyIdbIfNeeded(): Promise<void> {
+  try {
+    const existingBytes = await idbGetFrom<Uint8Array>(IDB_DB_NAME, IDB_PRIMARY_KEY);
+    const existingFallback = await idbGetFrom<BarnDatabaseSnapshot>(
+      IDB_DB_NAME,
+      IDB_FALLBACK_SNAPSHOT_KEY
+    );
+    if ((existingBytes && existingBytes.byteLength > 0) || existingFallback) {
+      return;
+    }
+    if (typeof indexedDB.databases === 'function') {
+      const dbs = await indexedDB.databases();
+      const hasLegacy = dbs.some((d) => d.name === LEGACY_IDB_DB_NAME);
+      if (!hasLegacy) return;
+    }
+    const legacyBytes = await idbGetFrom<Uint8Array>(LEGACY_IDB_DB_NAME, IDB_PRIMARY_KEY);
+    if (legacyBytes && legacyBytes.byteLength > 0) {
+      await idbSet(IDB_PRIMARY_KEY, legacyBytes);
+    }
+    const legacyFallback = await idbGetFrom<BarnDatabaseSnapshot>(
+      LEGACY_IDB_DB_NAME,
+      IDB_FALLBACK_SNAPSHOT_KEY
+    );
+    if (legacyFallback) {
+      await idbSet(IDB_FALLBACK_SNAPSHOT_KEY, legacyFallback);
+    }
+  } catch {
+    // Ignore if legacy DB does not exist or browser blocks databases() enumeration
+  }
 }
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
@@ -238,16 +289,77 @@ async function idbSet<T>(key: string, value: T): Promise<void> {
   });
 }
 
+function safeJsonParse<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== 'string' || !raw.trim()) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeFallbackSnapshot(saved: BarnDatabaseSnapshot): BarnDatabaseSnapshot {
+  return {
+    ...saved,
+    settings: {
+      ...saved.settings,
+      barnNameSetupComplete: saved.settings?.barnNameSetupComplete ?? true,
+      showHomeSummaryStrip: saved.settings?.showHomeSummaryStrip ?? true,
+    },
+    speciesProfiles: (saved.speciesProfiles ?? []).map((sp, idx) => ({
+      ...sp,
+      sortOrder: sp.sortOrder ?? idx,
+      defaultAnimalNamePrefix: sp.defaultAnimalNamePrefix ?? '',
+    })),
+    animalPhotos: saved.animalPhotos ?? [],
+  };
+}
+
 export class WebSqliteAdapter implements StorageAdapter {
   private SQL: SqlJsStatic | null = null;
   private db: Database | null = null;
   private fallbackSnapshot: BarnDatabaseSnapshot | null = null;
 
   get engineName(): string {
-    return this.db ? 'Unencrypted SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
+    return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
+  }
+
+  private applySchemaMigrations(db: Database, forceDarkOnColorColAdd: boolean): void {
+    db.run(PEDIGREE_SQLITE_SCHEMA);
+    const alterStatements: Array<{ sql: string; after?: string }> = [
+      {
+        sql: "ALTER TABLE barn_settings ADD COLUMN custom_colors_json TEXT NOT NULL DEFAULT '{}';",
+        after: forceDarkOnColorColAdd ? "UPDATE barn_settings SET theme_mode = 'dark';" : undefined,
+      },
+      {
+        sql: 'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;',
+      },
+      {
+        sql: "ALTER TABLE barn_settings ADD COLUMN image_optimization_preset TEXT NOT NULL DEFAULT 'balanced';",
+      },
+      {
+        sql: 'ALTER TABLE barn_settings ADD COLUMN barn_name_setup_complete INTEGER NOT NULL DEFAULT 1;',
+      },
+      {
+        sql: 'ALTER TABLE barn_settings ADD COLUMN show_home_summary_strip INTEGER NOT NULL DEFAULT 1;',
+      },
+      {
+        sql: "ALTER TABLE species_profiles ADD COLUMN default_animal_name_prefix TEXT NOT NULL DEFAULT '';",
+      },
+    ];
+
+    for (const step of alterStatements) {
+      try {
+        db.run(step.sql);
+        if (step.after) db.run(step.after);
+      } catch {
+        // Column already exists
+      }
+    }
   }
 
   async initialize(): Promise<BarnDatabaseSnapshot> {
+    await migrateLegacyIdbIfNeeded();
     try {
       this.SQL = await initSqlJs({
         locateFile: () => sqlWasmUrl,
@@ -256,29 +368,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       const savedBytes = await idbGet<Uint8Array>(IDB_PRIMARY_KEY);
       if (savedBytes && savedBytes.byteLength > 0) {
         this.db = new this.SQL.Database(savedBytes);
-        this.db.run(PEDIGREE_SQLITE_SCHEMA);
-        try {
-          this.db.run(
-            "ALTER TABLE barn_settings ADD COLUMN custom_colors_json TEXT NOT NULL DEFAULT '{}';"
-          );
-          this.db.run("UPDATE barn_settings SET theme_mode = 'dark';");
-        } catch {
-          // Column already exists
-        }
-        try {
-          this.db.run(
-            'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;'
-          );
-        } catch {
-          // Column already exists
-        }
-        try {
-          this.db.run(
-            "ALTER TABLE barn_settings ADD COLUMN image_optimization_preset TEXT NOT NULL DEFAULT 'balanced';"
-          );
-        } catch {
-          // Column already exists
-        }
+        this.applySchemaMigrations(this.db, true);
         const snap = await this.loadSnapshot();
         if (snap.speciesProfiles.length === 0 && snap.animals.length === 0) {
           const seeded = buildFullPredefinedSampleSnapshot();
@@ -297,8 +387,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       console.warn('WASM SQLite fallback to IndexedDB JSON snapshot:', err);
       const saved = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY);
       if (saved) {
-        this.fallbackSnapshot = saved;
-        return saved;
+        const normalized = normalizeFallbackSnapshot(saved);
+        this.fallbackSnapshot = normalized;
+        return normalized;
       }
       const seeded = buildFullPredefinedSampleSnapshot();
       this.fallbackSnapshot = seeded;
@@ -344,27 +435,35 @@ export class WebSqliteAdapter implements StorageAdapter {
           pinnedLandingSpecies: String(sRow.pinned_landing_species ?? ''),
           defaultGenerations: Number(sRow.default_generations) === 4 ? 4 : 3,
           themeMode: sRow.theme_mode === 'dark' ? 'dark' : 'light',
-          customColors: sRow.custom_colors_json
-            ? JSON.parse(String(sRow.custom_colors_json))
-            : undefined,
+          customColors: safeJsonParse(sRow.custom_colors_json, undefined),
           imageOptimizationPreset:
             sRow.image_optimization_preset === 'compact' ||
             sRow.image_optimization_preset === 'balanced' ||
             sRow.image_optimization_preset === 'high_detail'
               ? sRow.image_optimization_preset
               : 'balanced',
+          barnNameSetupComplete:
+            sRow.barn_name_setup_complete === undefined
+              ? true
+              : Number(sRow.barn_name_setup_complete) === 1,
+          showHomeSummaryStrip:
+            sRow.show_home_summary_strip === undefined
+              ? true
+              : Number(sRow.show_home_summary_strip) === 1,
           updatedAt: String(sRow.updated_at || nowIsoUtc()),
         }
       : {
           id: 'barn_settings',
-          barnName: 'Copper Creek Barn',
-          breederName: 'Kimberly',
+          barnName: 'My Barn',
+          breederName: '',
           preferredUnit: 'lbs_oz',
           defaultSpecies: 'Rabbit',
           pinnedLandingSpecies: '',
           defaultGenerations: 3,
           themeMode: 'dark',
           imageOptimizationPreset: 'balanced',
+          barnNameSetupComplete: false,
+          showHomeSummaryStrip: true,
           updatedAt: nowIsoUtc(),
         };
 
@@ -381,8 +480,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       maleLabel: String(r.male_label),
       femaleLabel: String(r.female_label),
       offspringLabel: String(r.offspring_label),
-      exampleBreeds: JSON.parse(String(r.example_breeds_json || '[]')),
-      milestones: JSON.parse(String(r.milestones_json || '[]')),
+      exampleBreeds: safeJsonParse(r.example_breeds_json, []),
+      milestones: safeJsonParse(r.milestones_json, []),
+      defaultAnimalNamePrefix: String(r.default_animal_name_prefix ?? ''),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     }));
@@ -399,7 +499,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         status: (r.status as any) || 'Active',
         birthDateIso: String(r.birth_date_iso),
         weightGrams: Number(r.weight_grams),
-        genotype: JSON.parse(String(r.genotype_json || '[]')),
+        genotype: safeJsonParse(r.genotype_json, []),
         genotypeRaw: String(r.genotype_raw),
         registrationNumber: String(r.registration_number),
         grandChampionNumber: String(r.grand_champion_number),
@@ -516,7 +616,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       sanctioningBody: String(r.sanctioning_body),
       eventDateIso: String(r.event_date_iso),
       entryDeadlineIso: String(r.entry_deadline_iso),
-      enteredAnimalIds: JSON.parse(String(r.entered_animal_ids_json || '[]')),
+      enteredAnimalIds: safeJsonParse(r.entered_animal_ids_json, []),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
@@ -576,8 +676,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSettingsRow(s: BarnSettings): void {
     this.db?.run(
       `INSERT OR REPLACE INTO barn_settings
-       (id, barn_name, breeder_name, preferred_unit, default_species, pinned_landing_species, default_generations, theme_mode, custom_colors_json, image_optimization_preset, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, barn_name, breeder_name, preferred_unit, default_species, pinned_landing_species, default_generations, theme_mode, custom_colors_json, image_optimization_preset, barn_name_setup_complete, show_home_summary_strip, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id || 'barn_settings',
         s.barnName,
@@ -589,6 +689,8 @@ export class WebSqliteAdapter implements StorageAdapter {
         s.themeMode,
         JSON.stringify(s.customColors || {}),
         s.imageOptimizationPreset || 'balanced',
+        s.barnNameSetupComplete ? 1 : 0,
+        s.showHomeSummaryStrip === false ? 0 : 1,
         s.updatedAt,
       ]
     );
@@ -597,8 +699,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, default_animal_name_prefix, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
@@ -612,6 +714,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         sp.offspringLabel,
         JSON.stringify(sp.exampleBreeds),
         JSON.stringify(sp.milestones),
+        sp.defaultAnimalNamePrefix || '',
         sp.createdAt,
         sp.updatedAt,
       ]
@@ -848,18 +951,54 @@ export class WebSqliteAdapter implements StorageAdapter {
     await this.persistToDisk();
   }
 
-  async deleteAnimal(id: string): Promise<void> {
+  async saveAnimalsBatch(animals: Animal[]): Promise<void> {
+    if (animals.length === 0) return;
     if (this.db) {
-      this.db.run('DELETE FROM animals WHERE id = ?', [id]);
-      this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
-      this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const a of animals) this.upsertAnimalRow(a);
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
     } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => a.id !== id);
+      for (const a of animals) {
+        const idx = this.fallbackSnapshot.animals.findIndex((x) => x.id === a.id);
+        if (idx >= 0) this.fallbackSnapshot.animals[idx] = a;
+        else this.fallbackSnapshot.animals.push(a);
+      }
+    }
+    await this.persistToDisk();
+  }
+
+  async deleteAnimal(id: string): Promise<void> {
+    await this.deleteAnimalsBatch([id]);
+  }
+
+  async deleteAnimalsBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    if (this.db) {
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const id of ids) {
+          this.db.run('DELETE FROM animals WHERE id = ?', [id]);
+          this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
+          this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
+        }
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
+    } else if (this.fallbackSnapshot) {
+      const idSet = new Set(ids);
+      this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => !idSet.has(a.id));
       this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
-        (p) => p.animalId !== id
+        (p) => !idSet.has(p.animalId)
       );
       this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
-        (l) => l.animalId !== id
+        (l) => !idSet.has(l.animalId)
       );
     }
     await this.persistToDisk();
@@ -989,10 +1128,25 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async deleteTask(id: string): Promise<void> {
+    await this.deleteTasksBatch([id]);
+  }
+
+  async deleteTasksBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
     if (this.db) {
-      this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
+      this.db.run('BEGIN TRANSACTION;');
+      try {
+        for (const id of ids) {
+          this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
+        }
+        this.db.run('COMMIT;');
+      } catch (e) {
+        this.db.run('ROLLBACK;');
+        throw e;
+      }
     } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => t.id !== id);
+      const idSet = new Set(ids);
+      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => !idSet.has(t.id));
     }
     await this.persistToDisk();
   }
@@ -1047,28 +1201,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       throw new Error('SQLite WebAssembly engine is not available in this browser.');
     }
     const importedDb = new this.SQL.Database(bytes);
-    importedDb.run(PEDIGREE_SQLITE_SCHEMA);
-    try {
-      importedDb.run(
-        "ALTER TABLE barn_settings ADD COLUMN custom_colors_json TEXT NOT NULL DEFAULT '{}';"
-      );
-    } catch {
-      // Column already exists
-    }
-    try {
-      importedDb.run(
-        'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;'
-      );
-    } catch {
-      // Column already exists
-    }
-    try {
-      importedDb.run(
-        "ALTER TABLE barn_settings ADD COLUMN image_optimization_preset TEXT NOT NULL DEFAULT 'balanced';"
-      );
-    } catch {
-      // Column already exists
-    }
+    this.applySchemaMigrations(importedDb, false);
     if (this.db) {
       this.db.close();
     }

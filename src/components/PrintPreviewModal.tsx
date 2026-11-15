@@ -17,6 +17,8 @@ interface PrintPreviewModalProps {
   title: string;
   filename: string;
   htmlContent: string;
+  includePrimaryPhoto?: boolean;
+  onToggleIncludePrimaryPhoto?: (include: boolean) => void;
   onClose: () => void;
 }
 
@@ -24,6 +26,8 @@ export function PrintPreviewModal({
   title,
   filename,
   htmlContent,
+  includePrimaryPhoto,
+  onToggleIncludePrimaryPhoto,
   onClose,
 }: PrintPreviewModalProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -48,9 +52,20 @@ export function PrintPreviewModal({
       className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4"
     >
       <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-5xl h-[86vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-4 px-5 py-3.5 border-b border-[var(--barn-border)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-b border-[var(--barn-border)]">
           <h2 className="text-base font-semibold truncate">{title}</h2>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onToggleIncludePrimaryPhoto && (
+              <label className="min-h-[40px] px-3 py-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium inline-flex items-center gap-2 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={Boolean(includePrimaryPhoto)}
+                  onChange={(e) => onToggleIncludePrimaryPhoto(e.target.checked)}
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Include Primary Photo</span>
+              </label>
+            )}
             <button
               type="button"
               onClick={handleDownloadHtm}

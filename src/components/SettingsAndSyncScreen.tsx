@@ -96,6 +96,9 @@ export function SettingsAndSyncScreen({
   const [defaultGenerations, setDefaultGenerations] = useState<3 | 4>(settings.defaultGenerations);
   const [imageOptimizationPreset, setImageOptimizationPreset] =
     useState<ImageOptimizationPresetId>(settings.imageOptimizationPreset || 'balanced');
+  const [showHomeSummaryStrip, setShowHomeSummaryStrip] = useState(
+    settings.showHomeSummaryStrip !== false
+  );
 
   const [confirmGlobalDeleteAll, setConfirmGlobalDeleteAll] = useState(false);
   const [confirmFactoryRestore, setConfirmFactoryRestore] = useState(false);
@@ -111,6 +114,7 @@ export function SettingsAndSyncScreen({
     setPinnedLandingSpecies(settings.pinnedLandingSpecies);
     setDefaultGenerations(settings.defaultGenerations);
     setImageOptimizationPreset(settings.imageOptimizationPreset || 'balanced');
+    setShowHomeSummaryStrip(settings.showHomeSummaryStrip !== false);
   }, [settings]);
 
   const mergeFileRef = useRef<HTMLInputElement | null>(null);
@@ -169,6 +173,8 @@ export function SettingsAndSyncScreen({
       pinnedLandingSpecies,
       defaultGenerations,
       imageOptimizationPreset,
+      showHomeSummaryStrip,
+      barnNameSetupComplete: true,
     });
   };
 
@@ -201,7 +207,7 @@ export function SettingsAndSyncScreen({
       return;
     }
     const stamp = new Date().toISOString().slice(0, 10);
-    downloadBinaryFile(`community-pedigree-${stamp}.sqlite`, bytes, 'application/x-sqlite3');
+    downloadBinaryFile(`pedigree-${stamp}.sqlite`, bytes, 'application/x-sqlite3');
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -435,17 +441,17 @@ export function SettingsAndSyncScreen({
               <button
                 type="button"
                 onClick={() => setShowCustomSpeciesModal(true)}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                Add Custom Livestock
+                Add Species
               </button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-                  Barn / Rabbitry Name
+                  Barn / Farm Name
                 </label>
                 <input
                   type="text"
@@ -604,6 +610,23 @@ export function SettingsAndSyncScreen({
                   </div>
                 </div>
               </div>
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] cursor-pointer hover:border-[var(--barn-sage)] transition-colors">
+                <input
+                  type="checkbox"
+                  checked={showHomeSummaryStrip}
+                  onChange={(e) => setShowHomeSummaryStrip(e.target.checked)}
+                  className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <div className="space-y-0.5">
+                  <div className="text-xs font-medium text-[var(--barn-ink)]">
+                    Show compact summary strip on Home page
+                  </div>
+                  <div className="text-[11px] text-[var(--barn-muted)]">
+                    Displays total animals, active gestations, open chores, and startup status at
+                    the top of the Home page. Uncheck to keep Home focused purely on species cards.
+                  </div>
+                </div>
+              </label>
             </div>
 
             <button
@@ -658,7 +681,7 @@ export function SettingsAndSyncScreen({
                   type="button"
                   onClick={() =>
                     downloadTextFile(
-                      `community-pedigree-backup-${stamp}.json`,
+                      `pedigree-backup-${stamp}.json`,
                       exportBarnBackupJson(snapshot),
                       'application/json'
                     )

@@ -9,7 +9,7 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { Camera, Trash2, X } from 'lucide-react';
+import { Camera, Star, Trash2, X } from 'lucide-react';
 import React, { useMemo, useRef, useState } from 'react';
 import {
   parseGenotypeString,
@@ -26,6 +26,7 @@ import {
   ANIMAL_STATUSES,
   Animal,
   AnimalStatus,
+  applyAnimalNamePrefix,
   BiologicalSex,
   CageLocation,
   isSameSpecies,
@@ -74,8 +75,12 @@ export function AnimalEditorModal({
 }: AnimalEditorModalProps) {
   const isEditing = Boolean(initialAnimal?.id);
 
+  const speciesDefaultPrefix = (speciesProfile.defaultAnimalNamePrefix || '').trim();
+  const hasDefaultPrefix = Boolean(speciesDefaultPrefix);
+
   const [tattoo, setTattoo] = useState(initialAnimal?.tattoo || '');
   const [name, setName] = useState(initialAnimal?.name || '');
+  const [applyDefaultPrefix, setApplyDefaultPrefix] = useState(true);
   const [breed, setBreed] = useState(
     initialAnimal?.breed ||
       (isSameSpecies(speciesProfile.name, 'Rabbit')
@@ -179,12 +184,17 @@ export function AnimalEditorModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    const finalName =
+      !isEditing && applyDefaultPrefix && hasDefaultPrefix
+        ? applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix)
+        : name.trim();
+
     onSave(
       {
         id: initialAnimal?.id,
         createdAt: initialAnimal?.createdAt,
         tattoo: tattoo.trim(),
-        name: name.trim(),
+        name: finalName,
         species: speciesProfile.name, // Strictly locked to active species
         breed: breed.trim(),
         variety: variety.trim(),
@@ -250,6 +260,41 @@ export function AnimalEditorModal({
                 onChange={(e) => setName(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
               />
+              {!isEditing && hasDefaultPrefix && (
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--barn-ink)]">
+                    <input
+                      type="checkbox"
+                      checked={applyDefaultPrefix}
+                      onChange={(e) => setApplyDefaultPrefix(e.target.checked)}
+                      className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                    />
+                    <span>
+                      Apply {speciesProfile.name} prefix{' '}
+                      <code className="font-mono font-semibold">{speciesDefaultPrefix}</code>
+                    </span>
+                  </label>
+                  <span className="text-[var(--barn-muted)]">
+                    {!applyDefaultPrefix ? (
+                      'Overridden — saves exact name'
+                    ) : name.trim() ? (
+                      applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix).toLowerCase() ===
+                      name.trim().toLowerCase() ? (
+                        'Already includes prefix'
+                      ) : (
+                        <>
+                          Saves as:{' '}
+                          <strong className="text-[var(--barn-ink)]">
+                            {applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix)}
+                          </strong>
+                        </>
+                      )
+                    ) : (
+                      'Auto-prepended unless already present'
+                    )}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div>
@@ -592,29 +637,62 @@ export function AnimalEditorModal({
             </div>
 
             {stagedPhotos.length > 0 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                {stagedPhotos.map((p, idx) => (
-                  <div
-                    key={`${p.originalFileName}-${idx}`}
-                    className="relative w-16 h-16 rounded-xl overflow-hidden border border-[var(--barn-border)] shrink-0"
-                  >
-                    <img
-                      src={p.thumbnailDataUrl}
-                      alt={p.originalFileName}
-                      className="w-full h-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setStagedPhotos((prev) => prev.filter((_, i) => i !== idx))
-                      }
-                      aria-label="Remove staged photo"
-                      className="absolute top-0.5 right-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+              <div className="space-y-1.5">
+                {stagedPhotos.length > 1 && (
+                  <div className="text-[11px] text-[var(--barn-muted)]">
+                    Click the star on any staged photo to set it as the primary photo.
                   </div>
-                ))}
+                )}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {stagedPhotos.map((p, idx) => (
+                    <div
+                      key={`${p.originalFileName}-${idx}`}
+                      className={`relative w-16 h-16 rounded-xl overflow-hidden border-2 shrink-0 ${
+                        idx === 0 && stagedPhotos.length > 1
+                          ? 'border-[var(--barn-sage)]'
+                          : 'border-[var(--barn-border)]'
+                      }`}
+                    >
+                      <img
+                        src={p.thumbnailDataUrl}
+                        alt={p.originalFileName}
+                        className="w-full h-full object-cover"
+                      />
+                      {stagedPhotos.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (idx === 0) return;
+                            setStagedPhotos((prev) => {
+                              const next = [...prev];
+                              const [picked] = next.splice(idx, 1);
+                              return [picked, ...next];
+                            });
+                          }}
+                          title={idx === 0 ? 'Primary photo' : 'Set as primary photo'}
+                          aria-label={idx === 0 ? 'Primary photo' : 'Set as primary photo'}
+                          className="absolute bottom-0.5 left-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
+                        >
+                          <Star
+                            className={`w-3 h-3 ${
+                              idx === 0 ? 'fill-amber-400 text-amber-400' : 'text-white/80'
+                            }`}
+                          />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStagedPhotos((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        aria-label="Remove staged photo"
+                        className="absolute top-0.5 right-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

@@ -829,9 +829,9 @@ export const HerdBossImporter: PlatformImporter = {
   supportsMultiZip: true,
   acceptedExtensions: ['.zip', '.csv', '.tsv', '.json'],
   summary:
-    'Imports HerdBoss multi-ZIP exports (animals, multi-generation Sire/Dam pedigrees, tags/EID/tattoos, breedings, weights, treatments, herd locations, and multi-photo animal galleries with automatic storage optimization).',
+    'Imports HerdBoss multi-ZIP exports (animals, multi-generation Sire/Dam pedigrees, tags/EID/tattoos, breedings, weights, treatments, and herd locations; photo matching stays active in code though HerdBoss omits photo-to-animal links in its CSVs).',
   instructions:
-    'Stage both HerdBoss export .ZIP files together (either select both at once or click "+ Add Companion .ZIP" for Part 1 and Part 2), review the detected records & auto-optimized photo preview below, then click Merge Into Barn.',
+    'Stage your HerdBoss export .ZIP file(s) (select both at once or click "+ Add Companion .ZIP" for Part 1 and Part 2), review the detected records below, then click Merge Into Barn.',
 
   parse(
     inputs: RawArchiveInput[],
@@ -1009,9 +1009,14 @@ export const HerdBossImporter: PlatformImporter = {
 
     // Entity accumulators
     const animalsById = new Map<string, Animal>();
+    const existingAnimalsById = new Map<string, Animal>(
+      existingSnapshot.animals.map((a) => [a.id, a])
+    );
     const matchedExistingByAnimalId = new Map<string, PreexistingAnimalMatch>();
     // Per-species lookup index: key = `${species.toLowerCase()}::${lookupToken.toLowerCase()}` -> animal.id
     const animalLookup = new Map<string, string>();
+    // Cross-species token fallback index: key = lookupToken.toLowerCase() -> animal.id
+    const tokenLookupAnySpecies = new Map<string, string>();
     const pendingLineage: PendingLineageRef[] = [];
     const cagesByKey = new Map<string, CageLocation>();
     const breedings: BreedingRecord[] = [];
@@ -1030,6 +1035,9 @@ export const HerdBossImporter: PlatformImporter = {
       const key = `${species.trim().toLowerCase()}::${clean}`;
       if (overwrite || !animalLookup.has(key)) {
         animalLookup.set(key, animalId);
+      }
+      if (overwrite || !tokenLookupAnySpecies.has(clean)) {
+        tokenLookupAnySpecies.set(clean, animalId);
       }
     };
 
@@ -1704,26 +1712,21 @@ export const HerdBossImporter: PlatformImporter = {
       }
     }
 
-    // Helper to resolve an animal across imported + existing barn animals
+    // Helper to resolve an animal across imported + existing barn animals in O(1)
     const findAnimalByAnyToken = (rawToken: string, preferredSpecies?: string): Animal | undefined => {
       const clean = rawToken.trim().toLowerCase();
       if (!clean) return undefined;
 
       if (preferredSpecies) {
-        const id = animalLookup.get(`${preferredSpecies.toLowerCase()}::${clean}`);
+        const id = animalLookup.get(`${preferredSpecies.trim().toLowerCase()}::${clean}`);
         if (id) {
-          return (
-            animalsById.get(id) || existingSnapshot.animals.find((a) => a.id === id)
-          );
+          return animalsById.get(id) || existingAnimalsById.get(id);
         }
       }
 
-      for (const [key, id] of animalLookup.entries()) {
-        if (key.endsWith(`::${clean}`)) {
-          return (
-            animalsById.get(id) || existingSnapshot.animals.find((a) => a.id === id)
-          );
-        }
+      const fallbackId = tokenLookupAnySpecies.get(clean);
+      if (fallbackId) {
+        return animalsById.get(fallbackId) || existingAnimalsById.get(fallbackId);
       }
       return undefined;
     };
@@ -2422,7 +2425,7 @@ export const HerdBossImporter: PlatformImporter = {
       }
     } else if (missingPhotoZipRefsCount > 0 && imageArchiveEntries.length === 0) {
       warnings.push(
-        `Detected ${missingPhotoZipRefsCount} animal photo reference(s) in your CSV data, but no image files are staged yet. Add the companion HerdBoss Photos .ZIP above if you'd like to import & optimize those photos automatically.`
+        `Detected ${missingPhotoZipRefsCount} possible photo reference(s) in your CSV data, though no image files are staged. Note: HerdBoss exports usually omit photo-to-animal ID links, so photos typically need to be added on each animal's profile page.`
       );
     }
 

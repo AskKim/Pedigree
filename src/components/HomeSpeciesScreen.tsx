@@ -13,8 +13,12 @@
 import {
   ArrowDown,
   ArrowRight,
+  ArrowRightLeft,
   ArrowUp,
   ArrowUpToLine,
+  Check,
+  Edit3,
+  EyeOff,
   GripVertical,
   Pin,
   Plus,
@@ -24,6 +28,7 @@ import {
 import React, { useState } from 'react';
 import {
   BarnDatabaseSnapshot,
+  BarnSettings,
   isSameSpecies,
   SpeciesProfile,
   todayDateIso,
@@ -34,6 +39,7 @@ import {
 } from '../core/sampleData';
 import { WorkspaceRoute } from '../hooks/useBarnStore';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
+import { SpeciesMigrationModal } from './SpeciesMigrationModal';
 
 interface HomeSpeciesScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -46,7 +52,13 @@ interface HomeSpeciesScreenProps {
   onSeedSpeciesSample: (speciesName: string) => void;
   onDeleteSpeciesTestingData: (speciesName: string) => void;
   onDeleteAllSpeciesRecords: (speciesName: string) => void;
+  onMigrateAnimals: (
+    animalIds: string[],
+    targetSpecies: string,
+    options?: { migrateEntireSpecies?: boolean; sourceSpeciesName?: string }
+  ) => Promise<void>;
   onOpenSettings: () => void;
+  onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
 }
 
 export function HomeSpeciesScreen({
@@ -60,16 +72,26 @@ export function HomeSpeciesScreen({
   onSeedSpeciesSample,
   onDeleteSpeciesTestingData,
   onDeleteAllSpeciesRecords,
+  onMigrateAnimals,
   onOpenSettings,
+  onUpdateSettings,
 }: HomeSpeciesScreenProps) {
   const [editingSpecies, setEditingSpecies] = useState<SpeciesProfile | null>(null);
   const [showEditor, setShowEditor] = useState(false);
+  const [migratingSpeciesName, setMigratingSpeciesName] = useState<string | null>(null);
   const [draggedSpeciesId, setDraggedSpeciesId] = useState<string | null>(null);
   const [dragOverSpeciesId, setDragOverSpeciesId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     speciesName: string;
     mode: 'testing' | 'all';
   } | null>(null);
+
+  const [setupBarnName, setSetupBarnName] = useState(
+    snapshot.settings.barnName === 'My Barn' ? '' : snapshot.settings.barnName
+  );
+  const [setupBreederName, setSetupBreederName] = useState(snapshot.settings.breederName || '');
+  const [isEditingBarnName, setIsEditingBarnName] = useState(false);
+  const [inlineBarnName, setInlineBarnName] = useState(snapshot.settings.barnName || '');
 
   const today = todayDateIso();
   const totalAnimals = snapshot.animals.length;
@@ -100,82 +122,217 @@ export function HomeSpeciesScreen({
     setDragOverSpeciesId(null);
   };
 
+  const showBarnSetupCard = !snapshot.settings.barnNameSetupComplete;
+  const showSummaryStrip = snapshot.settings.showHomeSummaryStrip !== false;
+
+  const handleSaveInitialBarnName = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateSettings({
+      barnName: setupBarnName.trim() || 'My Barn',
+      breederName: setupBreederName.trim(),
+      barnNameSetupComplete: true,
+    });
+  };
+
+  const handleSaveInlineBarnName = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateSettings({
+      barnName: inlineBarnName.trim() || 'My Barn',
+      barnNameSetupComplete: true,
+    });
+    setIsEditingBarnName(false);
+  };
+
   return (
-    <div className="space-y-8">
-      {/* Barn Hero Header + Full-Width KPI Strip */}
-      <section className="space-y-5">
+    <div className="space-y-6">
+      {/* First-Run Barn / Farm Name Setup Prompt */}
+      {showBarnSetupCard && (
+        <form
+          onSubmit={handleSaveInitialBarnName}
+          className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-2xl p-4 sm:p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-display text-base sm:text-lg font-semibold">
+                Welcome! Name Your Barn or Farm
+              </h2>
+              <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                Personalize your home header and exported pedigrees. You can edit or change this
+                anytime.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onUpdateSettings({ barnNameSetupComplete: true }, { silent: true })}
+              className="text-xs text-[var(--barn-muted)] hover:text-[var(--barn-ink)] underline shrink-0"
+            >
+              Skip for now
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+            <div className="sm:col-span-5">
+              <label
+                htmlFor="first-run-barn-name"
+                className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+              >
+                Barn / Farm Name
+              </label>
+              <input
+                id="first-run-barn-name"
+                type="text"
+                placeholder="e.g. Oak Ridge Homestead"
+                value={setupBarnName}
+                onChange={(e) => setSetupBarnName(e.target.value)}
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+              />
+            </div>
+            <div className="sm:col-span-4">
+              <label
+                htmlFor="first-run-breeder-name"
+                className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+              >
+                Breeder Name (optional)
+              </label>
+              <input
+                id="first-run-breeder-name"
+                type="text"
+                placeholder="e.g. Kimberly Miller"
+                value={setupBreederName}
+                onChange={(e) => setSetupBreederName(e.target.value)}
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+              />
+            </div>
+            <div className="sm:col-span-3 flex items-center gap-2">
+              <button
+                type="submit"
+                className="w-full min-h-[40px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 whitespace-nowrap"
+              >
+                Save Barn Name
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* Barn Hero Header + Condensed Hideable 4-Metric Strip */}
+      <section className="space-y-3.5">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div className="space-y-1.5 max-w-2xl">
             <p className="text-xs text-[var(--barn-muted)]">
-              Offline-First Livestock &amp; Pedigree Registry · Local Unencrypted SQLite
+              Offline-First Livestock &amp; Pedigree Registry · 100% Yours, Stored Offline on Your
+              Device
             </p>
-            <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-balance">
-              {snapshot.settings.barnName || 'My Barn'}
-            </h1>
+            {isEditingBarnName ? (
+              <form
+                onSubmit={handleSaveInlineBarnName}
+                className="flex flex-wrap items-center gap-2 pt-0.5"
+              >
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Enter barn or farm name"
+                  value={inlineBarnName}
+                  onChange={(e) => setInlineBarnName(e.target.value)}
+                  className="min-h-[42px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-sage)] font-display text-xl sm:text-2xl font-semibold"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingBarnName(false)}
+                  className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs"
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-balance">
+                  {snapshot.settings.barnName || 'My Barn'}
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInlineBarnName(
+                      snapshot.settings.barnName === 'My Barn' ? '' : snapshot.settings.barnName
+                    );
+                    setIsEditingBarnName(true);
+                  }}
+                  title="Edit barn or farm name"
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
+                >
+                  <Edit3 className="w-3 h-3" aria-hidden="true" />
+                  Edit Name
+                </button>
+              </div>
+            )}
             <p className="text-sm text-[var(--barn-muted)]">
               Select any livestock species below to open its isolated herd ledger, cage-side
               breeding logger, and recursive pedigree explorer—or arrange your favorite species to
               the top of your barn.
             </p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] transition-colors whitespace-nowrap"
-            >
-              Import (HerdBoss) &amp; Settings
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingSpecies(null);
-                setShowEditor(true);
-              }}
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 transition-opacity inline-flex items-center gap-1.5 whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" aria-hidden="true" />
-              Add Custom Livestock
-            </button>
-          </div>
         </div>
 
-        {/* 4-Column Barn-Wide KPI Summary */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4">
-            <div className="text-xs text-[var(--barn-muted)]">Total Barn Headcount</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">{totalAnimals}</div>
-            <div className="mt-1 text-xs text-[var(--barn-muted)]">
-              Across {snapshot.speciesProfiles.length} configured species
+        {/* Condensed 4-Metric Summary Strip (Optional / Hideable) */}
+        {showSummaryStrip && (
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl px-3.5 py-2 flex flex-wrap items-center justify-between gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-1.5 flex-1 min-w-0">
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                <span className="text-[11px] text-[var(--barn-muted)] whitespace-nowrap">
+                  Animals:
+                </span>
+                <span className="font-mono text-sm font-semibold tabular-nums">
+                  {totalAnimals}
+                </span>
+                <span className="text-[11px] text-[var(--barn-muted)] truncate">
+                  ({snapshot.speciesProfiles.length} sp.)
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                <span className="text-[11px] text-[var(--barn-muted)] whitespace-nowrap">
+                  Gestations:
+                </span>
+                <span className="font-mono text-sm font-semibold tabular-nums">
+                  {activeGestations}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                <span className="text-[11px] text-[var(--barn-muted)] whitespace-nowrap">
+                  Open Chores:
+                </span>
+                <span className="font-mono text-sm font-semibold tabular-nums">{openTasks}</span>
+              </div>
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                <span className="text-[11px] text-[var(--barn-muted)] whitespace-nowrap">
+                  Startup:
+                </span>
+                <span className="text-xs font-semibold truncate">
+                  {pinnedName || 'All-Species'}
+                </span>
+                <span className="text-[11px] text-[var(--barn-muted)] whitespace-nowrap">
+                  · {upcomingShows} show{upcomingShows === 1 ? '' : 's'}
+                </span>
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => onUpdateSettings({ showHomeSummaryStrip: false })}
+              title="Hide summary strip (you can re-enable it anytime in Settings)"
+              className="min-h-[28px] px-2 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 shrink-0"
+            >
+              <EyeOff className="w-3 h-3" aria-hidden="true" />
+              Hide
+            </button>
           </div>
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4">
-            <div className="text-xs text-[var(--barn-muted)]">Active Gestations</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">
-              {activeGestations}
-            </div>
-            <div className="mt-1 text-xs text-[var(--barn-muted)]">
-              Planned, bred, or confirmed
-            </div>
-          </div>
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4">
-            <div className="text-xs text-[var(--barn-muted)]">Open Barn Chores</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">{openTasks}</div>
-            <div className="mt-1 text-xs text-[var(--barn-muted)]">
-              TaskMaster &amp; manual reminders
-            </div>
-          </div>
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4">
-            <div className="text-xs text-[var(--barn-muted)]">Startup Landing Mode</div>
-            <div className="mt-1 text-lg font-semibold truncate">
-              {pinnedName ? `${pinnedName} Hub` : 'All-Species Home'}
-            </div>
-            <div className="mt-1 text-xs text-[var(--barn-muted)]">
-              {upcomingShows} upcoming show{upcomingShows === 1 ? '' : 's'} scheduled
-            </div>
-          </div>
-        </div>
+        )}
       </section>
 
       {/* Reorderable Species Hub Cards Grid */}
@@ -448,7 +605,7 @@ export function HomeSpeciesScreen({
                   )}
 
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => onOpenSpecies(sp.name, 'herd')}
@@ -456,6 +613,19 @@ export function HomeSpeciesScreen({
                       >
                         Herd ({count})
                       </button>
+                      {(count > 0 || spTotalRecords > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => setMigratingSpeciesName(sp.name)}
+                          title={`Migrate ALL ${sp.name} animals (all statuses) and all ${sp.name} records to another species`}
+                          className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                          {count > 0
+                            ? `Migrate All (${count})`
+                            : `Migrate All (${spTotalRecords} records)`}
+                        </button>
+                      )}
                       {count === 0 && (
                         <button
                           type="button"
@@ -481,6 +651,17 @@ export function HomeSpeciesScreen({
             );
           })}
         </div>
+
+        <div className="pt-2 flex justify-center sm:justify-start">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 transition-opacity inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" aria-hidden="true" />
+            Add Species
+          </button>
+        </div>
       </section>
 
       {showEditor && (
@@ -490,6 +671,19 @@ export function HomeSpeciesScreen({
           onSave={onSaveSpecies}
           onDelete={onDeleteSpecies}
           onClose={() => setShowEditor(false)}
+        />
+      )}
+
+      {migratingSpeciesName && (
+        <SpeciesMigrationModal
+          snapshot={snapshot}
+          sourceSpecies={migratingSpeciesName}
+          directAnimalIds={snapshot.animals
+            .filter((a) => isSameSpecies(a.species, migratingSpeciesName))
+            .map((a) => a.id)}
+          mode="bulk-all"
+          onConfirmMigrate={onMigrateAnimals}
+          onClose={() => setMigratingSpeciesName(null)}
         />
       )}
     </div>

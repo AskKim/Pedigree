@@ -564,9 +564,10 @@ export function ExternalImporterPanel({
       <div className="text-xs text-[var(--barn-muted)] bg-[var(--barn-canvas)] border border-[var(--barn-border)] rounded-xl px-3.5 py-2.5 space-y-1">
         <p>{importer.instructions}</p>
         <p className="text-[11px]">
-          <strong className="text-[var(--barn-ink)]">Smart Merge &amp; Image Compression:</strong>{' '}
-          New custom species get a dedicated schedule, preexisting barn animals let you resolve any
-          contradicting fields side-by-side, and incoming photos are automatically WebP-optimized.
+          <strong className="text-[var(--barn-ink)]">Smart Merge:</strong> New custom species get
+          a dedicated schedule, and preexisting barn animals let you resolve any contradicting
+          fields side-by-side. (Photo matching stays enabled in code if an archive includes linked
+          image IDs/filenames.)
         </p>
       </div>
 
@@ -1219,9 +1220,12 @@ export function ExternalImporterPanel({
                   <strong className="font-mono text-[var(--barn-ink)]">
                     {preview.deferredMediaCount}
                   </strong>{' '}
-                  additional media file{preview.deferredMediaCount === 1 ? '' : 's'} (
-                  {formatByteSizePure(preview.deferredMediaBytes)}) had no matching animal tag/ID or
-                  used a non-image format and will be skipped cleanly.
+                  photo/media file{preview.deferredMediaCount === 1 ? '' : 's'} (
+                  {formatByteSizePure(preview.deferredMediaBytes)}) could not be linked to an animal
+                  and will be skipped cleanly.{' '}
+                  {importer.id === 'herdboss'
+                    ? 'HerdBoss exports split photos into a separate folder using internal IDs that do not appear in its CSV tables—please upload photos directly on each animal’s Herd profile page.'
+                    : 'Matched records will still import normally.'}
                 </p>
               </div>
 
@@ -1321,6 +1325,34 @@ export function ExternalImporterPanel({
                     : ''
                 } & ${preview.breedings.length + preview.careLogs.length} Records Into Barn`}
           </button>
+        </div>
+      )}
+
+      {/* Condensed HerdBoss Photo Export Limitation Note (shown below HerdBoss importer) */}
+      {importer.id === 'herdboss' && (
+        <div className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)]/45 border border-[var(--barn-terracotta)]/50 text-xs space-y-1.5">
+          <div className="flex items-center gap-2 font-semibold text-[var(--barn-ink)]">
+            <AlertTriangle
+              className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0"
+              aria-hidden="true"
+            />
+            <span>Note on HerdBoss Photo Exports (Expected Not to Auto-Import)</span>
+          </div>
+          <p className="text-[var(--barn-muted)] leading-relaxed">
+            HerdBoss exports photos into a separate folder using internal database IDs (for example,
+            numbers in parentheses like <span className="font-mono">(38770)</span>), but those
+            image IDs are omitted from all exported CSV tables (<span className="font-mono">Animals</span>,{' '}
+            <span className="font-mono">Animal Notes</span>, <span className="font-mono">Medical History</span>,
+            etc.). Because HerdBoss does not include the link between photo IDs and animal IDs,
+            automatic photo import from HerdBoss ZIPs is expected to fail.
+          </p>
+          <p className="text-[var(--barn-muted)] leading-relaxed">
+            We are keeping HerdBoss photo matching in the code in case they update their export
+            format. <strong className="text-[var(--barn-ink)]">If you use HerdBoss, please contact HerdBoss directly and urge them to include image IDs or filenames in their CSV exports.</strong>{' '}
+            In the meantime, you can match photos manually by comparing photo taken/upload dates
+            against <span className="font-mono">Animals</span> or <span className="font-mono">Animal Notes</span>{' '}
+            timestamps and adding them directly on each animal&apos;s Herd profile page.
+          </p>
         </div>
       )}
     </section>

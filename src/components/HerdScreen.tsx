@@ -10,11 +10,24 @@
  * Evans-compatible `.HTM` / PDF pedigree generation.
  */
 
-import { Edit3, FileText, GitFork, Plus, Printer, Search, Trash2 } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import {
+  ArrowRightLeft,
+  CheckSquare,
+  Edit3,
+  FileText,
+  GitFork,
+  Plus,
+  Printer,
+  Search,
+  Square,
+  Trash2,
+} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { formatGenotypeArray, inferHiddenAlleles } from '../core/geneticsEngine';
 import {
   Animal,
+  AnimalPhoto,
+  BarnDatabaseSnapshot,
   BarnSettings,
   CARE_LOG_TYPES,
   CareLog,
@@ -22,11 +35,16 @@ import {
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
+  isSameSpecies,
   parseWeightInputToGrams,
   SpeciesProfile,
   todayDateIso,
 } from '../core/models';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
+import {
+  expandPedigreeFamilyInSpecies,
+  SpeciesMigrationOptions,
+} from '../core/speciesMigration';
 import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
@@ -35,8 +53,12 @@ import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
 import { PrintPreviewModal } from './PrintPreviewModal';
+import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+
+const EMPTY_PHOTOS: AnimalPhoto[] = [];
 
 interface HerdScreenProps {
+  snapshot: BarnDatabaseSnapshot;
   activeData: ActiveSpeciesData;
   allAnimals: Animal[];
   speciesProfiles: SpeciesProfile[];
@@ -56,11 +78,18 @@ interface HerdScreenProps {
   onUpdateAnimalPhotoCaption: (photoId: string, caption: string) => Promise<void> | void;
   onDeleteAnimalPhoto: (photoId: string) => Promise<void> | void;
   onDeleteAnimal: (animal: Animal) => void;
+  onDeleteAnimalsBatch: (animalIds: string[]) => Promise<void>;
+  onMigrateAnimals: (
+    animalIds: string[],
+    targetSpecies: string,
+    options?: SpeciesMigrationOptions
+  ) => Promise<void>;
   onAddCareLog: (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onDeleteCareLog: (id: string) => void;
 }
 
 export function HerdScreen({
+  snapshot,
   activeData,
   allAnimals,
   speciesProfiles,
@@ -74,6 +103,8 @@ export function HerdScreen({
   onUpdateAnimalPhotoCaption,
   onDeleteAnimalPhoto,
   onDeleteAnimal,
+  onDeleteAnimalsBatch,
+  onMigrateAnimals,
   onAddCareLog,
   onDeleteCareLog,
 }: HerdScreenProps) {
@@ -95,11 +126,37 @@ export function HerdScreen({
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
 
+  // Multi-select & Cross-Species Migration state
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [migrationDialog, setMigrationDialog] = useState<{
+    directAnimalIds: string[];
+    mode: 'single' | 'multi-select' | 'bulk-all';
+  } | null>(null);
+
+  const selectedFamilyExpansion = useMemo(
+    () =>
+      expandPedigreeFamilyInSpecies(
+        animals,
+        Array.from(selectedIds),
+        speciesProfile.name
+      ),
+    [animals, selectedIds, speciesProfile.name]
+  );
+
+  useEffect(() => {
+    setMultiSelectMode(false);
+    setSelectedIds(new Set());
+    setConfirmBatchDelete(false);
+    setMigrationDialog(null);
+  }, [speciesProfile.name]);
+
   // Print preview state
   const [previewDoc, setPreviewDoc] = useState<{
-    title: string;
-    filename: string;
-    html: string;
+    kind: 'cage-card' | 'pedigree';
+    animal: Animal;
+    includePrimaryPhoto: boolean;
   } | null>(null);
 
   // Quick Cage-Side Care/Weight Log state
@@ -136,6 +193,14 @@ export function HerdScreen({
     }
     return filteredAnimals[0] ?? null;
   }, [selectedAnimalId, herdById, filteredAnimals]);
+
+  useEffect(() => {
+    setShowLogForm(false);
+    setLogTitle('');
+    setLogWeightInput('');
+    setLogShowLeg(false);
+    setLogNotes('');
+  }, [activeAnimal?.id]);
 
   const activeAnimalLogs = useMemo(
     () => (activeAnimal ? careLogs.filter((l) => l.animalId === activeAnimal.id) : []),
@@ -228,18 +293,145 @@ export function HerdScreen({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setEditingAnimal(null);
-            setShowAnimalModal(true);
-          }}
-          className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
-        >
-          <Plus className="w-4 h-4" aria-hidden="true" />
-          Add {speciesProfile.name}
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {animals.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setMultiSelectMode((prev) => {
+                    if (prev) {
+                      setSelectedIds(new Set());
+                      setConfirmBatchDelete(false);
+                    }
+                    return !prev;
+                  });
+                }}
+                className={`min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors ${
+                  multiSelectMode
+                    ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] border-transparent'
+                    : 'bg-[var(--barn-surface)] border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+                }`}
+              >
+                <CheckSquare className="w-4 h-4" aria-hidden="true" />
+                {multiSelectMode ? 'Done Selecting' : 'Multi-Select'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setMigrationDialog({
+                    directAnimalIds: animals.map((a) => a.id),
+                    mode: 'bulk-all',
+                  })
+                }
+                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                Bulk Migrate All ({animals.length})
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setEditingAnimal(null);
+              setShowAnimalModal(true);
+            }}
+            className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <Plus className="w-4 h-4" aria-hidden="true" />
+            Add {speciesProfile.name}
+          </button>
+        </div>
       </div>
+
+      {/* Multi-Select Batch Action Toolbar */}
+      {multiSelectMode && (
+        <div className="bg-[var(--barn-surface)] border border-[var(--barn-sage)] rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+              {selectedIds.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set(filteredAnimals.map((a) => a.id)))}
+              className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] font-medium"
+            >
+              Select All Filtered ({filteredAnimals.length})
+            </button>
+            {selectedIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedIds(new Set());
+                  setConfirmBatchDelete(false);
+                }}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-[var(--barn-muted)]"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={selectedIds.size === 0}
+              onClick={() => {
+                if (selectedIds.size > 0) {
+                  setMigrationDialog({
+                    directAnimalIds: Array.from(selectedIds),
+                    mode: 'multi-select',
+                  });
+                }
+              }}
+              className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold disabled:opacity-45 disabled:pointer-events-none inline-flex items-center gap-1.5"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+              {selectedFamilyExpansion.allExpandedIds.length > selectedIds.size
+                ? `Migrate Selected (${selectedIds.size} · ${selectedFamilyExpansion.allExpandedIds.length} w/ pedigree)`
+                : `Migrate Selected (${selectedIds.size})`}
+            </button>
+
+            {confirmBatchDelete ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ids = Array.from(selectedIds);
+                    await onDeleteAnimalsBatch(ids);
+                    setSelectedIds(new Set());
+                    setConfirmBatchDelete(false);
+                    setMultiSelectMode(false);
+                  }}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-white font-semibold"
+                >
+                  Confirm Delete ({selectedIds.size})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmBatchDelete(false)}
+                  className="min-h-[36px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)]"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={selectedIds.size === 0}
+                onClick={() => setConfirmBatchDelete(true)}
+                className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:pointer-events-none inline-flex items-center gap-1.5 font-medium"
+              >
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                Delete Selected
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Master-Detail Split Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -265,6 +457,7 @@ export function HerdScreen({
             <div className="divide-y divide-[var(--barn-border)] max-h-[72vh] overflow-y-auto">
               {filteredAnimals.map((a) => {
                 const isSelected = activeAnimal?.id === a.id;
+                const isChecked = selectedIds.has(a.id);
                 const coi = coiByAnimalId.get(a.id);
                 const coverPhoto = primaryPhotoByAnimalId.get(a.id);
                 const photoCount = photosByAnimalId.get(a.id)?.length || 0;
@@ -279,12 +472,36 @@ export function HerdScreen({
                   <button
                     key={a.id}
                     type="button"
-                    onClick={() => onSelectAnimal(a.id)}
+                    onClick={() => {
+                      if (multiSelectMode) {
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(a.id)) next.delete(a.id);
+                          else next.add(a.id);
+                          return next;
+                        });
+                      } else {
+                        onSelectAnimal(a.id);
+                      }
+                    }}
                     className={`w-full text-left px-4 py-3.5 transition-colors flex items-center justify-between gap-3 ${
-                      isSelected ? 'bg-[var(--barn-subtle)]/75' : 'hover:bg-[var(--barn-subtle)]/40'
+                      multiSelectMode && isChecked
+                        ? 'bg-[var(--barn-sage-tint)]/65'
+                        : isSelected
+                          ? 'bg-[var(--barn-subtle)]/75'
+                          : 'hover:bg-[var(--barn-subtle)]/40'
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
+                      {multiSelectMode && (
+                        <span className="text-[var(--barn-sage)] shrink-0" aria-hidden="true">
+                          {isChecked ? (
+                            <CheckSquare className="w-4 h-4" />
+                          ) : (
+                            <Square className="w-4 h-4 text-[var(--barn-muted)]" />
+                          )}
+                        </span>
+                      )}
                       <div className="relative w-10 h-10 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
                         {coverPhoto ? (
                           <img
@@ -375,14 +592,9 @@ export function HerdScreen({
                     type="button"
                     onClick={() =>
                       setPreviewDoc({
-                        title: `Cage Card — ${activeAnimal.name}`,
-                        filename: `cage-card-${activeAnimal.tattoo || activeAnimal.id}.htm`,
-                        html: generateThermalCageCardHtml(
-                          activeAnimal,
-                          allAnimals,
-                          speciesProfiles,
-                          settings
-                        ),
+                        kind: 'cage-card',
+                        animal: activeAnimal,
+                        includePrimaryPhoto: false,
                       })
                     }
                     className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
@@ -394,21 +606,28 @@ export function HerdScreen({
                     type="button"
                     onClick={() =>
                       setPreviewDoc({
-                        title: `Formal Pedigree (.HTM / PDF) — ${activeAnimal.name}`,
-                        filename: `pedigree-${activeAnimal.tattoo || activeAnimal.id}.htm`,
-                        html: generateEvansHtmPedigree(
-                          activeAnimal,
-                          allAnimals,
-                          speciesProfiles,
-                          settings,
-                          settings.defaultGenerations
-                        ),
+                        kind: 'pedigree',
+                        animal: activeAnimal,
+                        includePrimaryPhoto: false,
                       })
                     }
                     className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
                   >
                     <FileText className="w-3.5 h-3.5" aria-hidden="true" />
                     .HTM / PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMigrationDialog({
+                        directAnimalIds: [activeAnimal.id],
+                        mode: 'single',
+                      })
+                    }
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                    Move Species
                   </button>
                   <button
                     type="button"
@@ -459,7 +678,7 @@ export function HerdScreen({
               {/* Multi-Photo Optimized Animal Gallery */}
               <AnimalPhotoGallery
                 animal={activeAnimal}
-                photos={photosByAnimalId.get(activeAnimal.id) || []}
+                photos={photosByAnimalId.get(activeAnimal.id) ?? EMPTY_PHOTOS}
                 optimizationPresetId={settings.imageOptimizationPreset}
                 onAddPhotos={(payloads) => onAddAnimalPhotos(activeAnimal, payloads)}
                 onSetPrimary={(photoId) => onSetPrimaryAnimalPhoto(activeAnimal.id, photoId)}
@@ -528,7 +747,7 @@ export function HerdScreen({
               {/* Coat Color Genotype & Allele Inference Panel */}
               {(activeAnimal.genotypeRaw ||
                 activeAnimal.genotype.length > 0 ||
-                activeAnimal.species === 'Rabbit') && (
+                isSameSpecies(activeAnimal.species, 'Rabbit')) && (
                 <div className="space-y-2.5 border-b border-[var(--barn-border)] pb-5">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold">
@@ -748,12 +967,69 @@ export function HerdScreen({
         />
       )}
 
-      {previewDoc && (
-        <PrintPreviewModal
-          title={previewDoc.title}
-          filename={previewDoc.filename}
-          htmlContent={previewDoc.html}
-          onClose={() => setPreviewDoc(null)}
+      {previewDoc &&
+        (() => {
+          const previewPrimaryPhoto = primaryPhotoByAnimalId.get(previewDoc.animal.id);
+          const isPedigree = previewDoc.kind === 'pedigree';
+          return (
+            <PrintPreviewModal
+              title={
+                isPedigree
+                  ? `Formal Pedigree (.HTM / PDF) — ${previewDoc.animal.name}`
+                  : `Cage Card — ${previewDoc.animal.name}`
+              }
+              filename={
+                isPedigree
+                  ? `pedigree-${previewDoc.animal.tattoo || previewDoc.animal.id}.htm`
+                  : `cage-card-${previewDoc.animal.tattoo || previewDoc.animal.id}.htm`
+              }
+              htmlContent={
+                isPedigree
+                  ? generateEvansHtmPedigree(
+                      previewDoc.animal,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
+                      settings.defaultGenerations,
+                      {
+                        includePrimaryPhoto: previewDoc.includePrimaryPhoto,
+                        primaryPhotoDataUrl: previewPrimaryPhoto?.dataUrl,
+                        primaryPhotoCaption: previewPrimaryPhoto?.caption,
+                      }
+                    )
+                  : generateThermalCageCardHtml(
+                      previewDoc.animal,
+                      allAnimals,
+                      speciesProfiles,
+                      settings
+                    )
+              }
+              includePrimaryPhoto={isPedigree ? previewDoc.includePrimaryPhoto : undefined}
+              onToggleIncludePrimaryPhoto={
+                isPedigree && previewPrimaryPhoto
+                  ? (include) =>
+                      setPreviewDoc((prev) =>
+                        prev ? { ...prev, includePrimaryPhoto: include } : null
+                      )
+                  : undefined
+              }
+              onClose={() => setPreviewDoc(null)}
+            />
+          );
+        })()}
+
+      {migrationDialog && (
+        <SpeciesMigrationModal
+          snapshot={snapshot}
+          sourceSpecies={speciesProfile.name}
+          directAnimalIds={migrationDialog.directAnimalIds}
+          mode={migrationDialog.mode}
+          onConfirmMigrate={async (ids, targetSpecies, options) => {
+            await onMigrateAnimals(ids, targetSpecies, options);
+            setSelectedIds(new Set());
+            setMultiSelectMode(false);
+          }}
+          onClose={() => setMigrationDialog(null)}
         />
       )}
     </div>

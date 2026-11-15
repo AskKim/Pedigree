@@ -8,7 +8,7 @@
  * 1. Strict per-species filtering across Herd, Breeding, Pedigree, Tasks, Cages, and Shows.
  * 2. Startup Landing Pinning (`pinnedLandingSpecies` opens directly inside a pinned species hub
  *    when configured, or on the All-Species Home page when empty).
- * 3. Automatic TaskMaster chore cascading whenever a breeding record is logged.
+ * 3. Automatic Master Task List chore cascading whenever a breeding record is logged.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -54,8 +54,12 @@ import {
   resolveAnimalsWithConflictChoices,
 } from '../core/importers/conflictResolver';
 import { PlatformImportPreview } from '../core/importers/importerTypes';
+import {
+  migrateAnimalsToSpecies,
+  SpeciesMigrationResult,
+} from '../core/speciesMigration';
 import { mergeBarnSnapshots, parseBarnBackupJson } from '../core/syncAndExports';
-import { generateCascadedTasksForBreeding } from '../core/taskMaster';
+import { generateCascadedTasksForBreeding } from '../core/masterTaskList';
 import { resolveThemeCssVariables } from '../core/themePalette';
 import { StorageAdapter } from '../storage/storageAdapter';
 import { WebSqliteAdapter } from '../storage/webSqliteAdapter';
@@ -607,6 +611,88 @@ export function useBarnStore() {
     [selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify]
   );
 
+  const deleteAnimalsBatch = useCallback(
+    async (animalIds: string[]) => {
+      if (animalIds.length === 0) return;
+      const idSet = new Set(animalIds);
+      await adapterRef.current!.deleteAnimalsBatch(animalIds);
+      if (selectedAnimalId && idSet.has(selectedAnimalId)) setSelectedAnimalId(null);
+      if (pedigreeAnimalId && idSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
+      await reloadFromAdapter();
+      notify(`Deleted ${animalIds.length} selected animal${animalIds.length === 1 ? '' : 's'}.`);
+    },
+    [selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify]
+  );
+
+  const migrateAnimalsSpecies = useCallback(
+    async (
+      animalIds: string[],
+      targetSpeciesName: string,
+      options?: {
+        switchToTarget?: boolean;
+        migrateEntireSpecies?: boolean;
+        sourceSpeciesName?: string;
+      }
+    ): Promise<SpeciesMigrationResult | null> => {
+      if (!snapshot) return null;
+      const result = migrateAnimalsToSpecies(snapshot, animalIds, targetSpeciesName, {
+        migrateEntireSpecies: options?.migrateEntireSpecies,
+        sourceSpeciesName: options?.sourceSpeciesName,
+      });
+      await adapterRef.current!.replaceSnapshot(result.snapshot);
+      await reloadFromAdapter();
+
+      const movedIds = new Set(
+        result.snapshot.animals
+          .filter((a) => {
+            const orig = snapshot.animals.find((o) => o.id === a.id);
+            return orig && !isSameSpecies(orig.species, a.species);
+          })
+          .map((a) => a.id)
+      );
+      if (selectedAnimalId && movedIds.has(selectedAnimalId)) {
+        setSelectedAnimalId(null);
+      }
+      if (pedigreeAnimalId && movedIds.has(pedigreeAnimalId)) {
+        setPedigreeAnimalId(null);
+      }
+
+      const remainingInActive = result.snapshot.animals.filter((a) =>
+        isSameSpecies(a.species, activeSpeciesName)
+      ).length;
+
+      if (
+        options?.switchToTarget ||
+        (route !== 'home' &&
+          remainingInActive === 0 &&
+          !isSameSpecies(activeSpeciesName, result.targetSpecies))
+      ) {
+        setActiveSpeciesName(result.targetSpecies);
+      }
+
+      const extras: string[] = [];
+      if (result.photosMigrated > 0) extras.push(`${result.photosMigrated} photos`);
+      if (result.careLogsMigrated > 0) extras.push(`${result.careLogsMigrated} logs`);
+      if (result.tasksMigrated > 0) extras.push(`${result.tasksMigrated} chores`);
+      if (result.breedingsMigrated > 0) extras.push(`${result.breedingsMigrated} breedings`);
+      if (result.cagesMigratedOrAdded > 0) extras.push(`${result.cagesMigratedOrAdded} cages`);
+      if (result.showsUpdated > 0) extras.push(`${result.showsUpdated} shows`);
+      if (result.splitParentLinksCount > 0) {
+        extras.push(
+          `${result.splitParentLinksCount} with parent IDs preserved for follow-up`
+        );
+      }
+
+      notify(
+        `Migrated ${result.animalsMigrated} animal${result.animalsMigrated === 1 ? '' : 's'} from ${
+          result.sourceSpecies
+        } → ${result.targetSpecies}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}.`
+      );
+      return result;
+    },
+    [snapshot, activeSpeciesName, route, selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify]
+  );
+
   const saveCage = useCallback(
     async (cageDraft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => {
       const ts = nowIsoUtc();
@@ -635,7 +721,7 @@ export function useBarnStore() {
 
   /**
    * Logs a new breeding or updates an existing breeding, and automatically runs the
-   * TaskMaster engine to cascade species-appropriate barn tasks on creation.
+   * Master Task List engine to cascade species-appropriate barn tasks on creation.
    */
   const logBreedingWithCascade = useCallback(
     async (params: {
@@ -712,12 +798,13 @@ export function useBarnStore() {
       const sp = resolveSpeciesProfile(existing.species, snapshot.speciesProfiles);
 
       let createdAny = existing.offspringCreated;
-      if (patch.registerJuniorCount > 0) {
+      const count = Math.min(16, Math.max(0, Math.round(patch.registerJuniorCount || 0)));
+      if (count > 0) {
         const sire = snapshot.animals.find((a) => a.id === existing.sireId);
         const dam = snapshot.animals.find((a) => a.id === existing.damId);
-        const count = Math.min(16, Math.max(0, patch.registerJuniorCount));
+        const juniorRecords: Animal[] = [];
         for (let i = 1; i <= count; i++) {
-          const jr: Animal = {
+          juniorRecords.push({
             id: generateUuid(),
             tattoo: `${(dam?.tattoo || sp.name.slice(0, 3).toUpperCase()).slice(0, 6)}-K${i}`,
             name: `${existing.damName} ${sp.offspringLabel} #${i}`,
@@ -741,9 +828,9 @@ export function useBarnStore() {
             notes: `Auto-registered from ${existing.sireName} × ${existing.damName} litter.`,
             createdAt: ts,
             updatedAt: ts,
-          };
-          await adapterRef.current!.saveAnimal(jr);
+          });
         }
+        await adapterRef.current!.saveAnimalsBatch(juniorRecords);
         createdAny = true;
       }
 
@@ -815,6 +902,37 @@ export function useBarnStore() {
       await reloadFromAdapter();
     },
     [reloadFromAdapter]
+  );
+
+  const setTasksCompletedBatch = useCallback(
+    async (taskIds: string[], completed: boolean) => {
+      if (!snapshot || taskIds.length === 0) return;
+      const ts = nowIsoUtc();
+      const idSet = new Set(taskIds);
+      const updated = snapshot.tasks
+        .filter((t) => idSet.has(t.id) && t.completed !== completed)
+        .map((t) => ({ ...t, completed, updatedAt: ts }));
+      if (updated.length > 0) {
+        await adapterRef.current!.saveTasksBatch(updated);
+        await reloadFromAdapter();
+        notify(
+          `${completed ? 'Completed' : 'Reopened'} ${updated.length} chore${
+            updated.length === 1 ? '' : 's'
+          }.`
+        );
+      }
+    },
+    [snapshot, reloadFromAdapter, notify]
+  );
+
+  const deleteTasksBatch = useCallback(
+    async (taskIds: string[]) => {
+      if (taskIds.length === 0) return;
+      await adapterRef.current!.deleteTasksBatch(taskIds);
+      await reloadFromAdapter();
+      notify(`Deleted ${taskIds.length} selected chore${taskIds.length === 1 ? '' : 's'}.`);
+    },
+    [reloadFromAdapter, notify]
   );
 
   const addCareLog = useCallback(
@@ -1130,6 +1248,8 @@ export function useBarnStore() {
     updateAnimalPhotoCaption,
     deleteAnimalPhoto,
     deleteAnimal,
+    deleteAnimalsBatch,
+    migrateAnimalsSpecies,
     saveCage,
     deleteCage,
     logBreedingWithCascade,
@@ -1138,6 +1258,8 @@ export function useBarnStore() {
     saveTask,
     toggleTaskCompleted,
     deleteTask,
+    setTasksCompletedBatch,
+    deleteTasksBatch,
     addCareLog,
     deleteCareLog,
     saveShow,
