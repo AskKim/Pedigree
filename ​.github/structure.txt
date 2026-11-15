@@ -1,0 +1,9 @@
+Pedigree/
+├── .github/
+│   └── workflows/
+├── src/
+│   └── ... (app code, components, database adapters)
+├── prompts/
+│   └── master_system_prompt.md   <-- Your core AI Studio prompt lives here
+├── package.json
+└── README.md
