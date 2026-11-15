@@ -21,6 +21,38 @@ export function downloadTextFile(filename: string, content: string, mimeType: st
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
+export async function shareTextFileOrDownload(params: {
+  filename: string;
+  content: string;
+  mimeType: string;
+  title: string;
+  text?: string;
+}): Promise<'shared' | 'downloaded'> {
+  const { filename, content, mimeType, title, text } = params;
+  const file = new File([content], filename, { type: mimeType });
+
+  if (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.share === 'function' &&
+    typeof navigator.canShare === 'function' &&
+    navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({
+        title,
+        text,
+        files: [file],
+      });
+      return 'shared';
+    } catch {
+      // Share sheet cancelled or unsupported by target — fall back to standard .ics file download
+    }
+  }
+
+  downloadTextFile(filename, content, mimeType);
+  return 'downloaded';
+}
+
 export function downloadBinaryFile(
   filename: string,
   bytes: Uint8Array,

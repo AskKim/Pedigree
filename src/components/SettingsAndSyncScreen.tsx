@@ -8,15 +8,19 @@
 
 import {
   Archive,
+  Bell,
+  CalendarPlus,
   CheckCircle2,
   Database,
   Download,
   FolderSync,
   HardDrive,
   Images,
+  LogOut,
   Moon,
   Palette,
   Plus,
+  RefreshCw,
   RotateCcw,
   Share2,
   ShieldCheck,
@@ -30,6 +34,7 @@ import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
 } from '../core/backupArchive';
+import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
@@ -46,6 +51,10 @@ import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
   BarnSettings,
+  BarnTask,
+  CalendarDeliveryMode,
+  CalendarSyncSettings,
+  normalizeCalendarSyncSettings,
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
@@ -74,6 +83,8 @@ import {
   usePWAInstall,
 } from '../storage/storageProtection';
 import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
+import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
+import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
@@ -125,6 +136,14 @@ interface SettingsAndSyncScreenProps {
   onSeedAllSpecies: () => void;
   onClearAllRecords: () => void;
   onRestoreFactoryDefaults: () => void;
+  onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => number;
+  googleAuthConnected?: boolean;
+  googleUserEmail?: string | null;
+  googleCalendars?: GoogleCalendarOption[];
+  googleSyncBusy?: boolean;
+  onConnectGoogleCalendar?: () => Promise<boolean>;
+  onDisconnectGoogleCalendar?: () => Promise<void>;
+  onRefreshGoogleCalendars?: () => Promise<void>;
 }
 
 export function SettingsAndSyncScreen({
@@ -159,8 +178,24 @@ export function SettingsAndSyncScreen({
   onSeedAllSpecies,
   onClearAllRecords,
   onRestoreFactoryDefaults,
+  onExportTasksToCalendar,
+  googleAuthConnected = false,
+  googleUserEmail = null,
+  googleCalendars = [],
+  googleSyncBusy = false,
+  onConnectGoogleCalendar,
+  onDisconnectGoogleCalendar,
+  onRefreshGoogleCalendars,
 }: SettingsAndSyncScreenProps) {
   const { settings, speciesProfiles } = snapshot;
+  const calendarSync = normalizeCalendarSyncSettings(settings.calendarSync);
+  const updateCalendarSync = (patch: Partial<CalendarSyncSettings>) => {
+    onUpdateSettings(
+      { calendarSync: { ...calendarSync, ...patch } },
+      { silent: true }
+    );
+  };
+  const openDatedTasks = snapshot.tasks.filter((t) => !t.completed && Boolean(t.dueDateIso));
 
   const [barnName, setBarnName] = useState(settings.barnName);
   const [breederName, setBreederName] = useState(settings.breederName);
@@ -704,6 +739,371 @@ export function SettingsAndSyncScreen({
               Save Barn Preferences
             </button>
           </form>
+
+          {/* System Calendar & Task Alarms (.ICS + Online Calendar) */}
+          <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-xl font-semibold">
+                  System Calendar &amp; Task Alarms (.ICS / Online)
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                  Link an online Google Calendar, hand off to a local/desktop calendar app (like
+                  desktop Outlook or Apple Calendar), or download offline .ICS files—with automatic
+                  offline fallback whenever a connection isn&apos;t available.
+                </p>
+              </div>
+              <CalendarPlus
+                className="w-5 h-5 text-[var(--barn-sage)] shrink-0"
+                aria-hidden="true"
+              />
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
+              <div className="font-semibold text-[var(--barn-ink)]">
+                Calendar Destination Mode
+              </div>
+
+              <div className="space-y-2">
+                {(
+                  [
+                    {
+                      id: 'google_calendar' as CalendarDeliveryMode,
+                      title: 'Link Online Google Calendar (auto-fallback to .ICS)',
+                      desc: 'Add chores straight to your Google Calendar when online. Automatically falls back to offline .ICS files & links if offline or disconnected.',
+                    },
+                    {
+                      id: 'external_app_or_ics' as CalendarDeliveryMode,
+                      title: 'External / Desktop Calendar App (Outlook, Apple Calendar, Android)',
+                      desc: 'Hands off .ICS directly to your device or desktop calendar app—even when that app is offline (such as desktop-hosted Outlook).',
+                    },
+                    {
+                      id: 'offline_ics' as CalendarDeliveryMode,
+                      title: 'Offline .ICS File Download Only',
+                      desc: 'Always download standard .ICS calendar files locally without linking an online account.',
+                    },
+                  ] as const
+                ).map((mode) => (
+                  <label
+                    key={mode.id}
+                    className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      calendarSync.deliveryMode === mode.id
+                        ? 'border-[var(--barn-sage)] bg-[var(--barn-sage)]/5'
+                        : 'border-[var(--barn-border)] bg-[var(--barn-surface)]'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="calendar-delivery-mode"
+                      checked={calendarSync.deliveryMode === mode.id}
+                      onChange={() => updateCalendarSync({ deliveryMode: mode.id })}
+                      className="w-4 h-4 mt-0.5 accent-[var(--barn-sage)] shrink-0"
+                    />
+                    <span>
+                      <span className="font-semibold text-[var(--barn-ink)] block">
+                        {mode.title}
+                      </span>
+                      <span className="text-[11px] text-[var(--barn-muted)] block mt-0.5">
+                        {mode.desc}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {calendarSync.deliveryMode === 'google_calendar' && (
+                <div className="mt-2 p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-3">
+                  {!googleAuthConnected ? (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-[var(--barn-muted)]">
+                        Connect your own Google account to grant Community Pedigree permission to
+                        view your calendar list and add barn chore events. If you stay signed out or
+                        go offline, the app automatically falls back to offline .ICS downloads.
+                      </div>
+                      {onConnectGoogleCalendar && (
+                        <SignInWithGoogleButton
+                          onClick={() => {
+                            void onConnectGoogleCalendar();
+                          }}
+                          disabled={googleSyncBusy}
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--barn-sage)]">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                          <span>
+                            Connected{googleUserEmail ? ` as ${googleUserEmail}` : ' to Google Calendar'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {onRefreshGoogleCalendars && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void onRefreshGoogleCalendars();
+                              }}
+                              disabled={googleSyncBusy}
+                              className="inline-flex items-center gap-1 min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+                            >
+                              <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                              Refresh
+                            </button>
+                          )}
+                          {onDisconnectGoogleCalendar && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void onDisconnectGoogleCalendar();
+                              }}
+                              disabled={googleSyncBusy}
+                              className="inline-flex items-center gap-1 min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+                            >
+                              <LogOut className="w-3 h-3" aria-hidden="true" />
+                              Sign out
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {googleCalendars.length > 0 && (
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="google-target-calendar"
+                            className="text-[11px] font-semibold text-[var(--barn-ink)] block"
+                          >
+                            Target Google Calendar
+                          </label>
+                          <select
+                            id="google-target-calendar"
+                            value={calendarSync.googleCalendarId}
+                            onChange={(e) => {
+                              const picked = googleCalendars.find((c) => c.id === e.target.value);
+                              updateCalendarSync({
+                                googleCalendarId: e.target.value,
+                                googleCalendarName: picked?.summary || 'Google Calendar',
+                              });
+                            }}
+                            className="w-full min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs"
+                          >
+                            {googleCalendars.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.summary}
+                                {c.primary ? ' (Primary)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3 text-xs">
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={calendarSync.autoAddNewTasks}
+                  onChange={(e) => updateCalendarSync({ autoAddNewTasks: e.target.checked })}
+                  className="w-4 h-4 mt-0.5 accent-[var(--barn-sage)] shrink-0"
+                />
+                <span>
+                  <span className="font-semibold text-[var(--barn-ink)] block">
+                    Automatically send newly added tasks to calendar
+                  </span>
+                  <span className="text-[11px] text-[var(--barn-muted)] block mt-0.5">
+                    When enabled, new dated chores use your selected calendar mode above (and fall
+                    back to offline .ICS if unable to connect).
+                  </span>
+                </span>
+              </label>
+
+              <div className="pl-6 space-y-2.5 border-l-2 border-[var(--barn-border)]">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={calendarSync.includeBreedingTasks}
+                    onChange={(e) =>
+                      updateCalendarSync({ includeBreedingTasks: e.target.checked })
+                    }
+                    className="w-4 h-4 accent-[var(--barn-sage)]"
+                  />
+                  <span>Include chores auto-generated from new breeding events</span>
+                </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={calendarSync.includeManualTasks}
+                    onChange={(e) =>
+                      updateCalendarSync({ includeManualTasks: e.target.checked })
+                    }
+                    className="w-4 h-4 accent-[var(--barn-sage)]"
+                  />
+                  <span>Include manually created barn chores</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1.5">
+                <label
+                  htmlFor="calendar-reminder-time"
+                  className="font-semibold text-[var(--barn-ink)] block"
+                >
+                  Scheduled local time on due date
+                </label>
+                <input
+                  id="calendar-reminder-time"
+                  type="time"
+                  value={calendarSync.reminderTimeLocal}
+                  onChange={(e) =>
+                    updateCalendarSync({
+                      reminderTimeLocal: e.target.value || '08:00',
+                    })
+                  }
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-sm font-mono"
+                />
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Uses your device&apos;s local clock (30-minute chore block).
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer font-semibold text-[var(--barn-ink)]">
+                  <input
+                    type="checkbox"
+                    checked={calendarSync.alarmEnabled}
+                    onChange={(e) => updateCalendarSync({ alarmEnabled: e.target.checked })}
+                    className="w-4 h-4 accent-[var(--barn-sage)]"
+                  />
+                  <Bell className="w-3.5 h-3.5 text-[var(--barn-terracotta)]" aria-hidden="true" />
+                  <span>Include alarm / notification</span>
+                </label>
+
+                <select
+                  aria-label="Alarm lead time before scheduled task"
+                  value={calendarSync.alarmMinutesBefore}
+                  disabled={!calendarSync.alarmEnabled}
+                  onChange={(e) =>
+                    updateCalendarSync({ alarmMinutesBefore: Number(e.target.value) })
+                  }
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs disabled:opacity-50"
+                >
+                  {CALENDAR_ALARM_LEAD_OPTIONS.map((opt) => (
+                    <option key={opt.minutes} value={opt.minutes}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
+              <div className="font-semibold text-[var(--barn-ink)]">
+                External Calendar Task Naming &amp; App Link
+              </div>
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                Controls how animal identifiers appear in exported external calendar events (in-app
+                task titles stay unchanged). Species is always appended to external calendar titles,
+                and every event includes a direct link back into the app task entry.
+              </p>
+
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={calendarSync.includeAnimalName}
+                  onChange={(e) => updateCalendarSync({ includeAnimalName: e.target.checked })}
+                  className="w-4 h-4 mt-0.5 accent-[var(--barn-sage)] shrink-0"
+                />
+                <span>
+                  <span className="font-medium text-[var(--barn-ink)] block">
+                    Include animal name in calendar task titles
+                  </span>
+                  <span className="text-[11px] text-[var(--barn-muted)] block">
+                    Uncheck to exclude animal names completely and show Ear Tattoo / Tag ID instead.
+                  </span>
+                </span>
+              </label>
+
+              <div className="pl-6 border-l-2 border-[var(--barn-border)]">
+                <label
+                  className={`flex items-start gap-2.5 ${
+                    calendarSync.includeAnimalName
+                      ? 'cursor-pointer'
+                      : 'opacity-50 cursor-not-allowed'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={calendarSync.includeAnimalPrefix}
+                    disabled={!calendarSync.includeAnimalName}
+                    onChange={(e) =>
+                      updateCalendarSync({ includeAnimalPrefix: e.target.checked })
+                    }
+                    className="w-4 h-4 mt-0.5 accent-[var(--barn-sage)] shrink-0"
+                  />
+                  <span>
+                    <span className="font-medium text-[var(--barn-ink)] block">
+                      Include species / herd name prefix
+                    </span>
+                    <span className="text-[11px] text-[var(--barn-muted)] block">
+                      Uncheck to strip your configured species prefix (e.g. show{' '}
+                      <span className="font-mono">Briar</span> instead of{' '}
+                      <span className="font-mono">Copper Creek Briar</span>).
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[11px]">
+                <span className="text-[var(--barn-muted)] mr-1.5">Calendar preview:</span>
+                <span className="font-mono text-[var(--barn-ink)] font-medium">
+                  {(() => {
+                    const activeSp = speciesProfiles.find(
+                      (sp) => sp.name.toLowerCase() === activeSpeciesName.toLowerCase()
+                    );
+                    const spLabel = activeSp?.name || activeSpeciesName || 'Rabbit';
+                    const samplePrefix = (activeSp?.defaultAnimalPrefix || '').trim() || 'Copper Creek';
+                    const sampleDam = !calendarSync.includeAnimalName
+                      ? 'NZR-102'
+                      : calendarSync.includeAnimalPrefix
+                        ? `${samplePrefix} Briar`
+                        : 'Briar';
+                    const sampleSire = !calendarSync.includeAnimalName
+                      ? 'NZR-051'
+                      : calendarSync.includeAnimalPrefix
+                        ? `${samplePrefix} Marshal`
+                        : 'Marshal';
+                    return `Palpation Check: ${sampleDam} (× ${sampleSire}) [${spLabel}]`;
+                  })()}
+                </span>
+              </div>
+            </div>
+
+            {onExportTasksToCalendar && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <span className="text-[11px] text-[var(--barn-muted)]">
+                  {openDatedTasks.length} open dated{' '}
+                  {openDatedTasks.length === 1 ? 'task' : 'tasks'} ready across all species
+                </span>
+                <button
+                  type="button"
+                  disabled={openDatedTasks.length === 0}
+                  onClick={() => onExportTasksToCalendar(openDatedTasks, 'open-barn-tasks')}
+                  className="inline-flex items-center gap-1.5 min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold disabled:opacity-50"
+                >
+                  <CalendarPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                  Export {openDatedTasks.length} Open Dated{' '}
+                  {openDatedTasks.length === 1 ? 'Task' : 'Tasks'} (.ICS)
+                </button>
+              </div>
+            )}
+          </section>
 
           {/* PWA Offline App Installation & Local Storage Protection */}
           <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">

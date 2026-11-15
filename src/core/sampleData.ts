@@ -7,9 +7,10 @@
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * 100% pure TypeScript with zero browser DOM dependencies.
  *
- * Provides authentic 3-generation pedigree trees, active breedings, cascaded Master Task List
- * chores, cage/pen locations, weight/leg logs, and show rosters for ALL 9 predefined
- * livestock species—led by an ARBA-standard New Zealand Red rabbitry.
+ * Provides authentic 3- to 6-generation pedigree trees (with ~half of active animals having a
+ * complete 6-generation pedigree backed by archived/inactive foundation ancestors), active breedings,
+ * cascaded Master Task List chores, cage/pen locations, weight/leg logs, and show rosters for ALL 9
+ * predefined livestock species—led by an ARBA-standard New Zealand Red rabbitry.
  */
 
 import { parseGenotypeString } from './geneticsEngine';
@@ -864,6 +865,7 @@ export function buildSampleDataForSpecies(
       name: spec.names.pgd,
       sex: 'Female',
       status: 'Retired',
+      archived: true,
       daysOld: 1080,
       weightGrams: Math.round(spec.avgAdultGrams * 1.04),
       variety: spec.varietyA,
@@ -991,6 +993,150 @@ export function buildSampleDataForSpecies(
     createdAt: ts,
     updatedAt: ts,
   }));
+
+  // Extend ancestral lineage with Retired/archived foundation animals so ~half of active
+  // animals (jrFemale, jrMale, and sire) carry a complete 6-generation pedigree.
+  const herdPrefixes = [
+    'Oakridge',
+    'Briarwood',
+    'Suncrest',
+    'Timberline',
+    'Cloverdale',
+    'Meadowlark',
+    'Ironwood',
+    'Redwood',
+  ];
+  const maleAncestorNames = [
+    'Sovereign',
+    'Cavalier',
+    'Brigadier',
+    'Vanguard',
+    'Monarch',
+    'Sterling',
+    'Sentinel',
+    'Marshal',
+    'Ranger',
+    'Noble',
+    'Champion',
+    'Warden',
+    'Commodore',
+    'Duke',
+    'Major',
+    'Baron',
+  ];
+  const femaleAncestorNames = [
+    'Duchess',
+    'Velvet',
+    'Autumn',
+    'Garnet',
+    'Saffron',
+    'Briar',
+    'Celeste',
+    'Dahlia',
+    'Empress',
+    'Magnolia',
+    'Sorrel',
+    'Camellia',
+    'Heather',
+    'Rosette',
+    'Aurora',
+    'Verbena',
+  ];
+
+  const animalById = new Map(animals.map((a) => [a.id, a]));
+  const rabbitAncestorGeno = spec.genoPgs ? 'Aa Bb CC Dd ee ww' : '';
+
+  const attachAncestors = (params: {
+    rootId: string;
+    branchKey: string;
+    branchCode: string;
+    depth: number;
+  }) => {
+    const root = animalById.get(params.rootId);
+    if (!root || params.depth <= 0) return;
+
+    const rootBirthDaysAgo =
+      params.branchKey === 'pgs'
+        ? 1120
+        : params.branchKey === 'pgd'
+        ? 1080
+        : params.branchKey === 'mgs'
+        ? 980
+        : 940;
+
+    let currentLevelIds: string[] = [root.id];
+
+    for (let level = 1; level <= params.depth; level++) {
+      const nextLevelIds: string[] = [];
+      const levelDaysOld = rootBirthDaysAgo + level * 540;
+
+      for (let i = 0; i < currentLevelIds.length; i++) {
+        const child = animalById.get(currentLevelIds[i])!;
+        const sireIdx = i * 2;
+        const damIdx = i * 2 + 1;
+
+        const ancSireId = seedId(slug, `anc-${params.branchKey}-l${level}-${sireIdx}`);
+        const ancDamId = seedId(slug, `anc-${params.branchKey}-l${level}-${damIdx}`);
+
+        const sirePrefix = herdPrefixes[(level * 3 + sireIdx) % herdPrefixes.length];
+        const sireGiven = maleAncestorNames[(level * 5 + sireIdx) % maleAncestorNames.length];
+        const damPrefix = herdPrefixes[(level * 3 + damIdx + 2) % herdPrefixes.length];
+        const damGiven = femaleAncestorNames[(level * 5 + damIdx) % femaleAncestorNames.length];
+
+        const ancSire = makeAnimal({
+          id: ancSireId,
+          idx: `${params.branchCode}${level}${String(sireIdx + 1).padStart(2, '0')}`,
+          name: `${sirePrefix} ${sireGiven} ${params.branchCode}${level}-${sireIdx + 1}`,
+          sex: 'Male',
+          status: 'Retired',
+          archived: true,
+          daysOld: levelDaysOld,
+          weightGrams: spec.avgAdultGrams,
+          variety: sireIdx % 4 === 0 ? spec.varietyB : spec.varietyA,
+          genoRaw: rabbitAncestorGeno,
+          cage: '',
+          legs: level <= 2 && sireIdx === 0 ? 1 : 0,
+          regSuffix: level <= 3 ? `${params.branchCode}${level}${String(sireIdx + 1).padStart(2, '0')}` : '',
+          notes: `Archived pedigree ancestor (Gen +${level} from ${root.name}).`,
+        });
+
+        const ancDam = makeAnimal({
+          id: ancDamId,
+          idx: `${params.branchCode}${level}${String(damIdx + 1).padStart(2, '0')}`,
+          name: `${damPrefix} ${damGiven} ${params.branchCode}${level}-${damIdx + 1}`,
+          sex: 'Female',
+          status: 'Retired',
+          archived: true,
+          daysOld: levelDaysOld - 15,
+          weightGrams: Math.round(spec.avgAdultGrams * 1.02),
+          variety: damIdx % 4 === 1 ? spec.varietyA : spec.varietyB,
+          genoRaw: rabbitAncestorGeno,
+          cage: '',
+          legs: level === 1 ? 1 : 0,
+          regSuffix: level <= 3 ? `${params.branchCode}${level}${String(damIdx + 1).padStart(2, '0')}` : '',
+          notes: `Archived pedigree ancestor (Gen +${level} from ${root.name}).`,
+        });
+
+        child.sireId = ancSireId;
+        child.damId = ancDamId;
+
+        animals.push(ancSire, ancDam);
+        animalById.set(ancSireId, ancSire);
+        animalById.set(ancDamId, ancDam);
+
+        nextLevelIds.push(ancSireId, ancDamId);
+      }
+
+      currentLevelIds = nextLevelIds;
+    }
+  };
+
+  attachAncestors({ rootId: pgsId, branchKey: 'pgs', branchCode: 'P', depth: 5 });
+  attachAncestors({ rootId: pgdId, branchKey: 'pgd', branchCode: 'Q', depth: 5 });
+  if (!spec.shareGrandsireForLinebreeding) {
+    attachAncestors({ rootId: mgsId, branchKey: 'mgs', branchCode: 'M', depth: 4 });
+  }
+  attachAncestors({ rootId: mgdId, branchKey: 'mgd', branchCode: 'N', depth: 4 });
 
   const herdMap = new Map(animals.map((a) => [a.id, a]));
   const sire = herdMap.get(sireId)!;

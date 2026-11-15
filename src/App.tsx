@@ -34,12 +34,13 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { BreedingScreen } from './components/BreedingScreen';
+import { CalendarSyncConfirmModal } from './components/CalendarIntegrationModals';
 import { HerdScreen } from './components/HerdScreen';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { PedigreeScreen } from './components/PedigreeScreen';
 import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
 import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
-import { isSameSpecies } from './core/models';
+import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
 
@@ -418,6 +419,20 @@ export default function App() {
               void store.deleteAllSpeciesRecords(speciesName);
             }}
             onDownloadTimestampedBackup={store.exportTimestampedSpeciesBackup}
+            onMoveHubBlock={(blockId, dir) => {
+              void store.moveSpeciesHubBlock(activeSpeciesName, blockId, dir);
+            }}
+            onReorderHubBlocks={(orderedIds) => {
+              void store.reorderSpeciesHubBlocks(activeSpeciesName, orderedIds);
+            }}
+            onExportTaskToCalendar={(task) => {
+              store.exportTasksToCalendar([task], task.title);
+            }}
+            onCopyTaskAppLink={(task) => {
+              void store.copyTaskAppLink(task);
+            }}
+            highlightedTaskId={store.highlightedTaskId}
+            onClearHighlightedTask={() => store.setHighlightedTaskId(null)}
             onOpenSettings={() => setRoute('settings')}
           />
         )}
@@ -548,9 +563,41 @@ export default function App() {
             onRestoreFactoryDefaults={() => {
               void store.restoreFactoryDefaults();
             }}
+            onExportTasksToCalendar={store.exportTasksToCalendar}
+            googleAuthConnected={store.googleAuthConnected}
+            googleUserEmail={store.googleUserEmail}
+            googleCalendars={store.googleCalendars}
+            googleSyncBusy={store.googleSyncBusy}
+            onConnectGoogleCalendar={store.connectGoogleCalendar}
+            onDisconnectGoogleCalendar={store.disconnectGoogleCalendar}
+            onRefreshGoogleCalendars={store.refreshGoogleCalendars}
           />
         )}
       </main>
+
+      {/* Online Google Calendar Confirmation + Automatic Offline .ICS Fallback */}
+      <CalendarSyncConfirmModal
+        pending={store.pendingCalendarSync}
+        config={normalizeCalendarSyncSettings(snapshot.settings.calendarSync)}
+        barnName={snapshot.settings.barnName}
+        context={{
+          animals: snapshot.animals,
+          breedings: snapshot.breedings,
+          speciesProfiles: snapshot.speciesProfiles,
+          appBaseUrl:
+            typeof window !== 'undefined'
+              ? `${window.location.origin}${window.location.pathname}`
+              : '',
+        }}
+        isSignedIn={store.googleAuthConnected}
+        userEmail={store.googleUserEmail}
+        isBusy={store.googleSyncBusy}
+        isOnline={isOnline}
+        onSignIn={store.connectGoogleCalendar}
+        onConfirmGoogleSync={store.confirmGoogleCalendarSync}
+        onFallbackOfflineIcs={store.fallbackPendingCalendarSyncToIcs}
+        onCancel={store.cancelPendingCalendarSync}
+      />
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (

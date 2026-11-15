@@ -34,11 +34,18 @@ import {
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  normalizeCalendarSyncSettings,
+  normalizeSpeciesHubBlockOrder,
   nowIsoUtc,
   resolveSpeciesProfile,
   ShowEvent,
+  SpeciesHubBlockId,
   SpeciesProfile,
 } from '../core/models';
+import {
+  buildIcsCalendarForTasks,
+  buildTaskAppDeepLink,
+} from '../core/calendarExport';
 import {
   BackupStatusEvaluation,
   evaluateBackupStatus,
@@ -73,6 +80,7 @@ import {
 import {
   buildSpeciesSafetyBackupFileName,
   exportSpeciesBackupJson,
+  formatTimestampedBackupSlug,
   mergeBarnSnapshots,
   parseBarnBackupJson,
   SpeciesBackupReason,
@@ -124,7 +132,21 @@ import {
   StorageProtectionStatus,
 } from '../storage/storageProtection';
 import { purgeStaleBrowserCaches, WebSqliteAdapter } from '../storage/webSqliteAdapter';
-import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
+import {
+  getGoogleCalendarAccessToken,
+  GoogleCalendarOption,
+  initGoogleCalendarAuth,
+  listWritableGoogleCalendars,
+  pushTasksToGoogleCalendar,
+  signInGoogleCalendar,
+  signOutGoogleCalendar,
+} from '../utils/googleCalendarClient';
+import {
+  downloadBinaryFile,
+  downloadTextFile,
+  shareTextFileOrDownload,
+} from '../utils/webFileActions';
+import type { PendingGoogleCalendarSync } from '../components/CalendarIntegrationModals';
 
 export type WorkspaceRoute =
   | 'home'
@@ -168,6 +190,13 @@ export function useBarnStore() {
   const [selectedAnimalId, setSelectedAnimalId] = useState<string | null>(null);
   const [pedigreeAnimalId, setPedigreeAnimalId] = useState<string | null>(null);
   const [pedigreeGenerations, setPedigreeGenerations] = useState<3 | 4 | 5 | 6>(3);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
+  const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
+  const [googleAuthConnected, setGoogleAuthConnected] = useState<boolean>(false);
+  const [googleCalendars, setGoogleCalendars] = useState<GoogleCalendarOption[]>([]);
+  const [googleSyncBusy, setGoogleSyncBusy] = useState<boolean>(false);
+  const [pendingCalendarSync, setPendingCalendarSync] =
+    useState<PendingGoogleCalendarSync | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageProtectionStatus | null>(null);
@@ -247,6 +276,20 @@ export function useBarnStore() {
     setCurrentDiagnosticRoute(route);
   }, [route]);
 
+  // Monitor Google Calendar auth state (access token is kept strictly in memory)
+  useEffect(() => {
+    return initGoogleCalendarAuth(
+      (user) => {
+        setGoogleAuthConnected(true);
+        setGoogleUserEmail(user.email || user.displayName || 'Google Account');
+      },
+      (user) => {
+        setGoogleAuthConnected(false);
+        setGoogleUserEmail(user?.email || null);
+      }
+    );
+  }, []);
+
   // Initialize local SQLite / IndexedDB store + request persistent storage lock + load outbox
   useEffect(() => {
     let mounted = true;
@@ -266,17 +309,57 @@ export function useBarnStore() {
         setSyncOperations(ops);
         setSyncConflicts(conflicts);
 
-        const pinned = (initial.settings.pinnedLandingSpecies || '').trim();
-        const matchedPinned = pinned
-          ? initial.speciesProfiles.find((sp) => isSameSpecies(sp.name, pinned))
+        const urlParams =
+          typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search)
+            : null;
+        const deepTaskId = (urlParams?.get('taskId') || '').trim();
+        const deepSpecies = (urlParams?.get('species') || '').trim();
+        const deepRoute = (urlParams?.get('route') || '').trim();
+        const deepTask = deepTaskId
+          ? initial.tasks.find((t) => t.id === deepTaskId)
           : undefined;
 
-        if (matchedPinned) {
-          setActiveSpeciesName(matchedPinned.name);
+        if (deepTask) {
+          setActiveSpeciesName(deepTask.species);
           setRoute('dashboard');
+          setHighlightedTaskId(deepTask.id);
+        } else if (deepSpecies) {
+          const matchedDeepSpecies = initial.speciesProfiles.find((sp) =>
+            isSameSpecies(sp.name, deepSpecies)
+          );
+          if (matchedDeepSpecies) {
+            setActiveSpeciesName(matchedDeepSpecies.name);
+            setRoute(deepRoute === 'herd' ? 'herd' : 'dashboard');
+          } else {
+            setActiveSpeciesName(initial.settings.defaultSpecies || 'Rabbit');
+            setRoute('home');
+          }
+          if (deepTaskId) {
+            setStatusMessage(
+              'Linked calendar chore was not found in local records (it may have been deleted).'
+            );
+          }
         } else {
-          setActiveSpeciesName(initial.settings.defaultSpecies || 'Rabbit');
-          setRoute('home');
+          const pinned = (initial.settings.pinnedLandingSpecies || '').trim();
+          const matchedPinned = pinned
+            ? initial.speciesProfiles.find((sp) => isSameSpecies(sp.name, pinned))
+            : undefined;
+
+          if (matchedPinned) {
+            setActiveSpeciesName(matchedPinned.name);
+            setRoute('dashboard');
+          } else {
+            setActiveSpeciesName(initial.settings.defaultSpecies || 'Rabbit');
+            setRoute('home');
+          }
+        }
+
+        if (
+          typeof window !== 'undefined' &&
+          (deepTaskId || deepSpecies || deepRoute)
+        ) {
+          window.history.replaceState({}, '', window.location.pathname);
         }
         logDiagnosticEvent({
           level: 'info',
@@ -505,8 +588,11 @@ export function useBarnStore() {
   );
 
   const clearTaskAlertGroup = useCallback(
-    async (speciesName: string, groupSignature: string) => {
-      if (!snapshot || !groupSignature) return;
+    async (speciesName: string, groupSignature: string | string[]) => {
+      const isEmpty = Array.isArray(groupSignature)
+        ? groupSignature.length === 0
+        : !groupSignature;
+      if (!snapshot || isEmpty) return;
       const key = speciesName.trim().toLowerCase();
       const prevMap = snapshot.settings.dismissedTaskGroupKeys || {};
       const nextMap: Record<string, string | string[]> = { ...prevMap, [key]: groupSignature };
@@ -674,10 +760,67 @@ export function useBarnStore() {
     [snapshot, reorderSpeciesCards]
   );
 
+  const reorderSpeciesHubBlocks = useCallback(
+    async (speciesName: string, orderedBlockIds: SpeciesHubBlockId[]) => {
+      if (!snapshot) return;
+      const key = speciesName.trim().toLowerCase();
+      const normalized = normalizeSpeciesHubBlockOrder(orderedBlockIds);
+      const prevMap = snapshot.settings.speciesHubBlockOrder || {};
+      await updateSettings(
+        {
+          speciesHubBlockOrder: {
+            ...prevMap,
+            [key]: normalized,
+          },
+        },
+        { silent: true }
+      );
+    },
+    [snapshot, updateSettings]
+  );
+
+  const moveSpeciesHubBlock = useCallback(
+    async (
+      speciesName: string,
+      blockId: SpeciesHubBlockId,
+      direction: 'up' | 'down' | 'top'
+    ) => {
+      if (!snapshot) return;
+      const key = speciesName.trim().toLowerCase();
+      const ids = normalizeSpeciesHubBlockOrder(snapshot.settings.speciesHubBlockOrder?.[key]);
+      const fromIdx = ids.indexOf(blockId);
+      if (fromIdx === -1) return;
+
+      let toIdx = fromIdx;
+      if (direction === 'top') toIdx = 0;
+      else if (direction === 'up') toIdx = Math.max(0, fromIdx - 1);
+      else if (direction === 'down') toIdx = Math.min(ids.length - 1, fromIdx + 1);
+
+      if (toIdx === fromIdx) return;
+
+      const nextIds = [...ids];
+      const [moved] = nextIds.splice(fromIdx, 1);
+      nextIds.splice(toIdx, 0, moved);
+      await reorderSpeciesHubBlocks(speciesName, nextIds);
+    },
+    [snapshot, reorderSpeciesHubBlocks]
+  );
+
   const deleteSpeciesProfile = useCallback(
     async (profile: SpeciesProfile) => {
       try {
         if (snapshot) {
+          const remainingRecords = countAllSpeciesRecords(snapshot, profile.name);
+          if (remainingRecords > 0) {
+            notify(
+              `Only empty species can be fully removed (${profile.name} still has ${remainingRecords} record${remainingRecords === 1 ? '' : 's'}).`
+            );
+            return;
+          }
+          if (snapshot.speciesProfiles.length <= 1) {
+            notify('At least one species must remain in your barn.');
+            return;
+          }
           await saveRollingSnapshotBackup(snapshot);
         }
         await adapterRef.current!.deleteSpeciesProfile(profile.id);
@@ -690,7 +833,9 @@ export function useBarnStore() {
         }
         await reloadFromAdapter();
         if (isSameSpecies(activeSpeciesName, profile.name)) {
-          setActiveSpeciesName('Rabbit');
+          const fallbackName =
+            snapshot?.speciesProfiles.find((p) => p.id !== profile.id)?.name || 'Rabbit';
+          setActiveSpeciesName(fallbackName);
           setRoute('home');
         }
         notify(`${profile.name} removed from configured species.`);
@@ -952,13 +1097,21 @@ export function useBarnStore() {
         const result = migrateAnimalsToSpecies(snapshot, animalIds, targetSpeciesName, options);
         await adapterRef.current!.replaceSnapshot(result.snapshot);
 
-        const movedSet = new Set(result.migratedAnimalIds);
+        const prevSpeciesById = new Map(snapshot.animals.map((a) => [a.id, a.species]));
+        const movedSet = new Set(
+          result.snapshot.animals
+            .filter((a) => {
+              const prevSpecies = prevSpeciesById.get(a.id);
+              return prevSpecies !== undefined && !isSameSpecies(prevSpecies, a.species);
+            })
+            .map((a) => a.id)
+        );
         if (selectedAnimalId && movedSet.has(selectedAnimalId)) setSelectedAnimalId(null);
         if (pedigreeAnimalId && movedSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
 
         await reloadFromAdapter();
         notify(
-          `Moved ${result.animalsMigrated} animal${result.animalsMigrated === 1 ? '' : 's'} to ${result.targetSpeciesName}.`
+          `Moved ${result.animalsMigrated} animal${result.animalsMigrated === 1 ? '' : 's'} to ${result.targetSpecies}.`
         );
         return result;
       } catch (err) {
@@ -1189,9 +1342,10 @@ export function useBarnStore() {
           nextCounter: allocateNextLogicalCounter,
         });
 
+        let cascaded: BarnTask[] = [];
         let taskCount = 0;
         if (params.autoScheduleChores) {
-          const cascaded = generateCascadedTasksForBreeding(breeding, sp);
+          cascaded = generateCascadedTasksForBreeding(breeding, sp);
           taskCount = cascaded.length;
           await adapterRef.current!.saveTasksBatch(cascaded);
           for (const t of cascaded) {
@@ -1209,9 +1363,52 @@ export function useBarnStore() {
 
         await recordOutboxOps(ops);
         await reloadFromAdapter();
+
+        let calendarResultMsg = '';
+        const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
+        if (calConfig.autoAddNewTasks && calConfig.includeBreedingTasks && cascaded.length > 0) {
+          const dated = cascaded.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''));
+          if (dated.length > 0) {
+            const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+            if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
+              setPendingCalendarSync({
+                tasks: dated,
+                filenameHint: `${params.dam.name}-breeding-chores`,
+              });
+              calendarResultMsg = ` & queued ${dated.length} event(s) for Google Calendar.`;
+            } else {
+              const appBaseUrl =
+                typeof window !== 'undefined'
+                  ? `${window.location.origin}${window.location.pathname}`
+                  : '';
+              const ics = buildIcsCalendarForTasks(
+                dated,
+                calConfig,
+                snapshot.settings.barnName,
+                `${params.dam.name}-breeding-chores`,
+                {
+                  animals: snapshot.animals,
+                  breedings: [...snapshot.breedings, breeding],
+                  speciesProfiles: snapshot.speciesProfiles,
+                  appBaseUrl,
+                }
+              );
+              if (ics) {
+                downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+                calendarResultMsg =
+                  calConfig.deliveryMode === 'google_calendar' && !isOnline
+                    ? ` & downloaded offline .ICS fallback (${ics.eventCount} event(s)).`
+                    : ` & exported ${ics.eventCount} calendar event(s) (.ICS).`;
+              }
+            }
+          }
+        }
+
         notify(
           taskCount > 0
-            ? `Logged ${params.sire.name} × ${params.dam.name} and cascaded ${taskCount} barn chores.`
+            ? calendarResultMsg
+              ? `Logged ${params.sire.name} × ${params.dam.name}, cascaded ${taskCount} chores${calendarResultMsg}`
+              : `Logged ${params.sire.name} × ${params.dam.name} and cascaded ${taskCount} barn chores.`
             : `Logged pairing ${params.sire.name} × ${params.dam.name}.`
         );
       } catch (err) {
@@ -1356,9 +1553,289 @@ export function useBarnStore() {
         })
       );
       await reloadFromAdapter();
-      notify('Barn chore saved.');
+
+      let calendarNote = '';
+      if (!prev && task.dueDateIso) {
+        const calConfig = normalizeCalendarSyncSettings(snapshot?.settings.calendarSync);
+        if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
+          const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+          if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
+            setPendingCalendarSync({ tasks: [task], filenameHint: task.title });
+            calendarNote = ' Ready to add to Google Calendar.';
+          } else {
+            const appBaseUrl =
+              typeof window !== 'undefined'
+                ? `${window.location.origin}${window.location.pathname}`
+                : '';
+            const ics = buildIcsCalendarForTasks(
+              [task],
+              calConfig,
+              snapshot?.settings.barnName,
+              undefined,
+              {
+                animals: snapshot?.animals,
+                breedings: snapshot?.breedings,
+                speciesProfiles: snapshot?.speciesProfiles,
+                appBaseUrl,
+              }
+            );
+            if (ics) {
+              downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+              calendarNote =
+                calConfig.deliveryMode === 'google_calendar' && !isOnline
+                  ? ' Offline — downloaded .ICS fallback.'
+                  : ' Exported to calendar (.ICS).';
+            }
+          }
+        }
+      }
+
+      notify(calendarNote ? `Barn chore saved.${calendarNote}` : 'Barn chore saved.');
     },
     [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+  );
+
+  const downloadOfflineIcsForTasks = useCallback(
+    (
+      tasksToExport: BarnTask[],
+      filenameHint?: string,
+      options?: { useExternalShare?: boolean; fallbackPrefix?: string }
+    ) => {
+      if (!snapshot) return 0;
+      const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
+      const appBaseUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}${window.location.pathname}`
+          : '';
+      const ics = buildIcsCalendarForTasks(
+        tasksToExport,
+        calConfig,
+        snapshot.settings.barnName,
+        filenameHint,
+        {
+          animals: snapshot.animals,
+          breedings: snapshot.breedings,
+          speciesProfiles: snapshot.speciesProfiles,
+          appBaseUrl,
+        }
+      );
+      if (!ics) {
+        notify('Selected chore(s) have no due date to add to calendar.');
+        return 0;
+      }
+
+      if (options?.useExternalShare) {
+        void shareTextFileOrDownload({
+          filename: ics.filename,
+          content: ics.icsContent,
+          mimeType: 'text/calendar',
+          title: filenameHint || `${snapshot.settings.barnName} Barn Chores`,
+          text: 'Import barn chore into your calendar app',
+        }).then((outcome) => {
+          notify(
+            outcome === 'shared'
+              ? `Opened external calendar handoff for ${ics.eventCount} event${
+                  ics.eventCount === 1 ? '' : 's'
+                }.`
+              : `Saved ${ics.eventCount} event${
+                  ics.eventCount === 1 ? '' : 's'
+                } (.ICS) — open file to add to Outlook, Apple, or system calendar.`
+          );
+        });
+        return ics.eventCount;
+      }
+
+      downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+      const prefix = options?.fallbackPrefix ? `${options.fallbackPrefix} ` : '';
+      notify(
+        `${prefix}Downloaded ${ics.eventCount} calendar event${
+          ics.eventCount === 1 ? '' : 's'
+        } (.ICS)${calConfig.alarmEnabled ? ' with alarm' : ''}.`
+      );
+      return ics.eventCount;
+    },
+    [snapshot, notify]
+  );
+
+  const exportTasksToCalendar = useCallback(
+    (tasksToExport: BarnTask[], filenameHint?: string) => {
+      if (!snapshot) return 0;
+      const dated = tasksToExport.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''));
+      if (dated.length === 0) {
+        notify('Selected chore(s) have no due date to add to calendar.');
+        return 0;
+      }
+
+      const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
+      const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+
+      if (calConfig.deliveryMode === 'google_calendar') {
+        if (!isOnline) {
+          return downloadOfflineIcsForTasks(dated, filenameHint, {
+            fallbackPrefix: 'Device is offline —',
+          });
+        }
+        setPendingCalendarSync({ tasks: dated, filenameHint });
+        return dated.length;
+      }
+
+      if (calConfig.deliveryMode === 'external_app_or_ics') {
+        return downloadOfflineIcsForTasks(dated, filenameHint, {
+          useExternalShare: true,
+        });
+      }
+
+      return downloadOfflineIcsForTasks(dated, filenameHint);
+    },
+    [snapshot, downloadOfflineIcsForTasks, notify]
+  );
+
+  const connectGoogleCalendar = useCallback(async (): Promise<boolean> => {
+    setGoogleSyncBusy(true);
+    try {
+      const { user, accessToken } = await signInGoogleCalendar();
+      setGoogleAuthConnected(true);
+      setGoogleUserEmail(user.email || user.displayName || 'Google Account');
+      const cals = await listWritableGoogleCalendars(accessToken);
+      setGoogleCalendars(cals);
+      notify(`Connected Google Calendar${user.email ? ` (${user.email})` : ''}.`);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google Calendar sign-in cancelled.';
+      setErrorMessage(`Could not connect Google Calendar: ${msg}`);
+      return false;
+    } finally {
+      setGoogleSyncBusy(false);
+    }
+  }, [notify]);
+
+  const disconnectGoogleCalendar = useCallback(async () => {
+    await signOutGoogleCalendar();
+    setGoogleAuthConnected(false);
+    setGoogleUserEmail(null);
+    setGoogleCalendars([]);
+    notify('Signed out of Google Calendar.');
+  }, [notify]);
+
+  const refreshGoogleCalendars = useCallback(async () => {
+    const token = getGoogleCalendarAccessToken();
+    if (!token) {
+      setGoogleAuthConnected(false);
+      return;
+    }
+    setGoogleSyncBusy(true);
+    try {
+      const cals = await listWritableGoogleCalendars(token);
+      setGoogleCalendars(cals);
+    } catch {
+      setGoogleAuthConnected(false);
+    } finally {
+      setGoogleSyncBusy(false);
+    }
+  }, []);
+
+  const confirmGoogleCalendarSync = useCallback(async () => {
+    if (!snapshot || !pendingCalendarSync) return;
+    const { tasks: queuedTasks, filenameHint } = pendingCalendarSync;
+    const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
+    const token = getGoogleCalendarAccessToken();
+    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+
+    if (!isOnline || !token) {
+      setPendingCalendarSync(null);
+      downloadOfflineIcsForTasks(queuedTasks, filenameHint, {
+        fallbackPrefix: !isOnline
+          ? 'Device is offline —'
+          : 'Google session unavailable —',
+      });
+      return;
+    }
+
+    setGoogleSyncBusy(true);
+    try {
+      const appBaseUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}${window.location.pathname}`
+          : '';
+      const result = await pushTasksToGoogleCalendar({
+        accessToken: token,
+        calendarId: calConfig.googleCalendarId || 'primary',
+        tasks: queuedTasks,
+        config: calConfig,
+        barnName: snapshot.settings.barnName,
+        context: {
+          animals: snapshot.animals,
+          breedings: snapshot.breedings,
+          speciesProfiles: snapshot.speciesProfiles,
+          appBaseUrl,
+        },
+      });
+
+      if (result.authExpired) {
+        setGoogleAuthConnected(false);
+      }
+
+      if (result.createdCount > 0 && result.failedCount === 0) {
+        setPendingCalendarSync(null);
+        notify(
+          `Added ${result.createdCount} event${
+            result.createdCount === 1 ? '' : 's'
+          } to ${calConfig.googleCalendarName || 'Google Calendar'}.`
+        );
+        return;
+      }
+
+      // Automatic fallback to offline .ICS if Google Calendar couldn't save all events
+      setPendingCalendarSync(null);
+      downloadOfflineIcsForTasks(queuedTasks, filenameHint, {
+        fallbackPrefix:
+          result.createdCount > 0
+            ? `Added ${result.createdCount} to Google Calendar; saved offline .ICS fallback for remaining`
+            : 'Could not reach Google Calendar —',
+      });
+    } catch {
+      setPendingCalendarSync(null);
+      downloadOfflineIcsForTasks(queuedTasks, filenameHint, {
+        fallbackPrefix: 'Could not reach Google Calendar —',
+      });
+    } finally {
+      setGoogleSyncBusy(false);
+    }
+  }, [snapshot, pendingCalendarSync, downloadOfflineIcsForTasks, notify]);
+
+  const fallbackPendingCalendarSyncToIcs = useCallback(() => {
+    if (!pendingCalendarSync) return;
+    const { tasks: queuedTasks, filenameHint } = pendingCalendarSync;
+    setPendingCalendarSync(null);
+    downloadOfflineIcsForTasks(queuedTasks, filenameHint, {
+      useExternalShare: true,
+    });
+  }, [pendingCalendarSync, downloadOfflineIcsForTasks]);
+
+  const cancelPendingCalendarSync = useCallback(() => {
+    setPendingCalendarSync(null);
+  }, []);
+
+  const copyTaskAppLink = useCallback(
+    async (task: BarnTask) => {
+      const appBaseUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}${window.location.pathname}`
+          : '';
+      const link = buildTaskAppDeepLink(appBaseUrl, task);
+      if (!link) return;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(link);
+          notify('Copied direct app task link to clipboard.');
+          return;
+        }
+      } catch {
+        // Fallback below if clipboard permission is blocked in preview frame
+      }
+      notify(`App task link: ${link}`);
+    },
+    [notify]
   );
 
   const toggleTaskCompleted = useCallback(
@@ -1502,7 +1979,7 @@ export function useBarnStore() {
       });
       await adapterRef.current!.replaceSnapshot(report.snapshot);
       await reloadFromAdapter();
-      notify(`Loaded 3-generation testing dataset for ${speciesName}.`);
+      notify(`Loaded 6-generation testing dataset for ${speciesName}.`);
     },
     [snapshot, reloadFromAdapter, notify]
   );
@@ -1511,7 +1988,7 @@ export function useBarnStore() {
     const full = buildFullPredefinedSampleSnapshot(snapshot?.settings);
     await adapterRef.current!.replaceSnapshot(full);
     await reloadFromAdapter();
-    notify('Loaded 3-generation testing herds across all 9 predefined livestock species.');
+    notify('Loaded 6-generation testing herds across all 9 predefined livestock species.');
   }, [snapshot, reloadFromAdapter, notify]);
 
   const deleteSpeciesTestingData = useCallback(
@@ -2081,6 +2558,8 @@ export function useBarnStore() {
     saveSpeciesProfile,
     reorderSpeciesCards,
     moveSpeciesCard,
+    reorderSpeciesHubBlocks,
+    moveSpeciesHubBlock,
     deleteSpeciesProfile,
     exportTimestampedSpeciesBackup,
     saveAnimal,
@@ -2098,6 +2577,21 @@ export function useBarnStore() {
     updateBreedingOutcome,
     deleteBreeding,
     saveTask,
+    exportTasksToCalendar,
+    copyTaskAppLink,
+    highlightedTaskId,
+    setHighlightedTaskId,
+    googleUserEmail,
+    googleAuthConnected,
+    googleCalendars,
+    googleSyncBusy,
+    pendingCalendarSync,
+    connectGoogleCalendar,
+    disconnectGoogleCalendar,
+    refreshGoogleCalendars,
+    confirmGoogleCalendarSync,
+    fallbackPendingCalendarSyncToIcs,
+    cancelPendingCalendarSync,
     toggleTaskCompleted,
     deleteTask,
     addCareLog,

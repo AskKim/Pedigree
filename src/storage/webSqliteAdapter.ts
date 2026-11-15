@@ -21,6 +21,8 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  DEFAULT_CALENDAR_SYNC_SETTINGS,
+  normalizeCalendarSyncSettings,
   nowIsoUtc,
   ShowEvent,
   SpeciesProfile,
@@ -515,7 +517,13 @@ export class WebSqliteAdapter implements StorageAdapter {
             typeof extraSettings.dismissedTaskGroupKeys === 'object'
               ? extraSettings.dismissedTaskGroupKeys
               : {},
+          speciesHubBlockOrder:
+            extraSettings.speciesHubBlockOrder &&
+            typeof extraSettings.speciesHubBlockOrder === 'object'
+              ? extraSettings.speciesHubBlockOrder
+              : {},
           includePhotoOnPedigree: Boolean(extraSettings.includePhotoOnPedigree),
+          calendarSync: normalizeCalendarSyncSettings(extraSettings.calendarSync),
           lastBackupMeta:
             extraSettings.lastBackupMeta && typeof extraSettings.lastBackupMeta === 'object'
               ? extraSettings.lastBackupMeta
@@ -540,7 +548,9 @@ export class WebSqliteAdapter implements StorageAdapter {
           barnNameOnboarded: false,
           ignoredTaskIds: [],
           dismissedTaskGroupKeys: {},
+          speciesHubBlockOrder: {},
           includePhotoOnPedigree: false,
+          calendarSync: { ...DEFAULT_CALENDAR_SYNC_SETTINGS },
           updatedAt: nowIsoUtc(),
         };
 
@@ -757,7 +767,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       barnNameOnboarded: s.barnNameOnboarded ?? false,
       ignoredTaskIds: s.ignoredTaskIds ?? [],
       dismissedTaskGroupKeys: s.dismissedTaskGroupKeys ?? {},
+      speciesHubBlockOrder: s.speciesHubBlockOrder ?? {},
       includePhotoOnPedigree: s.includePhotoOnPedigree ?? false,
+      calendarSync: s.calendarSync ? normalizeCalendarSyncSettings(s.calendarSync) : undefined,
       lastBackupMeta: s.lastBackupMeta ?? undefined,
       backupReminderSnoozedUntilMs: s.backupReminderSnoozedUntilMs ?? undefined,
     });

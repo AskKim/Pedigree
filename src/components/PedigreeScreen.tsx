@@ -11,8 +11,8 @@
  * - Optional primary animal photo embedding in exported Evans `.HTM` / PDF pedigrees
  */
 
-import { FileText, Plus, ZoomIn, ZoomOut } from 'lucide-react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronRight, FileText, Plus, ZoomIn, ZoomOut } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatGenotypeArray } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
@@ -51,10 +51,11 @@ interface PedigreeScreenProps {
   ) => void;
 }
 
-function getTouchDistance(touches: React.TouchList): number {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.hypot(dx, dy);
+const MIN_TREE_ZOOM = 0.2;
+const MAX_TREE_ZOOM = 2.0;
+
+function clampTreeZoom(value: number): number {
+  return Math.min(MAX_TREE_ZOOM, Math.max(MIN_TREE_ZOOM, value));
 }
 
 export function PedigreeScreen({
@@ -89,27 +90,20 @@ export function PedigreeScreen({
   }, [linkingSlot]);
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const gestureRef = useRef<{
-    mode: 'none' | 'pan' | 'pinch';
-    startZoom: number;
-    startDistance: number;
-    startMidX: number;
-    startMidY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-    lastTouchX: number;
-    lastTouchY: number;
-  }>({
-    mode: 'none',
-    startZoom: 1,
-    startDistance: 0,
-    startMidX: 0,
-    startMidY: 0,
-    startScrollLeft: 0,
-    startScrollTop: 0,
-    lastTouchX: 0,
-    lastTouchY: 0,
-  });
+  const sizerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const zoomLabelRef = useRef<HTMLButtonElement | null>(null);
+  const zoomRef = useRef<number>(zoom);
+  const canvasDimsRef = useRef<{ width: number; height: number }>({ width: 960, height: 640 });
+  const wheelSyncTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (wheelSyncTimerRef.current !== null) {
+        window.clearTimeout(wheelSyncTimerRef.current);
+      }
+    };
+  }, []);
 
   const subject = useMemo(() => {
     if (selectedSubjectId && herdById.has(selectedSubjectId)) {
@@ -117,6 +111,72 @@ export function PedigreeScreen({
     }
     return animals[0] ?? null;
   }, [selectedSubjectId, herdById, animals]);
+
+  const [historyIds, setHistoryIds] = useState<string[]>(() =>
+    selectedSubjectId ? [selectedSubjectId] : []
+  );
+  const internalNavIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!subject) {
+      setHistoryIds([]);
+      return;
+    }
+    if (internalNavIdRef.current === subject.id) {
+      internalNavIdRef.current = null;
+      return;
+    }
+    setHistoryIds([subject.id]);
+  }, [subject?.id, speciesProfile.name]);
+
+  const historyAnimals = useMemo(() => {
+    const resolved = historyIds
+      .map((id) => herdById.get(id))
+      .filter((a): a is Animal => Boolean(a));
+    if (subject && (resolved.length === 0 || resolved[resolved.length - 1].id !== subject.id)) {
+      return [...resolved, subject];
+    }
+    return resolved;
+  }, [historyIds, herdById, subject]);
+
+  const handleSelectRootFromDropdown = (id: string) => {
+    internalNavIdRef.current = id;
+    setHistoryIds([id]);
+    onSelectSubject(id);
+    if (viewportRef.current) {
+      viewportRef.current.scrollLeft = 0;
+    }
+  };
+
+  const handleDrillToAnimal = (id: string) => {
+    if (subject && id === subject.id) return;
+    const base = historyIds.filter((entry) => herdById.has(entry));
+    const currentTrail =
+      subject && base[base.length - 1] !== subject.id ? [...base, subject.id] : base;
+    const nextHistory =
+      currentTrail.length > 0 && id === currentTrail[0] ? [id] : [...currentTrail, id];
+    internalNavIdRef.current = id;
+    setHistoryIds(nextHistory);
+    onSelectSubject(id);
+    if (viewportRef.current) {
+      viewportRef.current.scrollLeft = 0;
+    }
+  };
+
+  const handleJumpToHistoryIndex = (index: number) => {
+    const validIds = historyAnimals.map((a) => a.id);
+    if (index < 0 || index >= validIds.length) return;
+    const nextHistory = validIds.slice(0, index + 1);
+    const targetId = nextHistory[nextHistory.length - 1];
+    setHistoryIds(nextHistory);
+    if (targetId && targetId !== subject?.id) {
+      internalNavIdRef.current = targetId;
+      onSelectSubject(targetId);
+      if (viewportRef.current) {
+        viewportRef.current.scrollLeft = 0;
+      }
+    }
+  };
 
   const slots = useMemo(() => {
     if (!subject) return [];
@@ -157,6 +217,233 @@ export function PedigreeScreen({
     [allSafeLinkCandidates, includeArchivedInLink]
   );
 
+  const applyVisualZoomFrame = useCallback(
+    (nextZoomRaw: number, scrollLeft: number, scrollTop: number) => {
+      const nextZoom = clampTreeZoom(nextZoomRaw);
+      zoomRef.current = nextZoom;
+
+      const dims = canvasDimsRef.current;
+      if (sizerRef.current) {
+        sizerRef.current.style.width = `${dims.width * nextZoom}px`;
+        sizerRef.current.style.height = `${dims.height * nextZoom}px`;
+      }
+      if (stageRef.current) {
+        stageRef.current.style.transform = `scale(${nextZoom})`;
+      }
+      if (viewportRef.current) {
+        viewportRef.current.scrollLeft = Math.max(0, scrollLeft);
+        viewportRef.current.scrollTop = Math.max(0, scrollTop);
+      }
+      if (zoomLabelRef.current) {
+        zoomLabelRef.current.textContent = `${Math.round(nextZoom * 100)}%`;
+      }
+      return nextZoom;
+    },
+    []
+  );
+
+  const commitZoomToReact = useCallback(() => {
+    setZoom(Math.round(zoomRef.current * 1000) / 1000);
+  }, []);
+
+  const applyZoomCentered = useCallback(
+    (nextZoomRaw: number, clientX?: number, clientY?: number, deferReactSync = false) => {
+      const viewport = viewportRef.current;
+      const prevZoom = zoomRef.current;
+      const nextZoom = clampTreeZoom(nextZoomRaw);
+      if (Math.abs(nextZoom - prevZoom) < 0.0005) return;
+
+      if (!viewport) {
+        zoomRef.current = nextZoom;
+        setZoom(nextZoom);
+        return;
+      }
+
+      const vpRect = viewport.getBoundingClientRect();
+      const sizerRect = sizerRef.current?.getBoundingClientRect();
+      const originLeft = sizerRect ? sizerRect.left - vpRect.left + viewport.scrollLeft : 12;
+      const originTop = sizerRect ? sizerRect.top - vpRect.top + viewport.scrollTop : 12;
+
+      const focalVpX = clientX !== undefined ? clientX - vpRect.left : viewport.clientWidth / 2;
+      const focalVpY = clientY !== undefined ? clientY - vpRect.top : viewport.clientHeight / 2;
+
+      const contentX = (viewport.scrollLeft + focalVpX - originLeft) / prevZoom;
+      const contentY = (viewport.scrollTop + focalVpY - originTop) / prevZoom;
+
+      const targetScrollLeft = originLeft + contentX * nextZoom - focalVpX;
+      const targetScrollTop = originTop + contentY * nextZoom - focalVpY;
+
+      applyVisualZoomFrame(nextZoom, targetScrollLeft, targetScrollTop);
+
+      if (deferReactSync) {
+        if (wheelSyncTimerRef.current !== null) {
+          window.clearTimeout(wheelSyncTimerRef.current);
+        }
+        wheelSyncTimerRef.current = window.setTimeout(() => {
+          wheelSyncTimerRef.current = null;
+          commitZoomToReact();
+        }, 120);
+      } else {
+        commitZoomToReact();
+      }
+    },
+    [applyVisualZoomFrame, commitZoomToReact]
+  );
+
+  const hasSubject = Boolean(subject);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !hasSubject) return;
+
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1;
+    let pinchOriginLeft = 12;
+    let pinchOriginTop = 12;
+    let pinchContentX = 0;
+    let pinchContentY = 0;
+    let isPinching = false;
+    let pendingPinchFrame: number | null = null;
+    let latestTouchMetrics: { dist: number; midClientX: number; midClientY: number } | null = null;
+
+    const getTouchMetrics = (touches: TouchList) => {
+      const t0 = touches[0];
+      const t1 = touches[1];
+      return {
+        dist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+        midClientX: (t0.clientX + t1.clientX) / 2,
+        midClientY: (t0.clientY + t1.clientY) / 2,
+      };
+    };
+
+    const flushPinchFrame = () => {
+      pendingPinchFrame = null;
+      if (!isPinching || !latestTouchMetrics || pinchStartDist <= 0) return;
+
+      const { dist, midClientX, midClientY } = latestTouchMetrics;
+      const vpRect = viewport.getBoundingClientRect();
+      const midVpX = midClientX - vpRect.left;
+      const midVpY = midClientY - vpRect.top;
+
+      const nextZoom = clampTreeZoom(pinchStartZoom * (dist / pinchStartDist));
+      const targetScrollLeft = pinchOriginLeft + pinchContentX * nextZoom - midVpX;
+      const targetScrollTop = pinchOriginTop + pinchContentY * nextZoom - midVpY;
+
+      applyVisualZoomFrame(nextZoom, targetScrollLeft, targetScrollTop);
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        if (e.cancelable) e.preventDefault();
+        const metrics = getTouchMetrics(e.touches);
+        if (metrics.dist <= 4) return;
+
+        const vpRect = viewport.getBoundingClientRect();
+        const sizerRect = sizerRef.current?.getBoundingClientRect();
+        pinchOriginLeft = sizerRect ? sizerRect.left - vpRect.left + viewport.scrollLeft : 12;
+        pinchOriginTop = sizerRect ? sizerRect.top - vpRect.top + viewport.scrollTop : 12;
+
+        isPinching = true;
+        pinchStartDist = metrics.dist;
+        pinchStartZoom = zoomRef.current;
+
+        const midVpX = metrics.midClientX - vpRect.left;
+        const midVpY = metrics.midClientY - vpRect.top;
+        pinchContentX = (viewport.scrollLeft + midVpX - pinchOriginLeft) / pinchStartZoom;
+        pinchContentY = (viewport.scrollTop + midVpY - pinchOriginTop) / pinchStartZoom;
+        latestTouchMetrics = metrics;
+
+        if (stageRef.current) {
+          stageRef.current.style.willChange = 'transform';
+        }
+      } else {
+        isPinching = false;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!isPinching || e.touches.length !== 2) return;
+      if (e.cancelable) e.preventDefault();
+      latestTouchMetrics = getTouchMetrics(e.touches);
+      if (pendingPinchFrame === null) {
+        pendingPinchFrame = window.requestAnimationFrame(flushPinchFrame);
+      }
+    };
+
+    const finishPinch = (e: TouchEvent) => {
+      if (e.touches.length < 2 && isPinching) {
+        if (pendingPinchFrame !== null) {
+          window.cancelAnimationFrame(pendingPinchFrame);
+          flushPinchFrame();
+        }
+        isPinching = false;
+        latestTouchMetrics = null;
+        if (stageRef.current) {
+          stageRef.current.style.willChange = 'auto';
+        }
+        commitZoomToReact();
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const clampedDelta = Math.max(-60, Math.min(60, e.deltaY));
+      const scaleFactor = Math.exp(-clampedDelta * 0.008);
+      applyZoomCentered(zoomRef.current * scaleFactor, e.clientX, e.clientY, true);
+    };
+
+    viewport.addEventListener('touchstart', onTouchStart, { passive: false });
+    viewport.addEventListener('touchmove', onTouchMove, { passive: false });
+    viewport.addEventListener('touchend', finishPinch, { passive: true });
+    viewport.addEventListener('touchcancel', finishPinch, { passive: true });
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+
+    return () => {
+      if (pendingPinchFrame !== null) {
+        window.cancelAnimationFrame(pendingPinchFrame);
+      }
+      viewport.removeEventListener('touchstart', onTouchStart);
+      viewport.removeEventListener('touchmove', onTouchMove);
+      viewport.removeEventListener('touchend', finishPinch);
+      viewport.removeEventListener('touchcancel', finishPinch);
+      viewport.removeEventListener('wheel', onWheel);
+    };
+  }, [hasSubject, applyVisualZoomFrame, applyZoomCentered, commitZoomToReact]);
+
+  const prevSubjectIdRef = useRef<string | null>(subject?.id ?? null);
+  useEffect(() => {
+    const nextId = subject?.id ?? null;
+    if (prevSubjectIdRef.current !== nextId) {
+      prevSubjectIdRef.current = nextId;
+      applyVisualZoomFrame(1, 0, 0);
+      setZoom(1);
+    }
+  }, [subject?.id, applyVisualZoomFrame]);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+    const dims = canvasDimsRef.current;
+    if (sizerRef.current) {
+      sizerRef.current.style.width = `${dims.width * zoom}px`;
+      sizerRef.current.style.height = `${dims.height * zoom}px`;
+    }
+    if (stageRef.current) {
+      stageRef.current.style.transform = `scale(${zoom})`;
+    }
+    if (zoomLabelRef.current) {
+      zoomLabelRef.current.textContent = `${Math.round(zoom * 100)}%`;
+    }
+  }, [zoom, generations]);
+
+  const handleFitTreeWidth = () => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const availableWidth = Math.max(240, viewport.clientWidth - 24);
+    const fit = clampTreeZoom(Math.min(1, availableWidth / canvasDimsRef.current.width));
+    applyVisualZoomFrame(fit, 0, 0);
+    setZoom(Math.round(fit * 1000) / 1000);
+  };
+
   if (!subject) {
     return (
       <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)]">
@@ -180,6 +467,7 @@ export function PedigreeScreen({
   const leafCount = 1 << generations;
   const canvasHeight = Math.max(460, leafCount * rowPitch + 40);
   const canvasWidth = (generations + 1) * colWidth + 24;
+  canvasDimsRef.current = { width: canvasWidth, height: canvasHeight };
 
   const nodeCoords = new Map<string, { x: number; y: number; slot: PedigreeSlot }>();
   for (const sl of slots) {
@@ -218,68 +506,6 @@ export function PedigreeScreen({
     }
   }
 
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    const el = viewportRef.current;
-    if (!el) return;
-    if (e.touches.length === 2) {
-      e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-      gestureRef.current = {
-        mode: 'pinch',
-        startZoom: zoom,
-        startDistance: Math.max(1, getTouchDistance(e.touches)),
-        startMidX: midX,
-        startMidY: midY,
-        startScrollLeft: el.scrollLeft,
-        startScrollTop: el.scrollTop,
-        lastTouchX: 0,
-        lastTouchY: 0,
-      };
-    } else if (e.touches.length === 1) {
-      gestureRef.current = {
-        ...gestureRef.current,
-        mode: 'pan',
-        lastTouchX: e.touches[0].clientX,
-        lastTouchY: e.touches[0].clientY,
-      };
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const g = gestureRef.current;
-
-    if (e.touches.length === 2 && g.mode === 'pinch') {
-      e.preventDefault();
-      const dist = Math.max(1, getTouchDistance(e.touches));
-      const ratio = dist / g.startDistance;
-      const nextZoom = Math.min(2.0, Math.max(0.25, Math.round(g.startZoom * ratio * 100) / 100));
-      setZoom(nextZoom);
-
-      const scaleChange = nextZoom / g.startZoom;
-      el.scrollLeft = (g.startScrollLeft + g.startMidX) * scaleChange - g.startMidX;
-      el.scrollTop = (g.startScrollTop + g.startMidY) * scaleChange - g.startMidY;
-    } else if (e.touches.length === 1 && g.mode === 'pan') {
-      const dx = g.lastTouchX - e.touches[0].clientX;
-      const dy = g.lastTouchY - e.touches[0].clientY;
-      el.scrollLeft += dx;
-      el.scrollTop += dy;
-      g.lastTouchX = e.touches[0].clientX;
-      g.lastTouchY = e.touches[0].clientY;
-    }
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length < 2 && gestureRef.current.mode === 'pinch') {
-      gestureRef.current.mode = 'none';
-    } else if (e.touches.length === 0) {
-      gestureRef.current.mode = 'none';
-    }
-  };
-
   const subjectPrimaryPhoto = primaryPhotoByAnimalId.get(subject.id);
 
   return (
@@ -295,7 +521,7 @@ export function PedigreeScreen({
               <select
                 id="pedigree-subject-select"
                 value={subject.id}
-                onChange={(e) => onSelectSubject(e.target.value)}
+                onChange={(e) => handleSelectRootFromDropdown(e.target.value)}
                 className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-medium"
               >
                 {animals.map((a) => (
@@ -334,33 +560,6 @@ export function PedigreeScreen({
               ))}
             </div>
 
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.1) * 100) / 100))}
-                aria-label="Zoom out pedigree"
-                className="min-h-[38px] min-w-[38px] rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
-              >
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setZoom(1)}
-                title="Reset zoom to 100%"
-                className="min-h-[38px] px-2.5 rounded-lg border border-[var(--barn-border)] text-xs font-mono tabular-nums hover:bg-[var(--barn-subtle)]"
-              >
-                {Math.round(zoom * 100)}%
-              </button>
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.min(2.0, Math.round((z + 0.1) * 100) / 100))}
-                aria-label="Zoom in pedigree"
-                className="min-h-[38px] min-w-[38px] rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
-              >
-                <ZoomIn className="w-4 h-4" />
-              </button>
-            </div>
-
             <button
               type="button"
               onClick={() => setShowPrintModal(true)}
@@ -374,7 +573,7 @@ export function PedigreeScreen({
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--barn-muted)] border-t border-[var(--barn-border)] pt-2.5">
           <span>
-            Pinch with two fingers (or use - / + buttons) to zoom 25%–200% and drag to pan
+            Pinch with two fingers to zoom (20%–200%), drag to pan, and swipe edges to scroll page
           </span>
           {subjectPrimaryPhoto && (
             <label className="inline-flex items-center gap-2 cursor-pointer text-[var(--barn-ink)] font-medium">
@@ -390,31 +589,77 @@ export function PedigreeScreen({
       </div>
 
       {/* Scrollable Pinch-to-Zoom & Pan Bezier Pedigree Canvas */}
-      <div
-        ref={viewportRef}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        onTouchCancel={handleTouchEnd}
-        style={{ touchAction: 'none' }}
-        className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-auto p-4 max-h-[72vh]"
-      >
+      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-hidden">
+        <div className="px-3 sm:px-4 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/55 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-medium text-[var(--barn-muted)] truncate">
+              {subject.name} · {generations}-Gen
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleFitTreeWidth}
+              className="min-h-[34px] px-2.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-xs font-medium"
+            >
+              Fit
+            </button>
+            <button
+              type="button"
+              onClick={() => applyZoomCentered(zoomRef.current - 0.15)}
+              aria-label="Zoom out pedigree"
+              className="min-h-[34px] min-w-[34px] rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              ref={zoomLabelRef}
+              onClick={() => applyZoomCentered(1)}
+              title="Reset zoom to 100%"
+              className="min-h-[34px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-mono tabular-nums hover:bg-[var(--barn-subtle)]"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => applyZoomCentered(zoomRef.current + 0.15)}
+              aria-label="Zoom in pedigree"
+              className="min-h-[34px] min-w-[34px] rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
         <div
+          ref={viewportRef}
           style={{
-            width: `${canvasWidth * zoom}px`,
-            height: `${canvasHeight * zoom}px`,
+            touchAction: 'pan-x pan-y',
+            overscrollBehavior: 'auto',
+            overflowAnchor: 'none',
           }}
-          className="relative"
+          className="h-[56dvh] min-h-[300px] sm:h-[66vh] sm:min-h-[420px] overflow-auto p-3 sm:p-4"
         >
           <div
+            ref={sizerRef}
             style={{
-              width: `${canvasWidth}px`,
-              height: `${canvasHeight}px`,
-              transform: `scale(${zoom})`,
-              transformOrigin: 'top left',
+              width: `${canvasWidth * zoom}px`,
+              height: `${canvasHeight * zoom}px`,
             }}
             className="relative"
           >
+            <div
+              ref={stageRef}
+              style={{
+                width: `${canvasWidth}px`,
+                height: `${canvasHeight}px`,
+                transform: `scale(${zoom})`,
+                transformOrigin: 'top left',
+              }}
+              className="relative"
+            >
             <svg
               width={canvasWidth}
               height={canvasHeight}
@@ -430,10 +675,15 @@ export function PedigreeScreen({
                       ? cp.isSire
                         ? 'var(--barn-slate)'
                         : 'var(--barn-terracotta)'
-                      : 'var(--barn-border)'
+                      : 'currentColor'
+                  }
+                  className={
+                    cp.isKnown
+                      ? undefined
+                      : 'text-[var(--barn-border)] dark:text-[var(--barn-muted)]/70'
                   }
                   strokeDasharray={cp.isKnown ? undefined : '4 4'}
-                  strokeWidth={cp.isKnown ? (compact ? '1.5' : '2') : '1.2'}
+                  strokeWidth={cp.isKnown ? (compact ? '1.5' : '2') : '1.4'}
                 />
               ))}
             </svg>
@@ -461,7 +711,7 @@ export function PedigreeScreen({
                       ? isSubject || isLinebred
                         ? 'bg-[var(--barn-sage-tint)]/75 border-[var(--barn-sage)] border-[1.5px]'
                         : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
-                      : 'bg-[var(--barn-canvas)]/40 border-dashed border-[var(--barn-border)]'
+                      : 'bg-[var(--barn-canvas)]/65 dark:bg-[var(--barn-subtle)]/75 border-dashed border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60'
                   }`}
                 >
                   {a ? (
@@ -472,7 +722,7 @@ export function PedigreeScreen({
                           onClick={() =>
                             slot.generation === 0
                               ? onOpenAnimalInHerd(a.id)
-                              : onSelectSubject(a.id)
+                              : handleDrillToAnimal(a.id)
                           }
                           className={`font-semibold text-left truncate hover:underline ${
                             compact ? 'text-[10.5px] leading-tight' : 'text-xs'
@@ -525,11 +775,11 @@ export function PedigreeScreen({
                     </>
                   ) : (
                     <div
-                      className={`h-full flex items-center justify-between gap-1.5 text-[var(--barn-muted)] ${
+                      className={`h-full flex items-center justify-between gap-1.5 text-[var(--barn-muted)] dark:text-[var(--barn-ink)]/85 ${
                         compact ? 'text-[10px]' : 'text-xs'
                       }`}
                     >
-                      <span className="truncate">
+                      <span className="truncate font-medium">
                         {compact ? 'Unknown' : `Unknown ${isMaleSlot ? speciesProfile.maleLabel : speciesProfile.femaleLabel}`}
                       </span>
                       {canLinkMissing && (
@@ -539,7 +789,7 @@ export function PedigreeScreen({
                             setIncludeArchivedInLink(false);
                             setLinkingSlot(slot);
                           }}
-                          className={`rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-0.5 shrink-0 ${
+                          className={`rounded-md border border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60 bg-[var(--barn-surface)] dark:bg-[var(--barn-canvas)] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-0.5 shrink-0 ${
                             compact ? 'px-1.5 py-0.5 text-[9.5px]' : 'min-h-[30px] px-2 py-1 text-[11px]'
                           }`}
                         >
@@ -554,7 +804,55 @@ export function PedigreeScreen({
             })}
           </div>
         </div>
+        </div>
       </div>
+
+      {/* Pedigree Navigation Breadcrumb Below Preview */}
+      {historyAnimals.length > 1 && (
+        <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-3 flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => handleJumpToHistoryIndex(historyAnimals.length - 2)}
+            className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            Back
+          </button>
+
+          <nav
+            aria-label="Pedigree trail"
+            className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--barn-muted)] min-w-0"
+          >
+            {historyAnimals.map((entry, idx) => {
+              const isLast = idx === historyAnimals.length - 1;
+              return (
+                <React.Fragment key={`${entry.id}-${idx}`}>
+                  {idx > 0 && (
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0 opacity-60" aria-hidden="true" />
+                  )}
+                  {isLast ? (
+                    <span className="font-semibold text-[var(--barn-ink)] truncate max-w-[180px]">
+                      {entry.name}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToHistoryIndex(idx)}
+                      className={`min-h-[30px] px-2.5 py-1 rounded-lg border transition-colors truncate max-w-[180px] ${
+                        idx === 0
+                          ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)]/50 text-[var(--barn-ink)] font-semibold hover:opacity-90'
+                          : 'bg-[var(--barn-canvas)] border-[var(--barn-border)] text-[var(--barn-ink)] font-medium hover:bg-[var(--barn-subtle)]'
+                      }`}
+                    >
+                      {entry.name}
+                    </button>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </nav>
+        </div>
+      )}
 
       {/* Quick Offspring Jump Strip */}
       {offspring.length > 0 && (
@@ -566,7 +864,7 @@ export function PedigreeScreen({
             <button
               key={kid.id}
               type="button"
-              onClick={() => onSelectSubject(kid.id)}
+              onClick={() => handleDrillToAnimal(kid.id)}
               className="min-h-[34px] px-3 py-1 rounded-full bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] font-medium whitespace-nowrap hover:opacity-95 transition-opacity"
             >
               {kid.sex === 'Female' ? '♀ ' : kid.sex === 'Male' ? '♂ ' : ''}

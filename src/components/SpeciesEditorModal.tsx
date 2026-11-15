@@ -27,6 +27,7 @@ import { describeMilestoneOffset } from '../core/taskMaster';
 interface SpeciesEditorModalProps {
   initialProfile: SpeciesProfile | null;
   existingNames: string[];
+  recordCount?: number;
   onSave: (profile: SpeciesProfile) => void;
   onDelete?: (profile: SpeciesProfile) => void;
   onDownloadTimestampedBackup?: (speciesName: string) => void;
@@ -60,12 +61,15 @@ const DEFAULT_CUSTOM_MILESTONES: SpeciesMilestoneTemplate[] = [
 export function SpeciesEditorModal({
   initialProfile,
   existingNames,
+  recordCount = 0,
   onSave,
   onDelete,
   onDownloadTimestampedBackup,
   onClose,
 }: SpeciesEditorModalProps) {
   const isEditing = Boolean(initialProfile);
+  const canDeleteEmptySpecies =
+    isEditing && Boolean(onDelete) && recordCount === 0 && existingNames.length > 1;
 
   const [creationMode, setCreationMode] = useState<'custom' | 'preset'>('custom');
 
@@ -582,14 +586,24 @@ export function SpeciesEditorModal({
           )}
 
           <div className="flex items-center justify-between gap-3 pt-4 border-t border-[var(--barn-border)]">
-            {isEditing && onDelete && !isSameSpecies(initialProfile?.name, 'Rabbit') ? (
-              <button
-                type="button"
-                onClick={() => setConfirmRemoveSpecies(true)}
-                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)]"
-              >
-                Remove Livestock
-              </button>
+            {isEditing && onDelete ? (
+              <div className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  disabled={!canDeleteEmptySpecies}
+                  onClick={() => setConfirmRemoveSpecies(true)}
+                  className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:pointer-events-none self-start"
+                >
+                  Remove Empty Species
+                </button>
+                {!canDeleteEmptySpecies && (
+                  <span className="text-[11px] text-[var(--barn-muted)]">
+                    {recordCount > 0
+                      ? `Only empty species can be fully removed (${recordCount} record${recordCount === 1 ? '' : 's'} left).`
+                      : 'At least one species must remain in your barn.'}
+                  </span>
+                )}
+              </div>
             ) : (
               <div />
             )}

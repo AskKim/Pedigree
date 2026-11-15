@@ -31,6 +31,7 @@ import {
   millisToDateIso,
   normalizeAnimalStatus,
   normalizeBiologicalSex,
+  normalizeCalendarSyncSettings,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -360,10 +361,18 @@ export function parseBarnBackupJson(
       typeof rawSettings.dismissedTaskGroupKeys === 'object'
         ? rawSettings.dismissedTaskGroupKeys
         : fallbackSettings.dismissedTaskGroupKeys ?? {},
+    speciesHubBlockOrder:
+      rawSettings.speciesHubBlockOrder &&
+      typeof rawSettings.speciesHubBlockOrder === 'object'
+        ? rawSettings.speciesHubBlockOrder
+        : fallbackSettings.speciesHubBlockOrder ?? {},
     includePhotoOnPedigree:
       typeof rawSettings.includePhotoOnPedigree === 'boolean'
         ? rawSettings.includePhotoOnPedigree
         : fallbackSettings.includePhotoOnPedigree ?? false,
+    calendarSync: normalizeCalendarSyncSettings(
+      rawSettings.calendarSync ?? fallbackSettings.calendarSync
+    ),
     updatedAt: rawSettings.updatedAt || ts,
   };
 
@@ -799,7 +808,7 @@ export function generateEvansHtmPedigree(
   td.cell { border: 1px solid #c5c0b5; padding: ${compactMode ? '2px 4px' : '6px 8px'}; vertical-align: middle; font-size: ${compactMode ? '9px' : '11.5px'}; line-height: ${compactMode ? '1.15' : '1.35'}; word-break: break-word; }
   td.sire { background: #f7fafd; }
   td.dam { background: #fdf9f7; }
-  td.empty { color: #888; font-style: italic; background: #fafafa; }
+  td.empty { color: #555555; font-style: italic; background: #f6f6f4; }
   .name { font-weight: bold; font-size: ${compactMode ? '9.5px' : '12.5px'}; color: #111; }
   .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
   .geno { color: #2d5a3d; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }

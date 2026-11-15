@@ -62,6 +62,131 @@ export interface GenotypeAllelePair {
   allele2: string;
 }
 
+export type SpeciesHubBlockId = 'tasks' | 'breedings' | 'cages' | 'shows';
+
+export const DEFAULT_SPECIES_HUB_BLOCK_ORDER: SpeciesHubBlockId[] = [
+  'tasks',
+  'breedings',
+  'cages',
+  'shows',
+];
+
+export function normalizeSpeciesHubBlockOrder(raw?: unknown): SpeciesHubBlockId[] {
+  const allowed = new Set<SpeciesHubBlockId>(DEFAULT_SPECIES_HUB_BLOCK_ORDER);
+  const ordered: SpeciesHubBlockId[] = [];
+  const seen = new Set<SpeciesHubBlockId>();
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string' && allowed.has(item as SpeciesHubBlockId)) {
+        const id = item as SpeciesHubBlockId;
+        if (!seen.has(id)) {
+          seen.add(id);
+          ordered.push(id);
+        }
+      }
+    }
+  }
+  for (const defId of DEFAULT_SPECIES_HUB_BLOCK_ORDER) {
+    if (!seen.has(defId)) {
+      ordered.push(defId);
+    }
+  }
+  return ordered;
+}
+
+export type CalendarDeliveryMode =
+  | 'offline_ics'
+  | 'google_calendar'
+  | 'external_app_or_ics';
+
+export interface CalendarSyncSettings {
+  autoAddNewTasks: boolean;
+  includeBreedingTasks: boolean;
+  includeManualTasks: boolean;
+  reminderTimeLocal: string;
+  alarmEnabled: boolean;
+  alarmMinutesBefore: number;
+  includeAnimalPrefix: boolean;
+  includeAnimalName: boolean;
+  deliveryMode: CalendarDeliveryMode;
+  googleCalendarId: string;
+  googleCalendarName: string;
+}
+
+export const DEFAULT_CALENDAR_SYNC_SETTINGS: CalendarSyncSettings = {
+  autoAddNewTasks: false,
+  includeBreedingTasks: true,
+  includeManualTasks: true,
+  reminderTimeLocal: '08:00',
+  alarmEnabled: true,
+  alarmMinutesBefore: 15,
+  includeAnimalPrefix: true,
+  includeAnimalName: true,
+  deliveryMode: 'offline_ics',
+  googleCalendarId: 'primary',
+  googleCalendarName: 'Primary Google Calendar',
+};
+
+export function normalizeCalendarSyncSettings(raw?: unknown): CalendarSyncSettings {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const rawTime = typeof obj.reminderTimeLocal === 'string' ? obj.reminderTimeLocal.trim() : '';
+  const validTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(rawTime)
+    ? rawTime
+    : DEFAULT_CALENDAR_SYNC_SETTINGS.reminderTimeLocal;
+  const rawLead = Number(obj.alarmMinutesBefore);
+  const validLead =
+    Number.isFinite(rawLead) && rawLead >= 0
+      ? Math.round(rawLead)
+      : DEFAULT_CALENDAR_SYNC_SETTINGS.alarmMinutesBefore;
+  const rawDelivery = obj.deliveryMode;
+  const validDelivery: CalendarDeliveryMode =
+    rawDelivery === 'google_calendar' ||
+    rawDelivery === 'external_app_or_ics' ||
+    rawDelivery === 'offline_ics'
+      ? rawDelivery
+      : DEFAULT_CALENDAR_SYNC_SETTINGS.deliveryMode;
+  const rawCalId =
+    typeof obj.googleCalendarId === 'string' && obj.googleCalendarId.trim()
+      ? obj.googleCalendarId.trim()
+      : DEFAULT_CALENDAR_SYNC_SETTINGS.googleCalendarId;
+  const rawCalName =
+    typeof obj.googleCalendarName === 'string' && obj.googleCalendarName.trim()
+      ? obj.googleCalendarName.trim()
+      : DEFAULT_CALENDAR_SYNC_SETTINGS.googleCalendarName;
+
+  return {
+    autoAddNewTasks:
+      typeof obj.autoAddNewTasks === 'boolean'
+        ? obj.autoAddNewTasks
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.autoAddNewTasks,
+    includeBreedingTasks:
+      typeof obj.includeBreedingTasks === 'boolean'
+        ? obj.includeBreedingTasks
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.includeBreedingTasks,
+    includeManualTasks:
+      typeof obj.includeManualTasks === 'boolean'
+        ? obj.includeManualTasks
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.includeManualTasks,
+    reminderTimeLocal: validTime,
+    alarmEnabled:
+      typeof obj.alarmEnabled === 'boolean'
+        ? obj.alarmEnabled
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.alarmEnabled,
+    alarmMinutesBefore: validLead,
+    includeAnimalPrefix:
+      typeof obj.includeAnimalPrefix === 'boolean'
+        ? obj.includeAnimalPrefix
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.includeAnimalPrefix,
+    includeAnimalName:
+      typeof obj.includeAnimalName === 'boolean'
+        ? obj.includeAnimalName
+        : DEFAULT_CALENDAR_SYNC_SETTINGS.includeAnimalName,
+    deliveryMode: validDelivery,
+    googleCalendarId: rawCalId,
+    googleCalendarName: rawCalName,
+  };
+}
+
 /**
  * Global Barn preferences stored locally on the user's device.
  * `pinnedLandingSpecies`:
@@ -83,7 +208,9 @@ export interface BarnSettings {
   barnNameOnboarded?: boolean;
   ignoredTaskIds?: string[];
   dismissedTaskGroupKeys?: Record<string, string | string[]>;
+  speciesHubBlockOrder?: Record<string, SpeciesHubBlockId[]>;
   includePhotoOnPedigree?: boolean;
+  calendarSync?: CalendarSyncSettings;
   lastBackupMeta?: {
     exportedAtIso: string;
     format: 'zip' | 'sqlite' | 'json';
@@ -550,6 +677,24 @@ export function applyAnimalNamePrefix(name: string, prefix?: string): string {
   }
   const endsWithPunct = /[-_:/#']$/.test(cleanPrefix);
   return endsWithPunct ? `${cleanPrefix}${cleanName}` : `${cleanPrefix} ${cleanName}`;
+}
+
+/**
+ * Strips an optional species default prefix from an animal name for external calendar display.
+ * Falls back to the original trimmed name if stripping would leave an empty string.
+ */
+export function stripAnimalNamePrefix(name: string, prefix?: string): string {
+  const cleanName = (name || '').trim();
+  const cleanPrefix = (prefix || '').trim();
+  if (!cleanPrefix || !cleanName) return cleanName;
+  if (!cleanName.toLowerCase().startsWith(cleanPrefix.toLowerCase())) {
+    return cleanName;
+  }
+  const stripped = cleanName
+    .slice(cleanPrefix.length)
+    .replace(/^[\s\-_:/#']+/, '')
+    .trim();
+  return stripped || cleanName;
 }
 
 export const applySpeciesNamePrefix = applyAnimalNamePrefix;
