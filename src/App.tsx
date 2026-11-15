@@ -4,33 +4,35 @@
  *
  * Project Name: Community Pedigree Project
  * App Name: Community Pedigree
- * Repo: AskKim/Pedigree
- * Package Name: pedigree
+ * Package Name: Pedigree
  *
- * Root Cross-Platform Application Shell.
- * Connects the offline-first SQLite / IndexedDB store (`useBarnStore`) to:
+ * Root Cross-Platform PWA Shell.
+ * Connects the offline-first local IndexedDB / SQLite store (`useBarnStore`) to:
  * - Multi-Species Barn Home (`home`)
- * - Strictly Species-Isolated Barn Dashboard (`dashboard`)
- * - Strictly Species-Isolated Herd, Optimized Photo Galleries & Coat Genetics (`herd`)
+ * - Species Selector for Herd navigation from Home (`showHerdSpeciesPicker`)
+ * - Strictly Species-Isolated Barn Dashboard (`dashboard`) + Species Hub Settings
+ * - Strictly Species-Isolated Herd Multi-Select & Dedicated Animal Pages (`herd`)
  * - Strictly Species-Isolated Breeding, COI & Master Task List Lab (`breeding`)
- * - Strictly Species-Isolated 3/4-Gen Pedigree Explorer (`pedigree`)
- * - Barn Preferences, Photo Optimization, External Importers & Reset Controls (`settings`)
+ * - Strictly Species-Isolated 3/4/5/6-Gen Pinch-Zoom Pedigree Explorer (`pedigree`)
+ * - Barn Preferences, PWA Storage Defense, Zero-Cloud Sync & Importers (`settings`)
  */
 
 import {
+  AlertTriangle,
+  ArrowRight,
   CalendarCheck,
   GitFork,
   Home,
   ListFilter,
   Moon,
-  Pin,
   RefreshCw,
   Settings,
   Sparkles,
   Sun,
-  Trash2,
+  WifiOff,
+  X,
 } from 'lucide-react';
-import { Component, ErrorInfo, ReactNode, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BreedingScreen } from './components/BreedingScreen';
 import { HerdScreen } from './components/HerdScreen';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
@@ -39,98 +41,24 @@ import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
 import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
 import { isSameSpecies } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
-
-interface ScreenErrorBoundaryProps {
-  routeKey: string;
-  onResetRoute: () => void;
-  children: ReactNode;
-}
-
-interface ScreenErrorBoundaryState {
-  hasError: boolean;
-  errorMessage: string;
-}
-
-class ScreenErrorBoundary extends Component<
-  ScreenErrorBoundaryProps,
-  ScreenErrorBoundaryState
-> {
-  state: ScreenErrorBoundaryState = { hasError: false, errorMessage: '' };
-
-  static getDerivedStateFromError(error: Error): ScreenErrorBoundaryState {
-    return {
-      hasError: true,
-      errorMessage: error?.message || 'Unexpected workspace rendering error.',
-    };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Workspace render error:', error, info);
-  }
-
-  componentDidUpdate(prevProps: ScreenErrorBoundaryProps) {
-    if (prevProps.routeKey !== this.props.routeKey && this.state.hasError) {
-      this.setState({ hasError: false, errorMessage: '' });
-    }
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3">
-          <h2 className="font-display text-lg font-semibold">
-            This screen ran into an issue
-          </h2>
-          <p className="text-xs text-[var(--barn-muted)]">{this.state.errorMessage}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                this.setState({ hasError: false, errorMessage: '' });
-                this.props.onResetRoute();
-              }}
-              className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
-            >
-              Return to All Species
-            </button>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="min-h-[38px] px-4 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium"
-            >
-              Reload App
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
 
 export default function App() {
   const store = useBarnStore();
-  const [workspaceDeleteConfirm, setWorkspaceDeleteConfirm] = useState<
-    'testing' | 'all' | null
-  >(null);
-  const [focusAddSpeciesOnSettings, setFocusAddSpeciesOnSettings] = useState(false);
+  const isOnline = useOnlineStatus();
+  const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
+
+  const [showHerdSpeciesPicker, setShowHerdSpeciesPicker] = useState(false);
+  const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
 
   useEffect(() => {
-    setWorkspaceDeleteConfirm(null);
-    if (store.route !== 'settings') {
-      setFocusAddSpeciesOnSettings(false);
-    }
-  }, [store.activeSpeciesName, store.route]);
-
-  const animalCountBySpecies = useMemo(() => {
-    const counts = new Map<string, number>();
-    if (!store.snapshot) return counts;
-    for (const animal of store.snapshot.animals) {
-      const key = animal.species.trim().toLowerCase();
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return counts;
-  }, [store.snapshot]);
+    if (!showHerdSpeciesPicker) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowHerdSpeciesPicker(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showHerdSpeciesPicker]);
 
   if (store.isLoading || !store.snapshot || !store.activeSpeciesData) {
     return (
@@ -139,7 +67,7 @@ export default function App() {
           <div className="h-5 w-44 rounded bg-[var(--barn-subtle)]" />
           <div className="h-4 w-64 rounded bg-[var(--barn-subtle)]" />
           <p className="text-xs text-[var(--barn-muted)] pt-1">
-            Opening your local offline barn database...
+            Opening local offline database...
           </p>
         </div>
       </main>
@@ -152,6 +80,14 @@ export default function App() {
     activeSpeciesName
   );
 
+  const handlePrimaryNavClick = (target: WorkspaceRoute) => {
+    if (target === 'herd' && route === 'home') {
+      setShowHerdSpeciesPicker(true);
+      return;
+    }
+    setRoute(target);
+  };
+
   const navItems: Array<{ id: WorkspaceRoute; label: string }> = [
     { id: 'home', label: 'All Species' },
     { id: 'dashboard', label: 'Dashboard' },
@@ -160,15 +96,18 @@ export default function App() {
     { id: 'pedigree', label: 'Pedigree' },
   ];
 
+  const showInstallReminder =
+    !dismissedInstallBanner && !isInstalled && (canPromptInstall || isIos);
+
   return (
-    <div className="min-h-screen bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex flex-col pb-16 md:pb-8">
+    <div className="min-h-screen overflow-x-clip bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex flex-col pb-16 md:pb-8">
       {/* 3-Zone Top Navigation Bar */}
-      <header className="sticky top-0 z-30 h-14 bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-4 sm:px-6 flex items-center justify-between gap-8">
+      <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-4 lg:gap-8 overflow-x-clip">
         {/* Zone 1: Single-line Brand Wordmark */}
         <button
           type="button"
           onClick={() => setRoute('home')}
-          className="font-display text-lg font-semibold tracking-tight whitespace-nowrap shrink-0 text-left"
+          className="font-display text-base sm:text-lg font-semibold tracking-tight truncate min-w-0 text-left"
         >
           Community Pedigree
         </button>
@@ -176,7 +115,7 @@ export default function App() {
         {/* Zone 2: 5 Concise Single-Line Navigation Links */}
         <nav
           aria-label="Primary Navigation"
-          className="hidden md:flex items-center gap-6 text-sm font-medium"
+          className="hidden md:flex items-center md:gap-4 lg:gap-6 text-sm font-medium shrink-0"
         >
           {navItems.map((item) => {
             const active = route === item.id;
@@ -184,7 +123,7 @@ export default function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setRoute(item.id)}
+                onClick={() => handlePrimaryNavClick(item.id)}
                 className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
                   active
                     ? 'border-[var(--barn-sage)] text-[var(--barn-ink)] font-semibold'
@@ -197,14 +136,24 @@ export default function App() {
           })}
         </nav>
 
-        {/* Zone 3: Quick In-Frame Reload, Light/Dark Toggle & Settings Action */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Zone 3: Quick Reload, Offline Status, Light/Dark Toggle & Settings */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {!isOnline && (
+            <span
+              title="Operating in offline barn mode — all edits stay safe locally"
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-[var(--barn-sage)] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]"
+            >
+              <WifiOff className="w-3.5 h-3.5" aria-hidden="true" />
+              Offline Ready
+            </span>
+          )}
+
           <button
             type="button"
             onClick={() => window.location.reload()}
             title="Reload app preview (stays in full screen)"
             aria-label="Reload app preview"
-            className="min-h-[38px] min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+            className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
           >
             <RefreshCw className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -227,7 +176,7 @@ export default function App() {
                 ? 'Switch to Light mode'
                 : 'Switch to Dark mode'
             }
-            className="min-h-[38px] min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
+            className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
           >
             {snapshot.settings.themeMode === 'dark' ? (
               <Sun className="w-4 h-4 text-[var(--barn-terracotta)]" aria-hidden="true" />
@@ -238,24 +187,108 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => {
-              setFocusAddSpeciesOnSettings(false);
-              setRoute(route === 'settings' ? 'dashboard' : 'settings');
-            }}
-            className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
+            onClick={() => setRoute(route === 'settings' ? 'dashboard' : 'settings')}
+            aria-label={
+              route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import and Settings'
+            }
+            className={`min-h-[36px] sm:min-h-[38px] px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               route === 'settings'
                 ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
                 : 'border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
             }`}
           >
-            <Settings className="w-3.5 h-3.5" aria-hidden="true" />
-            {route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import & Settings'}
+            <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span className="sm:hidden">{route === 'settings' ? 'Back' : 'Settings'}</span>
+            <span className="hidden sm:inline">
+              {route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import & Settings'}
+            </span>
           </button>
         </div>
       </header>
 
       {/* Main Content Container */}
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 pt-5 space-y-5">
+      <main className="flex-1 w-full min-w-0 max-w-7xl mx-auto px-3 sm:px-6 pt-5 space-y-5">
+        {/* Offline Barn Mode Banner on Mobile */}
+        {!isOnline && (
+          <div className="sm:hidden bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-xl px-3.5 py-2 text-xs font-medium flex items-center gap-2">
+            <WifiOff className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+            <span>Offline Barn Mode — all records saved locally on device.</span>
+          </div>
+        )}
+
+        {/* Home Screen Install & Storage Eviction Defense Prompt */}
+        {showInstallReminder && (
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[var(--barn-muted)]">
+              {isIos ? (
+                <>
+                  <strong className="text-[var(--barn-ink)]">Protect Local Herd Data:</strong> Tap{' '}
+                  <strong>Share</strong> &rarr; <strong>Add to Home Screen</strong> on iOS Safari so
+                  your offline barn database stays immune to 7-day tab cleanup.
+                </>
+              ) : (
+                <>
+                  <strong className="text-[var(--barn-ink)]">Install Offline Barn PWA:</strong>{' '}
+                  Add Community Pedigree to your Home Screen / Desktop for airplane-mode access and
+                  elevated storage lock.
+                </>
+              )}
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              {canPromptInstall && (
+                <button
+                  type="button"
+                  onClick={() => void promptInstall()}
+                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                >
+                  Install App
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setDismissedInstallBanner(true)}
+                className="min-h-[32px] px-2 text-[11px] text-[var(--barn-muted)] underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Actionable Error / Quota / Persistence Failure Recovery Banner */}
+        {store.errorMessage && (
+          <div
+            role="alert"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs font-medium flex flex-wrap items-center justify-between gap-3"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <span className="break-words">{store.errorMessage}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {route !== 'settings' && (
+                <button
+                  type="button"
+                  onClick={() => setRoute('settings')}
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                >
+                  Open Recovery &amp; Backups
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={store.clearErrorMessage}
+                className="underline text-[11px] shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Transient Barn Action Feedback Banner */}
         {store.statusMessage && (
           <div
@@ -273,147 +306,79 @@ export default function App() {
           </div>
         )}
 
-        {/* Contextual Species Switcher, Per-Species Delete Controls & Pin Bar inside any Species Workspace */}
+        {/* Contextual Species Switcher Bar inside any Species Workspace */}
         {route !== 'home' && route !== 'settings' && (
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-3 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <label
-                  htmlFor="active-species-switcher"
-                  className="text-xs text-[var(--barn-muted)]"
-                >
-                  Active Livestock Workspace:
-                </label>
-                <select
-                  id="active-species-switcher"
-                  value={activeSpeciesName}
-                  onChange={(e) => store.selectSpeciesWorkspace(e.target.value, route)}
-                  className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-semibold"
-                >
-                  {snapshot.speciesProfiles.map((sp) => (
-                    <option key={sp.id} value={sp.name}>
-                      {sp.name} ({animalCountBySpecies.get(sp.name.trim().toLowerCase()) ?? 0})
-                    </option>
-                  ))}
-                </select>
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <label
+                htmlFor="active-species-switcher"
+                className="text-xs text-[var(--barn-muted)]"
+              >
+                Active Livestock Workspace:
+              </label>
+              <select
+                id="active-species-switcher"
+                value={activeSpeciesName}
+                onChange={(e) => store.selectSpeciesWorkspace(e.target.value, route)}
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-semibold"
+              >
+                {snapshot.speciesProfiles.map((sp) => (
+                  <option key={sp.id} value={sp.name}>
+                    {sp.name}
+                  </option>
+                ))}
+              </select>
 
-                <span className="text-xs text-[var(--barn-muted)] hidden lg:inline">
-                  {activeSpeciesData.speciesProfile.maleLabel} /{' '}
-                  {activeSpeciesData.speciesProfile.femaleLabel} /{' '}
-                  {activeSpeciesData.speciesProfile.offspringLabel} ·{' '}
-                  {activeSpeciesData.speciesProfile.gestationDays}d gestation
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {activeSpeciesData.testingRecordCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceDeleteConfirm('testing')}
-                    className="min-h-[36px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    Delete Testing Data
-                  </button>
-                )}
-
-                {activeSpeciesData.totalRecordCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceDeleteConfirm('all')}
-                    className="min-h-[36px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    Delete All {activeSpeciesName} Records
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => store.togglePinSpeciesLanding(activeSpeciesName)}
-                  className={`min-h-[36px] px-3 py-1 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-                    isActivePinned
-                      ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] border-transparent'
-                      : 'border-[var(--barn-border)] text-[var(--barn-muted)] hover:bg-[var(--barn-subtle)]'
-                  }`}
-                >
-                  <Pin className="w-3.5 h-3.5" aria-hidden="true" />
-                  {isActivePinned
-                    ? `Pinned ${activeSpeciesName} Hub as Startup Page`
-                    : `Pin ${activeSpeciesName} Hub as Startup Page`}
-                </button>
-              </div>
+              <span className="text-xs text-[var(--barn-muted)] hidden md:inline">
+                {activeSpeciesData.speciesProfile.maleLabel} /{' '}
+                {activeSpeciesData.speciesProfile.femaleLabel} /{' '}
+                {activeSpeciesData.speciesProfile.offspringLabel} ·{' '}
+                {activeSpeciesData.speciesProfile.gestationDays}d gestation
+              </span>
             </div>
 
-            {/* Inline 2-Tap Confirmation Banner for Per-Species Delete Actions */}
-            {workspaceDeleteConfirm && (
-              <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="text-[var(--barn-ink)] font-medium">
-                  {workspaceDeleteConfirm === 'testing'
-                    ? `Delete ${activeSpeciesData.testingRecordCount} sample/testing records in ${activeSpeciesName}? Your real & imported ${activeSpeciesName} records will stay intact.`
-                    : `Delete ALL ${activeSpeciesData.totalRecordCount} records in ${activeSpeciesName}? (${activeSpeciesName} schedule & all other species remain untouched.)`}
-                </span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (workspaceDeleteConfirm === 'testing') {
-                        void store.deleteSpeciesTestingData(activeSpeciesName);
-                      } else {
-                        void store.deleteAllSpeciesRecords(activeSpeciesName);
-                      }
-                      setWorkspaceDeleteConfirm(null);
-                    }}
-                    className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-danger)] text-white text-xs font-semibold whitespace-nowrap"
-                  >
-                    {workspaceDeleteConfirm === 'testing'
-                      ? `Confirm Delete ${activeSpeciesName} Testing Data`
-                      : `Confirm Delete All ${activeSpeciesName} Records`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceDeleteConfirm(null)}
-                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setRoute('home')}
+              className="text-xs text-[var(--barn-muted)] hover:text-[var(--barn-ink)] underline whitespace-nowrap"
+            >
+              Switch Species Home
+            </button>
           </div>
         )}
 
         {/* Active Screen Viewport */}
-        <ScreenErrorBoundary routeKey={route} onResetRoute={() => setRoute('home')}>
         {route === 'home' && (
           <HomeSpeciesScreen
             snapshot={snapshot}
             onOpenSpecies={store.selectSpeciesWorkspace}
-            onTogglePinSpecies={store.togglePinSpeciesLanding}
-            onSaveSpecies={store.saveSpeciesProfile}
             onMoveSpeciesCard={(id, dir) => {
               void store.moveSpeciesCard(id, dir);
             }}
             onReorderSpeciesCards={(ids) => {
               void store.reorderSpeciesCards(ids);
             }}
-            onDeleteSpecies={store.deleteSpeciesProfile}
-            onSeedSpeciesSample={store.seedSpeciesSampleData}
-            onDeleteSpeciesTestingData={(speciesName) => {
-              void store.deleteSpeciesTestingData(speciesName);
+            onSaveBarnName={(name) => {
+              void store.updateSettings(
+                { barnName: name, barnNameOnboarded: true },
+                { silent: false }
+              );
             }}
-            onDeleteAllSpeciesRecords={(speciesName) => {
-              void store.deleteAllSpeciesRecords(speciesName);
+            onHideSummaryGrid={() => {
+              void store.updateSettings(
+                { showHomeSummaryGrid: false },
+                { silent: true }
+              );
             }}
-            onMigrateAnimals={async (ids, target, options) => {
-              await store.migrateAnimalsSpecies(ids, target, options);
+            onIgnoreTaskAlerts={(taskIds) => {
+              void store.ignoreTaskAlertsPermanently(taskIds);
             }}
-            onOpenSettings={() => {
-              setFocusAddSpeciesOnSettings(true);
+            onClearTaskAlertGroup={(speciesName, taskIds) => {
+              void store.clearTaskAlertGroup(speciesName, taskIds);
+            }}
+            onNavigateToAddSpecies={() => {
+              store.setOpenAddSpeciesInSettings(true);
               setRoute('settings');
-            }}
-            onUpdateSettings={(patch, options) => {
-              void store.updateSettings(patch, options);
             }}
           />
         )}
@@ -422,27 +387,43 @@ export default function App() {
           <SpeciesDashboardScreen
             activeData={activeSpeciesData}
             settings={snapshot.settings}
+            isPinned={isActivePinned}
+            existingSpeciesNames={snapshot.speciesProfiles.map((sp) => sp.name)}
             onNavigate={setRoute}
             onOpenAnimal={(animalId) => {
               store.setSelectedAnimalId(animalId);
               setRoute('herd');
             }}
             onToggleTask={store.toggleTaskCompleted}
-            onSetTasksCompletedBatch={store.setTasksCompletedBatch}
             onSaveTask={store.saveTask}
             onDeleteTask={store.deleteTask}
-            onDeleteTasksBatch={store.deleteTasksBatch}
             onSaveCage={store.saveCage}
             onDeleteCage={store.deleteCage}
             onSaveShow={store.saveShow}
             onDeleteShow={store.deleteShow}
             onSeedSpeciesSample={store.seedSpeciesSampleData}
+            onTogglePinSpecies={(speciesName) => {
+              void store.togglePinSpeciesLanding(speciesName);
+            }}
+            onSaveSpecies={(profile) => {
+              void store.saveSpeciesProfile(profile);
+            }}
+            onDeleteSpecies={(profile) => {
+              void store.deleteSpeciesProfile(profile);
+            }}
+            onDeleteSpeciesTestingData={(speciesName) => {
+              void store.deleteSpeciesTestingData(speciesName);
+            }}
+            onDeleteAllSpeciesRecords={(speciesName) => {
+              void store.deleteAllSpeciesRecords(speciesName);
+            }}
+            onDownloadTimestampedBackup={store.exportTimestampedSpeciesBackup}
+            onOpenSettings={() => setRoute('settings')}
           />
         )}
 
         {route === 'herd' && (
           <HerdScreen
-            snapshot={snapshot}
             activeData={activeSpeciesData}
             allAnimals={snapshot.animals}
             speciesProfiles={snapshot.speciesProfiles}
@@ -463,10 +444,17 @@ export default function App() {
             onDeleteAnimal={(animal) => {
               void store.deleteAnimal(animal);
             }}
-            onDeleteAnimalsBatch={store.deleteAnimalsBatch}
-            onSetAnimalsArchiveState={store.setAnimalsArchiveState}
-            onMigrateAnimals={async (ids, target, options) => {
-              await store.migrateAnimalsSpecies(ids, target, options);
+            onArchiveAnimals={(ids, archived) => {
+              void store.archiveAnimals(ids, archived);
+            }}
+            onDeleteAnimalsBatch={(ids) => {
+              void store.deleteAnimalsBatch(ids);
+            }}
+            onMigrateAnimalsSpecies={(ids, targetSpecies) => {
+              void store.migrateAnimalsSpecies(ids, targetSpecies);
+            }}
+            onToggleIncludePhotoOnPedigree={(include) => {
+              void store.updateSettings({ includePhotoOnPedigree: include }, { silent: true });
             }}
             onAddCareLog={(draft) => {
               void store.addCareLog(draft);
@@ -506,6 +494,9 @@ export default function App() {
               store.setSelectedAnimalId(id);
               setRoute('herd');
             }}
+            onToggleIncludePhotoOnPedigree={(include) => {
+              void store.updateSettings({ includePhotoOnPedigree: include }, { silent: true });
+            }}
             onSaveAnimal={(draft, linkTarget, pendingPhotos) => {
               void store.saveAnimal(draft, linkTarget, pendingPhotos);
             }}
@@ -517,8 +508,13 @@ export default function App() {
             snapshot={snapshot}
             engineName={store.engineName}
             activeSpeciesName={activeSpeciesName}
-            focusAddSpecies={focusAddSpeciesOnSettings}
-            onFocusedAddSpecies={() => setFocusAddSpeciesOnSettings(false)}
+            deviceId={store.deviceId}
+            storageStatus={store.storageStatus}
+            syncOperations={store.syncOperations}
+            syncConflicts={store.syncConflicts}
+            openAddSpeciesOnMount={store.openAddSpeciesInSettings}
+            onConsumedOpenAddSpecies={() => store.setOpenAddSpeciesInSettings(false)}
+            onRequestPersistentStorage={store.triggerPersistentStorageRequest}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
@@ -528,10 +524,21 @@ export default function App() {
             onDeleteSpecies={(profile) => {
               void store.deleteSpeciesProfile(profile);
             }}
+            onDownloadTimestampedSpeciesBackup={store.exportTimestampedSpeciesBackup}
             onApplyPlatformImport={store.applyPlatformImportPreview}
             onImportJson={store.importJsonBackup}
+            onImportBackupArchive={store.importBackupArchiveBytes}
+            onImportDeltaOperations={store.importDeltaOperations}
+            onResolveSyncConflict={store.resolveSyncConflict}
+            onDismissSyncConflict={store.dismissSyncConflict}
+            onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
+            onRestoreRollingBackup={store.restoreRollingBackupByKey}
             onExportSqliteBytes={store.exportSqliteBytes}
             onImportSqliteBytes={store.importSqliteBytes}
+            onScanDatabaseHealth={store.scanDatabaseHealth}
+            onRepairDatabaseHealth={store.runHealthCheckAndRepair}
+            onResetDatabaseConnection={store.resetDatabaseConnection}
+            onPurgeCorruptedCaches={store.purgeCorruptedCachesAndRecover}
             onSeedAllSpecies={() => {
               void store.seedAllPredefinedSpecies();
             }}
@@ -543,8 +550,58 @@ export default function App() {
             }}
           />
         )}
-        </ScreenErrorBoundary>
       </main>
+
+      {/* Select Livestock Species Before Entering Herd from Home */}
+      {showHerdSpeciesPicker && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose Livestock Species Herd"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-xl font-semibold">Select Livestock Herd</h2>
+                <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                  Each species keeps its own separate herd, pedigree tree, and records.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHerdSpeciesPicker(false)}
+                aria-label="Close species picker"
+                className="min-h-[38px] min-w-[38px] rounded-lg hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[60vh] overflow-y-auto">
+              {snapshot.speciesProfiles.map((sp) => (
+                <button
+                  key={sp.id}
+                  type="button"
+                  onClick={() => {
+                    setShowHerdSpeciesPicker(false);
+                    store.selectSpeciesWorkspace(sp.name, 'herd');
+                  }}
+                  className="min-h-[48px] px-4 py-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] text-left flex items-center justify-between gap-2 transition-colors"
+                >
+                  <div>
+                    <div className="text-sm font-semibold">{sp.name}</div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">
+                      {sp.maleLabel}s &amp; {sp.femaleLabel}s
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}
       <nav
@@ -565,7 +622,7 @@ export default function App() {
             <button
               key={id}
               type="button"
-              onClick={() => setRoute(id)}
+              onClick={() => handlePrimaryNavClick(id)}
               className={`h-full flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
                 active ? 'text-[var(--barn-ink)] font-semibold' : 'text-[var(--barn-muted)]'
               }`}

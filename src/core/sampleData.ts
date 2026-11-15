@@ -30,7 +30,7 @@ import {
   todayDateIso,
 } from './models';
 import { calculatePairingCoi } from './pedigreeCalculator';
-import { generateCascadedTasksForBreeding } from './masterTaskList';
+import { generateCascadedTasksForBreeding } from './taskMaster';
 
 interface SeedFamilySpec {
   species: string;
@@ -104,14 +104,14 @@ const SPECIES_SEED_SPECS: SeedFamilySpec[] = [
     varietyA: 'Gold & White',
     varietyB: 'Buckskin',
     tagPrefix: 'NDG',
-    breederName: 'Meadowbrook Dairy Goats',
+    breederName: ' Meadowbrook Dairy Goats',
     cagePrefix: 'Pen G',
     avgAdultGrams: 34000, // ~75 lbs
     juniorGrams: 16500,
     names: {
       pgs: 'Cedar Glen Orion *B',
       pgd: 'Willow Run Honeybee 2*M',
-      mgs: 'Cloverleaf Atlas *B',
+      mgs: ' Cloverleaf Atlas *B',
       mgd: 'Meadowbrook Marigold',
       sire: 'Meadowbrook Ranger *B',
       dam: 'Meadowbrook Sweet Clover 3*M',
@@ -635,6 +635,7 @@ export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundl
     name: string;
     sex: 'Male' | 'Female';
     status: 'Active' | 'Junior' | 'Retired';
+    archived?: boolean;
     daysOld: number;
     weightGrams: number;
     variety: string;
@@ -656,6 +657,7 @@ export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundl
       variety: params.variety,
       sex: params.sex,
       status: params.status,
+      archived: Boolean(params.archived),
       birthDateIso: addDaysIso(today, -params.daysOld),
       weightGrams: params.weightGrams,
       genotype: parseGenotypeString(genoRaw),
@@ -681,6 +683,7 @@ export function buildSampleDataForSpecies(speciesName: string): SpeciesSeedBundl
       name: spec.names.pgs,
       sex: 'Male',
       status: 'Retired',
+      archived: true,
       daysOld: 1120,
       weightGrams: Math.round(spec.avgAdultGrams * 1.02),
       variety: spec.varietyA,
@@ -943,8 +946,8 @@ export function buildFullPredefinedSampleSnapshot(
   const ts = nowIsoUtc();
   const settings: BarnSettings = {
     id: 'barn_settings',
-    barnName: existingSettings?.barnName || 'My Barn',
-    breederName: existingSettings?.breederName || '',
+    barnName: existingSettings?.barnName || 'Copper Creek Barn',
+    breederName: existingSettings?.breederName || 'Kimberly',
     preferredUnit: existingSettings?.preferredUnit || 'lbs_oz',
     defaultSpecies: existingSettings?.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies: existingSettings?.pinnedLandingSpecies ?? '',
@@ -952,8 +955,11 @@ export function buildFullPredefinedSampleSnapshot(
     themeMode: existingSettings?.themeMode || 'dark',
     customColors: existingSettings?.customColors,
     imageOptimizationPreset: existingSettings?.imageOptimizationPreset || 'balanced',
-    barnNameSetupComplete: existingSettings?.barnNameSetupComplete ?? false,
-    showHomeSummaryStrip: existingSettings?.showHomeSummaryStrip ?? true,
+    showHomeSummaryGrid: existingSettings?.showHomeSummaryGrid ?? true,
+    barnNameOnboarded: existingSettings?.barnNameOnboarded ?? false,
+    ignoredTaskIds: existingSettings?.ignoredTaskIds ?? [],
+    dismissedTaskGroupKeys: existingSettings?.dismissedTaskGroupKeys ?? {},
+    includePhotoOnPedigree: existingSettings?.includePhotoOnPedigree ?? false,
     updatedAt: ts,
   };
 

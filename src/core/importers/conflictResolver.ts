@@ -37,6 +37,7 @@ export type AnimalConflictFieldKey =
   | 'tattoo'
   | 'sex'
   | 'status'
+  | 'archived'
   | 'birthDateIso'
   | 'breed'
   | 'variety'
@@ -289,6 +290,17 @@ export function buildAnimalContradictions(
     });
   }
 
+  if (Boolean(existing.archived) !== Boolean(incoming.archived)) {
+    contradictions.push({
+      field: 'archived',
+      label: 'Active vs. Archived',
+      existingDisplay: existing.archived ? 'Archived (Non-Active)' : 'Active Herd',
+      incomingDisplay: incoming.archived ? 'Archived (Non-Active)' : 'Active Herd',
+      supportsCombine: false,
+      defaultChoice: incoming.archived ? 'incoming' : 'existing',
+    });
+  }
+
   if (
     existing.birthDateIso &&
     incoming.birthDateIso &&
@@ -490,6 +502,14 @@ export function resolveAnimalsWithConflictChoices(
           ? inc.damId
           : ex.damId;
 
+    const archivedChoice = selections[makeConflictSelectionKey(ex.id, 'archived')] || 'incoming';
+    const resolvedArchived =
+      Boolean(ex.archived) === Boolean(inc.archived)
+        ? Boolean(ex.archived)
+        : archivedChoice === 'incoming'
+          ? Boolean(inc.archived)
+          : Boolean(ex.archived);
+
     return {
       id: ex.id,
       species: ex.species,
@@ -497,6 +517,7 @@ export function resolveAnimalsWithConflictChoices(
       tattoo: pickNonEmptyText(ex.id, 'tattoo', ex.tattoo, inc.tattoo),
       sex: resolvedSex,
       status: resolvedStatus,
+      archived: resolvedArchived,
       birthDateIso: pickNonEmptyText(ex.id, 'birthDateIso', ex.birthDateIso, inc.birthDateIso),
       breed: pickNonEmptyText(ex.id, 'breed', ex.breed, inc.breed),
       variety: pickNonEmptyText(ex.id, 'variety', ex.variety, inc.variety),

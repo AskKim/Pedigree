@@ -53,7 +53,7 @@ import {
 import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
-  isAnimalActive,
+  isAnimalArchived,
   isSameSpecies,
   PREDEFINED_SPECIES_PRESETS,
 } from '../core/models';
@@ -91,6 +91,8 @@ export function ExternalImporterPanel({
   >({});
   const [conflictSelections, setConflictSelections] = useState<ConflictSelectionMap>({});
   const [expandedConflictIds, setExpandedConflictIds] = useState<Record<string, boolean>>({});
+  const [archiveOverrides, setArchiveOverrides] = useState<Record<string, boolean>>({});
+  const [showImportLifecycleList, setShowImportLifecycleList] = useState<boolean>(false);
 
   const [stagedArchives, setStagedArchives] = useState<RawArchiveInput[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -356,9 +358,21 @@ export function ExternalImporterPanel({
         optimizedPhotos = batchResult.photos;
       }
 
-      await onCommitImport(preview, optimizedPhotos, conflictSelections);
+      const previewToCommit: PlatformImportPreview =
+        Object.keys(archiveOverrides).length > 0
+          ? {
+              ...preview,
+              animals: preview.animals.map((a) =>
+                a.id in archiveOverrides ? { ...a, archived: archiveOverrides[a.id] } : a
+              ),
+            }
+          : preview;
+
+      await onCommitImport(previewToCommit, optimizedPhotos, conflictSelections);
       setStagedArchives([]);
       setConflictSelections({});
+      setArchiveOverrides({});
+      setShowImportLifecycleList(false);
       setShowDiagnostics(false);
     } catch (err: any) {
       setParseError(err?.message || 'Failed while optimizing or importing archive data.');
@@ -565,10 +579,9 @@ export function ExternalImporterPanel({
       <div className="text-xs text-[var(--barn-muted)] bg-[var(--barn-canvas)] border border-[var(--barn-border)] rounded-xl px-3.5 py-2.5 space-y-1">
         <p>{importer.instructions}</p>
         <p className="text-[11px]">
-          <strong className="text-[var(--barn-ink)]">Smart Merge:</strong> New custom species get
-          a dedicated schedule, and preexisting barn animals let you resolve any contradicting
-          fields side-by-side. (Photo matching stays enabled in code if an archive includes linked
-          image IDs/filenames.)
+          <strong className="text-[var(--barn-ink)]">Smart Merge &amp; Image Compression:</strong>{' '}
+          New custom species get a dedicated schedule, preexisting barn animals let you resolve any
+          contradicting fields side-by-side, and incoming photos are automatically WebP-optimized.
         </p>
       </div>
 
@@ -673,19 +686,10 @@ export function ExternalImporterPanel({
                 {preview.animals.length}
               </div>
               <div className="text-[11px] text-[var(--barn-muted)]">
-                {(() => {
-                  const activeCount = preview.animals.filter((a) => isAnimalActive(a)).length;
-                  const archivedCount = preview.animals.length - activeCount;
-                  const parts: string[] = [];
-                  if (archivedCount > 0) {
-                    parts.push(`${activeCount} active · ${archivedCount} archived`);
-                  }
-                  parts.push(`${preview.parentLinksResolved} parent links`);
-                  if (preview.matchedExistingAnimalsCount > 0) {
-                    parts.push(`${preview.matchedExistingAnimalsCount} existing`);
-                  }
-                  return parts.join(' · ');
-                })()}
+                {preview.parentLinksResolved} parent links
+                {preview.matchedExistingAnimalsCount > 0
+                  ? ` · ${preview.matchedExistingAnimalsCount} existing`
+                  : ''}
               </div>
             </div>
 
@@ -732,6 +736,93 @@ export function ExternalImporterPanel({
               </span>
             </div>
           )}
+
+          {/* Non-Active / Archived Detection & Lifecycle Review */}
+          {preview.animals.length > 0 && (() => {
+            const effectiveArchived = preview.animals.filter((a) =>
+              a.id in archiveOverrides ? archiveOverrides[a.id] : isAnimalArchived(a)
+            );
+            const effectiveActiveCount = preview.animals.length - effectiveArchived.length;
+            return (
+              <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-[var(--barn-ink)]">
+                      Herd Lifecycle Classification:{' '}
+                      <span className="font-mono">{effectiveActiveCount}</span> Active ·{' '}
+                      <span className="font-mono text-[var(--barn-terracotta)]">
+                        {effectiveArchived.length}
+                      </span>{' '}
+                      Non-Active / Archived
+                    </div>
+                    <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
+                      Deceased, sold, retired, or ancestor-only records are automatically tagged as
+                      Archived (retained for pedigrees, excluded from active barn tasks).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowImportLifecycleList((v) => !v)}
+                    className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                  >
+                    {showImportLifecycleList ? 'Hide' : 'Review'} Active / Archived (
+                    {preview.animals.length})
+                  </button>
+                </div>
+
+                {showImportLifecycleList && (
+                  <div className="max-h-56 overflow-y-auto divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl bg-[var(--barn-surface)]">
+                    {preview.animals.map((a) => {
+                      const isArch =
+                        a.id in archiveOverrides
+                          ? archiveOverrides[a.id]
+                          : isAnimalArchived(a);
+                      return (
+                        <label
+                          key={a.id}
+                          className="flex items-center justify-between gap-3 px-3 py-2 cursor-pointer hover:bg-[var(--barn-subtle)]/40"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">
+                              {a.name}{' '}
+                              {a.tattoo && (
+                                <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+                                  ({a.tattoo})
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-[var(--barn-muted)]">
+                              {a.species} · Status: {a.status}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={isArch}
+                              onChange={(e) =>
+                                setArchiveOverrides((prev) => ({
+                                  ...prev,
+                                  [a.id]: e.target.checked,
+                                }))
+                              }
+                              className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                            />
+                            <span
+                              className={`text-[11px] font-medium ${
+                                isArch ? 'text-[var(--barn-terracotta)]' : 'text-[var(--barn-sage)]'
+                              }`}
+                            >
+                              {isArch ? 'Archived' : 'Active'}
+                            </span>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* New Non-Predefined / Custom Species Schedule Customization Card */}
           {preview.newSpeciesProfiles.length > 0 && (
@@ -1230,12 +1321,9 @@ export function ExternalImporterPanel({
                   <strong className="font-mono text-[var(--barn-ink)]">
                     {preview.deferredMediaCount}
                   </strong>{' '}
-                  photo/media file{preview.deferredMediaCount === 1 ? '' : 's'} (
-                  {formatByteSizePure(preview.deferredMediaBytes)}) could not be linked to an animal
-                  and will be skipped cleanly.{' '}
-                  {importer.id === 'herdboss'
-                    ? 'HerdBoss exports split photos into a separate folder using internal IDs that do not appear in its CSV tables—please upload photos directly on each animal’s Herd profile page.'
-                    : 'Matched records will still import normally.'}
+                  additional media file{preview.deferredMediaCount === 1 ? '' : 's'} (
+                  {formatByteSizePure(preview.deferredMediaBytes)}) had no matching animal tag/ID or
+                  used a non-image format and will be skipped cleanly.
                 </p>
               </div>
 
@@ -1335,34 +1423,6 @@ export function ExternalImporterPanel({
                     : ''
                 } & ${preview.breedings.length + preview.careLogs.length} Records Into Barn`}
           </button>
-        </div>
-      )}
-
-      {/* Condensed HerdBoss Photo Export Limitation Note (shown below HerdBoss importer) */}
-      {importer.id === 'herdboss' && (
-        <div className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)]/45 border border-[var(--barn-terracotta)]/50 text-xs space-y-1.5">
-          <div className="flex items-center gap-2 font-semibold text-[var(--barn-ink)]">
-            <AlertTriangle
-              className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0"
-              aria-hidden="true"
-            />
-            <span>Note on HerdBoss Photo Exports (Expected Not to Auto-Import)</span>
-          </div>
-          <p className="text-[var(--barn-muted)] leading-relaxed">
-            HerdBoss exports photos into a separate folder using internal database IDs (for example,
-            numbers in parentheses like <span className="font-mono">(38770)</span>), but those
-            image IDs are omitted from all exported CSV tables (<span className="font-mono">Animals</span>,{' '}
-            <span className="font-mono">Animal Notes</span>, <span className="font-mono">Medical History</span>,
-            etc.). Because HerdBoss does not include the link between photo IDs and animal IDs,
-            automatic photo import from HerdBoss ZIPs is expected to fail.
-          </p>
-          <p className="text-[var(--barn-muted)] leading-relaxed">
-            We are keeping HerdBoss photo matching in the code in case they update their export
-            format. <strong className="text-[var(--barn-ink)]">If you use HerdBoss, please contact HerdBoss directly and urge them to include image IDs or filenames in their CSV exports.</strong>{' '}
-            In the meantime, you can match photos manually by comparing photo taken/upload dates
-            against <span className="font-mono">Animals</span> or <span className="font-mono">Animal Notes</span>{' '}
-            timestamps and adding them directly on each animal&apos;s Herd profile page.
-          </p>
         </div>
       )}
     </section>

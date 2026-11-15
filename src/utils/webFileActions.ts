@@ -38,3 +38,37 @@ export function downloadBinaryFile(
   document.body.removeChild(anchor);
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
+
+export async function shareBinaryFileOrDownload(params: {
+  filename: string;
+  bytes: Uint8Array;
+  mimeType: string;
+  title: string;
+  text?: string;
+}): Promise<'shared' | 'downloaded'> {
+  const { filename, bytes, mimeType, title, text } = params;
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const file = new File([copy], filename, { type: mimeType });
+
+  if (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.share === 'function' &&
+    typeof navigator.canShare === 'function' &&
+    navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({
+        title,
+        text,
+        files: [file],
+      });
+      return 'shared';
+    } catch {
+      // User cancelled or share target rejected — fall back to clean file download
+    }
+  }
+
+  downloadBinaryFile(filename, bytes, mimeType);
+  return 'downloaded';
+}

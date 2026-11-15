@@ -7,7 +7,7 @@
  * Portable UI Note: Maps cleanly to React Native `Modal` + `ScrollView` + `TextInput` + `Pressable`.
  */
 
-import { Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Download, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import React, { useState } from 'react';
 import {
   generateUuid,
@@ -22,13 +22,14 @@ import {
   TaskCategory,
   TaskPriority,
 } from '../core/models';
-import { describeMilestoneOffset } from '../core/masterTaskList';
+import { describeMilestoneOffset } from '../core/taskMaster';
 
 interface SpeciesEditorModalProps {
   initialProfile: SpeciesProfile | null;
   existingNames: string[];
   onSave: (profile: SpeciesProfile) => void;
   onDelete?: (profile: SpeciesProfile) => void;
+  onDownloadTimestampedBackup?: (speciesName: string) => void;
   onClose: () => void;
 }
 
@@ -61,6 +62,7 @@ export function SpeciesEditorModal({
   existingNames,
   onSave,
   onDelete,
+  onDownloadTimestampedBackup,
   onClose,
 }: SpeciesEditorModalProps) {
   const isEditing = Boolean(initialProfile);
@@ -68,6 +70,10 @@ export function SpeciesEditorModal({
   const [creationMode, setCreationMode] = useState<'custom' | 'preset'>('custom');
 
   const [name, setName] = useState(initialProfile?.name || '');
+  const [defaultAnimalPrefix, setDefaultAnimalPrefix] = useState(
+    initialProfile?.defaultAnimalPrefix || ''
+  );
+  const [confirmRemoveSpecies, setConfirmRemoveSpecies] = useState(false);
   const [gestationDays, setGestationDays] = useState(
     String(initialProfile?.gestationDays ?? 114)
   );
@@ -88,9 +94,6 @@ export function SpeciesEditorModal({
   const [breedsCsv, setBreedsCsv] = useState(
     initialProfile?.exampleBreeds?.join(', ') || ''
   );
-  const [defaultAnimalNamePrefix, setDefaultAnimalNamePrefix] = useState(
-    initialProfile?.defaultAnimalNamePrefix || ''
-  );
   const [milestones, setMilestones] = useState<SpeciesMilestoneTemplate[]>(
     initialProfile?.milestones
       ? [...initialProfile.milestones]
@@ -109,6 +112,7 @@ export function SpeciesEditorModal({
     setCreationMode('custom');
     setErrorMsg('');
     setName('');
+    setDefaultAnimalPrefix('');
     setGestationDays('114');
     setWeanDays('56');
     setRebreedDays('45');
@@ -117,7 +121,6 @@ export function SpeciesEditorModal({
     setFemaleLabel('Dam');
     setOffspringLabel('Offspring');
     setBreedsCsv('');
-    setDefaultAnimalNamePrefix('');
     setMilestones(DEFAULT_CUSTOM_MILESTONES.map((m) => ({ ...m })));
   };
 
@@ -135,7 +138,6 @@ export function SpeciesEditorModal({
     setFemaleLabel(preset.femaleLabel);
     setOffspringLabel(preset.offspringLabel);
     setBreedsCsv(preset.exampleBreeds.join(', '));
-    setDefaultAnimalNamePrefix(preset.defaultAnimalNamePrefix || '');
     setMilestones(preset.milestones.map((m) => ({ ...m })));
   };
 
@@ -184,6 +186,7 @@ export function SpeciesEditorModal({
       id: initialProfile?.id || `species-${slug || generateUuid()}`,
       sortOrder: initialProfile?.sortOrder,
       name: cleanName,
+      defaultAnimalPrefix: defaultAnimalPrefix.trim(),
       gestationDays: Math.max(1, Number(gestationDays) || 31),
       rebreedDaysAfterBirth: Math.max(0, Number(rebreedDays) || 28),
       weanDaysAfterBirth: Math.max(1, Number(weanDays) || 42),
@@ -192,9 +195,6 @@ export function SpeciesEditorModal({
       femaleLabel: femaleLabel.trim() || 'Female',
       offspringLabel: offspringLabel.trim() || 'Offspring',
       exampleBreeds: parsedBreeds,
-      defaultAnimalNamePrefix: defaultAnimalNamePrefix.trim()
-        ? defaultAnimalNamePrefix.trimStart()
-        : '',
       milestones,
       createdAt: initialProfile?.createdAt || ts,
       updatedAt: ts,
@@ -218,7 +218,7 @@ export function SpeciesEditorModal({
                 : 'Add Custom Livestock Species'}
             </h2>
             <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-              Define species name, gestation/weaning dates, sex terms, breeds, and Master Task List rules
+              Define species name, prefix, gestation/weaning dates, sex terms, breeds, and Master Task List rules
             </p>
           </div>
           <button
@@ -407,34 +407,35 @@ export function SpeciesEditorModal({
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-              Common Breeds / Varieties (comma-separated, optional)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. Quarter Horse, Morgan, Arabian (provides quick breed suggestions)"
-              value={breedsCsv}
-              onChange={(e) => setBreedsCsv(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-            />
-          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Common Breeds / Varieties (comma-separated, optional)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Quarter Horse, Morgan, Arabian"
+                value={breedsCsv}
+                onChange={(e) => setBreedsCsv(e.target.value)}
+                className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-              Default Animal Name Prefix (optional)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. Oak Ridge  or  OR-"
-              value={defaultAnimalNamePrefix}
-              onChange={(e) => setDefaultAnimalNamePrefix(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-            />
-            <p className="text-[11px] text-[var(--barn-muted)] mt-1">
-              Auto-prepended when adding new {name.trim() || 'species'} animals if the name
-              doesn&apos;t already start with it. Can be overridden per animal.
-            </p>
+            <div>
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Optional Default Animal Name Prefix
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Copper Creek or Farm Prefix (editable per animal)"
+                value={defaultAnimalPrefix}
+                onChange={(e) => setDefaultAnimalPrefix(e.target.value)}
+                className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+              />
+              <p className="text-[11px] text-[var(--barn-muted)] mt-1">
+                Pre-fills new animal names if omitted; breeders can clear or override it anytime.
+              </p>
+            </div>
           </div>
 
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
@@ -539,14 +540,52 @@ export function SpeciesEditorModal({
             </button>
           </div>
 
+          {confirmRemoveSpecies && initialProfile && onDelete && (
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-danger)]/60 space-y-2.5 text-xs">
+              <div className="font-semibold text-[var(--barn-ink)]">
+                Recommend Backing Up Before Removing {initialProfile.name}
+              </div>
+              <p className="text-[var(--barn-muted)]">
+                Save a timestamped backup first so prior snapshots are never overwritten if you ever
+                want {initialProfile.name} records or settings back.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {onDownloadTimestampedBackup && (
+                  <button
+                    type="button"
+                    onClick={() => onDownloadTimestampedBackup(initialProfile.name)}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                    Download Timestamped {initialProfile.name} Backup
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDelete(initialProfile);
+                    onClose();
+                  }}
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-danger)] text-white text-xs font-semibold"
+                >
+                  Confirm Remove {initialProfile.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemoveSpecies(false)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between gap-3 pt-4 border-t border-[var(--barn-border)]">
             {isEditing && onDelete && !isSameSpecies(initialProfile?.name, 'Rabbit') ? (
               <button
                 type="button"
-                onClick={() => {
-                  onDelete(initialProfile!);
-                  onClose();
-                }}
+                onClick={() => setConfirmRemoveSpecies(true)}
                 className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)]"
               >
                 Remove Livestock

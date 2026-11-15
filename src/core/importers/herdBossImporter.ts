@@ -24,7 +24,6 @@ import {
   CareLog,
   CareLogType,
   isSameSpecies,
-  normalizeAnimalStatus,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -436,29 +435,31 @@ function parseHerdBossAnimalStatus(
   rawStatus: string | undefined,
   rawSoldDate?: string,
   rawDeathDate?: string,
-  rawReferenceFlag?: string,
-  rawArchivedFlag?: string,
-  rawActiveFlag?: string
+  rawReferenceFlag?: string
 ): AnimalStatus {
   if (rawDeathDate && rawDeathDate.trim()) return 'Deceased';
   if (rawSoldDate && rawSoldDate.trim()) return 'Sold';
-
-  const arch = (rawArchivedFlag || '').trim().toLowerCase();
-  if (arch === 'true' || arch === '1' || arch === 'yes' || arch === 'y' || arch === 'archived' || arch === 'inactive') {
-    return 'Archived';
-  }
-
-  const activeFlag = (rawActiveFlag || '').trim().toLowerCase();
-  if (activeFlag === 'false' || activeFlag === '0' || activeFlag === 'no' || activeFlag === 'n' || activeFlag === 'inactive' || activeFlag === 'archived') {
-    return 'Archived';
-  }
 
   const ref = (rawReferenceFlag || '').trim().toLowerCase();
   if (ref === 'true' || ref === '1' || ref === 'yes' || ref === 'reference') {
     return 'Retired';
   }
 
-  return normalizeAnimalStatus(rawStatus);
+  const s = (rawStatus || '').trim().toLowerCase();
+  if (!s) return 'Active';
+  if (/\b(?:dead|deceased|died|culled|cull|butchered|harvested|euthanized|lost)\b/.test(s)) {
+    return 'Deceased';
+  }
+  if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
+    return 'Sold';
+  }
+  if (/\b(?:ref|reference|ancestor|pedigree|retired|archived|inactive|historical|external)\b/.test(s)) {
+    return 'Retired';
+  }
+  if (/\b(?:junior|weanling|nursing|kid|calf|lamb|kit|cria|foal|puppy|chick|feeder)\b/.test(s)) {
+    return 'Junior';
+  }
+  return 'Active';
 }
 
 function buildNormalizedTablesFromEntry(entry: VirtualArchiveEntry): NormalizedTable[] {
@@ -828,9 +829,9 @@ export const HerdBossImporter: PlatformImporter = {
   supportsMultiZip: true,
   acceptedExtensions: ['.zip', '.csv', '.tsv', '.json'],
   summary:
-    'Imports HerdBoss multi-ZIP exports (animals, multi-generation Sire/Dam pedigrees, tags/EID/tattoos, breedings, weights, treatments, and herd locations; photo matching stays active in code though HerdBoss omits photo-to-animal links in its CSVs).',
+    'Imports HerdBoss multi-ZIP exports (animals, multi-generation Sire/Dam pedigrees, tags/EID/tattoos, breedings, weights, treatments, herd locations, and multi-photo animal galleries with automatic storage optimization).',
   instructions:
-    'Stage your HerdBoss export .ZIP file(s) (select both at once or click "+ Add Companion .ZIP" for Part 1 and Part 2), review the detected records below, then click Merge Into Barn.',
+    'Stage both HerdBoss export .ZIP files together (either select both at once or click "+ Add Companion .ZIP" for Part 1 and Part 2), review the detected records & auto-optimized photo preview below, then click Merge Into Barn.',
 
   parse(
     inputs: RawArchiveInput[],
@@ -1008,14 +1009,9 @@ export const HerdBossImporter: PlatformImporter = {
 
     // Entity accumulators
     const animalsById = new Map<string, Animal>();
-    const existingAnimalsById = new Map<string, Animal>(
-      existingSnapshot.animals.map((a) => [a.id, a])
-    );
     const matchedExistingByAnimalId = new Map<string, PreexistingAnimalMatch>();
     // Per-species lookup index: key = `${species.toLowerCase()}::${lookupToken.toLowerCase()}` -> animal.id
     const animalLookup = new Map<string, string>();
-    // Cross-species token fallback index: key = lookupToken.toLowerCase() -> animal.id
-    const tokenLookupAnySpecies = new Map<string, string>();
     const pendingLineage: PendingLineageRef[] = [];
     const cagesByKey = new Map<string, CageLocation>();
     const breedings: BreedingRecord[] = [];
@@ -1034,9 +1030,6 @@ export const HerdBossImporter: PlatformImporter = {
       const key = `${species.trim().toLowerCase()}::${clean}`;
       if (overwrite || !animalLookup.has(key)) {
         animalLookup.set(key, animalId);
-      }
-      if (overwrite || !tokenLookupAnySpecies.has(clean)) {
-        tokenLookupAnySpecies.set(clean, animalId);
       }
     };
 
@@ -1222,27 +1215,9 @@ export const HerdBossImporter: PlatformImporter = {
           'isreference',
           'reference',
           'pedigreeonly',
-        ]);
-        const archivedFlag = pickCell(row, table.normHeaderMap, usedCols, [
           'archived',
-          'isarchived',
-          'inactive',
-          'isinactive',
         ]);
-        const activeFlag = pickCell(row, table.normHeaderMap, usedCols, [
-          'isactive',
-          'active',
-          'inherd',
-          'current',
-        ]);
-        const status = parseHerdBossAnimalStatus(
-          rawStatus,
-          soldDate,
-          deathDate,
-          refFlag,
-          archivedFlag,
-          activeFlag
-        );
+        const status = parseHerdBossAnimalStatus(rawStatus, soldDate, deathDate, refFlag);
 
         const birthDateIso = normalizeFlexibleDateIso(
           pickCell(row, table.normHeaderMap, usedCols, [
@@ -1367,6 +1342,19 @@ export const HerdBossImporter: PlatformImporter = {
         const ownerName =
           rawOwner || (preexistingMatch ? '' : existingSnapshot.settings.barnName);
 
+        const resolvedStatus =
+          rawStatus || soldDate || deathDate || refFlag
+            ? status
+            : preexistingMatch?.animal.status || status;
+        const detectedArchived =
+          resolvedStatus === 'Deceased' ||
+          resolvedStatus === 'Sold' ||
+          resolvedStatus === 'Retired' ||
+          /^(?:1|true|yes|y|archived|inactive|ref|reference)$/i.test(refFlag) ||
+          /^(?:archived|inactive|culled|harvested|butchered|dead|died|sold|pet|gone|retired|reference)$/i.test(
+            rawStatus
+          );
+
         const animal: Animal = {
           id: animalId,
           tattoo: combinedTattoo,
@@ -1375,10 +1363,11 @@ export const HerdBossImporter: PlatformImporter = {
           breed,
           variety,
           sex,
-          status:
-            rawStatus || soldDate || deathDate || refFlag || archivedFlag || activeFlag
-              ? status
-              : preexistingMatch?.animal.status || status,
+          status: resolvedStatus,
+          archived:
+            rawStatus || soldDate || deathDate || refFlag
+              ? detectedArchived
+              : Boolean(preexistingMatch?.animal.archived),
           birthDateIso,
           weightGrams: bestWeightGrams,
           genotype: parseGenotypeString(genotypeRaw),
@@ -1616,6 +1605,7 @@ export const HerdBossImporter: PlatformImporter = {
           variety: '',
           sex: expectedSex,
           status: 'Retired',
+          archived: true,
           birthDateIso: '',
           weightGrams: 0,
           genotype: [],
@@ -1732,21 +1722,26 @@ export const HerdBossImporter: PlatformImporter = {
       }
     }
 
-    // Helper to resolve an animal across imported + existing barn animals in O(1)
+    // Helper to resolve an animal across imported + existing barn animals
     const findAnimalByAnyToken = (rawToken: string, preferredSpecies?: string): Animal | undefined => {
       const clean = rawToken.trim().toLowerCase();
       if (!clean) return undefined;
 
       if (preferredSpecies) {
-        const id = animalLookup.get(`${preferredSpecies.trim().toLowerCase()}::${clean}`);
+        const id = animalLookup.get(`${preferredSpecies.toLowerCase()}::${clean}`);
         if (id) {
-          return animalsById.get(id) || existingAnimalsById.get(id);
+          return (
+            animalsById.get(id) || existingSnapshot.animals.find((a) => a.id === id)
+          );
         }
       }
 
-      const fallbackId = tokenLookupAnySpecies.get(clean);
-      if (fallbackId) {
-        return animalsById.get(fallbackId) || existingAnimalsById.get(fallbackId);
+      for (const [key, id] of animalLookup.entries()) {
+        if (key.endsWith(`::${clean}`)) {
+          return (
+            animalsById.get(id) || existingSnapshot.animals.find((a) => a.id === id)
+          );
+        }
       }
       return undefined;
     };
@@ -2445,7 +2440,7 @@ export const HerdBossImporter: PlatformImporter = {
       }
     } else if (missingPhotoZipRefsCount > 0 && imageArchiveEntries.length === 0) {
       warnings.push(
-        `Detected ${missingPhotoZipRefsCount} possible photo reference(s) in your CSV data, though no image files are staged. Note: HerdBoss exports usually omit photo-to-animal ID links, so photos typically need to be added on each animal's profile page.`
+        `Detected ${missingPhotoZipRefsCount} animal photo reference(s) in your CSV data, but no image files are staged yet. Add the companion HerdBoss Photos .ZIP above if you'd like to import & optimize those photos automatically.`
       );
     }
 

@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Pure TypeScript Domain Models for the Community Pedigree Project (Repo: AskKim/Pedigree | Package: pedigree).
+ * Pure TypeScript Domain Models for the Community Pedigree Project (Package: Pedigree).
  *
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * This module has ZERO browser DOM (`window`, `document`) or framework dependencies.
@@ -17,7 +17,7 @@ import type { CustomThemeColors } from './themePalette';
 
 export type BiologicalSex = 'Male' | 'Female' | 'Unknown';
 
-export type AnimalStatus = 'Active' | 'Junior' | 'Archived' | 'Retired' | 'Sold' | 'Deceased';
+export type AnimalStatus = 'Active' | 'Junior' | 'Retired' | 'Sold' | 'Deceased';
 
 export type BreedingStatus =
   | 'Planned'
@@ -75,14 +75,15 @@ export interface BarnSettings {
   preferredUnit: WeightUnit;
   defaultSpecies: string;
   pinnedLandingSpecies: string;
-  defaultGenerations: 3 | 4;
+  defaultGenerations: 3 | 4 | 5 | 6;
   themeMode: 'light' | 'dark';
   customColors?: CustomThemeColors;
   imageOptimizationPreset?: ImageOptimizationPresetId;
-  /** Whether the first-run barn/farm name prompt has been completed or skipped. */
-  barnNameSetupComplete?: boolean;
-  /** Whether to show the compact 4-metric summary strip on the Home screen. */
-  showHomeSummaryStrip?: boolean;
+  showHomeSummaryGrid?: boolean;
+  barnNameOnboarded?: boolean;
+  ignoredTaskIds?: string[];
+  dismissedTaskGroupKeys?: Record<string, string[]>;
+  includePhotoOnPedigree?: boolean;
   updatedAt: string;
 }
 
@@ -105,6 +106,7 @@ export interface SpeciesProfile {
   id: string;
   name: string;
   sortOrder?: number;
+  defaultAnimalPrefix?: string;
   gestationDays: number;
   rebreedDaysAfterBirth: number;
   weanDaysAfterBirth: number;
@@ -114,8 +116,6 @@ export interface SpeciesProfile {
   offspringLabel: string;
   exampleBreeds: string[];
   milestones: SpeciesMilestoneTemplate[];
-  /** Optional default naming prefix auto-prepended when adding new animals in this species. */
-  defaultAnimalNamePrefix?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -134,6 +134,7 @@ export interface Animal {
   variety: string;
   sex: BiologicalSex;
   status: AnimalStatus;
+  archived?: boolean;
   birthDateIso: string; // YYYY-MM-DD or ""
   weightGrams: number;
   genotype: GenotypeAllelePair[];
@@ -284,68 +285,10 @@ export interface BarnDatabaseSnapshot {
 export const ANIMAL_STATUSES: AnimalStatus[] = [
   'Active',
   'Junior',
-  'Archived',
   'Retired',
   'Sold',
   'Deceased',
 ];
-
-/**
- * Returns `true` for animals in the active barn herd (`Active` or `Junior`).
- */
-export function isAnimalActive(animal: Pick<Animal, 'status'>): boolean {
-  return animal.status === 'Active' || animal.status === 'Junior';
-}
-
-/**
- * Returns `true` for non-active / archived animals (`Archived`, `Retired`, `Sold`, or `Deceased`)
- * kept in storage for pedigree lookups and historical analysis.
- */
-export function isAnimalArchived(animal: Pick<Animal, 'status'>): boolean {
-  return !isAnimalActive(animal);
-}
-
-/**
- * Normalizes status strings (including legacy/external import values) into a canonical `AnimalStatus`.
- */
-export function normalizeAnimalStatus(rawStatus: string | undefined): AnimalStatus {
-  const s = (rawStatus || '').trim().toLowerCase();
-  if (!s) return 'Active';
-  if (/\b(?:dead|deceased|died|culled|cull|butchered|harvested|euthanized|lost)\b/.test(s)) {
-    return 'Deceased';
-  }
-  if (/\b(?:sold|sale|transferred|marketed)\b/.test(s)) {
-    return 'Sold';
-  }
-  if (/\b(?:archived|archive|inactive|not active|non-active|former|past|off-farm|off farm)\b/.test(s)) {
-    return 'Archived';
-  }
-  if (/\b(?:ref|reference|ancestor|pedigree|retired|historical|external)\b/.test(s)) {
-    return 'Retired';
-  }
-  if (/\b(?:junior|jr|weanling|nursing|kid|calf|lamb|kit|cria|foal|puppy|chick|feeder)\b/.test(s)) {
-    return 'Junior';
-  }
-  return 'Active';
-}
-
-/**
- * Pluralizes a species sex/offspring label (`Doe` -> `Does`, `Buck` -> `Bucks`, `Fox` -> `Foxes`).
- */
-export function pluralizeSpeciesLabel(label: string): string {
-  const clean = (label || '').trim();
-  if (!clean) return 'Animals';
-  const lower = clean.toLowerCase();
-  if (lower === 'male') return 'Males';
-  if (lower === 'female') return 'Females';
-  if (lower.endsWith('s') || lower.endsWith('x') || lower.endsWith('z') || lower.endsWith('ch') || lower.endsWith('sh')) {
-    return `${clean}es`;
-  }
-  if (/[^aeiou]y$/i.test(clean)) {
-    return `${clean.slice(0, -1)}ies`;
-  }
-  return `${clean}s`;
-}
 
 export const BREEDING_STATUSES: BreedingStatus[] = [
   'Planned',
@@ -499,6 +442,30 @@ export function formatBreedingStatusForSpecies(
  */
 export function isSameSpecies(a: string | undefined, b: string | undefined): boolean {
   return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+}
+
+/**
+ * Returns true when an animal is archived (out of active herd tasks/tasks while kept for pedigree history).
+ */
+export function isAnimalArchived(
+  animal: Pick<Animal, 'archived' | 'status'> | undefined | null
+): boolean {
+  if (!animal) return false;
+  if (typeof animal.archived === 'boolean') return animal.archived;
+  return animal.status === 'Deceased' || animal.status === 'Sold';
+}
+
+/**
+ * Prepends an optional species default prefix to a new animal name unless it already starts with it.
+ */
+export function applySpeciesNamePrefix(name: string, prefix?: string): string {
+  const cleanName = (name || '').trim();
+  const cleanPrefix = (prefix || '').trim();
+  if (!cleanPrefix || !cleanName) return cleanName;
+  if (cleanName.toLowerCase().startsWith(cleanPrefix.toLowerCase())) {
+    return cleanName;
+  }
+  return `${cleanPrefix} ${cleanName}`;
 }
 
 /**
@@ -894,28 +861,7 @@ export function resolveSpeciesProfile(
         priority: 'High',
       },
     ],
-    defaultAnimalNamePrefix: '',
     createdAt: ts,
     updatedAt: ts,
   };
-}
-
-/**
- * Prepends `prefix` to `rawName` if `rawName` does not already begin with that prefix
- * (case-insensitive). Respects trailing punctuation/whitespace in `prefix`, or inserts a space.
- */
-export function applyAnimalNamePrefix(rawName: string, prefix?: string): string {
-  const cleanName = rawName.trim();
-  const rawPrefix = prefix ?? '';
-  const trimmedPrefix = rawPrefix.trim();
-  if (!cleanName || !trimmedPrefix) return cleanName;
-
-  if (cleanName.toLowerCase().startsWith(trimmedPrefix.toLowerCase())) {
-    return cleanName;
-  }
-
-  if (/[\s\-_/:]$/.test(rawPrefix)) {
-    return `${rawPrefix.trimStart()}${cleanName}`;
-  }
-  return `${trimmedPrefix} ${cleanName}`;
 }

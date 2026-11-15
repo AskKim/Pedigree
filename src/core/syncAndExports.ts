@@ -28,7 +28,6 @@ import {
   generateUuid,
   isSameSpecies,
   millisToDateIso,
-  normalizeAnimalStatus,
   normalizeBiologicalSex,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -152,8 +151,8 @@ export function mergeBarnSnapshots(
  */
 export function exportBarnBackupJson(snapshot: BarnDatabaseSnapshot): string {
   const payload = {
-    format: 'pedigree-backup',
-    package: 'pedigree',
+    format: 'community-pedigree-backup',
+    package: 'Pedigree',
     version: 5,
     exportedAtIsoUtc: nowIsoUtc(),
     settings: snapshot.settings,
@@ -190,7 +189,6 @@ export function parseBarnBackupJson(
     id: 'barn_settings',
     barnName:
       rawSettings.barnName ||
-      rawSettings.pedigreeName ||
       rawSettings.warrenName ||
       fallbackSettings.barnName ||
       'My Barn',
@@ -199,7 +197,12 @@ export function parseBarnBackupJson(
     defaultSpecies: rawSettings.defaultSpecies || fallbackSettings.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies:
       rawSettings.pinnedLandingSpecies ?? fallbackSettings.pinnedLandingSpecies ?? '',
-    defaultGenerations: rawSettings.defaultGenerations === 4 ? 4 : 3,
+    defaultGenerations:
+      rawSettings.defaultGenerations === 4 ||
+      rawSettings.defaultGenerations === 5 ||
+      rawSettings.defaultGenerations === 6
+        ? rawSettings.defaultGenerations
+        : 3,
     themeMode:
       rawSettings.themeMode === 'dark' || rawSettings.themeMode === 'light'
         ? rawSettings.themeMode
@@ -214,14 +217,26 @@ export function parseBarnBackupJson(
       rawSettings.imageOptimizationPreset === 'high_detail'
         ? rawSettings.imageOptimizationPreset
         : fallbackSettings.imageOptimizationPreset || 'balanced',
-    barnNameSetupComplete:
-      typeof rawSettings.barnNameSetupComplete === 'boolean'
-        ? rawSettings.barnNameSetupComplete
-        : true,
-    showHomeSummaryStrip:
-      typeof rawSettings.showHomeSummaryStrip === 'boolean'
-        ? rawSettings.showHomeSummaryStrip
-        : fallbackSettings.showHomeSummaryStrip ?? true,
+    showHomeSummaryGrid:
+      typeof rawSettings.showHomeSummaryGrid === 'boolean'
+        ? rawSettings.showHomeSummaryGrid
+        : fallbackSettings.showHomeSummaryGrid ?? true,
+    barnNameOnboarded:
+      typeof rawSettings.barnNameOnboarded === 'boolean'
+        ? rawSettings.barnNameOnboarded
+        : fallbackSettings.barnNameOnboarded ?? true,
+    ignoredTaskIds: Array.isArray(rawSettings.ignoredTaskIds)
+      ? rawSettings.ignoredTaskIds.filter((x: unknown) => typeof x === 'string')
+      : fallbackSettings.ignoredTaskIds ?? [],
+    dismissedTaskGroupKeys:
+      rawSettings.dismissedTaskGroupKeys &&
+      typeof rawSettings.dismissedTaskGroupKeys === 'object'
+        ? rawSettings.dismissedTaskGroupKeys
+        : fallbackSettings.dismissedTaskGroupKeys ?? {},
+    includePhotoOnPedigree:
+      typeof rawSettings.includePhotoOnPedigree === 'boolean'
+        ? rawSettings.includePhotoOnPedigree
+        : fallbackSettings.includePhotoOnPedigree ?? false,
     updatedAt: rawSettings.updatedAt || ts,
   };
 
@@ -238,6 +253,7 @@ export function parseBarnBackupJson(
             id: item.id || generateUuid(),
             name: item.name || 'Rabbit',
             sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+            defaultAnimalPrefix: String(item.defaultAnimalPrefix || ''),
             gestationDays: Number(item.gestationDays) || 31,
             rebreedDaysAfterBirth: Number(item.rebreedDaysAfterBirth) || 28,
             weanDaysAfterBirth: Number(item.weanDaysAfterBirth) || 42,
@@ -255,10 +271,6 @@ export function parseBarnBackupJson(
                   priority: (m.priority as TaskPriority) || 'Normal',
                 }))
               : [],
-            defaultAnimalNamePrefix:
-              typeof item.defaultAnimalNamePrefix === 'string'
-                ? item.defaultAnimalNamePrefix
-                : '',
             createdAt: item.createdAt || ts,
             updatedAt: item.updatedAt || ts,
           }))
@@ -291,10 +303,11 @@ export function parseBarnBackupJson(
       breed: a.breed || '',
       variety: a.variety || '',
       sex: normalizeBiologicalSex(a.sex || 'Unknown'),
-      status:
-        a.archived === true || a.isArchived === true || a.isActive === false
-          ? 'Archived'
-          : normalizeAnimalStatus(a.status),
+      status: a.status || 'Active',
+      archived:
+        typeof a.archived === 'boolean'
+          ? a.archived
+          : a.status === 'Deceased' || a.status === 'Sold',
       birthDateIso: a.birthDateIso || millisToDateIso(Number(a.birthDateMillis) || 0),
       weightGrams: Number(a.weightGrams) || 0,
       genotype: genoArray,
@@ -454,7 +467,7 @@ export function parseBarnBackupJson(
 
 function escapeCsvCell(value: unknown): string {
   const s = String(value ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
@@ -467,11 +480,19 @@ export function exportAnimalsCsv(
   animals: Animal[],
   speciesProfiles: SpeciesProfile[],
   settings: BarnSettings,
-  filterSpecies?: string
+  filterSpecies?: string,
+  animalPhotos: AnimalPhoto[] = []
 ): string {
   const rows = filterSpecies
     ? animals.filter((a) => isSameSpecies(a.species, filterSpecies))
     : animals;
+
+  const photosByAnimal = new Map<string, AnimalPhoto[]>();
+  for (const p of animalPhotos) {
+    const arr = photosByAnimal.get(p.animalId) || [];
+    arr.push(p);
+    photosByAnimal.set(p.animalId, arr);
+  }
 
   const headers = [
     'UUID',
@@ -480,6 +501,7 @@ export function exportAnimalsCsv(
     'Name',
     'Sex',
     'Status',
+    'Archived',
     'Breed',
     'Variety',
     'Birth_Date',
@@ -494,6 +516,8 @@ export function exportAnimalsCsv(
     'Dam_UUID',
     'Breeder',
     'Owner',
+    'Photo_Count',
+    'Primary_Photo_File',
     'Notes',
     'Updated_At_UTC',
   ];
@@ -501,6 +525,8 @@ export function exportAnimalsCsv(
   const lines = [headers.join(',')];
   for (const a of rows) {
     const sp = resolveSpeciesProfile(a.species, speciesProfiles);
+    const aPhotos = photosByAnimal.get(a.id) || [];
+    const primaryPhoto = aPhotos.find((p) => p.isPrimary) || aPhotos[0];
     const cells = [
       a.id,
       a.species,
@@ -508,6 +534,7 @@ export function exportAnimalsCsv(
       a.name,
       formatSexForSpecies(a.sex, sp),
       a.status,
+      a.archived ? 'Yes' : 'No',
       a.breed,
       a.variety,
       a.birthDateIso,
@@ -522,6 +549,8 @@ export function exportAnimalsCsv(
       a.damId,
       a.breederName,
       a.ownerName,
+      aPhotos.length,
+      primaryPhoto?.originalFileName || '',
       a.notes,
       a.updatedAt,
     ];
@@ -538,23 +567,18 @@ function escapeHtml(raw: string): string {
     .replace(/"/g, '&quot;');
 }
 
-export interface EvansPedigreeOptions {
-  includePrimaryPhoto?: boolean;
-  primaryPhotoDataUrl?: string;
-  primaryPhotoCaption?: string;
-}
-
 /**
  * Generates a standardized, self-contained `.HTM` multi-generation pedigree file compatible
  * with Evans Rabbit Register / ARBA breeder sharing conventions and direct PDF printing.
+ * Supports 3, 4, 5, and 6 generations plus optional embedded primary portrait photo.
  */
 export function generateEvansHtmPedigree(
   subject: Animal,
   allAnimals: Animal[],
   speciesProfiles: SpeciesProfile[],
   settings: BarnSettings,
-  generations: 3 | 4 = 3,
-  options?: EvansPedigreeOptions
+  generations: 3 | 4 | 5 | 6 = 3,
+  primaryPhotoDataUrl?: string
 ): string {
   const sp = resolveSpeciesProfile(subject.species, speciesProfiles);
   const herdById = buildSpeciesHerdMap(allAnimals, subject.species);
@@ -566,20 +590,22 @@ export function generateEvansHtmPedigree(
     slotMap.set(`${sl.generation}:${sl.slotIndex}`, sl);
   }
 
+  const compactMode = generations >= 5;
+
   const renderAncestorCell = (gen: number, idx: number, rowspan: number): string => {
     const slot = slotMap.get(`${gen}:${idx}`);
     const a = slot?.animal;
     const roleTag = idx % 2 === 0 ? sp.maleLabel : sp.femaleLabel;
     if (!a) {
       return `<td rowspan="${rowspan}" class="cell empty">
-        <div class="role">${escapeHtml(roleTag)} — Unknown</div>
+        <div class="role">${escapeHtml(roleTag)} &mdash; Unknown</div>
       </td>`;
     }
     const geno = a.genotypeRaw || formatGenotypeArray(a.genotype);
     const metaParts = [
       a.tattoo ? `ID: ${escapeHtml(a.tattoo)}` : '',
-      a.variety ? escapeHtml(a.variety) : '',
-      a.weightGrams > 0 ? escapeHtml(formatWeight(a.weightGrams, settings.preferredUnit)) : '',
+      !compactMode && a.variety ? escapeHtml(a.variety) : '',
+      !compactMode && a.weightGrams > 0 ? escapeHtml(formatWeight(a.weightGrams, settings.preferredUnit)) : '',
     ].filter(Boolean);
 
     const regParts = [
@@ -590,14 +616,14 @@ export function generateEvansHtmPedigree(
 
     return `<td rowspan="${rowspan}" class="cell ${idx % 2 === 0 ? 'sire' : 'dam'}">
       <div class="name">${escapeHtml(a.name)}</div>
-      <div class="meta">${metaParts.join(' &middot; ')}</div>
-      ${a.birthDateIso ? `<div class="meta">DOB: ${escapeHtml(formatReadableDate(a.birthDateIso))}</div>` : ''}
-      ${regParts.length ? `<div class="meta">${regParts.join(' &middot; ')}</div>` : ''}
-      ${geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
+      ${metaParts.length ? `<div class="meta">${metaParts.join(' &middot; ')}</div>` : ''}
+      ${!compactMode && a.birthDateIso ? `<div class="meta">DOB: ${escapeHtml(formatReadableDate(a.birthDateIso))}</div>` : ''}
+      ${!compactMode && regParts.length ? `<div class="meta">${regParts.join(' &middot; ')}</div>` : ''}
+      ${!compactMode && geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
     </td>`;
   };
 
-  const totalRows = 1 << generations; // 8 rows for 3-gen, 16 rows for 4-gen
+  const totalRows = 1 << generations;
   const tableRowsHtml: string[] = [];
 
   for (let r = 0; r < totalRows; r++) {
@@ -613,12 +639,19 @@ export function generateEvansHtmPedigree(
   }
 
   const subjectGeno = subject.genotypeRaw || formatGenotypeArray(subject.genotype);
-  const safePhotoUrl =
-    options?.includePrimaryPhoto &&
-    options.primaryPhotoDataUrl &&
-    options.primaryPhotoDataUrl.startsWith('data:image/')
-      ? options.primaryPhotoDataUrl
+  const safePhoto =
+    primaryPhotoDataUrl && primaryPhotoDataUrl.startsWith('data:image/')
+      ? primaryPhotoDataUrl
       : '';
+
+  const genHeaders: string[] = [
+    '<th>Parents (Gen 1)</th>',
+    '<th>Grandparents (Gen 2)</th>',
+    '<th>Great-Grandparents (Gen 3)</th>',
+  ];
+  if (generations >= 4) genHeaders.push('<th>4th Gen (G4)</th>');
+  if (generations >= 5) genHeaders.push('<th>5th Gen (G5)</th>');
+  if (generations >= 6) genHeaders.push('<th>6th Gen (G6)</th>');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -626,24 +659,24 @@ export function generateEvansHtmPedigree(
 <meta charset="UTF-8" />
 <title>Pedigree - ${escapeHtml(subject.name)} (${escapeHtml(subject.tattoo || subject.id)})</title>
 <style>
-  @page { size: landscape; margin: 12mm; }
-  body { font-family: Georgia, "Times New Roman", serif; color: #1e241e; background: #fff; margin: 16px; }
-  .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2d5a3d; padding-bottom: 10px; margin-bottom: 12px; }
-  .barn-title { font-size: 22px; font-weight: bold; color: #2d5a3d; }
-  .sub-title { font-size: 12px; color: #535d52; }
-  .subject-box { border: 1px solid #bbb; padding: 10px 14px; margin-bottom: 12px; background: #faf7f2; display: flex; align-items: center; gap: 16px; font-size: 13px; }
-  .subject-photo { width: 92px; height: 92px; object-fit: cover; border-radius: 6px; border: 1px solid #b5afa4; flex-shrink: 0; background: #fff; }
-  .subject-fields { display: flex; flex-wrap: wrap; gap: 10px 18px; flex: 1; }
+  @page { size: landscape; margin: ${compactMode ? '8mm' : '12mm'}; }
+  body { font-family: Georgia, "Times New Roman", serif; color: #1e241e; background: #fff; margin: ${compactMode ? '8px' : '16px'}; }
+  .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2d5a3d; padding-bottom: 8px; margin-bottom: 10px; }
+  .barn-title { font-size: 20px; font-weight: bold; color: #2d5a3d; }
+  .sub-title { font-size: 11.5px; color: #535d52; }
+  .subject-wrap { border: 1px solid #bbb; padding: 10px 14px; margin-bottom: 10px; background: #faf7f2; display: flex; align-items: center; gap: 16px; }
+  .subject-photo { width: 84px; height: 84px; object-fit: cover; border-radius: 6px; border: 1px solid #8c8678; flex-shrink: 0; }
+  .subject-box { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; flex: 1; }
   table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.pedigree th { background: #2d5a3d; color: #fff; font-size: 12px; padding: 6px; text-align: left; border: 1px solid #2d5a3d; }
-  td.cell { border: 1px solid #c5c0b5; padding: 6px 8px; vertical-align: middle; font-size: 11.5px; line-height: 1.35; }
+  table.pedigree th { background: #2d5a3d; color: #fff; font-size: ${compactMode ? '10px' : '12px'}; padding: ${compactMode ? '4px' : '6px'}; text-align: left; border: 1px solid #2d5a3d; }
+  td.cell { border: 1px solid #c5c0b5; padding: ${compactMode ? '2px 4px' : '6px 8px'}; vertical-align: middle; font-size: ${compactMode ? '9px' : '11.5px'}; line-height: ${compactMode ? '1.15' : '1.35'}; word-break: break-word; }
   td.sire { background: #f7fafd; }
   td.dam { background: #fdf9f7; }
   td.empty { color: #888; font-style: italic; background: #fafafa; }
-  .name { font-weight: bold; font-size: 12.5px; color: #111; }
-  .meta { color: #333; font-family: "Courier New", monospace; font-size: 10.5px; }
-  .geno { color: #2d5a3d; font-family: "Courier New", monospace; font-size: 10.5px; margin-top: 2px; }
-  .footer { margin-top: 14px; display: flex; justify-content: space-between; font-size: 11.5px; color: #444; border-top: 1px solid #ccc; padding-top: 8px; }
+  .name { font-weight: bold; font-size: ${compactMode ? '9.5px' : '12.5px'}; color: #111; }
+  .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
+  .geno { color: #2d5a3d; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
+  .footer { margin-top: 12px; display: flex; justify-content: space-between; font-size: 11px; color: #444; border-top: 1px solid #ccc; padding-top: 8px; }
 </style>
 </head>
 <body>
@@ -655,13 +688,9 @@ export function generateEvansHtmPedigree(
     <div class="sub-title">Generated ${escapeHtml(formatReadableDate(nowIsoUtc().slice(0, 10)))} &middot; Wright COI: ${coi.coiPercent.toFixed(2)}% (${escapeHtml(coi.risk.label)})</div>
   </div>
 
-  <div class="subject-box">
-    ${
-      safePhotoUrl
-        ? `<img class="subject-photo" src="${escapeHtml(safePhotoUrl)}" alt="${escapeHtml(options?.primaryPhotoCaption || subject.name)}" />`
-        : ''
-    }
-    <div class="subject-fields">
+  <div class="subject-wrap">
+    ${safePhoto ? `<img class="subject-photo" src="${safePhoto}" alt="${escapeHtml(subject.name)}" />` : ''}
+    <div class="subject-box">
       <div><strong>Name:</strong> ${escapeHtml(subject.name)}</div>
       <div><strong>Tattoo / ID:</strong> ${escapeHtml(subject.tattoo || 'Unmarked')}</div>
       <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
@@ -678,10 +707,7 @@ export function generateEvansHtmPedigree(
   <table class="pedigree">
     <thead>
       <tr>
-        <th>Parents (Gen 1)</th>
-        <th>Grandparents (Gen 2)</th>
-        <th>Great-Grandparents (Gen 3)</th>
-        ${generations === 4 ? '<th>4th Generation (Gen 4)</th>' : ''}
+        ${genHeaders.join('\n        ')}
       </tr>
     </thead>
     <tbody>
@@ -695,6 +721,50 @@ export function generateEvansHtmPedigree(
   </div>
 </body>
 </html>`;
+}
+
+/**
+ * Generates a timestamp suffix (`YYYY-MM-DD-HHmmss`) so emergency/pre-delete backups never overwrite prior files.
+ */
+export function formatTimestampedBackupSlug(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+/**
+ * Exports a single species subset as a valid `BarnDatabaseSnapshot` JSON string for targeted backups.
+ */
+export function exportSpeciesBackupJson(
+  snapshot: BarnDatabaseSnapshot,
+  speciesName: string
+): string {
+  const speciesProfile = snapshot.speciesProfiles.find((sp) =>
+    isSameSpecies(sp.name, speciesName)
+  );
+  const animals = snapshot.animals.filter((a) => isSameSpecies(a.species, speciesName));
+  const animalIds = new Set(animals.map((a) => a.id));
+  const animalPhotos = (snapshot.animalPhotos ?? []).filter(
+    (p) => isSameSpecies(p.species, speciesName) || animalIds.has(p.animalId)
+  );
+  const cages = snapshot.cages.filter((c) => isSameSpecies(c.species, speciesName));
+  const breedings = snapshot.breedings.filter((b) => isSameSpecies(b.species, speciesName));
+  const tasks = snapshot.tasks.filter((t) => isSameSpecies(t.species, speciesName));
+  const careLogs = snapshot.careLogs.filter(
+    (l) => isSameSpecies(l.species, speciesName) || animalIds.has(l.animalId)
+  );
+  const shows = snapshot.shows.filter((s) => isSameSpecies(s.species, speciesName));
+
+  return exportBarnBackupJson({
+    settings: snapshot.settings,
+    speciesProfiles: speciesProfile ? [speciesProfile] : [],
+    animals,
+    animalPhotos,
+    cages,
+    breedings,
+    tasks,
+    careLogs,
+    shows,
+  });
 }
 
 /**
@@ -799,17 +869,6 @@ export function buildPdfReadyBarnSnapshot(
     ? snapshot.breedings.filter((b) => isSameSpecies(b.species, filterSpecies))
     : snapshot.breedings;
 
-  const herdMapBySpecies = new Map<string, Map<string, Animal>>();
-  const getHerdMap = (speciesName: string) => {
-    const key = speciesName.trim().toLowerCase();
-    let map = herdMapBySpecies.get(key);
-    if (!map) {
-      map = buildSpeciesHerdMap(snapshot.animals, speciesName);
-      herdMapBySpecies.set(key, map);
-    }
-    return map;
-  };
-
   return {
     barnName: snapshot.settings.barnName,
     breederName: snapshot.settings.breederName,
@@ -822,7 +881,7 @@ export function buildPdfReadyBarnSnapshot(
     ).length,
     animals: scopedAnimals.map((a) => {
       const sp = resolveSpeciesProfile(a.species, snapshot.speciesProfiles);
-      const herdMap = getHerdMap(a.species);
+      const herdMap = buildSpeciesHerdMap(snapshot.animals, a.species);
       const coi = calculateAnimalCoi(a, herdMap);
       const sire = a.sireId ? herdMap.get(a.sireId) : undefined;
       const dam = a.damId ? herdMap.get(a.damId) : undefined;

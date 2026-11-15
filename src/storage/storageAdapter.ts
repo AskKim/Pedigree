@@ -82,4 +82,10 @@ export interface StorageAdapter {
 
   /** Imports a raw unencrypted `.sqlite` binary database file and persists it locally. */
   importRawSqliteBytes(bytes: Uint8Array): Promise<BarnDatabaseSnapshot>;
+
+  /** Closes and cleanly re-opens the local database connection without losing saved records. */
+  resetConnection?(): Promise<BarnDatabaseSnapshot>;
+
+  /** Purges and rebuilds a corrupted primary IndexedDB/SQLite store cleanly from starter schema. */
+  rebuildCleanDatabase?(): Promise<BarnDatabaseSnapshot>;
 }

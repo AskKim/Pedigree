@@ -9,8 +9,8 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { Camera, Star, Trash2, X } from 'lucide-react';
-import React, { useMemo, useRef, useState } from 'react';
+import { Camera, Trash2, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   parseGenotypeString,
   RABBIT_VARIETY_GENOTYPE_PRESETS,
@@ -26,10 +26,8 @@ import {
   ANIMAL_STATUSES,
   Animal,
   AnimalStatus,
-  applyAnimalNamePrefix,
   BiologicalSex,
   CageLocation,
-  isAnimalActive,
   isAnimalArchived,
   isSameSpecies,
   parseWeightInputToGrams,
@@ -76,13 +74,13 @@ export function AnimalEditorModal({
   onClose,
 }: AnimalEditorModalProps) {
   const isEditing = Boolean(initialAnimal?.id);
-
-  const speciesDefaultPrefix = (speciesProfile.defaultAnimalNamePrefix || '').trim();
-  const hasDefaultPrefix = Boolean(speciesDefaultPrefix);
+  const defaultPrefix = (speciesProfile.defaultAnimalPrefix || '').trim();
 
   const [tattoo, setTattoo] = useState(initialAnimal?.tattoo || '');
-  const [name, setName] = useState(initialAnimal?.name || '');
-  const [applyDefaultPrefix, setApplyDefaultPrefix] = useState(true);
+  const [name, setName] = useState(() => {
+    if (initialAnimal?.name) return initialAnimal.name;
+    return defaultPrefix ? `${defaultPrefix} ` : '';
+  });
   const [breed, setBreed] = useState(
     initialAnimal?.breed ||
       (isSameSpecies(speciesProfile.name, 'Rabbit')
@@ -94,6 +92,19 @@ export function AnimalEditorModal({
   );
   const [sex, setSex] = useState<BiologicalSex>(forcedSex || initialAnimal?.sex || 'Female');
   const [status, setStatus] = useState<AnimalStatus>(initialAnimal?.status || 'Active');
+  const [archived, setArchived] = useState<boolean>(
+    initialAnimal ? isAnimalArchived(initialAnimal) : false
+  );
+  const [includeArchivedParents, setIncludeArchivedParents] = useState<boolean>(() => {
+    if (!initialAnimal) return false;
+    const sireArch = initialAnimal.sireId
+      ? isAnimalArchived(speciesAnimals.find((a) => a.id === initialAnimal.sireId))
+      : false;
+    const damArch = initialAnimal.damId
+      ? isAnimalArchived(speciesAnimals.find((a) => a.id === initialAnimal.damId))
+      : false;
+    return sireArch || damArch;
+  });
   const [birthDateIso, setBirthDateIso] = useState(initialAnimal?.birthDateIso || '');
   const [weightInput, setWeightInput] = useState(() => {
     const g = initialAnimal?.weightGrams || 0;
@@ -119,30 +130,47 @@ export function AnimalEditorModal({
   const [ownerName, setOwnerName] = useState(initialAnimal?.ownerName ?? defaultOwnerName);
   const [sireId, setSireId] = useState(initialAnimal?.sireId || '');
   const [damId, setDamId] = useState(initialAnimal?.damId || '');
-  const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
   const [notes, setNotes] = useState(initialAnimal?.notes || '');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [stagedPhotos, setStagedPhotos] = useState<OptimizedImagePayload[]>([]);
   const [isOptimizingPhotos, setIsOptimizingPhotos] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const activePreset = resolveImageOptimizationPreset(optimizationPresetId);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
 
   const handleSelectModalPhotos = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setIsOptimizingPhotos(true);
+    setPhotoError(null);
     try {
       const next: OptimizedImagePayload[] = [];
+      const failures: string[] = [];
       for (let i = 0; i < files.length; i++) {
         try {
           const opt = await optimizeImageFile(files[i], activePreset.id);
           next.push(opt);
-        } catch {
-          // Ignore unreadable non-image
+        } catch (err) {
+          failures.push(
+            err instanceof Error ? err.message : `Could not decode "${files[i].name}"`
+          );
         }
       }
       if (next.length > 0) {
         setStagedPhotos((prev) => [...prev, ...next]);
+      }
+      if (failures.length > 0) {
+        setPhotoError(failures[0]);
       }
     } finally {
       setIsOptimizingPhotos(false);
@@ -154,7 +182,18 @@ export function AnimalEditorModal({
     [speciesAnimals, speciesProfile.name]
   );
 
-  // Strictly species-isolated, sex-appropriate, cycle-safe parent options
+  const archivedParentCount = useMemo(
+    () =>
+      speciesAnimals.filter(
+        (c) =>
+          isSameSpecies(c.species, speciesProfile.name) &&
+          c.id !== initialAnimal?.id &&
+          isAnimalArchived(c)
+      ).length,
+    [speciesAnimals, speciesProfile.name, initialAnimal?.id]
+  );
+
+  // Strictly species-isolated, sex-appropriate, cycle-safe parent options (Active by default, Archived optional)
   const sireCandidates = useMemo(
     () =>
       speciesAnimals.filter(
@@ -162,10 +201,10 @@ export function AnimalEditorModal({
           isSameSpecies(c.species, speciesProfile.name) &&
           (c.sex === 'Male' || c.sex === 'Unknown') &&
           c.id !== initialAnimal?.id &&
-          (includeArchivedParents || isAnimalActive(c) || c.id === sireId) &&
+          (!isAnimalArchived(c) || includeArchivedParents || c.id === sireId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
       ),
-    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById, includeArchivedParents, sireId]
+    [speciesAnimals, speciesProfile.name, initialAnimal?.id, includeArchivedParents, sireId, herdById]
   );
 
   const damCandidates = useMemo(
@@ -175,10 +214,10 @@ export function AnimalEditorModal({
           isSameSpecies(c.species, speciesProfile.name) &&
           (c.sex === 'Female' || c.sex === 'Unknown') &&
           c.id !== initialAnimal?.id &&
-          (includeArchivedParents || isAnimalActive(c) || c.id === damId) &&
+          (!isAnimalArchived(c) || includeArchivedParents || c.id === damId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
       ),
-    [speciesAnimals, speciesProfile.name, initialAnimal?.id, herdById, includeArchivedParents, damId]
+    [speciesAnimals, speciesProfile.name, initialAnimal?.id, includeArchivedParents, damId, herdById]
   );
 
   const projectedCoi = useMemo(() => {
@@ -189,22 +228,18 @@ export function AnimalEditorModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    const finalName =
-      !isEditing && applyDefaultPrefix && hasDefaultPrefix
-        ? applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix)
-        : name.trim();
-
     onSave(
       {
         id: initialAnimal?.id,
         createdAt: initialAnimal?.createdAt,
         tattoo: tattoo.trim(),
-        name: finalName,
+        name: name.trim(),
         species: speciesProfile.name, // Strictly locked to active species
         breed: breed.trim(),
         variety: variety.trim(),
         sex,
         status,
+        archived,
         birthDateIso,
         weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
         genotype: parseGenotypeString(genotypeRaw),
@@ -265,41 +300,6 @@ export function AnimalEditorModal({
                 onChange={(e) => setName(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
               />
-              {!isEditing && hasDefaultPrefix && (
-                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--barn-ink)]">
-                    <input
-                      type="checkbox"
-                      checked={applyDefaultPrefix}
-                      onChange={(e) => setApplyDefaultPrefix(e.target.checked)}
-                      className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
-                    />
-                    <span>
-                      Apply {speciesProfile.name} prefix{' '}
-                      <code className="font-mono font-semibold">{speciesDefaultPrefix}</code>
-                    </span>
-                  </label>
-                  <span className="text-[var(--barn-muted)]">
-                    {!applyDefaultPrefix ? (
-                      'Overridden — saves exact name'
-                    ) : name.trim() ? (
-                      applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix).toLowerCase() ===
-                      name.trim().toLowerCase() ? (
-                        'Already includes prefix'
-                      ) : (
-                        <>
-                          Saves as:{' '}
-                          <strong className="text-[var(--barn-ink)]">
-                            {applyAnimalNamePrefix(name, speciesProfile.defaultAnimalNamePrefix)}
-                          </strong>
-                        </>
-                      )
-                    ) : (
-                      'Auto-prepended unless already present'
-                    )}
-                  </span>
-                </div>
-              )}
             </div>
 
             <div>
@@ -349,7 +349,13 @@ export function AnimalEditorModal({
               </label>
               <select
                 value={status}
-                onChange={(e) => setStatus(e.target.value as AnimalStatus)}
+                onChange={(e) => {
+                  const next = e.target.value as AnimalStatus;
+                  setStatus(next);
+                  if (next === 'Deceased' || next === 'Sold') {
+                    setArchived(true);
+                  }
+                }}
                 className="w-full min-h-[44px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
               >
                 {ANIMAL_STATUSES.map((st) => (
@@ -360,6 +366,24 @@ export function AnimalEditorModal({
               </select>
             </div>
           </div>
+
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs cursor-pointer">
+            <input
+              type="checkbox"
+              checked={archived}
+              onChange={(e) => setArchived(e.target.checked)}
+              className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+            />
+            <span>
+              <strong className="text-[var(--barn-ink)]">
+                Archived / Non-Active (Retain for Pedigrees Only)
+              </strong>
+              <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                Moves this animal out of the active herd and active barn chores while keeping its
+                lineage available when linking pedigrees.
+              </span>
+            </span>
+          </label>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="sm:col-span-2">
@@ -493,15 +517,17 @@ export function AnimalEditorModal({
                 <span className="text-xs font-medium text-[var(--barn-muted)]">
                   Lineage Parents ({speciesProfile.name} Only)
                 </span>
-                <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--barn-muted)] cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={includeArchivedParents}
-                    onChange={(e) => setIncludeArchivedParents(e.target.checked)}
-                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
-                  />
-                  <span>Include archived parents</span>
-                </label>
+                {archivedParentCount > 0 && (
+                  <label className="inline-flex items-center gap-1.5 text-xs text-[var(--barn-ink)] cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeArchivedParents}
+                      onChange={(e) => setIncludeArchivedParents(e.target.checked)}
+                      className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                    />
+                    Include Archived ({archivedParentCount})
+                  </label>
+                )}
               </div>
               {projectedCoi && (
                 <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)]">
@@ -521,10 +547,15 @@ export function AnimalEditorModal({
                   className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
                 >
                   <option value="">Unknown / Foundation {speciesProfile.maleLabel}</option>
+                  {sireId && !sireCandidates.some((c) => c.id === sireId) && (
+                    <option value={sireId}>
+                      [Unlisted / Missing Sire ID: {sireId.slice(0, 8)} — select Unknown to unlink]
+                    </option>
+                  )}
                   {sireCandidates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
-                      {isAnimalArchived(c) ? ` [${c.status}]` : ''}
+                      {isAnimalArchived(c) ? ' [Archived]' : ''}
                     </option>
                   ))}
                 </select>
@@ -540,10 +571,15 @@ export function AnimalEditorModal({
                   className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
                 >
                   <option value="">Unknown / Foundation {speciesProfile.femaleLabel}</option>
+                  {damId && !damCandidates.some((c) => c.id === damId) && (
+                    <option value={damId}>
+                      [Unlisted / Missing Dam ID: {damId.slice(0, 8)} — select Unknown to unlink]
+                    </option>
+                  )}
                   {damCandidates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
-                      {isAnimalArchived(c) ? ` [${c.status}]` : ''}
+                      {isAnimalArchived(c) ? ' [Archived]' : ''}
                     </option>
                   ))}
                 </select>
@@ -654,63 +690,36 @@ export function AnimalEditorModal({
               </button>
             </div>
 
+            {photoError && (
+              <div className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs">
+                {photoError}
+              </div>
+            )}
+
             {stagedPhotos.length > 0 && (
-              <div className="space-y-1.5">
-                {stagedPhotos.length > 1 && (
-                  <div className="text-[11px] text-[var(--barn-muted)]">
-                    Click the star on any staged photo to set it as the primary photo.
-                  </div>
-                )}
-                <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                  {stagedPhotos.map((p, idx) => (
-                    <div
-                      key={`${p.originalFileName}-${idx}`}
-                      className={`relative w-16 h-16 rounded-xl overflow-hidden border-2 shrink-0 ${
-                        idx === 0 && stagedPhotos.length > 1
-                          ? 'border-[var(--barn-sage)]'
-                          : 'border-[var(--barn-border)]'
-                      }`}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {stagedPhotos.map((p, idx) => (
+                  <div
+                    key={`${p.originalFileName}-${idx}`}
+                    className="relative w-16 h-16 rounded-xl overflow-hidden border border-[var(--barn-border)] shrink-0"
+                  >
+                    <img
+                      src={p.thumbnailDataUrl}
+                      alt={p.originalFileName}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStagedPhotos((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                      aria-label="Remove staged photo"
+                      className="absolute top-0.5 right-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
                     >
-                      <img
-                        src={p.thumbnailDataUrl}
-                        alt={p.originalFileName}
-                        className="w-full h-full object-cover"
-                      />
-                      {stagedPhotos.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (idx === 0) return;
-                            setStagedPhotos((prev) => {
-                              const next = [...prev];
-                              const [picked] = next.splice(idx, 1);
-                              return [picked, ...next];
-                            });
-                          }}
-                          title={idx === 0 ? 'Primary photo' : 'Set as primary photo'}
-                          aria-label={idx === 0 ? 'Primary photo' : 'Set as primary photo'}
-                          className="absolute bottom-0.5 left-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
-                        >
-                          <Star
-                            className={`w-3 h-3 ${
-                              idx === 0 ? 'fill-amber-400 text-amber-400' : 'text-white/80'
-                            }`}
-                          />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setStagedPhotos((prev) => prev.filter((_, i) => i !== idx))
-                        }
-                        aria-label="Remove staged photo"
-                        className="absolute top-0.5 right-0.5 w-5 h-5 rounded-md bg-black/75 text-white flex items-center justify-center"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>

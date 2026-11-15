@@ -36,7 +36,10 @@ interface DecodedCanvasSource {
   cleanup: () => void;
 }
 
-async function decodeBlobToCanvasSource(blob: Blob): Promise<DecodedCanvasSource> {
+async function decodeBlobToCanvasSource(
+  blob: Blob,
+  originalFileName = ''
+): Promise<DecodedCanvasSource> {
   if (typeof createImageBitmap === 'function') {
     try {
       const bitmap = await createImageBitmap(blob, {
@@ -67,7 +70,15 @@ async function decodeBlobToCanvasSource(blob: Blob): Promise<DecodedCanvasSource
     };
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl);
-      reject(new Error('Unsupported or unreadable image format.'));
+      const isHeic =
+        /heic|heif/i.test(blob.type || '') || /\.(heic|heif)$/i.test(originalFileName);
+      reject(
+        new Error(
+          isHeic
+            ? `Cannot decode iPhone HEIC/HEIF photo "${originalFileName || 'image'}" in this browser. Change iPhone Camera Format to "Most Compatible" (JPEG) or export as JPG/PNG first.`
+            : `Unsupported or unreadable image format${originalFileName ? ` (${originalFileName})` : ''}. Try JPG, PNG, or WebP.`
+        )
+      );
     };
     img.src = objectUrl;
   });
@@ -80,44 +91,39 @@ function renderToDataUrl(
   quality: number
 ): { dataUrl: string; mimeType: string } {
   const canvas = document.createElement('canvas');
-  let jpegCanvas: HTMLCanvasElement | null = null;
-  try {
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('2D Canvas context unavailable for image optimization.');
-    }
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('2D Canvas context unavailable for image optimization.');
+  }
 
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
 
-    // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
-    const webpUrl = canvas.toDataURL('image/webp', quality);
-    if (webpUrl.startsWith('data:image/webp')) {
-      return { dataUrl: webpUrl, mimeType: 'image/webp' };
-    }
-
-    // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
-    jpegCanvas = document.createElement('canvas');
-    jpegCanvas.width = targetWidth;
-    jpegCanvas.height = targetHeight;
-    const jCtx = jpegCanvas.getContext('2d')!;
-    jCtx.fillStyle = '#F7F2E7';
-    jCtx.fillRect(0, 0, targetWidth, targetHeight);
-    jCtx.drawImage(canvas, 0, 0);
-    const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
-    return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
-  } finally {
-    // Release GPU/RAM canvas backing buffers immediately instead of waiting for GC
+  // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
+  const webpUrl = canvas.toDataURL('image/webp', quality);
+  if (webpUrl.startsWith('data:image/webp')) {
     canvas.width = 0;
     canvas.height = 0;
-    if (jpegCanvas) {
-      jpegCanvas.width = 0;
-      jpegCanvas.height = 0;
-    }
+    return { dataUrl: webpUrl, mimeType: 'image/webp' };
   }
+
+  // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
+  const jpegCanvas = document.createElement('canvas');
+  jpegCanvas.width = targetWidth;
+  jpegCanvas.height = targetHeight;
+  const jCtx = jpegCanvas.getContext('2d')!;
+  jCtx.fillStyle = '#F7F2E7';
+  jCtx.fillRect(0, 0, targetWidth, targetHeight);
+  jCtx.drawImage(canvas, 0, 0);
+  const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
+  canvas.width = 0;
+  canvas.height = 0;
+  jpegCanvas.width = 0;
+  jpegCanvas.height = 0;
+  return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -139,20 +145,42 @@ export async function optimizeImageBlob(
 ): Promise<OptimizedImagePayload> {
   const preset = resolveImageOptimizationPreset(presetId);
   const originalBytes = blob.size;
-  const decoded = await decodeBlobToCanvasSource(blob);
+  const decoded = await decodeBlobToCanvasSource(blob, originalFileName);
 
   try {
-    const mainDims = computeScaledDimensions(
+    let activePreset = preset;
+    let mainDims = computeScaledDimensions(
       decoded.width,
       decoded.height,
-      preset.maxDimension
+      activePreset.maxDimension
     );
-    let mainEncoded = renderToDataUrl(
-      decoded.source,
-      mainDims.width,
-      mainDims.height,
-      preset.quality
-    );
+    let mainEncoded: { dataUrl: string; mimeType: string };
+    try {
+      mainEncoded = renderToDataUrl(
+        decoded.source,
+        mainDims.width,
+        mainDims.height,
+        activePreset.quality
+      );
+    } catch (renderErr) {
+      // Automatic low-memory self-recovery: step down to Compact (960px) before failing
+      if (activePreset.maxDimension > 960) {
+        activePreset = resolveImageOptimizationPreset('compact');
+        mainDims = computeScaledDimensions(
+          decoded.width,
+          decoded.height,
+          activePreset.maxDimension
+        );
+        mainEncoded = renderToDataUrl(
+          decoded.source,
+          mainDims.width,
+          mainDims.height,
+          activePreset.quality
+        );
+      } else {
+        throw renderErr;
+      }
+    }
     let storedBytes = estimateDataUrlByteLength(mainEncoded.dataUrl);
 
     // Never-Inflate Guard: if input was already a compact JPEG/WebP within target dimensions
@@ -173,13 +201,13 @@ export async function optimizeImageBlob(
     const thumbDims = computeScaledDimensions(
       decoded.width,
       decoded.height,
-      preset.thumbnailDimension
+      activePreset.thumbnailDimension
     );
     const thumbEncoded = renderToDataUrl(
       decoded.source,
       thumbDims.width,
       thumbDims.height,
-      preset.thumbnailQuality
+      activePreset.thumbnailQuality
     );
 
     return {
@@ -220,14 +248,10 @@ export async function optimizeImageBytes(
   mimeHint = 'image/jpeg',
   presetId?: ImageOptimizationPresetId
 ): Promise<OptimizedImagePayload> {
-  // Reuse the underlying ArrayBuffer directly when un-sliced, otherwise slice only the needed range
-  const bufferSlice =
-    bytes.buffer instanceof ArrayBuffer &&
-    bytes.byteOffset === 0 &&
-    bytes.byteLength === bytes.buffer.byteLength
-      ? bytes.buffer
-      : bytes.slice().buffer;
-  const blob = new Blob([bufferSlice], { type: mimeHint || 'image/jpeg' });
+  // Create a clean ArrayBuffer copy slice for Blob compatibility across strict TypeScript DOM libs
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const blob = new Blob([copy.buffer], { type: mimeHint || 'image/jpeg' });
   return optimizeImageBlob(blob, originalFileName, presetId);
 }
 
