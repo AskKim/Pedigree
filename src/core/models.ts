@@ -240,6 +240,8 @@ export interface SpeciesProfile {
   name: string;
   sortOrder?: number;
   defaultAnimalPrefix?: string;
+  memoText?: string;
+  memoUpdatedAt?: string;
   gestationDays: number;
   rebreedDaysAfterBirth: number;
   weanDaysAfterBirth: number;
@@ -268,6 +270,7 @@ export interface Animal {
   sex: BiologicalSex;
   status: AnimalStatus;
   archived?: boolean;
+  needsAttention?: boolean;
   birthDateIso: string; // YYYY-MM-DD or ""
   weightGrams: number;
   genotype: GenotypeAllelePair[];
@@ -1095,4 +1098,12 @@ export function resolveSpeciesProfile(
     createdAt: ts,
     updatedAt: ts,
   };
+}
+
+/**
+ * Returns `true` when an animal record is flagged as needing follow-up attention
+ * (for example, quick-added as an outside or unlisted parent during breeding).
+ */
+export function doesAnimalNeedAttention(animal: Animal | null | undefined): boolean {
+  return Boolean(animal?.needsAttention);
 }

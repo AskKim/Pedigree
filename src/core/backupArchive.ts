@@ -400,7 +400,7 @@ export function buildCompleteBackupZipFiles(
         `Photos: ${manifest.length}`,
         '',
         'Contents:',
-        '- pedigree-backup.json: Complete herd, lineage, breeding, chore, and care log database.',
+        '- pedigree-backup.json: Complete herd, lineage, breeding, chore, care log, and species memo pad database.',
         '- photos/: Standard viewable image files organized by species and animal.',
         '- photos/manifest.json: Index linking every image file to its animal UUID, tattoo, cover flag, and caption.',
         '',

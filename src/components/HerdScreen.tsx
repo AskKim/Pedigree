@@ -13,10 +13,12 @@
  */
 
 import {
+  AlertCircle,
   Archive,
   ArchiveRestore,
   ArrowLeft,
   ArrowRightLeft,
+  CheckCircle2,
   Edit3,
   FileText,
   GitFork,
@@ -30,10 +32,12 @@ import { formatGenotypeArray, inferHiddenAlleles } from '../core/geneticsEngine'
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   Animal,
+  BarnDatabaseSnapshot,
   BarnSettings,
   CARE_LOG_TYPES,
   CareLog,
   CareLogType,
+  doesAnimalNeedAttention,
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
@@ -42,6 +46,7 @@ import {
   SpeciesProfile,
   todayDateIso,
 } from '../core/models';
+import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
@@ -49,9 +54,15 @@ import {
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
+import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
+import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+import { WrightCoiNotice } from './WrightCoiNotice';
+
+export const HERD_PAGE_SIZE = 50;
 
 interface HerdScreenProps {
+  snapshot: BarnDatabaseSnapshot;
   activeData: ActiveSpeciesData;
   allAnimals: Animal[];
   speciesProfiles: SpeciesProfile[];
@@ -73,15 +84,27 @@ interface HerdScreenProps {
   onDeleteAnimal: (animal: Animal) => void;
   onArchiveAnimals: (animalIds: string[], archived: boolean) => void;
   onDeleteAnimalsBatch: (animalIds: string[]) => void;
-  onMigrateAnimalsSpecies: (animalIds: string[], targetSpecies: string) => void;
+  onMigrateAnimalsSpecies: (
+    animalIds: string[],
+    targetSpecies: string,
+    options?: SpeciesMigrationOptions
+  ) => Promise<void> | void;
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
   onAddCareLog: (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onDeleteCareLog: (id: string) => void;
 }
 
-type HerdFilterTab = 'all' | 'Male' | 'Female' | 'Junior' | 'Active' | 'Archived';
+type HerdFilterTab =
+  | 'all'
+  | 'Male'
+  | 'Female'
+  | 'Junior'
+  | 'Active'
+  | 'Archived'
+  | 'NeedsAttention';
 
 export function HerdScreen({
+  snapshot,
   activeData,
   allAnimals,
   speciesProfiles,
@@ -117,23 +140,22 @@ export function HerdScreen({
   const [filterKey, setFilterKey] = useState<HerdFilterTab>('all');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
-
-  const otherSpecies = useMemo(
-    () =>
-      speciesProfiles.filter(
-        (sp) => sp.name.toLowerCase() !== speciesProfile.name.toLowerCase()
-      ),
-    [speciesProfiles, speciesProfile.name]
-  );
-  const [bulkMoveTarget, setBulkMoveTarget] = useState<string>(otherSpecies[0]?.name || '');
-  const [singleMoveTarget, setSingleMoveTarget] = useState<string>(otherSpecies[0]?.name || '');
+  const [visibleLimit, setVisibleLimit] = useState(HERD_PAGE_SIZE);
+  const [migrationModalState, setMigrationModalState] = useState<{
+    mode: 'single' | 'multi-select';
+    animalIds: string[];
+  } | null>(null);
 
   useEffect(() => {
     setCheckedIds([]);
     setConfirmBatchDelete(false);
-    setBulkMoveTarget(otherSpecies[0]?.name || '');
-    setSingleMoveTarget(otherSpecies[0]?.name || '');
-  }, [speciesProfile.name, otherSpecies]);
+    setMigrationModalState(null);
+    setVisibleLimit(HERD_PAGE_SIZE);
+  }, [speciesProfile.name]);
+
+  useEffect(() => {
+    setVisibleLimit(HERD_PAGE_SIZE);
+  }, [filterKey, query]);
 
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
@@ -143,6 +165,7 @@ export function HerdScreen({
     title: string;
     filename: string;
     html: string;
+    isPedigree?: boolean;
   } | null>(null);
 
   // Quick Cage-Side Care/Weight Log state
@@ -166,6 +189,10 @@ export function HerdScreen({
     () => animals.filter((a) => isAnimalArchived(a)).length,
     [animals]
   );
+  const needsAttentionCount = useMemo(
+    () => animals.filter((a) => doesAnimalNeedAttention(a)).length,
+    [animals]
+  );
 
   const filteredAnimals = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -176,6 +203,7 @@ export function HerdScreen({
       if (filterKey === 'Junior' && a.status !== 'Junior') return false;
       if (filterKey === 'Active' && archived) return false;
       if (filterKey === 'Archived' && !archived) return false;
+      if (filterKey === 'NeedsAttention' && !doesAnimalNeedAttention(a)) return false;
 
       if (!q) return true;
       return (
@@ -220,6 +248,11 @@ export function HerdScreen({
   const alleleInference = useMemo(
     () => (activeAnimal ? inferHiddenAlleles(activeAnimal, herdById, animals) : null),
     [activeAnimal, herdById, animals]
+  );
+
+  const visibleAnimals = useMemo(
+    () => filteredAnimals.slice(0, visibleLimit),
+    [filteredAnimals, visibleLimit]
   );
 
   const filteredIds = filteredAnimals.map((a) => a.id);
@@ -270,6 +303,7 @@ export function HerdScreen({
     setPreviewDoc({
       title: `Formal Pedigree (.HTM / PDF) — ${subject.name}`,
       filename: `pedigree-${subject.tattoo || subject.id}.htm`,
+      isPedigree: true,
       html: generateEvansHtmPedigree(
         subject,
         allAnimals,
@@ -319,36 +353,59 @@ export function HerdScreen({
                 )}
               </button>
 
-              {otherSpecies.length > 0 && (
-                <div className="inline-flex items-center gap-1.5 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl px-2 py-1">
-                  <select
-                    aria-label="Target species for move"
-                    value={singleMoveTarget}
-                    onChange={(e) => setSingleMoveTarget(e.target.value)}
-                    className="min-h-[30px] px-1.5 bg-transparent text-xs"
-                  >
-                    {otherSpecies.map((sp) => (
-                      <option key={sp.id} value={sp.name}>
-                        {sp.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (singleMoveTarget) {
-                        onMigrateAnimalsSpecies([activeAnimal.id], singleMoveTarget);
-                      }
-                    }}
-                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
-                  >
-                    <ArrowRightLeft className="w-3 h-3" aria-hidden="true" />
-                    Move Species
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() =>
+                  setMigrationModalState({ mode: 'single', animalIds: [activeAnimal.id] })
+                }
+                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                Move Species
+              </button>
             </div>
           </div>
+
+          {doesAnimalNeedAttention(activeAnimal) && (
+            <div className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <AlertCircle
+                  className="w-5 h-5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="text-xs space-y-0.5">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    This {speciesProfile.name.toLowerCase()} record is marked Needs Attention
+                  </div>
+                  <p className="text-[var(--barn-muted)]">
+                    Complete any missing details (tattoo, breed, pedigree, or owner), then resolve
+                    to clear the Home &amp; Hub reminders.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingAnimal(activeAnimal);
+                    setShowAnimalModal(true);
+                  }}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                  Edit Details
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSaveAnimal({ ...activeAnimal, needsAttention: false })}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  Mark Attention Resolved
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-6">
             {/* Header & Cage-Side Print/Tree Actions */}
@@ -419,16 +476,19 @@ export function HerdScreen({
                   </button>
                 </div>
 
-                {primaryPhotoByAnimalId.has(activeAnimal.id) && (
-                  <label className="flex items-center justify-end gap-2 text-xs text-[var(--barn-muted)] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(settings.includePhotoOnPedigree)}
-                      onChange={(e) => onToggleIncludePhotoOnPedigree(e.target.checked)}
-                    />
-                    <span>Print primary photo on .HTM / PDF pedigree</span>
-                  </label>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <PedigreePrintNotice compact />
+                  {primaryPhotoByAnimalId.has(activeAnimal.id) && (
+                    <label className="flex items-center gap-2 text-xs text-[var(--barn-muted)] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.includePhotoOnPedigree)}
+                        onChange={(e) => onToggleIncludePhotoOnPedigree(e.target.checked)}
+                      />
+                      <span>Print primary photo on .HTM / PDF pedigree</span>
+                    </label>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -446,6 +506,7 @@ export function HerdScreen({
                   {(coiByAnimalId.get(activeAnimal.id)?.coiPercent ?? 0).toFixed(2)}% (
                   {coiByAnimalId.get(activeAnimal.id)?.risk.label || 'Outcross'})
                 </div>
+                <WrightCoiNotice compact className="mt-1" />
               </div>
               <div>
                 <div className="text-[var(--barn-muted)]">Registration / GC</div>
@@ -768,6 +829,9 @@ export function HerdScreen({
                     ['Junior', `Juniors (${juniorCount})`],
                     ['Active', `Active (${activeCount})`],
                     ['Archived', `Archived (${archivedCount})`],
+                    ...(needsAttentionCount > 0 || filterKey === 'NeedsAttention'
+                      ? ([['NeedsAttention', `Needs Attention (${needsAttentionCount})`]] as const)
+                      : []),
                   ] as const
                 ).map(([key, label]) => (
                   <button
@@ -777,6 +841,8 @@ export function HerdScreen({
                     className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 tabular-nums ${
                       filterKey === key
                         ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                        : key === 'NeedsAttention'
+                        ? 'text-[var(--barn-terracotta)] hover:bg-[var(--barn-terracotta-tint)]'
                         : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
                     }`}
                   >
@@ -833,34 +899,16 @@ export function HerdScreen({
                     Restore to Active
                   </button>
 
-                  {otherSpecies.length > 0 && (
-                    <div className="inline-flex items-center gap-1.5 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl px-2 py-1">
-                      <select
-                        aria-label="Target species for selected animals"
-                        value={bulkMoveTarget}
-                        onChange={(e) => setBulkMoveTarget(e.target.value)}
-                        className="min-h-[28px] px-1 bg-transparent text-xs"
-                      >
-                        {otherSpecies.map((sp) => (
-                          <option key={sp.id} value={sp.name}>
-                            {sp.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (bulkMoveTarget) {
-                            onMigrateAnimalsSpecies(checkedIds, bulkMoveTarget);
-                            setCheckedIds([]);
-                          }
-                        }}
-                        className="min-h-[28px] px-2.5 py-0.5 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
-                      >
-                        Move to Species
-                      </button>
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMigrationModalState({ mode: 'multi-select', animalIds: checkedIds })
+                    }
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                    Move to Species
+                  </button>
 
                   {confirmBatchDelete ? (
                     <div className="inline-flex items-center gap-1.5">
@@ -931,7 +979,7 @@ export function HerdScreen({
               </div>
             ) : (
               <>
-                <div className="px-4 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/50 flex items-center justify-between gap-2 text-xs text-[var(--barn-muted)]">
+                <div className="px-4 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/50 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--barn-muted)]">
                   <label className="inline-flex items-center gap-2.5 cursor-pointer font-medium text-[var(--barn-ink)]">
                     <input
                       type="checkbox"
@@ -941,11 +989,14 @@ export function HerdScreen({
                     />
                     <span>Select All Shown ({filteredAnimals.length})</span>
                   </label>
-                  <span>Tap any animal row to open its full page</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <WrightCoiNotice compact />
+                    <span>Tap any animal row to open its full page</span>
+                  </div>
                 </div>
 
                 <div className="divide-y divide-[var(--barn-border)]">
-                  {filteredAnimals.map((a) => {
+                  {visibleAnimals.map((a) => {
                     const isChecked = checkedIds.includes(a.id);
                     const isArch = isAnimalArchived(a);
                     const coi = coiByAnimalId.get(a.id);
@@ -1018,6 +1069,11 @@ export function HerdScreen({
                                     · Archived
                                   </span>
                                 )}
+                                {doesAnimalNeedAttention(a) && (
+                                  <span className="text-[11px] font-semibold text-[var(--barn-terracotta)] shrink-0">
+                                    · Needs Attention
+                                  </span>
+                                )}
                               </div>
                               <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
                                 <span className={`font-medium ${sexColor}`}>
@@ -1042,6 +1098,21 @@ export function HerdScreen({
                     );
                   })}
                 </div>
+
+                {filteredAnimals.length > visibleAnimals.length && (
+                  <div className="px-4 py-3 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/50 flex items-center justify-between gap-3 text-xs">
+                    <span className="text-[var(--barn-muted)] font-mono tabular-nums">
+                      Showing {visibleAnimals.length} of {filteredAnimals.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit((n) => n + HERD_PAGE_SIZE)}
+                      className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                    >
+                      Show More ({Math.min(HERD_PAGE_SIZE, filteredAnimals.length - visibleAnimals.length)})
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -1064,11 +1135,26 @@ export function HerdScreen({
         />
       )}
 
+      {migrationModalState && (
+        <SpeciesMigrationModal
+          snapshot={snapshot}
+          sourceSpecies={speciesProfile.name}
+          directAnimalIds={migrationModalState.animalIds}
+          mode={migrationModalState.mode}
+          onConfirmMigrate={async (ids, target, options) => {
+            await onMigrateAnimalsSpecies(ids, target, options);
+            setCheckedIds([]);
+          }}
+          onClose={() => setMigrationModalState(null)}
+        />
+      )}
+
       {previewDoc && (
         <PrintPreviewModal
           title={previewDoc.title}
           filename={previewDoc.filename}
           htmlContent={previewDoc.html}
+          headerNotice={previewDoc.isPedigree ? <PedigreePrintNotice /> : undefined}
           onClose={() => setPreviewDoc(null)}
         />
       )}

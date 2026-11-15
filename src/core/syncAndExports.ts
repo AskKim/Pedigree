@@ -47,6 +47,7 @@ import {
   calculateAnimalCoi,
   PedigreeSlot,
 } from './pedigreeCalculator';
+import { sanitizeSpeciesMemo } from './speciesMemo';
 
 /**
  * Deterministic UUID + ISO-8601 `updatedAt` record merge helper.
@@ -102,16 +103,45 @@ export function mergeBarnSnapshots(
       ? incoming.settings
       : local.settings;
 
-  // Merge species profiles by case-insensitive species name first, then ID
+  // Merge species profiles by case-insensitive species name first, then ID,
+  // while preserving whichever side has the newest memo pad edit.
   const speciesByName = new Map<string, SpeciesProfile>();
   for (const sp of local.speciesProfiles) {
-    speciesByName.set(sp.name.trim().toLowerCase(), sp);
+    speciesByName.set(sp.name.trim().toLowerCase(), {
+      ...sp,
+      memoText: sanitizeSpeciesMemo(sp.memoText),
+      memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
+    });
   }
   for (const incSp of incoming.speciesProfiles) {
     const key = incSp.name.trim().toLowerCase();
     const prev = speciesByName.get(key);
-    if (!prev || (incSp.updatedAt || '') > (prev.updatedAt || '')) {
-      speciesByName.set(key, prev ? { ...incSp, id: prev.id } : incSp);
+    const cleanIncText = sanitizeSpeciesMemo(incSp.memoText);
+    const cleanIncMemoTs = typeof incSp.memoUpdatedAt === 'string' ? incSp.memoUpdatedAt : '';
+
+    if (!prev) {
+      speciesByName.set(key, {
+        ...incSp,
+        memoText: cleanIncText,
+        memoUpdatedAt: cleanIncMemoTs,
+      });
+      continue;
+    }
+
+    const prevText = sanitizeSpeciesMemo(prev.memoText);
+    const prevMemoTs = typeof prev.memoUpdatedAt === 'string' ? prev.memoUpdatedAt : '';
+    const pickIncomingMemo =
+      (cleanIncMemoTs && (!prevMemoTs || cleanIncMemoTs > prevMemoTs)) ||
+      (!prevMemoTs && !cleanIncMemoTs && !prevText && Boolean(cleanIncText));
+
+    const winnerMemo = pickIncomingMemo
+      ? { memoText: cleanIncText, memoUpdatedAt: cleanIncMemoTs }
+      : { memoText: prevText, memoUpdatedAt: prevMemoTs };
+
+    if ((incSp.updatedAt || '') > (prev.updatedAt || '')) {
+      speciesByName.set(key, { ...incSp, id: prev.id, ...winnerMemo });
+    } else {
+      speciesByName.set(key, { ...prev, ...winnerMemo });
     }
   }
 
@@ -261,6 +291,12 @@ export function exportBarnBackupJson(
     bySpeciesMap.set(key, bucket);
   }
 
+  const exportedSpeciesProfiles: SpeciesProfile[] = snapshot.speciesProfiles.map((sp) => ({
+    ...sp,
+    memoText: sanitizeSpeciesMemo(sp.memoText),
+    memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
+  }));
+
   const exportedAtIsoUtc = nowIsoUtc();
   const payload = {
     format: 'community-pedigree-backup',
@@ -276,7 +312,7 @@ export function exportBarnBackupJson(
         animals: sortedAnimals.length,
         activeAnimals: activeAnimalsCount,
         archivedAnimals: archivedAnimalsCount,
-        speciesProfiles: snapshot.speciesProfiles.length,
+        speciesProfiles: exportedSpeciesProfiles.length,
         animalPhotos: (snapshot.animalPhotos ?? []).length,
         breedings: snapshot.breedings.length,
         tasks: snapshot.tasks.length,
@@ -284,7 +320,7 @@ export function exportBarnBackupJson(
       bySpecies: Array.from(bySpeciesMap.values()),
     },
     settings: snapshot.settings,
-    speciesProfiles: snapshot.speciesProfiles,
+    speciesProfiles: exportedSpeciesProfiles,
     animals: sortedAnimals,
     animalPhotos: snapshot.animalPhotos ?? [],
     cages: snapshot.cages,
@@ -390,6 +426,8 @@ export function parseBarnBackupJson(
             name: item.name || 'Rabbit',
             sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
             defaultAnimalPrefix: String(item.defaultAnimalPrefix || ''),
+            memoText: sanitizeSpeciesMemo(item.memoText),
+            memoUpdatedAt: typeof item.memoUpdatedAt === 'string' ? item.memoUpdatedAt : '',
             gestationDays: Number(item.gestationDays) || 31,
             rebreedDaysAfterBirth: Number(item.rebreedDaysAfterBirth) || 28,
             weanDaysAfterBirth: Number(item.weanDaysAfterBirth) || 42,
@@ -444,6 +482,7 @@ export function parseBarnBackupJson(
         typeof a.archived === 'boolean'
           ? a.archived
           : isAnimalArchived({ status: normalizeAnimalStatus(a.status, a.archived) }),
+      needsAttention: Boolean(a.needsAttention),
       birthDateIso: a.birthDateIso || millisToDateIso(Number(a.birthDateMillis) || 0),
       weightGrams: Number(a.weightGrams) || 0,
       genotype: genoArray,
@@ -654,6 +693,7 @@ export function exportAnimalsCsv(
     'Owner',
     'Photo_Count',
     'Primary_Photo_File',
+    'Needs_Attention',
     'Notes',
     'Updated_At_UTC',
   ];
@@ -687,6 +727,7 @@ export function exportAnimalsCsv(
       a.ownerName,
       aPhotos.length,
       primaryPhoto?.originalFileName || '',
+      a.needsAttention ? 'Yes' : 'No',
       a.notes,
       a.updatedAt,
     ];

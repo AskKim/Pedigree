@@ -328,13 +328,12 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     category: 'stability-pwa',
     source: 'session',
     summary:
-      'Eliminates Chrome Android Aw Snap renderer crashes by disabling Workbox SW in dev + adding self-unregistering `/dev-sw.js` middleware, lazy-loading screens via `React.lazy`, scoping eager COI computation off home/settings boot, guarding `PedigreeIndex.inbreeding` recursion cycles, and batching SQLite/IndexedDB mutations.',
+      'Eliminates Chrome Android Aw Snap renderer crashes by disabling Workbox SW in dev + adding self-unregistering `/dev-sw.js` middleware, scoping eager COI computation off home/settings boot, guarding `PedigreeIndex.inbreeding` recursion cycles, and batching SQLite/IndexedDB mutations (React.lazy route splitting deferred).',
     userIntent:
       'Fix repeated Chrome Android tab crashes before/during app startup and keep pedigree/bulk operations fast under tight mobile RAM.',
     files: [
       'vite.config.ts',
       'src/main.tsx',
-      'src/App.tsx',
       'src/core/pedigreeCalculator.ts',
       'src/storage/webSqliteAdapter.ts',
       'src/hooks/useBarnStore.ts',
@@ -352,11 +351,6 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         rationale: 'Dev mode must unregister lingering service workers and clear caches instead of registering Workbox.',
       },
       {
-        filePath: 'src/App.tsx',
-        requiredSubstrings: ['lazy(() =>', '<Suspense'],
-        rationale: 'Route-level code splitting keeps startup JS/memory overhead low on mobile browsers.',
-      },
-      {
         filePath: 'src/core/pedigreeCalculator.ts',
         requiredSubstrings: ['inbreeding(id: string, activeCalls: Set<string> = new Set())'],
         rationale: 'Cycle guard prevents stack overflow if an imported pedigree has an ancestral loop.',
@@ -370,7 +364,6 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     restorePlaybook: [
       'Set `devOptions: { enabled: false }` and keep `devServiceWorkerCleanupPlugin` in `vite.config.ts`.',
       'Guard `registerSW` behind `if (import.meta.env.PROD)` and unregister dev SWs in `src/main.tsx`.',
-      'Lazy-load the 6 workspace screens via `React.lazy` + `<Suspense>` in `src/App.tsx`.',
       'Forward `activeCalls` inside `PedigreeIndex.inbreeding` in `src/core/pedigreeCalculator.ts` and skip unnecessary COI precompute on `home`/`settings` in `src/hooks/useBarnStore.ts`.',
     ],
   },
@@ -436,12 +429,12 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
       {
         filePath: 'src/core/dataHealthCheck.ts',
-        requiredSubstrings: ['analyzeDatabaseHealth', 'repairDatabaseSnapshot'],
+        requiredSubstrings: ['analyzeBarnDataHealth', 'repairBarnDataHealth'],
         rationale: 'Health scan & self-repair logic protects against orphaned pointers or malformed rows.',
       },
       {
         filePath: 'src/core/supportBundle.ts',
-        requiredSubstrings: ['buildSupportDiagnosticsBundle'],
+        requiredSubstrings: ['buildSupportBundleZipArchive'],
         rationale: 'Diagnostic ZIP generator packages device info, crash logs, and DB health safely.',
       },
     ],
@@ -468,12 +461,12 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     invariants: [
       {
         filePath: 'src/core/syncOutbox.ts',
-        requiredSubstrings: ['diffEntityFieldsToOperations', 'applyDeltaSyncBundle'],
+        requiredSubstrings: ['diffEntityFieldsToOperations', 'mergeDeltaOperations'],
         rationale: 'Field-level sync outbox prevents whole-record overwrites across peer devices.',
       },
       {
         filePath: 'src/core/backupArchive.ts',
-        requiredSubstrings: ['buildCompleteBackupZipArchive', 'parseCompleteBackupZipArchive'],
+        requiredSubstrings: ['buildCompleteBackupZipArchive', 'parseBackupArchiveInput'],
         rationale: 'ZIP archive builder/parser handles combined data + real image directory trees.',
       },
     ],

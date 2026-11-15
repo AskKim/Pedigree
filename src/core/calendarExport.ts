@@ -137,18 +137,19 @@ function resolveAnimalDisplayToken(
   return cleanName;
 }
 
-/**
- * Formats an external calendar task summary according to user preferences:
- * - Optionally excludes the animal's name prefix (`includeAnimalPrefix: false`)
- * - Optionally excludes the animal's name entirely and uses its ear number/tattoo (`includeAnimalName: false`)
- * - Always appends `[Species]` at the end of the external calendar task title
- * Note: In-app `BarnTask.title` values are never modified by these options.
- */
-export function formatExternalCalendarTaskSummary(
+interface FormattedTaskTitleResult {
+  title: string;
+  matchedAnyInTitle: boolean;
+  dam: Animal | undefined;
+  prefix: string;
+  config: CalendarSyncSettings;
+}
+
+function formatTaskTitleCore(
   task: BarnTask,
   rawConfig?: Partial<CalendarSyncSettings>,
   context?: CalendarExportContext
-): string {
+): FormattedTaskTitleResult {
   const config = normalizeCalendarSyncSettings(rawConfig);
   const speciesProfile = context?.speciesProfiles?.find((sp) =>
     isSameSpecies(sp.name, task.species)
@@ -220,6 +221,51 @@ export function formatExternalCalendarTaskSummary(
       return replacementMap.get(match.toLowerCase()) || match;
     });
   }
+
+  return {
+    title: formattedTitle,
+    matchedAnyInTitle,
+    dam,
+    prefix,
+    config,
+  };
+}
+
+/**
+ * Formats an in-app `BarnTask.title` according to user preferences across the system:
+ * - Optionally excludes the animal's name prefix (`includeAnimalPrefix: false`)
+ * - Optionally excludes the animal's name entirely and uses its ear number/tattoo (`includeAnimalName: false`)
+ * Note: Canonical stored `BarnTask.title` values stay intact so toggling preferences updates
+ * existing and future tasks non-destructively.
+ */
+export function formatSystemTaskTitle(
+  task: BarnTask,
+  rawConfig?: Partial<CalendarSyncSettings>,
+  context?: CalendarExportContext
+): string {
+  return formatTaskTitleCore(task, rawConfig, context).title;
+}
+
+/**
+ * Formats an external calendar task summary according to user preferences:
+ * - Optionally excludes the animal's name prefix (`includeAnimalPrefix: false`)
+ * - Optionally excludes the animal's name entirely and uses its ear number/tattoo (`includeAnimalName: false`)
+ * - Always appends `[Species]` at the end of the external calendar task title
+ */
+export function formatExternalCalendarTaskSummary(
+  task: BarnTask,
+  rawConfig?: Partial<CalendarSyncSettings>,
+  context?: CalendarExportContext
+): string {
+  const {
+    title,
+    matchedAnyInTitle,
+    dam,
+    prefix,
+    config,
+  } = formatTaskTitleCore(task, rawConfig, context);
+
+  let formattedTitle = title;
 
   // If a manual chore is linked to an animal whose name wasn't typed in the chore title,
   // append the configured animal identifier (name, unprefixed name, or ear number).
@@ -368,7 +414,9 @@ export function buildIcsCalendarForTasks(
   const stamp = nowIsoUtc().slice(0, 10);
   const filename =
     datedTasks.length === 1
-      ? `${formatSlug(filenameHint || datedTasks[0].title)}-${datedTasks[0].dueDateIso}.ics`
+      ? `${formatSlug(
+          filenameHint || formatSystemTaskTitle(datedTasks[0], config, context)
+        )}-${datedTasks[0].dueDateIso}.ics`
       : `${formatSlug(filenameHint || `${datedTasks[0].species}-barn-tasks`)}-${stamp}.ics`;
 
   return {

@@ -191,6 +191,8 @@ export function SpeciesEditorModal({
       sortOrder: initialProfile?.sortOrder,
       name: cleanName,
       defaultAnimalPrefix: defaultAnimalPrefix.trim(),
+      memoText: initialProfile?.memoText ?? '',
+      memoUpdatedAt: initialProfile?.memoUpdatedAt ?? '',
       gestationDays: Math.max(1, Number(gestationDays) || 31),
       rebreedDaysAfterBirth: Math.max(0, Number(rebreedDays) || 28),
       weanDaysAfterBirth: Math.max(1, Number(weanDays) || 42),

@@ -11,7 +11,7 @@
  */
 
 import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { downloadTextFile } from '../utils/webFileActions';
 
 const MIN_PREVIEW_ZOOM = 0.2;
@@ -25,6 +25,7 @@ interface PrintPreviewModalProps {
   title: string;
   filename: string;
   htmlContent: string;
+  headerNotice?: ReactNode;
   includePrimaryPhoto?: boolean;
   onToggleIncludePrimaryPhoto?: (include: boolean) => void;
   onClose: () => void;
@@ -34,6 +35,7 @@ export function PrintPreviewModal({
   title,
   filename,
   htmlContent,
+  headerNotice,
   includePrimaryPhoto,
   onToggleIncludePrimaryPhoto,
   onClose,
@@ -640,6 +642,12 @@ export function PrintPreviewModal({
             </button>
           </div>
         </div>
+
+        {headerNotice && (
+          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60">
+            {headerNotice}
+          </div>
+        )}
 
         {printBlockedMessage && (
           <div

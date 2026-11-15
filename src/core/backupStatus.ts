@@ -116,6 +116,9 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
   const hasCustomSpecies = snapshot.speciesProfiles.some(
     (sp) => !PREDEFINED_SPECIES_LOWER.has(sp.name.trim().toLowerCase())
   );
+  const hasSpeciesMemo = snapshot.speciesProfiles.some(
+    (sp) => (sp.memoText || '').trim().length > 0
+  );
 
   return (
     hasRealAnimals ||
@@ -125,7 +128,8 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
     hasRealTasks ||
     hasRealLogs ||
     hasRealShows ||
-    hasCustomSpecies
+    hasCustomSpecies ||
+    hasSpeciesMemo
   );
 }
 

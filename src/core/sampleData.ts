@@ -744,10 +744,11 @@ export interface SpeciesSeedBundle {
  */
 export function buildSampleDataForSpecies(
   speciesName: string,
-  speciesProfileOverride?: SpeciesProfile
+  speciesProfileOverride?: SpeciesProfile,
+  referenceTodayIso?: string
 ): SpeciesSeedBundle | null {
   const ts = nowIsoUtc();
-  const today = todayDateIso();
+  const today = referenceTodayIso || todayDateIso();
   const matchedSpec = SPECIES_SEED_SPECS.find((s) => isSameSpecies(s.species, speciesName));
   const matchedPreset = PREDEFINED_SPECIES_PRESETS.find((p) => isSameSpecies(p.name, speciesName));
 
@@ -1143,11 +1144,10 @@ export function buildSampleDataForSpecies(
   const dam = herdMap.get(damId)!;
   const projectedCoi = calculatePairingCoi(sire.id, dam.id, herdMap).coiPercent;
 
-  // Set bred date so next upcoming milestone falls within the next few days!
-  const bredDaysAgo = Math.max(
-    4,
-    Math.min(spec.species === 'Rabbit' ? 25 : 28, speciesProfile.gestationDays - 6)
-  );
+  // Set bred date so expected due date lands within the arriving-babies alert window
+  // (e.g. 2 days from today) whenever sample data is built or restored.
+  const arrivalLeadDays = Math.min(2, Math.max(0, speciesProfile.gestationDays - 1));
+  const bredDaysAgo = Math.max(1, speciesProfile.gestationDays - arrivalLeadDays);
   const bredDateIso = addDaysIso(today, -bredDaysAgo);
   const expectedDueDateIso = addDaysIso(bredDateIso, speciesProfile.gestationDays);
 
@@ -1180,6 +1180,23 @@ export function buildSampleDataForSpecies(
       completed: task.dueDateIso < today,
     })
   );
+
+  const overdueTask: BarnTask = {
+    id: seedId(slug, 'task-overdue'),
+    species: spec.species,
+    title: `Pre-${speciesProfile.birthEventLabel} Health & Bedding Check: ${dam.name}`,
+    category: 'Health',
+    priority: 'High',
+    dueDateIso: addDaysIso(today, -2),
+    linkedAnimalId: dam.id,
+    linkedAnimalName: dam.name,
+    linkedBreedingId: activeBreeding.id,
+    completed: false,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  const tasks: BarnTask[] = [overdueTask, ...cascadedTasks];
 
   const careLogs: CareLog[] = [
     {
@@ -1244,7 +1261,7 @@ export function buildSampleDataForSpecies(
     animals,
     cages,
     breedings: [activeBreeding],
-    tasks: cascadedTasks,
+    tasks,
     careLogs,
     shows,
   };
@@ -1255,7 +1272,8 @@ export function buildSampleDataForSpecies(
  * so every species tab has rich, strictly isolated 3-generation test data out of the box.
  */
 export function buildFullPredefinedSampleSnapshot(
-  existingSettings?: Partial<BarnSettings>
+  existingSettings?: Partial<BarnSettings>,
+  referenceTodayIso?: string
 ): BarnDatabaseSnapshot {
   const ts = nowIsoUtc();
   const settings: BarnSettings = {
@@ -1286,7 +1304,7 @@ export function buildFullPredefinedSampleSnapshot(
   const shows: ShowEvent[] = [];
 
   PREDEFINED_SPECIES_PRESETS.forEach((preset, idx) => {
-    const bundle = buildSampleDataForSpecies(preset.name);
+    const bundle = buildSampleDataForSpecies(preset.name, undefined, referenceTodayIso);
     if (bundle) {
       speciesProfiles.push({ ...bundle.speciesProfile, sortOrder: idx });
       animals.push(...bundle.animals);

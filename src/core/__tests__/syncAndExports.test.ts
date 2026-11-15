@@ -80,8 +80,19 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
         pinnedLandingSpecies: 'Rabbit',
       }),
       animals: [
-        makeAnimal('b2', { name: 'Retired Lady', status: 'Archived', sex: 'Female', species: 'Rabbit' }),
-        makeAnimal('b1', { name: 'Red Baron', status: 'Active', sex: 'Male', species: 'Rabbit' }),
+        makeAnimal('b2', {
+          name: 'Retired Lady',
+          status: 'Archived',
+          sex: 'Female',
+          species: 'Rabbit',
+        }),
+        makeAnimal('b1', {
+          name: 'Red Baron',
+          status: 'Active',
+          sex: 'Male',
+          species: 'Rabbit',
+          needsAttention: true,
+        }),
         makeAnimal('s1', { name: 'Ewe One', status: 'Active', sex: 'Female', species: 'Sheep' }),
       ],
     });
@@ -104,6 +115,8 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(restored.settings.pinnedLandingSpecies).toBe('Rabbit');
     expect(restored.animals).toHaveLength(3);
     expect(restored.animals.find((a) => a.id === 'b2')?.status).toBe('Archived');
+    expect(restored.animals.find((a) => a.id === 'b1')?.needsAttention).toBe(true);
+    expect(restored.animals.find((a) => a.id === 'b2')?.needsAttention).toBe(false);
   });
 
   it('generates valid Evans .HTM pedigrees for 5-gen (32 rows) and 6-gen (64 rows)', () => {
@@ -149,6 +162,7 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
           name: 'Lady "Duchess", Jr.',
           species: 'Rabbit',
           sex: 'Female',
+          needsAttention: true,
           notes: 'Line 1\nLine 2',
         }),
         makeAnimal('c2', {
@@ -162,6 +176,8 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     const rabbitCsv = exportAnimalsCsv(snap.animals, snap.speciesProfiles, snap.settings, 'Rabbit');
     expect(rabbitCsv).toContain('"Lady ""Duchess"", Jr."');
     expect(rabbitCsv).toContain('"Line 1\nLine 2"');
+    expect(rabbitCsv).toContain('Needs_Attention');
+    expect(rabbitCsv).toContain('Yes');
     expect(rabbitCsv).not.toContain('Ewe One');
   });
 

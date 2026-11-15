@@ -9,7 +9,7 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { Camera, Trash2, X } from 'lucide-react';
+import { AlertCircle, Camera, Trash2, X } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   parseGenotypeString,
@@ -28,6 +28,7 @@ import {
   AnimalStatus,
   BiologicalSex,
   CageLocation,
+  doesAnimalNeedAttention,
   isAnimalArchived,
   isSameSpecies,
   parseWeightInputToGrams,
@@ -40,6 +41,8 @@ import {
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
+import { SearchableParentPicker } from './SearchableParentPicker';
+import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface AnimalEditorModalProps {
   initialAnimal: Animal | null;
@@ -94,6 +97,9 @@ export function AnimalEditorModal({
   const [status, setStatus] = useState<AnimalStatus>(initialAnimal?.status || 'Active');
   const [archived, setArchived] = useState<boolean>(
     initialAnimal ? isAnimalArchived(initialAnimal) : false
+  );
+  const [needsAttention, setNeedsAttention] = useState<boolean>(
+    initialAnimal ? doesAnimalNeedAttention(initialAnimal) : false
   );
   const [includeArchivedParents, setIncludeArchivedParents] = useState<boolean>(() => {
     if (!initialAnimal) return false;
@@ -240,6 +246,7 @@ export function AnimalEditorModal({
         sex,
         status,
         archived,
+        needsAttention,
         birthDateIso,
         weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
         genotype: parseGenotypeString(genotypeRaw),
@@ -367,23 +374,50 @@ export function AnimalEditorModal({
             </div>
           </div>
 
-          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              checked={archived}
-              onChange={(e) => setArchived(e.target.checked)}
-              className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
-            />
-            <span>
-              <strong className="text-[var(--barn-ink)]">
-                Archived / Non-Active (Retain for Pedigrees Only)
-              </strong>
-              <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
-                Moves this animal out of the active herd and active barn chores while keeping its
-                lineage available when linking pedigrees.
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={archived}
+                onChange={(e) => setArchived(e.target.checked)}
+                className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>
+                <strong className="text-[var(--barn-ink)]">
+                  Archived / Non-Active (Retain for Pedigrees Only)
+                </strong>
+                <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                  Moves this animal out of the active herd and active barn chores while keeping its
+                  lineage available when linking pedigrees.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+
+            <label
+              className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-colors ${
+                needsAttention
+                  ? 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)]'
+                  : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={needsAttention}
+                onChange={(e) => setNeedsAttention(e.target.checked)}
+                className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-terracotta)]"
+              />
+              <span>
+                <strong className="text-[var(--barn-ink)] inline-flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 text-[var(--barn-terracotta)]" aria-hidden="true" />
+                  Needs Attention (Review / Complete Record)
+                </strong>
+                <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                  Shows a reminder on Home &amp; Species Hub until details (tattoo, pedigree, breed)
+                  are finished. Uncheck once resolved.
+                </span>
+              </span>
+            </label>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="sm:col-span-2">
@@ -530,9 +564,12 @@ export function AnimalEditorModal({
                 )}
               </div>
               {projectedCoi && (
-                <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)]">
-                  Projected COI: {projectedCoi.coiPercent.toFixed(2)}% ({projectedCoi.risk.label})
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)]">
+                    Projected COI: {projectedCoi.coiPercent.toFixed(2)}% ({projectedCoi.risk.label})
+                  </span>
+                  <WrightCoiNotice compact />
+                </div>
               )}
             </div>
 
@@ -541,48 +578,70 @@ export function AnimalEditorModal({
                 <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                   Sire ({speciesProfile.maleLabel})
                 </label>
-                <select
-                  value={sireId}
-                  onChange={(e) => setSireId(e.target.value)}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-                >
-                  <option value="">Unknown / Foundation {speciesProfile.maleLabel}</option>
-                  {sireId && !sireCandidates.some((c) => c.id === sireId) && (
-                    <option value={sireId}>
-                      [Unlisted / Missing Sire ID: {sireId.slice(0, 8)} — select Unknown to unlink]
-                    </option>
-                  )}
-                  {sireCandidates.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
-                      {isAnimalArchived(c) ? ' [Archived]' : ''}
-                    </option>
-                  ))}
-                </select>
+                {includeArchivedParents ? (
+                  <SearchableParentPicker
+                    label={`Sire (${speciesProfile.maleLabel})`}
+                    value={sireId}
+                    candidates={sireCandidates}
+                    unknownLabel={`Unknown / Foundation ${speciesProfile.maleLabel}`}
+                    placeholder={`Search ${speciesProfile.maleLabel}s (incl. archived)...`}
+                    onChange={(id) => setSireId(id)}
+                  />
+                ) : (
+                  <select
+                    value={sireId}
+                    onChange={(e) => setSireId(e.target.value)}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                  >
+                    <option value="">Unknown / Foundation {speciesProfile.maleLabel}</option>
+                    {sireId && !sireCandidates.some((c) => c.id === sireId) && (
+                      <option value={sireId}>
+                        [Unlisted / Missing Sire ID: {sireId.slice(0, 8)} — select Unknown to unlink]
+                      </option>
+                    )}
+                    {sireCandidates.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
+                        {isAnimalArchived(c) ? ' [Archived]' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                   Dam ({speciesProfile.femaleLabel})
                 </label>
-                <select
-                  value={damId}
-                  onChange={(e) => setDamId(e.target.value)}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-                >
-                  <option value="">Unknown / Foundation {speciesProfile.femaleLabel}</option>
-                  {damId && !damCandidates.some((c) => c.id === damId) && (
-                    <option value={damId}>
-                      [Unlisted / Missing Dam ID: {damId.slice(0, 8)} — select Unknown to unlink]
-                    </option>
-                  )}
-                  {damCandidates.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
-                      {isAnimalArchived(c) ? ' [Archived]' : ''}
-                    </option>
-                  ))}
-                </select>
+                {includeArchivedParents ? (
+                  <SearchableParentPicker
+                    label={`Dam (${speciesProfile.femaleLabel})`}
+                    value={damId}
+                    candidates={damCandidates}
+                    unknownLabel={`Unknown / Foundation ${speciesProfile.femaleLabel}`}
+                    placeholder={`Search ${speciesProfile.femaleLabel}s (incl. archived)...`}
+                    onChange={(id) => setDamId(id)}
+                  />
+                ) : (
+                  <select
+                    value={damId}
+                    onChange={(e) => setDamId(e.target.value)}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                  >
+                    <option value="">Unknown / Foundation {speciesProfile.femaleLabel}</option>
+                    {damId && !damCandidates.some((c) => c.id === damId) && (
+                      <option value={damId}>
+                        [Unlisted / Missing Dam ID: {damId.slice(0, 8)} — select Unknown to unlink]
+                      </option>
+                    )}
+                    {damCandidates.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.tattoo ? `(${c.tattoo})` : ''}
+                        {isAnimalArchived(c) ? ' [Archived]' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
           </div>

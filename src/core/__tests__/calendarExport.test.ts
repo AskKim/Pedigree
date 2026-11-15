@@ -6,6 +6,7 @@ import {
   buildTaskAppDeepLink,
   formatExternalCalendarTaskSummary,
   formatIcsAlarmTrigger,
+  formatSystemTaskTitle,
 } from '../calendarExport';
 import {
   Animal,
@@ -194,6 +195,66 @@ describe('calendarExport (.ics + VALARM)', () => {
         ctx
       )
     ).toBe('Trim front nails — NZR-102 [Rabbit]');
+  });
+
+  it('formats in-app system task titles cleanly without appending species tags or unmentioned tokens', () => {
+    const ctx = {
+      animals: [damAnimal, sireAnimal],
+      breedings: [sampleBreeding],
+      speciesProfiles: [rabbitSpecies],
+    };
+    const task = makeTask();
+
+    expect(
+      formatSystemTaskTitle(
+        task,
+        { includeAnimalPrefix: true, includeAnimalName: true },
+        ctx
+      )
+    ).toBe('Palpation Check: Copper Creek Briar (× Copper Creek Marshal)');
+
+    expect(
+      formatSystemTaskTitle(
+        task,
+        { includeAnimalPrefix: false, includeAnimalName: true },
+        ctx
+      )
+    ).toBe('Palpation Check: Briar (× Marshal)');
+
+    expect(
+      formatSystemTaskTitle(
+        task,
+        { includeAnimalPrefix: true, includeAnimalName: false },
+        ctx
+      )
+    ).toBe('Palpation Check: NZR-102 (× NZR-051)');
+
+    const manualLinkedTask = makeTask({
+      id: 'task-manual',
+      title: 'Trim front nails',
+      linkedBreedingId: '',
+      linkedAnimalId: 'a1',
+      linkedAnimalName: 'Copper Creek Briar',
+    });
+    expect(
+      formatSystemTaskTitle(
+        manualLinkedTask,
+        { includeAnimalPrefix: false, includeAnimalName: false },
+        ctx
+      )
+    ).toBe('Trim front nails');
+
+    const singleTaskIcs = buildIcsCalendarForTasks(
+      [task],
+      { includeAnimalPrefix: false, includeAnimalName: false },
+      'Copper Creek Barn',
+      undefined,
+      ctx
+    );
+    expect(singleTaskIcs).not.toBeNull();
+    expect(singleTaskIcs!.filename).toMatch(/^palpation-check-nzr-102-nzr-051-\d{4}-\d{2}-\d{2}\.ics$/);
+    expect(singleTaskIcs!.filename).not.toContain('copper-creek');
+    expect(singleTaskIcs!.filename).not.toContain('briar');
   });
 
   it('builds valid multi-event .ics with VALARM and task deep links', () => {

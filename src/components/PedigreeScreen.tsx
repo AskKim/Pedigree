@@ -11,13 +11,14 @@
  * - Optional primary animal photo embedding in exported Evans `.HTM` / PDF pedigrees
  */
 
-import { ArrowLeft, ChevronRight, FileText, Plus, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, ChevronRight, FileText, Plus, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatGenotypeArray } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   Animal,
   BarnSettings,
+  doesAnimalNeedAttention,
   formatSexForSpecies,
   formatWeight,
   isAnimalArchived,
@@ -31,7 +32,9 @@ import {
 import { generateEvansHtmPedigree } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
+import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
+import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface PedigreeScreenProps {
   activeData: ActiveSpeciesData;
@@ -77,6 +80,7 @@ export function PedigreeScreen({
   const [zoom, setZoom] = useState<number>(1);
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
   const [includeArchivedInLink, setIncludeArchivedInLink] = useState(false);
+  const [linkSearchQuery, setLinkSearchQuery] = useState('');
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
 
@@ -209,13 +213,20 @@ export function PedigreeScreen({
     [allSafeLinkCandidates]
   );
 
-  const visibleLinkCandidates = useMemo(
-    () =>
-      includeArchivedInLink
-        ? allSafeLinkCandidates
-        : allSafeLinkCandidates.filter((c) => !isAnimalArchived(c)),
-    [allSafeLinkCandidates, includeArchivedInLink]
-  );
+  const visibleLinkCandidates = useMemo(() => {
+    const base = includeArchivedInLink
+      ? allSafeLinkCandidates
+      : allSafeLinkCandidates.filter((c) => !isAnimalArchived(c));
+    if (!includeArchivedInLink) return base;
+    const q = linkSearchQuery.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((c) =>
+      [c.name, c.tattoo, c.breed, c.variety, c.registrationNumber]
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [allSafeLinkCandidates, includeArchivedInLink, linkSearchQuery]);
 
   const applyVisualZoomFrame = useCallback(
     (nextZoomRaw: number, scrollLeft: number, scrollTop: number) => {
@@ -533,12 +544,15 @@ export function PedigreeScreen({
               </select>
             </div>
 
-            <div className="text-xs font-mono tabular-nums text-[var(--barn-muted)]">
-              Wright COI:{' '}
-              <strong className="text-[var(--barn-ink)]">
-                {(coi?.coiPercent ?? 0).toFixed(2)}%
-              </strong>{' '}
-              ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
+            <div className="space-y-1">
+              <div className="text-xs font-mono tabular-nums text-[var(--barn-muted)]">
+                Wright COI:{' '}
+                <strong className="text-[var(--barn-ink)]">
+                  {(coi?.coiPercent ?? 0).toFixed(2)}%
+                </strong>{' '}
+                ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
+              </div>
+              <WrightCoiNotice compact />
             </div>
           </div>
 
@@ -568,6 +582,7 @@ export function PedigreeScreen({
               <FileText className="w-3.5 h-3.5" aria-hidden="true" />
               Export .HTM / Print PDF
             </button>
+            <PedigreePrintNotice compact />
           </div>
         </div>
 
@@ -787,6 +802,7 @@ export function PedigreeScreen({
                           type="button"
                           onClick={() => {
                             setIncludeArchivedInLink(false);
+                            setLinkSearchQuery('');
                             setLinkingSlot(slot);
                           }}
                           className={`rounded-md border border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60 bg-[var(--barn-surface)] dark:bg-[var(--barn-canvas)] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-0.5 shrink-0 ${
@@ -896,20 +912,42 @@ export function PedigreeScreen({
                   <input
                     type="checkbox"
                     checked={includeArchivedInLink}
-                    onChange={(e) => setIncludeArchivedInLink(e.target.checked)}
+                    onChange={(e) => {
+                      setIncludeArchivedInLink(e.target.checked);
+                      if (!e.target.checked) setLinkSearchQuery('');
+                    }}
                   />
                   <span>Include Archived ({archivedLinkCount})</span>
                 </label>
               )}
             </div>
 
+            {includeArchivedInLink && (
+              <div className="relative">
+                <Search
+                  className="w-4 h-4 text-[var(--barn-muted)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  aria-hidden="true"
+                />
+                <input
+                  type="search"
+                  autoFocus
+                  placeholder={`Search ${speciesProfile.name} parents by name, tattoo, or breed...`}
+                  value={linkSearchQuery}
+                  onChange={(e) => setLinkSearchQuery(e.target.value)}
+                  className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--barn-sage)]"
+                />
+              </div>
+            )}
+
             {visibleLinkCandidates.length === 0 ? (
               <p className="text-sm text-[var(--barn-muted)]">
-                No {includeArchivedInLink ? '' : 'active '}
-                {speciesProfile.name.toLowerCase()} candidates available.{' '}
-                {archivedLinkCount > 0 && !includeArchivedInLink
-                  ? 'Toggle Include Archived above or create a new parent below.'
-                  : 'Create a new parent record below.'}
+                {includeArchivedInLink && linkSearchQuery.trim()
+                  ? `No matching ${speciesProfile.name.toLowerCase()} candidates for "${linkSearchQuery.trim()}".`
+                  : `No ${includeArchivedInLink ? '' : 'active '}${speciesProfile.name.toLowerCase()} candidates available. ${
+                      archivedLinkCount > 0 && !includeArchivedInLink
+                        ? 'Toggle Include Archived above or create a new parent below.'
+                        : 'Create a new parent record below.'
+                    }`}
               </p>
             ) : (
               <div className="max-h-56 overflow-y-auto divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl">
@@ -929,13 +967,16 @@ export function PedigreeScreen({
                       }
                       setLinkingSlot(null);
                     }}
-                    className="w-full text-left px-3.5 py-2.5 text-xs hover:bg-[var(--barn-subtle)] flex justify-between"
+                    className="w-full text-left px-3.5 py-2.5 text-xs hover:bg-[var(--barn-subtle)] flex justify-between gap-2"
                   >
-                    <span className="font-medium">
+                    <span className="font-medium truncate">
                       {cand.name}
                       {isAnimalArchived(cand) ? ' [Archived]' : ''}
+                      {doesAnimalNeedAttention(cand) ? ' [Needs Attention]' : ''}
                     </span>
-                    <span className="font-mono text-[var(--barn-muted)]">{cand.tattoo}</span>
+                    <span className="font-mono text-[var(--barn-muted)] shrink-0">
+                      {cand.tattoo}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -1004,6 +1045,7 @@ export function PedigreeScreen({
             generations,
             settings.includePhotoOnPedigree ? subjectPrimaryPhoto?.dataUrl : undefined
           )}
+          headerNotice={<PedigreePrintNotice />}
           onClose={() => setShowPrintModal(false)}
         />
       )}

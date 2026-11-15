@@ -45,6 +45,7 @@ import {
 import {
   buildIcsCalendarForTasks,
   buildTaskAppDeepLink,
+  formatSystemTaskTitle,
 } from '../core/calendarExport';
 import {
   BackupStatusEvaluation,
@@ -63,6 +64,7 @@ import {
   countAllSpeciesRecords,
   countSpeciesNonTestingRecords,
   countSpeciesTestingRecords,
+  isSampleTestingId,
   purgeAllSpeciesRecordsPure,
   purgeSpeciesNonTestingDataPure,
   purgeSpeciesTestingDataPure,
@@ -99,6 +101,7 @@ import {
   SyncOperation,
 } from '../core/syncOutbox';
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
+import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { resolveThemeCssVariables } from '../core/themePalette';
 import {
   allocateNextLogicalCounter,
@@ -154,6 +157,7 @@ export type WorkspaceRoute =
   | 'herd'
   | 'breeding'
   | 'pedigree'
+  | 'memo'
   | 'settings';
 
 export interface ActiveSpeciesData {
@@ -418,7 +422,11 @@ export function useBarnStore() {
       setActiveSpeciesName(speciesName);
       setSelectedAnimalId(null);
       setPedigreeAnimalId(null);
+      setHighlightedTaskId(null);
       setRoute(targetRoute);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      }
     },
     []
   );
@@ -668,6 +676,8 @@ export function useBarnStore() {
           sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
           name: profile.name.trim(),
           defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+          memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
+          memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
           createdAt: profile.createdAt || existing.createdAt || ts,
           updatedAt: ts,
         };
@@ -691,6 +701,8 @@ export function useBarnStore() {
           sortOrder: currentList.length,
           name: profile.name.trim(),
           defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+          memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
+          memoUpdatedAt: profile.memoUpdatedAt ?? '',
           createdAt: profile.createdAt || ts,
           updatedAt: ts,
         };
@@ -709,6 +721,42 @@ export function useBarnStore() {
       }
     },
     [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+  );
+
+  const saveSpeciesMemo = useCallback(
+    async (speciesId: string, rawMemoText: unknown, options?: { silent?: boolean }) => {
+      if (!snapshot) return;
+      const existing = snapshot.speciesProfiles.find((sp) => sp.id === speciesId);
+      if (!existing) return;
+      const cleanMemo = sanitizeSpeciesMemo(rawMemoText);
+      if ((existing.memoText ?? '') === cleanMemo) return;
+      const ts = nowIsoUtc();
+      const updated: SpeciesProfile = {
+        ...existing,
+        memoText: cleanMemo,
+        memoUpdatedAt: ts,
+        updatedAt: ts,
+      };
+      try {
+        await adapterRef.current!.saveSpeciesProfile(updated);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'species',
+            previous: existing,
+            next: updated,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+        if (!options?.silent) {
+          notify(`${existing.name} memo pad saved.`);
+        }
+      } catch (err) {
+        reportPersistenceFailure(`save ${existing.name} memo pad`, err);
+      }
+    },
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const reorderSpeciesCards = useCallback(
@@ -882,6 +930,7 @@ export function useBarnStore() {
         tattoo: draft.tattoo.trim(),
         name: draft.name.trim(),
         archived: Boolean(draft.archived),
+        needsAttention: Boolean(draft.needsAttention),
         genotype: parsedGeno,
         genotypeRaw: normalizedRaw,
         createdAt: draft.createdAt || ts,
@@ -1297,26 +1346,76 @@ export function useBarnStore() {
    */
   const logBreedingWithCascade = useCallback(
     async (params: {
-      sire: Animal;
-      dam: Animal;
+      sire?: Animal;
+      quickSireName?: string;
+      dam?: Animal;
+      quickDamName?: string;
       bredDateIso: string;
       status: BreedingRecord['status'];
       notes: string;
       autoScheduleChores: boolean;
     }) => {
       if (!snapshot) return;
-      const sp = resolveSpeciesProfile(params.dam.species, snapshot.speciesProfiles);
-      const herdMap = buildSpeciesHerdMap(snapshot.animals, sp.name);
-      const coi = calculatePairingCoi(params.sire.id, params.dam.id, herdMap).coiPercent;
+      const targetSpeciesName =
+        params.dam?.species || params.sire?.species || activeSpeciesName;
+      const sp = resolveSpeciesProfile(targetSpeciesName, snapshot.speciesProfiles);
       const ts = nowIsoUtc();
+
+      const buildQuickParent = (rawName: string, sex: 'Male' | 'Female'): Animal => ({
+        id: generateUuid(),
+        tattoo: '',
+        name: rawName.trim(),
+        species: sp.name,
+        breed: '',
+        variety: '',
+        sex,
+        status: 'Active',
+        archived: false,
+        needsAttention: true,
+        birthDateIso: '',
+        weightGrams: 0,
+        genotype: [],
+        genotypeRaw: '',
+        registrationNumber: '',
+        grandChampionNumber: '',
+        legsCount: 0,
+        cageLocation: '',
+        breederName: '',
+        ownerName: '',
+        sireId: '',
+        damId: '',
+        notes: 'Quick-added during breeding entry — review and complete record details.',
+        createdAt: ts,
+        updatedAt: ts,
+      });
+
+      const newlyCreatedParents: Animal[] = [];
+      let resolvedSire = params.sire;
+      if (!resolvedSire && params.quickSireName?.trim()) {
+        resolvedSire = buildQuickParent(params.quickSireName, 'Male');
+        newlyCreatedParents.push(resolvedSire);
+      }
+      let resolvedDam = params.dam;
+      if (!resolvedDam && params.quickDamName?.trim()) {
+        resolvedDam = buildQuickParent(params.quickDamName, 'Female');
+        newlyCreatedParents.push(resolvedDam);
+      }
+
+      if (!resolvedSire || !resolvedDam) return;
+
+      const herdMap = buildSpeciesHerdMap(
+        [...snapshot.animals, ...newlyCreatedParents],
+        sp.name
+      );
+      const coi = calculatePairingCoi(resolvedSire.id, resolvedDam.id, herdMap).coiPercent;
 
       const breeding: BreedingRecord = {
         id: generateUuid(),
         species: sp.name,
-        sireId: params.sire.id,
-        damId: params.dam.id,
-        sireName: params.sire.name,
-        damName: params.dam.name,
+        sireId: resolvedSire.id,
+        damId: resolvedDam.id,
+        sireName: resolvedSire.name,
+        damName: resolvedDam.name,
         bredDateIso: params.bredDateIso,
         expectedDueDateIso: addDaysIso(params.bredDateIso, sp.gestationDays),
         actualBirthDateIso: '',
@@ -1333,14 +1432,32 @@ export function useBarnStore() {
       };
 
       try {
+        const ops: SyncOperation[] = [];
+        if (newlyCreatedParents.length > 0) {
+          await adapterRef.current!.saveAnimalsBatch(newlyCreatedParents);
+          for (const created of newlyCreatedParents) {
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'animal',
+                previous: undefined,
+                next: created,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+              })
+            );
+          }
+        }
+
         await adapterRef.current!.saveBreeding(breeding);
-        const ops: SyncOperation[] = diffEntityFieldsToOperations({
-          entityType: 'breeding',
-          previous: undefined,
-          next: breeding,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        });
+        ops.push(
+          ...diffEntityFieldsToOperations({
+            entityType: 'breeding',
+            previous: undefined,
+            next: breeding,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
 
         let cascaded: BarnTask[] = [];
         let taskCount = 0;
@@ -1373,7 +1490,7 @@ export function useBarnStore() {
             if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
               setPendingCalendarSync({
                 tasks: dated,
-                filenameHint: `${params.dam.name}-breeding-chores`,
+                filenameHint: `${resolvedDam.name}-breeding-chores`,
               });
               calendarResultMsg = ` & queued ${dated.length} event(s) for Google Calendar.`;
             } else {
@@ -1385,9 +1502,9 @@ export function useBarnStore() {
                 dated,
                 calConfig,
                 snapshot.settings.barnName,
-                `${params.dam.name}-breeding-chores`,
+                `${resolvedDam.name}-breeding-chores`,
                 {
-                  animals: snapshot.animals,
+                  animals: [...snapshot.animals, ...newlyCreatedParents],
                   breedings: [...snapshot.breedings, breeding],
                   speciesProfiles: snapshot.speciesProfiles,
                   appBaseUrl,
@@ -1404,18 +1521,31 @@ export function useBarnStore() {
           }
         }
 
+        const quickAddNote =
+          newlyCreatedParents.length > 0
+            ? ` Added ${newlyCreatedParents.map((p) => p.name).join(' & ')} (Needs Attention).`
+            : '';
+
         notify(
-          taskCount > 0
+          (taskCount > 0
             ? calendarResultMsg
-              ? `Logged ${params.sire.name} × ${params.dam.name}, cascaded ${taskCount} chores${calendarResultMsg}`
-              : `Logged ${params.sire.name} × ${params.dam.name} and cascaded ${taskCount} barn chores.`
-            : `Logged pairing ${params.sire.name} × ${params.dam.name}.`
+              ? `Logged ${resolvedSire.name} × ${resolvedDam.name}, cascaded ${taskCount} chores${calendarResultMsg}`
+              : `Logged ${resolvedSire.name} × ${resolvedDam.name} and cascaded ${taskCount} barn chores.`
+            : `Logged pairing ${resolvedSire.name} × ${resolvedDam.name}.`) + quickAddNote
         );
       } catch (err) {
         reportPersistenceFailure('save breeding record', err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      activeSpeciesName,
+      deviceId,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const updateBreedingOutcome = useCallback(
@@ -1560,7 +1690,10 @@ export function useBarnStore() {
         if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
           const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
           if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
-            setPendingCalendarSync({ tasks: [task], filenameHint: task.title });
+            setPendingCalendarSync({
+              tasks: [task],
+              filenameHint: formatSystemTaskTitle(task, calConfig, snapshot ?? undefined),
+            });
             calendarNote = ' Ready to add to Google Calendar.';
           } else {
             const appBaseUrl =
@@ -1961,22 +2094,41 @@ export function useBarnStore() {
   const seedSpeciesSampleData = useCallback(
     async (speciesName: string) => {
       if (!snapshot) return;
-      const bundle = buildSampleDataForSpecies(speciesName);
+      const existingProfile = snapshot.speciesProfiles.find((sp) =>
+        isSameSpecies(sp.name, speciesName)
+      );
+      const bundle = buildSampleDataForSpecies(speciesName, existingProfile);
       if (!bundle) {
         notify(`No predefined testing dataset found for ${speciesName}.`);
         return;
       }
-      const report = mergeBarnSnapshots(snapshot, {
-        settings: snapshot.settings,
-        speciesProfiles: [bundle.speciesProfile],
-        animals: bundle.animals,
-        animalPhotos: [],
-        cages: bundle.cages,
-        breedings: bundle.breedings,
-        tasks: bundle.tasks,
-        careLogs: bundle.careLogs,
-        shows: bundle.shows,
-      });
+      const spKey = speciesName.trim().toLowerCase();
+      const seedTaskIds = new Set(bundle.tasks.map((t) => t.id));
+      const nextIgnored = (snapshot.settings.ignoredTaskIds || []).filter(
+        (id) => !seedTaskIds.has(id)
+      );
+      const nextDismissed = { ...(snapshot.settings.dismissedTaskGroupKeys || {}) };
+      delete nextDismissed[spKey];
+      const refreshedSettings: BarnSettings = {
+        ...snapshot.settings,
+        ignoredTaskIds: nextIgnored,
+        dismissedTaskGroupKeys: nextDismissed,
+        updatedAt: nowIsoUtc(),
+      };
+      const report = mergeBarnSnapshots(
+        { ...snapshot, settings: refreshedSettings },
+        {
+          settings: refreshedSettings,
+          speciesProfiles: [bundle.speciesProfile],
+          animals: bundle.animals,
+          animalPhotos: [],
+          cages: bundle.cages,
+          breedings: bundle.breedings,
+          tasks: bundle.tasks,
+          careLogs: bundle.careLogs,
+          shows: bundle.shows,
+        }
+      );
       await adapterRef.current!.replaceSnapshot(report.snapshot);
       await reloadFromAdapter();
       notify(`Loaded 6-generation testing dataset for ${speciesName}.`);
@@ -1985,7 +2137,31 @@ export function useBarnStore() {
   );
 
   const seedAllPredefinedSpecies = useCallback(async () => {
-    const full = buildFullPredefinedSampleSnapshot(snapshot?.settings);
+    const cleanedSettings: Partial<BarnSettings> | undefined = snapshot?.settings
+      ? {
+          ...snapshot.settings,
+          ignoredTaskIds: (snapshot.settings.ignoredTaskIds || []).filter(
+            (id) => !isSampleTestingId(id)
+          ),
+          dismissedTaskGroupKeys: {},
+        }
+      : undefined;
+    const full = buildFullPredefinedSampleSnapshot(cleanedSettings);
+    const memoBySpeciesKey = new Map(
+      (snapshot?.speciesProfiles || []).map((sp) => [
+        sp.name.trim().toLowerCase(),
+        {
+          memoText: sanitizeSpeciesMemo(sp.memoText ?? ''),
+          memoUpdatedAt: sp.memoUpdatedAt || '',
+        },
+      ])
+    );
+    full.speciesProfiles = full.speciesProfiles.map((sp) => {
+      const prevMemo = memoBySpeciesKey.get(sp.name.trim().toLowerCase());
+      return prevMemo && prevMemo.memoText
+        ? { ...sp, memoText: prevMemo.memoText, memoUpdatedAt: prevMemo.memoUpdatedAt }
+        : sp;
+    });
     await adapterRef.current!.replaceSnapshot(full);
     await reloadFromAdapter();
     notify('Loaded 6-generation testing herds across all 9 predefined livestock species.');
@@ -2556,6 +2732,7 @@ export function useBarnStore() {
     clearTaskAlertGroup,
     togglePinSpeciesLanding,
     saveSpeciesProfile,
+    saveSpeciesMemo,
     reorderSpeciesCards,
     moveSpeciesCard,
     reorderSpeciesHubBlocks,

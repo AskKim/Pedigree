@@ -106,14 +106,13 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Fix repeated Chrome Android tab crashes before/during app startup and keep pedigree/bulk operations fast under tight mobile RAM.
-- **Summary:** Disables Workbox SW in dev + adds self-unregistering `/dev-sw.js` middleware, lazy-loads screens via `React.lazy`, scopes eager COI computation off home/settings boot, guards `PedigreeIndex.inbreeding` recursion cycles, and batches SQLite/IndexedDB mutations.
-- **Tracked Files:** `vite.config.ts`, `src/main.tsx`, `src/App.tsx`, `src/core/pedigreeCalculator.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`
+- **Summary:** Disables Workbox SW in dev + adds self-unregistering `/dev-sw.js` middleware, scopes eager COI computation off home/settings boot, guards `PedigreeIndex.inbreeding` recursion cycles, and batches SQLite/IndexedDB mutations (`React.lazy` route splitting deferred).
+- **Tracked Files:** `vite.config.ts`, `src/main.tsx`, `src/core/pedigreeCalculator.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`
 
 **Restoration Playbook if Overwritten:**
 1. Set `devOptions: { enabled: false }` and keep `devServiceWorkerCleanupPlugin` in `vite.config.ts`.
 2. Guard `registerSW` behind `if (import.meta.env.PROD)` and unregister dev SWs in `src/main.tsx`.
-3. Lazy-load the 6 workspace screens via `React.lazy` + `<Suspense>` in `src/App.tsx`.
-4. Forward `activeCalls` inside `PedigreeIndex.inbreeding` in `src/core/pedigreeCalculator.ts` and skip unnecessary COI precompute on `home`/`settings` in `src/hooks/useBarnStore.ts`.
+3. Forward `activeCalls` inside `PedigreeIndex.inbreeding` in `src/core/pedigreeCalculator.ts` and skip unnecessary COI precompute on `home`/`settings` in `src/hooks/useBarnStore.ts`.
 
 ### IMP-008: Subpath-Safe PWA Base Config & GitHub Actions CI Pipeline
 

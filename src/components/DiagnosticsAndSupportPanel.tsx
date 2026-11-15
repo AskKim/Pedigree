@@ -36,6 +36,12 @@ import {
   BarnHealthReport,
 } from '../core/dataHealthCheck';
 import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import {
+  buildImprovementsRecoveryJson,
+  formatImprovementsMarkdown,
+  IMPROVEMENT_CATEGORY_LABELS,
+  IMPROVEMENTS_REGISTRY,
+} from '../core/improvementRegistry';
 import { BarnDatabaseSnapshot } from '../core/models';
 import {
   buildErrorLogsJson,
@@ -98,6 +104,8 @@ export function DiagnosticsAndSupportPanel({
   const [includePhotosInBundle, setIncludePhotosInBundle] = useState(true);
   const [busyAction, setBusyAction] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [showImprovementsLog, setShowImprovementsLog] = useState(false);
+  const [improvementsFeedback, setImprovementsFeedback] = useState<string | null>(null);
   const [mailtoHref, setMailtoHref] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [confirmRebuildDb, setConfirmRebuildDb] = useState(false);
@@ -914,6 +922,111 @@ export function DiagnosticsAndSupportPanel({
         {recoveryFeedback && (
           <div className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs">
             {recoveryFeedback}
+          </div>
+        )}
+      </div>
+
+      {/* App Improvements & GitHub-Overwrite Recovery Log (IMP-011) */}
+      <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div className="text-xs font-semibold text-[var(--barn-ink)]">
+              App Improvements &amp; Recovery Log ({IMPROVEMENTS_REGISTRY.length})
+            </div>
+            <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
+              Download or copy the tracked improvements manifest &amp; restoration playbooks.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowImprovementsLog((v) => !v)}
+            className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+          >
+            {showImprovementsLog ? (
+              <>
+                <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
+                Hide Log
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                View Tracked Improvements
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              downloadTextFile('IMPROVEMENTS.md', formatImprovementsMarkdown(), 'text/markdown');
+              setImprovementsFeedback('Downloaded IMPROVEMENTS.md recovery manual.');
+            }}
+            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            Download IMPROVEMENTS.md
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              downloadTextFile(
+                'pedigree-improvements-log.json',
+                buildImprovementsRecoveryJson(),
+                'application/json'
+              );
+              setImprovementsFeedback('Downloaded pedigree-improvements-log.json.');
+            }}
+            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            Download Recovery .JSON
+          </button>
+
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(formatImprovementsMarkdown());
+                setImprovementsFeedback('Copied Markdown recovery log to clipboard.');
+              } catch {
+                setImprovementsFeedback('Clipboard unavailable — use Download IMPROVEMENTS.md.');
+              }
+            }}
+            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+            Copy Markdown Log
+          </button>
+        </div>
+
+        {improvementsFeedback && (
+          <div className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]">
+            {improvementsFeedback}
+          </div>
+        )}
+
+        {showImprovementsLog && (
+          <div className="space-y-2 max-h-72 overflow-y-auto pt-1">
+            {IMPROVEMENTS_REGISTRY.map((entry) => (
+              <div
+                key={entry.id}
+                className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--barn-ink)]">
+                    <span className="font-mono text-[var(--barn-sage)]">{entry.id}</span> ·{' '}
+                    {entry.title}
+                  </span>
+                  <span className="text-[11px] font-mono text-[var(--barn-muted)]">
+                    {IMPROVEMENT_CATEGORY_LABELS[entry.category]}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[var(--barn-muted)]">{entry.summary}</p>
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -61,6 +61,7 @@ import {
   BatchImportPhotoProgress,
   optimizeStagedImporterPhotos,
 } from '../storage/webImageOptimizer';
+import { ImageCompressionNotice } from './ImageCompressionNotice';
 
 interface ExternalImporterPanelProps {
   snapshot: BarnDatabaseSnapshot;
@@ -1283,6 +1284,8 @@ export function ExternalImporterPanel({
                   </div>
                 )}
               </div>
+
+              {importAndOptimizePhotos && <ImageCompressionNotice />}
 
               {photoProgress && (
                 <div className="space-y-1.5 pt-1">

@@ -34,6 +34,7 @@ import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
 } from '../core/backupArchive';
+import { BackupStatusEvaluation } from '../core/backupStatus';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
 import {
   BarnHealthRepairResult,
@@ -87,6 +88,7 @@ import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
+import { ImageCompressionNotice } from './ImageCompressionNotice';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 
 interface SettingsAndSyncScreenProps {
@@ -95,11 +97,16 @@ interface SettingsAndSyncScreenProps {
   activeSpeciesName: string;
   deviceId: string;
   storageStatus: StorageProtectionStatus | null;
+  backupStatus: BackupStatusEvaluation | null;
   syncOperations: SyncOperation[];
   syncConflicts: SyncConflictEntry[];
   openAddSpeciesOnMount: boolean;
   onConsumedOpenAddSpecies: () => void;
   onRequestPersistentStorage: () => Promise<StorageProtectionStatus> | void;
+  recordBackupExport: (
+    format: 'zip' | 'sqlite' | 'json',
+    fileName?: string
+  ) => Promise<void> | void;
   onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
   onSaveSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
@@ -152,11 +159,13 @@ export function SettingsAndSyncScreen({
   activeSpeciesName,
   deviceId,
   storageStatus,
+  backupStatus,
   syncOperations,
   syncConflicts,
   openAddSpeciesOnMount,
   onConsumedOpenAddSpecies,
   onRequestPersistentStorage,
+  recordBackupExport,
   onUpdateSettings,
   onSaveSpecies,
   onDeleteSpecies,
@@ -324,11 +333,9 @@ export function SettingsAndSyncScreen({
 
   const handleDownloadTimestampedFullBackup = () => {
     const stampSlug = formatTimestampedBackupSlug();
-    downloadTextFile(
-      `community-pedigree-full-backup-${stampSlug}.json`,
-      exportBarnBackupJson(snapshot),
-      'application/json'
-    );
+    const filename = `community-pedigree-full-backup-${stampSlug}.json`;
+    downloadTextFile(filename, exportBarnBackupJson(snapshot), 'application/json');
+    void recordBackupExport('json', filename);
     setPortabilityFeedback(
       `Downloaded JSON backup (${snapshot.animals.length} animals, ${allPhotos.length} embedded photos).`
     );
@@ -340,6 +347,7 @@ export function SettingsAndSyncScreen({
     const archive = buildCompleteBackupZipArchive(snapshot);
     const filename = `community-pedigree-archive-${stampSlug}.zip`;
     downloadBinaryFile(filename, archive.bytes, 'application/zip');
+    void recordBackupExport('zip', filename);
     setPortabilityFeedback(
       `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${formatByteSizePure(archive.bytes.byteLength)}).`
     );
@@ -449,7 +457,9 @@ export function SettingsAndSyncScreen({
       return;
     }
     const stamp = formatTimestampedBackupSlug();
-    downloadBinaryFile(`community-pedigree-${stamp}.sqlite`, bytes, 'application/x-sqlite3');
+    const filename = `community-pedigree-${stamp}.sqlite`;
+    downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
+    void recordBackupExport('sqlite', filename);
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -619,6 +629,7 @@ export function SettingsAndSyncScreen({
                   );
                 })}
               </div>
+              <ImageCompressionNotice />
             </div>
 
             <div>
@@ -1005,12 +1016,12 @@ export function SettingsAndSyncScreen({
 
             <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
               <div className="font-semibold text-[var(--barn-ink)]">
-                External Calendar Task Naming &amp; App Link
+                Task Naming (App &amp; External Calendars)
               </div>
               <p className="text-[11px] text-[var(--barn-muted)]">
-                Controls how animal identifiers appear in exported external calendar events (in-app
-                task titles stay unchanged). Species is always appended to external calendar titles,
-                and every event includes a direct link back into the app task entry.
+                Controls how animal identifiers appear in task titles across the app and in
+                exported external calendar events. Species is appended to external calendar titles,
+                and exported events include a direct link back into the app task entry.
               </p>
 
               <label className="flex items-start gap-2.5 cursor-pointer">
@@ -1022,7 +1033,7 @@ export function SettingsAndSyncScreen({
                 />
                 <span>
                   <span className="font-medium text-[var(--barn-ink)] block">
-                    Include animal name in calendar task titles
+                    Include animal name in task titles
                   </span>
                   <span className="text-[11px] text-[var(--barn-muted)] block">
                     Uncheck to exclude animal names completely and show Ear Tattoo / Tag ID instead.
@@ -1060,28 +1071,41 @@ export function SettingsAndSyncScreen({
                 </label>
               </div>
 
-              <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[11px]">
-                <span className="text-[var(--barn-muted)] mr-1.5">Calendar preview:</span>
-                <span className="font-mono text-[var(--barn-ink)] font-medium">
-                  {(() => {
-                    const activeSp = speciesProfiles.find(
-                      (sp) => sp.name.toLowerCase() === activeSpeciesName.toLowerCase()
-                    );
-                    const spLabel = activeSp?.name || activeSpeciesName || 'Rabbit';
-                    const samplePrefix = (activeSp?.defaultAnimalPrefix || '').trim() || 'Copper Creek';
-                    const sampleDam = !calendarSync.includeAnimalName
-                      ? 'NZR-102'
-                      : calendarSync.includeAnimalPrefix
-                        ? `${samplePrefix} Briar`
-                        : 'Briar';
-                    const sampleSire = !calendarSync.includeAnimalName
-                      ? 'NZR-051'
-                      : calendarSync.includeAnimalPrefix
-                        ? `${samplePrefix} Marshal`
-                        : 'Marshal';
-                    return `Palpation Check: ${sampleDam} (× ${sampleSire}) [${spLabel}]`;
-                  })()}
-                </span>
+              <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[11px] space-y-1">
+                {(() => {
+                  const activeSp = speciesProfiles.find(
+                    (sp) => sp.name.toLowerCase() === activeSpeciesName.toLowerCase()
+                  );
+                  const spLabel = activeSp?.name || activeSpeciesName || 'Rabbit';
+                  const samplePrefix = (activeSp?.defaultAnimalPrefix || '').trim() || 'Copper Creek';
+                  const sampleDam = !calendarSync.includeAnimalName
+                    ? 'NZR-102'
+                    : calendarSync.includeAnimalPrefix
+                      ? `${samplePrefix} Briar`
+                      : 'Briar';
+                  const sampleSire = !calendarSync.includeAnimalName
+                    ? 'NZR-051'
+                    : calendarSync.includeAnimalPrefix
+                      ? `${samplePrefix} Marshal`
+                      : 'Marshal';
+                  const appSample = `Palpation Check: ${sampleDam} (× ${sampleSire})`;
+                  return (
+                    <>
+                      <div>
+                        <span className="text-[var(--barn-muted)] mr-1.5">App task preview:</span>
+                        <span className="font-mono text-[var(--barn-ink)] font-medium">
+                          {appSample}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[var(--barn-muted)] mr-1.5">Calendar preview:</span>
+                        <span className="font-mono text-[var(--barn-ink)] font-medium">
+                          {`${appSample} [${spLabel}]`}
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1546,6 +1570,30 @@ export function SettingsAndSyncScreen({
               </div>
               <Database className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
             </div>
+
+            {backupStatus && (
+              <div
+                className={`p-3 rounded-xl border text-xs space-y-1 ${
+                  backupStatus.level === 'up_to_date'
+                    ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)]'
+                    : 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)]'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-[var(--barn-ink)]">
+                  <span>{backupStatus.headline}</span>
+                  {backupStatus.lastExportRelative && (
+                    <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+                      {backupStatus.lastExportRelative}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-[var(--barn-muted)]">{backupStatus.detail}</p>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono text-[var(--barn-muted)] pt-0.5">
+                  <span>Last export: {backupStatus.lastExportLabel}</span>
+                  <span>Latest change: {backupStatus.latestChangeLabel}</span>
+                </div>
+              </div>
+            )}
 
             {importError && (
               <div className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium">

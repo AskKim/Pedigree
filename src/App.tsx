@@ -40,6 +40,8 @@ import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { PedigreeScreen } from './components/PedigreeScreen';
 import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
 import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
+import { SpeciesMemoScreen } from './components/SpeciesMemoScreen';
+import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
@@ -256,6 +258,37 @@ export default function App() {
           </div>
         )}
 
+        {/* Proactive Unbacked-Edits Reminder Banner (IMP-001) */}
+        {store.backupStatus && store.backupStatus.showDismissibleBanner && route !== 'settings' && (
+          <div
+            role="status"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+          >
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="font-semibold">{store.backupStatus.headline}</div>
+              <div className="text-[11px] text-[var(--barn-muted)]">
+                {store.backupStatus.detail}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setRoute('settings')}
+                className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+              >
+                Open Backups
+              </button>
+              <button
+                type="button"
+                onClick={() => void store.snoozeBackupReminder(24)}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+              >
+                Snooze 24h
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Actionable Error / Quota / Persistence Failure Recovery Banner */}
         {store.errorMessage && (
           <div
@@ -386,6 +419,7 @@ export default function App() {
 
         {route === 'dashboard' && (
           <SpeciesDashboardScreen
+            snapshot={snapshot}
             activeData={activeSpeciesData}
             settings={snapshot.settings}
             isPinned={isActivePinned}
@@ -415,10 +449,16 @@ export default function App() {
             onDeleteSpeciesTestingData={(speciesName) => {
               void store.deleteSpeciesTestingData(speciesName);
             }}
+            onDeleteSpeciesNonTestingData={(speciesName) => {
+              void store.deleteSpeciesNonTestingData(speciesName);
+            }}
             onDeleteAllSpeciesRecords={(speciesName) => {
               void store.deleteAllSpeciesRecords(speciesName);
             }}
-            onDownloadTimestampedBackup={store.exportTimestampedSpeciesBackup}
+            onDownloadTimestampedSpeciesBackup={store.exportTimestampedSpeciesBackup}
+            onMigrateAnimalsSpecies={async (ids, targetSpecies, options) => {
+              await store.migrateAnimalsSpecies(ids, targetSpecies, options);
+            }}
             onMoveHubBlock={(blockId, dir) => {
               void store.moveSpeciesHubBlock(activeSpeciesName, blockId, dir);
             }}
@@ -426,7 +466,10 @@ export default function App() {
               void store.reorderSpeciesHubBlocks(activeSpeciesName, orderedIds);
             }}
             onExportTaskToCalendar={(task) => {
-              store.exportTasksToCalendar([task], task.title);
+              store.exportTasksToCalendar(
+                [task],
+                formatSystemTaskTitle(task, snapshot.settings.calendarSync, snapshot)
+              );
             }}
             onCopyTaskAppLink={(task) => {
               void store.copyTaskAppLink(task);
@@ -439,6 +482,7 @@ export default function App() {
 
         {route === 'herd' && (
           <HerdScreen
+            snapshot={snapshot}
             activeData={activeSpeciesData}
             allAnimals={snapshot.animals}
             speciesProfiles={snapshot.speciesProfiles}
@@ -465,8 +509,8 @@ export default function App() {
             onDeleteAnimalsBatch={(ids) => {
               void store.deleteAnimalsBatch(ids);
             }}
-            onMigrateAnimalsSpecies={(ids, targetSpecies) => {
-              void store.migrateAnimalsSpecies(ids, targetSpecies);
+            onMigrateAnimalsSpecies={async (ids, targetSpecies, options) => {
+              await store.migrateAnimalsSpecies(ids, targetSpecies, options);
             }}
             onToggleIncludePhotoOnPedigree={(include) => {
               void store.updateSettings({ includePhotoOnPedigree: include }, { silent: true });
@@ -483,6 +527,7 @@ export default function App() {
         {route === 'breeding' && (
           <BreedingScreen
             activeData={activeSpeciesData}
+            settings={snapshot.settings}
             onLogBreeding={(params) => {
               void store.logBreedingWithCascade(params);
             }}
@@ -518,6 +563,14 @@ export default function App() {
           />
         )}
 
+        {route === 'memo' && (
+          <SpeciesMemoScreen
+            speciesProfile={activeSpeciesData.speciesProfile}
+            onSaveMemo={store.saveSpeciesMemo}
+            onBackToHub={() => setRoute('dashboard')}
+          />
+        )}
+
         {route === 'settings' && (
           <SettingsAndSyncScreen
             snapshot={snapshot}
@@ -525,11 +578,13 @@ export default function App() {
             activeSpeciesName={activeSpeciesName}
             deviceId={store.deviceId}
             storageStatus={store.storageStatus}
+            backupStatus={store.backupStatus}
             syncOperations={store.syncOperations}
             syncConflicts={store.syncConflicts}
             openAddSpeciesOnMount={store.openAddSpeciesInSettings}
             onConsumedOpenAddSpecies={() => store.setOpenAddSpeciesInSettings(false)}
             onRequestPersistentStorage={store.triggerPersistentStorageRequest}
+            recordBackupExport={store.recordBackupExport}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}

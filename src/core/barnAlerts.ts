@@ -12,8 +12,10 @@
  */
 
 import {
+  Animal,
   BarnTask,
   BreedingRecord,
+  doesAnimalNeedAttention,
   isSameSpecies,
   pluralizeSpeciesLabel,
   SpeciesProfile,
@@ -172,5 +174,28 @@ export function evaluateSpeciesArrivingBabiesAlert(
     windowDays,
     offspringPluralLabel: pluralizeSpeciesLabel(speciesProfile.offspringLabel || 'Baby'),
     shouldShow: items.length > 0,
+  };
+}
+
+export interface NeedsAttentionAlertEvaluation {
+  animals: Animal[];
+  shouldShow: boolean;
+}
+
+/**
+ * Evaluates animals flagged with `needsAttention` (e.g. quick-added outside parents)
+ * for a single livestock species.
+ */
+export function evaluateSpeciesNeedsAttentionAlert(
+  animals: Animal[],
+  speciesName: string
+): NeedsAttentionAlertEvaluation {
+  const flagged = animals
+    .filter((a) => isSameSpecies(a.species, speciesName) && doesAnimalNeedAttention(a))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  return {
+    animals: flagged,
+    shouldShow: flagged.length > 0,
   };
 }

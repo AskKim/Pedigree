@@ -28,6 +28,7 @@ import {
   SpeciesProfile,
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
+import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
 import { StorageAdapter } from './storageAdapter';
 import {
@@ -66,6 +67,8 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     name TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     default_animal_prefix TEXT NOT NULL DEFAULT '',
+    memo_text TEXT NOT NULL DEFAULT '',
+    memo_updated_at TEXT NOT NULL DEFAULT '',
     gestation_days INTEGER NOT NULL,
     rebreed_days_after_birth INTEGER NOT NULL,
     wean_days_after_birth INTEGER NOT NULL,
@@ -89,6 +92,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     sex TEXT NOT NULL,
     status TEXT NOT NULL,
     archived INTEGER NOT NULL DEFAULT 0,
+    needs_attention INTEGER NOT NULL DEFAULT 0,
     birth_date_iso TEXT NOT NULL,
     weight_grams INTEGER NOT NULL,
     genotype_json TEXT NOT NULL,
@@ -328,7 +332,10 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE barn_settings ADD COLUMN extra_settings_json TEXT NOT NULL DEFAULT '{}';",
     'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE species_profiles ADD COLUMN default_animal_prefix TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE species_profiles ADD COLUMN memo_text TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
+    'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
   ];
   for (const stmt of alterStatements) {
     try {
@@ -561,6 +568,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       name: String(r.name),
       sortOrder: typeof r.sort_order === 'number' ? Number(r.sort_order) : idx,
       defaultAnimalPrefix: String(r.default_animal_prefix || ''),
+      memoText: sanitizeSpeciesMemo(r.memo_text ?? ''),
+      memoUpdatedAt: String(r.memo_updated_at || ''),
       gestationDays: Number(r.gestation_days),
       rebreedDaysAfterBirth: Number(r.rebreed_days_after_birth),
       weanDaysAfterBirth: Number(r.wean_days_after_birth),
@@ -585,6 +594,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         sex: (r.sex as any) || 'Unknown',
         status: (r.status as any) || 'Active',
         archived: Number(r.archived) === 1,
+        needsAttention: Number(r.needs_attention) === 1,
         birthDateIso: String(r.birth_date_iso),
         weightGrams: Number(r.weight_grams),
         genotype: JSON.parse(String(r.genotype_json || '[]')),
@@ -797,13 +807,15 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
         sp.sortOrder ?? 0,
         sp.defaultAnimalPrefix || '',
+        sanitizeSpeciesMemo(sp.memoText ?? ''),
+        String(sp.memoUpdatedAt || ''),
         sp.gestationDays,
         sp.rebreedDaysAfterBirth,
         sp.weanDaysAfterBirth,
@@ -822,8 +834,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertAnimalRow(a: Animal): void {
     this.db?.run(
       `INSERT OR REPLACE INTO animals
-       (id, tattoo, name, species, breed, variety, sex, status, archived, birth_date_iso, weight_grams, genotype_json, genotype_raw, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, sire_id, dam_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, sire_id, dam_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         a.id,
         a.tattoo,
@@ -834,6 +846,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         a.sex,
         a.status,
         a.archived ? 1 : 0,
+        a.needsAttention ? 1 : 0,
         a.birthDateIso,
         a.weightGrams,
         JSON.stringify(a.genotype),

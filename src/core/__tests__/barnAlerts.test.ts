@@ -3,11 +3,12 @@ import {
   buildTaskAlertGroupSignature,
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
+  evaluateSpeciesNeedsAttentionAlert,
   formatArrivalTimingLabel,
   getGestationSoonWindowDays,
 } from '../barnAlerts';
 import { BarnTask, BreedingRecord } from '../models';
-import { makeSpeciesProfile } from './testFixtures';
+import { makeAnimal, makeSpeciesProfile } from './testFixtures';
 
 function makeTask(id: string, overrides: Partial<BarnTask> = {}): BarnTask {
   return {
@@ -151,5 +152,25 @@ describe('barnAlerts — per-species due/overdue task alerts and babies arriving
     expect(res.items.map((i) => i.breeding.damName)).toEqual(['Maple', 'Clover']);
     expect(res.items[0].timingLabel).toBe('Due tomorrow');
     expect(res.items[1].timingLabel).toBe('Due in 4 days');
+  });
+
+  it('evaluates per-species Needs Attention animals cleanly and clears when resolved', () => {
+    const animals = [
+      makeAnimal('r1', { name: 'Zebra Buck', species: 'Rabbit', needsAttention: true }),
+      makeAnimal('r2', { name: 'Alpha Buck', species: 'Rabbit', needsAttention: true }),
+      makeAnimal('r3', { name: 'Resolved Doe', species: 'Rabbit', needsAttention: false }),
+      makeAnimal('g1', { name: 'Outside Buck', species: 'Goat', needsAttention: true }),
+    ];
+
+    const rabbitRes = evaluateSpeciesNeedsAttentionAlert(animals, 'Rabbit');
+    expect(rabbitRes.shouldShow).toBe(true);
+    expect(rabbitRes.animals.map((a) => a.name)).toEqual(['Alpha Buck', 'Zebra Buck']);
+
+    const clearedRes = evaluateSpeciesNeedsAttentionAlert(
+      animals.map((a) => ({ ...a, needsAttention: false })),
+      'Rabbit'
+    );
+    expect(clearedRes.shouldShow).toBe(false);
+    expect(clearedRes.animals).toHaveLength(0);
   });
 });

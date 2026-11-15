@@ -10,7 +10,10 @@
  */
 
 import {
+  AlertCircle,
   ArrowDown,
+  ArrowRight,
+  ArrowRightLeft,
   ArrowUp,
   ArrowUpToLine,
   CalendarPlus,
@@ -23,10 +26,14 @@ import {
   Settings,
   SlidersHorizontal,
   Square,
+  StickyNote,
   Trash2,
 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
+import { evaluateSpeciesNeedsAttentionAlert } from '../core/barnAlerts';
+import { formatSystemTaskTitle } from '../core/calendarExport';
 import {
+  BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
   CageLocation,
@@ -43,10 +50,16 @@ import {
   TaskPriority,
   todayDateIso,
 } from '../core/models';
+import { countSpeciesNonTestingRecords } from '../core/sampleData';
+import { SpeciesMigrationOptions } from '../core/speciesMigration';
+import { SpeciesBackupReason } from '../core/syncAndExports';
 import { ActiveSpeciesData, WorkspaceRoute } from '../hooks/useBarnStore';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
+import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface SpeciesDashboardScreenProps {
+  snapshot: BarnDatabaseSnapshot;
   activeData: ActiveSpeciesData;
   settings: BarnSettings;
   isPinned: boolean;
@@ -65,8 +78,17 @@ interface SpeciesDashboardScreenProps {
   onSaveSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpeciesTestingData: (speciesName: string) => void;
+  onDeleteSpeciesNonTestingData: (speciesName: string) => void;
   onDeleteAllSpeciesRecords: (speciesName: string) => void;
-  onDownloadTimestampedBackup: (speciesName: string) => void;
+  onDownloadTimestampedSpeciesBackup: (
+    speciesName: string,
+    reason?: SpeciesBackupReason
+  ) => void;
+  onMigrateAnimalsSpecies: (
+    animalIds: string[],
+    targetSpecies: string,
+    options?: SpeciesMigrationOptions
+  ) => Promise<void> | void;
   onMoveHubBlock?: (blockId: SpeciesHubBlockId, direction: 'up' | 'down' | 'top') => void;
   onReorderHubBlocks?: (orderedIds: SpeciesHubBlockId[]) => void;
   onExportTaskToCalendar?: (task: BarnTask) => void;
@@ -77,6 +99,7 @@ interface SpeciesDashboardScreenProps {
 }
 
 export function SpeciesDashboardScreen({
+  snapshot,
   activeData,
   settings,
   isPinned,
@@ -95,8 +118,10 @@ export function SpeciesDashboardScreen({
   onSaveSpecies,
   onDeleteSpecies,
   onDeleteSpeciesTestingData,
+  onDeleteSpeciesNonTestingData,
   onDeleteAllSpeciesRecords,
-  onDownloadTimestampedBackup,
+  onDownloadTimestampedSpeciesBackup,
+  onMigrateAnimalsSpecies,
   onMoveHubBlock,
   onReorderHubBlocks,
   onExportTaskToCalendar,
@@ -140,9 +165,11 @@ export function SpeciesDashboardScreen({
 
   // Species Settings section modals / 2-step confirmations
   const [showSpeciesConfigModal, setShowSpeciesConfigModal] = useState(false);
+  const [showBulkMigrateModal, setShowBulkMigrateModal] = useState(false);
   const [hubDeleteConfirm, setHubDeleteConfirm] = useState<
-    'testing' | 'all' | 'remove-species' | null
+    'testing' | 'non-testing' | 'all' | 'remove-species' | null
   >(null);
+  const nonTestingCount = countSpeciesNonTestingRecords(snapshot, speciesProfile.name);
   const canRemoveEmptySpecies = totalRecordCount === 0 && existingSpeciesNames.length > 1;
   const [draggedBlockId, setDraggedBlockId] = useState<SpeciesHubBlockId | null>(null);
   const [dragOverBlockId, setDragOverBlockId] = useState<SpeciesHubBlockId | null>(null);
@@ -196,6 +223,7 @@ export function SpeciesDashboardScreen({
   );
   const openTasksCount = tasks.filter((t) => !t.completed).length;
   const upcomingShows = shows.filter((s) => !s.eventDateIso || s.eventDateIso >= today);
+  const attentionAlert = evaluateSpeciesNeedsAttentionAlert(animals, speciesProfile.name);
 
   const visibleTasks = tasks.filter((t) => (taskFilter === 'open' ? !t.completed : t.completed));
 
@@ -322,6 +350,39 @@ export function SpeciesDashboardScreen({
           </button>
         )}
 
+        {totalRecordCount > 0 && (
+          <button
+            type="button"
+            onClick={() => onDownloadTimestampedSpeciesBackup(speciesProfile.name, 'manual')}
+            className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Download className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+            Backup {speciesProfile.name} (.JSON)
+          </button>
+        )}
+
+        {animals.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowBulkMigrateModal(true)}
+            className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <ArrowRightLeft className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+            Migrate All {speciesProfile.name} Stock
+          </button>
+        )}
+
+        {nonTestingCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setHubDeleteConfirm('non-testing')}
+            className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-terracotta)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+            Clear Non-Testing Data ({nonTestingCount})
+          </button>
+        )}
+
         {totalRecordCount > 0 ? (
           <button
             type="button"
@@ -357,6 +418,8 @@ export function SpeciesDashboardScreen({
           <div className="font-semibold text-[var(--barn-ink)]">
             {hubDeleteConfirm === 'testing'
               ? `Delete ${testingRecordCount} sample/testing records in ${speciesProfile.name}?`
+              : hubDeleteConfirm === 'non-testing'
+              ? `Recommend Backing Up Before Clearing ${nonTestingCount} Non-Testing ${speciesProfile.name} Records`
               : hubDeleteConfirm === 'remove-species'
               ? `Remove empty ${speciesProfile.name} species from your barn?`
               : `Recommend Backing Up Before Deleting All ${totalRecordCount} ${speciesProfile.name} Records`}
@@ -364,19 +427,28 @@ export function SpeciesDashboardScreen({
           <p className="text-[var(--barn-muted)]">
             {hubDeleteConfirm === 'testing'
               ? `Real and imported ${speciesProfile.name} animals, breedings, and photos stay intact.`
+              : hubDeleteConfirm === 'non-testing'
+              ? `Removes your real/imported ${speciesProfile.name} animals, breedings, chores, and photos while keeping starter sample data intact. Download a timestamped safety backup first so prior daily backups are never overwritten.`
               : hubDeleteConfirm === 'remove-species'
               ? `${speciesProfile.name} has 0 records left. Removing it deletes this empty species hub and its schedule settings from your barn list.`
-              : `Download a timestamped backup first so prior backups are not overwritten if something needs recovery later. Other species stay untouched.`}
+              : `Download a timestamped safety backup first so prior backups are not overwritten if something needs recovery later. Other species stay untouched.`}
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            {hubDeleteConfirm === 'all' && (
+            {(hubDeleteConfirm === 'all' || hubDeleteConfirm === 'non-testing') && (
               <button
                 type="button"
-                onClick={() => onDownloadTimestampedBackup(speciesProfile.name)}
+                onClick={() =>
+                  onDownloadTimestampedSpeciesBackup(
+                    speciesProfile.name,
+                    hubDeleteConfirm === 'non-testing'
+                      ? 'pre-remove-non-testing'
+                      : 'pre-remove-species'
+                  )
+                }
                 className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                Download Timestamped {speciesProfile.name} Backup
+                Download Timestamped {speciesProfile.name} Safety Backup
               </button>
             )}
             <button
@@ -384,6 +456,8 @@ export function SpeciesDashboardScreen({
               onClick={() => {
                 if (hubDeleteConfirm === 'testing') {
                   onDeleteSpeciesTestingData(speciesProfile.name);
+                } else if (hubDeleteConfirm === 'non-testing') {
+                  onDeleteSpeciesNonTestingData(speciesProfile.name);
                 } else if (hubDeleteConfirm === 'remove-species') {
                   onDeleteSpecies(speciesProfile);
                 } else {
@@ -395,6 +469,8 @@ export function SpeciesDashboardScreen({
             >
               {hubDeleteConfirm === 'testing'
                 ? `Confirm Delete ${speciesProfile.name} Testing Data`
+                : hubDeleteConfirm === 'non-testing'
+                ? `Confirm Clear ${speciesProfile.name} Non-Testing Data`
                 : hubDeleteConfirm === 'remove-species'
                 ? `Confirm Remove ${speciesProfile.name}`
                 : `Confirm Delete All ${speciesProfile.name} Records`}
@@ -417,8 +493,21 @@ export function SpeciesDashboardScreen({
           recordCount={totalRecordCount}
           onSave={onSaveSpecies}
           onDelete={onDeleteSpecies}
-          onDownloadTimestampedBackup={onDownloadTimestampedBackup}
+          onDownloadTimestampedBackup={(name) =>
+            onDownloadTimestampedSpeciesBackup(name, 'pre-remove-species')
+          }
           onClose={() => setShowSpeciesConfigModal(false)}
+        />
+      )}
+
+      {showBulkMigrateModal && (
+        <SpeciesMigrationModal
+          snapshot={snapshot}
+          sourceSpecies={speciesProfile.name}
+          directAnimalIds={animals.map((a) => a.id)}
+          mode="bulk-all"
+          onConfirmMigrate={onMigrateAnimalsSpecies}
+          onClose={() => setShowBulkMigrateModal(false)}
         />
       )}
     </section>
@@ -452,6 +541,17 @@ export function SpeciesDashboardScreen({
             >
               Add Testing Data
             </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('memo')}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl border-2 border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-[var(--barn-ink)] text-xs font-semibold hover:brightness-105 transition-all inline-flex items-center gap-2"
+            >
+              <span className="p-1 rounded-md bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center">
+                <StickyNote className="w-3.5 h-3.5" aria-hidden="true" />
+              </span>
+              <span>Open {speciesProfile.name} Note / Memo Pad</span>
+              <ArrowRight className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+            </button>
           </div>
         </div>
 
@@ -462,48 +562,130 @@ export function SpeciesDashboardScreen({
 
   return (
     <div className="space-y-6">
-      {/* Compact 4-Metric Species Pulse Strip */}
-      <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl p-1.5 grid grid-cols-2 sm:grid-cols-4 gap-1">
-        <button
-          type="button"
-          onClick={() => onNavigate('herd')}
-          className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
-        >
-          <span className="text-xs text-[var(--barn-muted)] truncate">
-            {speciesProfile.name} Herd
-          </span>
-          <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-            {animals.length} ({activeBreedingStock} active)
-          </span>
-        </button>
+      {/* Compact 4-Metric Species Pulse Strip + Memo Pad Link */}
+      <div className="flex flex-col lg:flex-row lg:items-stretch gap-2">
+        <section className="flex-1 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl p-1.5 grid grid-cols-2 sm:grid-cols-4 gap-1">
+          <button
+            type="button"
+            onClick={() => onNavigate('herd')}
+            className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
+          >
+            <span className="text-xs text-[var(--barn-muted)] truncate">
+              {speciesProfile.name} Herd
+            </span>
+            <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
+              {animals.length} ({activeBreedingStock} active)
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('breeding')}
+            className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
+          >
+            <span className="text-xs text-[var(--barn-muted)] truncate">
+              {speciesProfile.birthEventLabel}s
+            </span>
+            <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
+              {activeGestations.length} active
+            </span>
+          </button>
+
+          <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
+            <span className="text-xs text-[var(--barn-muted)] truncate">Open Chores</span>
+            <span className="font-mono text-xs font-semibold tabular-nums">
+              {openTasksCount}
+            </span>
+          </div>
+
+          <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
+            <span className="text-xs text-[var(--barn-muted)] truncate">Cages / Shows</span>
+            <span className="font-mono text-xs font-semibold tabular-nums">
+              {cages.length} / {upcomingShows.length}
+            </span>
+          </div>
+        </section>
 
         <button
           type="button"
-          onClick={() => onNavigate('breeding')}
-          className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
+          onClick={() => onNavigate('memo')}
+          className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
         >
-          <span className="text-xs text-[var(--barn-muted)] truncate">
-            {speciesProfile.birthEventLabel}s
+          <span className="inline-flex items-center gap-2.5">
+            <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
+              <StickyNote className="w-4 h-4" aria-hidden="true" />
+            </span>
+            <span>
+              <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                {speciesProfile.name} Note Pad
+              </span>
+              <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
+                Open permanent scratch pad
+              </span>
+            </span>
           </span>
-          <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-            {activeGestations.length} active
-          </span>
+          <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
         </button>
+      </div>
 
-        <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
-          <span className="text-xs text-[var(--barn-muted)] truncate">Open Chores</span>
-          <span className="font-mono text-xs font-semibold tabular-nums">
-            {openTasksCount}
-          </span>
-        </div>
+      {/* Needs Attention Animals Notice */}
+      {attentionAlert.shouldShow && (
+        <section
+          aria-label={`${speciesProfile.name} records needing attention`}
+          className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] rounded-2xl p-4 sm:p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <AlertCircle
+                className="w-5 h-5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                aria-hidden="true"
+              />
+              <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold text-[var(--barn-ink)]">
+                  {attentionAlert.animals.length} {speciesProfile.name}{' '}
+                  {attentionAlert.animals.length === 1 ? 'Record Needs' : 'Records Need'} Attention
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)]">
+                  Review and complete details (such as tattoo, breed, or pedigree) or clear the
+                  flag once finished.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('herd')}
+              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              Open {speciesProfile.name} Herd
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
 
-        <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
-          <span className="text-xs text-[var(--barn-muted)] truncate">Cages / Shows</span>
-          <span className="font-mono text-xs font-semibold tabular-nums">
-            {cages.length} / {upcomingShows.length}
-          </span>
-        </div>
-      </section>
+          <div className="flex flex-wrap items-center gap-2">
+            {attentionAlert.animals.slice(0, 8).map((flagged) => (
+              <button
+                key={flagged.id}
+                type="button"
+                onClick={() => onOpenAnimal(flagged.id)}
+                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)] inline-flex items-center gap-1.5"
+              >
+                <span>{flagged.name}</span>
+                {flagged.tattoo && (
+                  <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+                    ({flagged.tattoo})
+                  </span>
+                )}
+                <ArrowRight className="w-3 h-3 text-[var(--barn-terracotta)]" aria-hidden="true" />
+              </button>
+            ))}
+            {attentionAlert.animals.length > 8 && (
+              <span className="text-xs text-[var(--barn-muted)] px-1">
+                +{attentionAlert.animals.length - 8} more in Herd
+              </span>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Main Reorderable Subunit Blocks */}
       <div className="space-y-3">
@@ -756,6 +938,11 @@ export function SpeciesDashboardScreen({
                       {visibleTasks.map((t) => {
                         const isOverdue = !t.completed && t.dueDateIso && t.dueDateIso < today;
                         const isHighlighted = highlightedTaskId === t.id;
+                        const displayTitle = formatSystemTaskTitle(t, settings.calendarSync, {
+                          animals,
+                          breedings,
+                          speciesProfiles: [speciesProfile],
+                        });
                         return (
                           <div
                             key={t.id}
@@ -774,7 +961,9 @@ export function SpeciesDashboardScreen({
                                   onToggleTask(t);
                                 }}
                                 aria-label={
-                                  t.completed ? `Mark ${t.title} open` : `Complete ${t.title}`
+                                  t.completed
+                                    ? `Mark ${displayTitle} open`
+                                    : `Complete ${displayTitle}`
                                 }
                                 className="min-h-[40px] min-w-[40px] -ml-2 rounded-lg flex items-center justify-center text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] shrink-0"
                               >
@@ -790,7 +979,7 @@ export function SpeciesDashboardScreen({
                                     t.completed ? 'line-through text-[var(--barn-muted)]' : ''
                                   }`}
                                 >
-                                  {t.title}
+                                  {displayTitle}
                                 </div>
                                 <div className="text-xs text-[var(--barn-muted)] mt-0.5 flex flex-wrap items-center gap-1.5">
                                   <span>{t.category}</span>
@@ -850,7 +1039,7 @@ export function SpeciesDashboardScreen({
                                   type="button"
                                   onClick={() => onExportTaskToCalendar(t)}
                                   title="Add chore to system calendar (.ICS)"
-                                  aria-label={`Add ${t.title} to system calendar`}
+                                  aria-label={`Add ${displayTitle} to system calendar`}
                                   className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
                                 >
                                   <CalendarPlus className="w-4 h-4" />
@@ -861,7 +1050,7 @@ export function SpeciesDashboardScreen({
                                   type="button"
                                   onClick={() => onCopyTaskAppLink(t)}
                                   title="Copy direct app link for calendar event"
-                                  aria-label={`Copy app link for ${t.title}`}
+                                  aria-label={`Copy app link for ${displayTitle}`}
                                   className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
                                 >
                                   <Link2 className="w-4 h-4" />
@@ -870,7 +1059,7 @@ export function SpeciesDashboardScreen({
                               <button
                                 type="button"
                                 onClick={() => onDeleteTask(t.id)}
-                                aria-label={`Delete chore ${t.title}`}
+                                aria-label={`Delete chore ${displayTitle}`}
                                 className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -930,7 +1119,9 @@ export function SpeciesDashboardScreen({
                       No active {speciesProfile.name.toLowerCase()} pairings right now.
                     </p>
                   ) : (
-                    <div className="divide-y divide-[var(--barn-border)]">
+                    <>
+                      <WrightCoiNotice compact />
+                      <div className="divide-y divide-[var(--barn-border)]">
                       {activeGestations.map((b) => (
                         <div key={b.id} className="py-3.5 first:pt-1 last:pb-1 space-y-1">
                           <div className="flex items-center justify-between gap-3">
@@ -952,7 +1143,8 @@ export function SpeciesDashboardScreen({
                           </div>
                         </div>
                       ))}
-                    </div>
+                      </div>
+                    </>
                   )}
                 </section>
               );

@@ -10,6 +10,7 @@
  */
 
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowDown,
   ArrowRight,
@@ -22,11 +23,14 @@ import {
 } from 'lucide-react';
 import React, { useState } from 'react';
 import {
+  evaluateSpeciesArrivingBabiesAlert,
+  evaluateSpeciesDueTasksAlert,
+  evaluateSpeciesNeedsAttentionAlert,
+} from '../core/barnAlerts';
+import { formatSystemTaskTitle } from '../core/calendarExport';
+import {
   BarnDatabaseSnapshot,
-  BreedingRecord,
   isAnimalArchived,
-  isSameSpecies,
-  SpeciesProfile,
   todayDateIso,
 } from '../core/models';
 import { WorkspaceRoute } from '../hooks/useBarnStore';
@@ -39,26 +43,8 @@ interface HomeSpeciesScreenProps {
   onSaveBarnName: (name: string) => void;
   onHideSummaryGrid: () => void;
   onIgnoreTaskAlerts: (taskIds: string[]) => void;
-  onClearTaskAlertGroup: (speciesName: string, taskIds: string[]) => void;
+  onClearTaskAlertGroup: (speciesName: string, groupSignature: string | string[]) => void;
   onNavigateToAddSpecies: () => void;
-}
-
-function diffIsoDays(targetIso: string, baseIso: string): number | null {
-  if (!targetIso || !baseIso) return null;
-  const t = Date.parse(`${targetIso}T00:00:00Z`);
-  const b = Date.parse(`${baseIso}T00:00:00Z`);
-  if (Number.isNaN(t) || Number.isNaN(b)) return null;
-  return Math.round((t - b) / 86400000);
-}
-
-function isBirthNearlyDue(b: BreedingRecord, sp: SpeciesProfile, todayIso: string): boolean {
-  if (!['Planned', 'Bred', 'Palpated Positive'].includes(b.status)) return false;
-  if (b.actualBirthDateIso || !b.expectedDueDateIso) return false;
-  const daysUntil = diffIsoDays(b.expectedDueDateIso, todayIso);
-  if (daysUntil === null || daysUntil < -7) return false;
-  const gestationDays = Math.max(1, sp.gestationDays || 30);
-  const progressRatio = (gestationDays - daysUntil) / gestationDays;
-  return daysUntil <= 5 || progressRatio >= 0.85;
 }
 
 export function HomeSpeciesScreen({
@@ -88,12 +74,14 @@ export function HomeSpeciesScreen({
   );
   const ignoredTaskIdSet = new Set(snapshot.settings.ignoredTaskIds || []);
 
+  const activeTasks = snapshot.tasks.filter(
+    (t) => !t.linkedAnimalId || !archivedIdSet.has(t.linkedAnimalId)
+  );
+
   const activeGestations = snapshot.breedings.filter((b) =>
     ['Planned', 'Bred', 'Palpated Positive'].includes(b.status)
   ).length;
-  const openTasks = snapshot.tasks.filter(
-    (t) => !t.completed && (!t.linkedAnimalId || !archivedIdSet.has(t.linkedAnimalId))
-  ).length;
+  const openTasks = activeTasks.filter((t) => !t.completed).length;
 
   const handleDropOnCard = (targetId: string) => {
     if (!draggedSpeciesId || draggedSpeciesId === targetId) {
@@ -167,13 +155,31 @@ export function HomeSpeciesScreen({
 
       {/* Barn Hero Header */}
       <section className="space-y-3.5">
-        <div className="space-y-1 max-w-2xl">
-          <p className="text-xs text-[var(--barn-muted)]">
-            100% Free Offline PWA · Full Local Data Ownership
-          </p>
-          <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-balance">
+        <div className="space-y-1.5 max-w-2xl">
+          <div className="space-y-0.5">
+            <p className="text-xs text-[var(--barn-muted)]">
+              Multi-Species Livestock Pedigree &amp; Management System
+            </p>
+            <p className="text-xs text-[var(--barn-muted)]">
+              100% local app ownership — offline-first with zero cloud lock-in.
+            </p>
+          </div>
+          <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-balance pt-1">
             {snapshot.settings.barnName || 'My Barn'}
           </h1>
+          <div
+            role="note"
+            className="flex items-start gap-2 px-3 py-2 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)]/70 text-xs text-[var(--barn-ink)]"
+          >
+            <AlertTriangle
+              className="w-3.5 h-3.5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span>
+              <strong>Pre-alpha:</strong> Use at your own risk — always back up your data before
+              upgrading or deleting records.
+            </span>
+          </div>
           <p className="text-sm text-[var(--barn-muted)]">
             Choose a livestock species below to open its isolated barn hub, manage records, or
             reorder cards to match your daily chore route.
@@ -234,24 +240,27 @@ export function HomeSpeciesScreen({
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {snapshot.speciesProfiles.map((sp, index) => {
             const spKey = sp.name.trim().toLowerCase();
-            const dueTasks = snapshot.tasks.filter(
-              (t) =>
-                isSameSpecies(t.species, sp.name) &&
-                !t.completed &&
-                Boolean(t.dueDateIso) &&
-                t.dueDateIso <= today &&
-                !ignoredTaskIdSet.has(t.id) &&
-                (!t.linkedAnimalId || !archivedIdSet.has(t.linkedAnimalId))
-            );
-            const dueTaskIds = dueTasks.map((t) => t.id).sort();
-            const dismissedGroup = new Set(
-              snapshot.settings.dismissedTaskGroupKeys?.[spKey] || []
-            );
+            const rawCleared = snapshot.settings.dismissedTaskGroupKeys?.[spKey];
+            const dueAlert = evaluateSpeciesDueTasksAlert(activeTasks, sp.name, {
+              todayIso: today,
+              ignoredTaskIds: ignoredTaskIdSet,
+              clearedGroupSignature: typeof rawCleared === 'string' ? rawCleared : undefined,
+            });
+            const dueTasks = dueAlert.tasks;
+            const dueTaskIds = dueTasks.map((t) => t.id);
+            const legacyDismissed = Array.isArray(rawCleared) ? new Set(rawCleared) : null;
             const showDueTaskAlert =
-              dueTaskIds.length > 0 && dueTaskIds.some((id) => !dismissedGroup.has(id));
+              dueAlert.shouldShow &&
+              (!legacyDismissed || dueTaskIds.some((id) => !legacyDismissed.has(id)));
 
-            const upcomingBirths = snapshot.breedings.filter(
-              (b) => isSameSpecies(b.species, sp.name) && isBirthNearlyDue(b, sp, today)
+            const arrivingAlert = evaluateSpeciesArrivingBabiesAlert(
+              snapshot.breedings,
+              sp,
+              { todayIso: today }
+            );
+            const attentionAlert = evaluateSpeciesNeedsAttentionAlert(
+              snapshot.animals,
+              sp.name
             );
 
             const isFirst = index === 0;
@@ -293,9 +302,9 @@ export function HomeSpeciesScreen({
                 }`}
               >
                 <div className="space-y-3">
-                  {/* Card Header: Drag Grip + Name + Position + Reorder Arrows */}
+                  {/* Card Header: Drag Grip + Invisibly Linked Name + Open Hub + Reorder Arrows */}
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
                       <span
                         title="Drag card to reorder"
                         className="text-[var(--barn-muted)] cursor-grab active:cursor-grabbing hidden sm:inline-flex shrink-0"
@@ -303,55 +312,73 @@ export function HomeSpeciesScreen({
                       >
                         <GripVertical className="w-4 h-4" />
                       </span>
-                      <h3 className="font-display text-lg font-semibold leading-snug truncate">
-                        {sp.name}
+                      <h3 className="font-display text-lg font-semibold leading-snug truncate min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => onOpenSpecies(sp.name, 'dashboard')}
+                          aria-label={`Open ${sp.name} hub`}
+                          className="text-left text-inherit font-inherit truncate max-w-full hover:opacity-80 focus:outline-none focus-visible:underline cursor-pointer"
+                        >
+                          {sp.name}
+                        </button>
                       </h3>
                       <span className="text-[11px] font-mono text-[var(--barn-muted)] tabular-nums shrink-0">
                         #{index + 1}
                       </span>
                     </div>
 
-                    <div
-                      role="group"
-                      aria-label={`Reorder ${sp.name} card`}
-                      className="inline-flex items-center rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] p-0.5 shrink-0"
-                    >
-                      {index > 1 && (
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onOpenSpecies(sp.name, 'dashboard')}
+                        className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold hover:opacity-95 transition-opacity inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+                      >
+                        Open Hub
+                        <ArrowRight className="w-3 h-3" aria-hidden="true" />
+                      </button>
+
+                      <div
+                        role="group"
+                        aria-label={`Reorder ${sp.name} card`}
+                        className="inline-flex items-center rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] p-0.5 shrink-0"
+                      >
+                        {index > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => onMoveSpeciesCard(sp.id, 'top')}
+                            title={`Move ${sp.name} to top (#1)`}
+                            aria-label={`Move ${sp.name} to top`}
+                            className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
+                          >
+                            <ArrowUpToLine className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => onMoveSpeciesCard(sp.id, 'top')}
-                          title={`Move ${sp.name} to top (#1)`}
-                          aria-label={`Move ${sp.name} to top`}
-                          className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
+                          disabled={isFirst}
+                          onClick={() => onMoveSpeciesCard(sp.id, 'up')}
+                          title={`Move ${sp.name} up`}
+                          aria-label={`Move ${sp.name} up`}
+                          className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors"
                         >
-                          <ArrowUpToLine className="w-3.5 h-3.5" />
+                          <ArrowUp className="w-3.5 h-3.5" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        disabled={isFirst}
-                        onClick={() => onMoveSpeciesCard(sp.id, 'up')}
-                        title={`Move ${sp.name} up`}
-                        aria-label={`Move ${sp.name} up`}
-                        className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors"
-                      >
-                        <ArrowUp className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isLast}
-                        onClick={() => onMoveSpeciesCard(sp.id, 'down')}
-                        title={`Move ${sp.name} down`}
-                        aria-label={`Move ${sp.name} down`}
-                        className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors"
-                      >
-                        <ArrowDown className="w-3.5 h-3.5" />
-                      </button>
+                        <button
+                          type="button"
+                          disabled={isLast}
+                          onClick={() => onMoveSpeciesCard(sp.id, 'down')}
+                          title={`Move ${sp.name} down`}
+                          aria-label={`Move ${sp.name} down`}
+                          className="min-h-[32px] min-w-[28px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
                   {/* Babies About to Arrive Alert (gestation nearly complete) */}
-                  {upcomingBirths.length > 0 && (
+                  {arrivingAlert.shouldShow && (
                     <div className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] space-y-2 text-xs">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-start gap-2 min-w-0">
@@ -361,24 +388,12 @@ export function HomeSpeciesScreen({
                           />
                           <div className="min-w-0">
                             <div className="font-semibold text-[var(--barn-ink)]">
-                              {upcomingBirths.length}{' '}
-                              {upcomingBirths.length === 1
-                                ? `${sp.birthEventLabel} Soon`
-                                : `${sp.birthEventLabel}s Soon`}
+                              {arrivingAlert.items.length} {arrivingAlert.offspringPluralLabel} Due Soon
                             </div>
                             <div className="text-[11px] text-[var(--barn-muted)] truncate">
-                              {upcomingBirths
+                              {arrivingAlert.items
                                 .slice(0, 2)
-                                .map((b) => {
-                                  const d = diffIsoDays(b.expectedDueDateIso, today);
-                                  const dueTag =
-                                    d === 0
-                                      ? 'due today'
-                                      : d && d < 0
-                                      ? `${Math.abs(d)}d overdue`
-                                      : `in ${d}d`;
-                                  return `${b.damName} (${dueTag})`;
-                                })
+                                .map((item) => `${item.breeding.damName} (${item.timingLabel})`)
                                 .join(' · ')}
                             </div>
                           </div>
@@ -389,6 +404,43 @@ export function HomeSpeciesScreen({
                           className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap shrink-0"
                         >
                           View Breeding
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Needs Attention Animals Notice (e.g., quick-added unlisted parents) */}
+                  {attentionAlert.shouldShow && (
+                    <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)]/80 space-y-2 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <AlertCircle
+                            className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[var(--barn-ink)]">
+                              {attentionAlert.animals.length}{' '}
+                              {attentionAlert.animals.length === 1 ? 'Record' : 'Records'} Need
+                              Attention
+                            </div>
+                            <div className="text-[11px] text-[var(--barn-muted)] truncate">
+                              {attentionAlert.animals
+                                .slice(0, 2)
+                                .map((a) => a.name)
+                                .join(' · ')}
+                              {attentionAlert.animals.length > 2
+                                ? ` +${attentionAlert.animals.length - 2} more`
+                                : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenSpecies(sp.name, 'herd')}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap shrink-0"
+                        >
+                          Review
                         </button>
                       </div>
                     </div>
@@ -410,7 +462,13 @@ export function HomeSpeciesScreen({
                           <div className="text-[11px] text-[var(--barn-muted)] truncate">
                             {dueTasks
                               .slice(0, 2)
-                              .map((t) => t.title)
+                              .map((t) =>
+                                formatSystemTaskTitle(t, snapshot.settings.calendarSync, {
+                                  animals: snapshot.animals,
+                                  breedings: snapshot.breedings,
+                                  speciesProfiles: snapshot.speciesProfiles,
+                                })
+                              )
                               .join(' · ')}
                           </div>
                         </div>
@@ -425,7 +483,9 @@ export function HomeSpeciesScreen({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onClearTaskAlertGroup(sp.name, dueTaskIds)}
+                          onClick={() =>
+                            onClearTaskAlertGroup(sp.name, dueAlert.groupSignature)
+                          }
                           className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
                         >
                           Clear Alert
@@ -441,15 +501,6 @@ export function HomeSpeciesScreen({
                     </div>
                   )}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => onOpenSpecies(sp.name, 'dashboard')}
-                  className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 transition-opacity inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  Open {sp.name} Hub
-                  <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-                </button>
               </article>
             );
           })}

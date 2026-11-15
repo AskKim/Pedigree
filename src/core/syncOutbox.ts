@@ -29,6 +29,7 @@ import {
   ShowEvent,
   SpeciesProfile,
 } from './models';
+import { sanitizeSpeciesMemo } from './speciesMemo';
 
 export type SyncEntityType =
   | 'animal'
@@ -359,9 +360,15 @@ export function mergeDeltaOperations(
   return {
     nextSnapshot: {
       settings,
-      speciesProfiles: Array.from(speciesProfiles.values()).sort(
-        (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
-      ),
+      speciesProfiles: Array.from(speciesProfiles.values())
+        .map((sp) => ({
+          ...sp,
+          memoText: sanitizeSpeciesMemo(sp.memoText),
+          memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
+        }))
+        .sort(
+          (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
+        ),
       animals: Array.from(animals.values()),
       animalPhotos: Array.from(photos.values()),
       cages: Array.from(cages.values()),

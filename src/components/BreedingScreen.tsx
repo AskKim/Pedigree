@@ -8,12 +8,14 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { Trash2 } from 'lucide-react';
+import { Trash2, UserPlus } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
+import { formatSystemTaskTitle } from '../core/calendarExport';
 import { simulatePairingGenetics } from '../core/geneticsEngine';
 import {
   addDaysIso,
   Animal,
+  BarnSettings,
   BREEDING_STATUSES,
   BreedingRecord,
   BreedingStatus,
@@ -25,12 +27,17 @@ import {
 import { calculatePairingCoi } from '../core/pedigreeCalculator';
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
+import { SearchableParentPicker } from './SearchableParentPicker';
+import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface BreedingScreenProps {
   activeData: ActiveSpeciesData;
+  settings?: BarnSettings;
   onLogBreeding: (params: {
-    sire: Animal;
-    dam: Animal;
+    sire?: Animal;
+    quickSireName?: string;
+    dam?: Animal;
+    quickDamName?: string;
     bredDateIso: string;
     status: BreedingStatus;
     notes: string;
@@ -54,6 +61,7 @@ interface BreedingScreenProps {
 
 export function BreedingScreen({
   activeData,
+  settings,
   onLogBreeding,
   onUpdateOutcome,
   onDeleteBreeding,
@@ -87,20 +95,37 @@ export function BreedingScreen({
 
   const [sireId, setSireId] = useState<string>(males[0]?.id || '');
   const [damId, setDamId] = useState<string>(females[0]?.id || '');
+  const [quickAddSire, setQuickAddSire] = useState<boolean>(males.length === 0);
+  const [quickSireName, setQuickSireName] = useState<string>('');
+  const [quickAddDam, setQuickAddDam] = useState<boolean>(females.length === 0);
+  const [quickDamName, setQuickDamName] = useState<string>('');
   const [bredDateIso, setBredDateIso] = useState<string>(todayDateIso());
   const [status, setStatus] = useState<BreedingStatus>('Bred');
   const [autoCascade, setAutoCascade] = useState<boolean>(true);
   const [notes, setNotes] = useState<string>('');
 
-  // Keep selected Sire & Dam synchronized whenever user switches active species!
+  // Keep selected Sire & Dam synchronized whenever user switches active species or toggles Include Archived
   useEffect(() => {
     if (!males.some((m) => m.id === sireId)) {
       setSireId(males[0]?.id || '');
     }
+    if (males.length === 0) {
+      setQuickAddSire(true);
+    }
     if (!females.some((f) => f.id === damId)) {
       setDamId(females[0]?.id || '');
     }
+    if (females.length === 0) {
+      setQuickAddDam(true);
+    }
   }, [males, females, sireId, damId]);
+
+  useEffect(() => {
+    setQuickAddSire(males.length === 0);
+    setQuickSireName('');
+    setQuickAddDam(females.length === 0);
+    setQuickDamName('');
+  }, [speciesProfile.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Outcome modal state
   const [editingRecord, setEditingRecord] = useState<BreedingRecord | null>(null);
@@ -113,8 +138,77 @@ export function BreedingScreen({
   const [outRegisterCount, setOutRegisterCount] = useState('0');
   const [outNotes, setOutNotes] = useState('');
 
-  const selectedSire = sireId ? herdById.get(sireId) : undefined;
-  const selectedDam = damId ? herdById.get(damId) : undefined;
+  const usingQuickSire = quickAddSire || males.length === 0;
+  const usingQuickDam = quickAddDam || females.length === 0;
+
+  const selectedSire = !usingQuickSire && sireId ? herdById.get(sireId) : undefined;
+  const selectedDam = !usingQuickDam && damId ? herdById.get(damId) : undefined;
+
+  const effectiveSire = useMemo<Animal | undefined>(() => {
+    if (!usingQuickSire) return selectedSire;
+    const trimmed = quickSireName.trim();
+    if (!trimmed) return undefined;
+    return {
+      id: '__quick_sire__',
+      tattoo: '',
+      name: trimmed,
+      species: speciesProfile.name,
+      breed: '',
+      variety: '',
+      sex: 'Male',
+      status: 'Active',
+      archived: false,
+      needsAttention: true,
+      birthDateIso: '',
+      weightGrams: 0,
+      genotype: [],
+      genotypeRaw: '',
+      registrationNumber: '',
+      grandChampionNumber: '',
+      legsCount: 0,
+      cageLocation: '',
+      breederName: '',
+      ownerName: '',
+      sireId: '',
+      damId: '',
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    };
+  }, [usingQuickSire, selectedSire, quickSireName, speciesProfile.name]);
+
+  const effectiveDam = useMemo<Animal | undefined>(() => {
+    if (!usingQuickDam) return selectedDam;
+    const trimmed = quickDamName.trim();
+    if (!trimmed) return undefined;
+    return {
+      id: '__quick_dam__',
+      tattoo: '',
+      name: trimmed,
+      species: speciesProfile.name,
+      breed: '',
+      variety: '',
+      sex: 'Female',
+      status: 'Active',
+      archived: false,
+      needsAttention: true,
+      birthDateIso: '',
+      weightGrams: 0,
+      genotype: [],
+      genotypeRaw: '',
+      registrationNumber: '',
+      grandChampionNumber: '',
+      legsCount: 0,
+      cageLocation: '',
+      breederName: '',
+      ownerName: '',
+      sireId: '',
+      damId: '',
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    };
+  }, [usingQuickDam, selectedDam, quickDamName, speciesProfile.name]);
 
   const coiAnalysis = useMemo(() => {
     if (!selectedSire || !selectedDam) return null;
@@ -127,14 +221,14 @@ export function BreedingScreen({
   }, [selectedSire, selectedDam]);
 
   const previewTasks = useMemo(() => {
-    if (!selectedSire || !selectedDam || !bredDateIso) return [];
+    if (!effectiveSire || !effectiveDam || !bredDateIso) return [];
     const mockBreeding: BreedingRecord = {
       id: 'preview',
       species: speciesProfile.name,
-      sireId: selectedSire.id,
-      damId: selectedDam.id,
-      sireName: selectedSire.name,
-      damName: selectedDam.name,
+      sireId: effectiveSire.id,
+      damId: effectiveDam.id,
+      sireName: effectiveSire.name,
+      damName: effectiveDam.name,
       bredDateIso,
       expectedDueDateIso: addDaysIso(bredDateIso, speciesProfile.gestationDays),
       actualBirthDateIso: '',
@@ -149,21 +243,44 @@ export function BreedingScreen({
       createdAt: '',
       updatedAt: '',
     };
-    return generateCascadedTasksForBreeding(mockBreeding, speciesProfile);
-  }, [selectedSire, selectedDam, bredDateIso, speciesProfile, coiAnalysis, status]);
+    const rawTasks = generateCascadedTasksForBreeding(mockBreeding, speciesProfile);
+    return rawTasks.map((pt) => ({
+      ...pt,
+      displayTitle: formatSystemTaskTitle(pt, settings?.calendarSync, {
+        animals: [effectiveSire, effectiveDam],
+        breedings: [mockBreeding],
+        speciesProfiles: [speciesProfile],
+      }),
+    }));
+  }, [effectiveSire, effectiveDam, bredDateIso, speciesProfile, coiAnalysis, status, settings]);
+
+  const canSubmitBreeding =
+    (usingQuickSire ? Boolean(quickSireName.trim()) : Boolean(selectedSire)) &&
+    (usingQuickDam ? Boolean(quickDamName.trim()) : Boolean(selectedDam)) &&
+    Boolean(bredDateIso);
 
   const handleLogSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSire || !selectedDam) return;
+    if (!canSubmitBreeding) return;
     onLogBreeding({
-      sire: selectedSire,
-      dam: selectedDam,
+      sire: usingQuickSire ? undefined : selectedSire,
+      quickSireName: usingQuickSire ? quickSireName.trim() : undefined,
+      dam: usingQuickDam ? undefined : selectedDam,
+      quickDamName: usingQuickDam ? quickDamName.trim() : undefined,
       bredDateIso,
       status,
       notes,
       autoScheduleChores: autoCascade,
     });
     setNotes('');
+    if (usingQuickSire) {
+      setQuickSireName('');
+      if (males.length > 0) setQuickAddSire(false);
+    }
+    if (usingQuickDam) {
+      setQuickDamName('');
+      if (females.length > 0) setQuickAddDam(false);
+    }
   };
 
   const openOutcomeModal = (rec: BreedingRecord) => {
@@ -205,8 +322,8 @@ export function BreedingScreen({
                 {speciesProfile.name} Pairing &amp; Cage-Side Logger
               </h2>
               <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-                Select a {speciesProfile.maleLabel} and {speciesProfile.femaleLabel} to test Wright
-                COI, coat color Punnett ratios, and auto-schedule barn tasks.
+                Select or quick-type a {speciesProfile.maleLabel} and {speciesProfile.femaleLabel} to
+                test Wright COI, coat color Punnett ratios, and auto-schedule barn tasks.
               </p>
             </div>
             {archivedCount > 0 && (
@@ -222,21 +339,49 @@ export function BreedingScreen({
             )}
           </div>
 
-          {males.length === 0 || females.length === 0 ? (
-            <p className="text-sm text-[var(--barn-muted)] py-3">
-              Add at least one active {speciesProfile.maleLabel} and one {speciesProfile.femaleLabel}{' '}
-              in the {speciesProfile.name} Herd tab to simulate and log pairings
-              {archivedCount > 0 && !includeArchivedParents
-                ? ' (or check Include Archived above).'
-                : '.'}
-            </p>
-          ) : (
-            <form onSubmit={handleLogSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+          <form onSubmit={handleLogSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-[var(--barn-muted)]">
                     Sire ({speciesProfile.maleLabel})
                   </label>
+                  {males.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setQuickAddSire((v) => !v)}
+                      className="text-[11px] font-medium text-[var(--barn-sage)] hover:underline inline-flex items-center gap-1"
+                    >
+                      <UserPlus className="w-3 h-3" aria-hidden="true" />
+                      {usingQuickSire ? 'Pick from herd' : 'Or type new'}
+                    </button>
+                  )}
+                </div>
+
+                {usingQuickSire ? (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      required
+                      placeholder={`Type unlisted ${speciesProfile.maleLabel} name...`}
+                      value={quickSireName}
+                      onChange={(e) => setQuickSireName(e.target.value)}
+                      className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)]/70 text-sm"
+                    />
+                    <p className="text-[11px] text-[var(--barn-terracotta)]">
+                      Auto-adds to {speciesProfile.name} Herd as {speciesProfile.maleLabel} (Needs
+                      Attention)
+                    </p>
+                  </div>
+                ) : includeArchivedParents ? (
+                  <SearchableParentPicker
+                    label={`Sire (${speciesProfile.maleLabel})`}
+                    value={sireId}
+                    candidates={males}
+                    placeholder={`Search ${speciesProfile.maleLabel}s (incl. archived)...`}
+                    onChange={(id) => setSireId(id)}
+                  />
+                ) : (
                   <select
                     value={sireId}
                     onChange={(e) => setSireId(e.target.value)}
@@ -249,12 +394,50 @@ export function BreedingScreen({
                       </option>
                     ))}
                   </select>
-                </div>
+                )}
+              </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-[var(--barn-muted)]">
                     Dam ({speciesProfile.femaleLabel})
                   </label>
+                  {females.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setQuickAddDam((v) => !v)}
+                      className="text-[11px] font-medium text-[var(--barn-sage)] hover:underline inline-flex items-center gap-1"
+                    >
+                      <UserPlus className="w-3 h-3" aria-hidden="true" />
+                      {usingQuickDam ? 'Pick from herd' : 'Or type new'}
+                    </button>
+                  )}
+                </div>
+
+                {usingQuickDam ? (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      required
+                      placeholder={`Type unlisted ${speciesProfile.femaleLabel} name...`}
+                      value={quickDamName}
+                      onChange={(e) => setQuickDamName(e.target.value)}
+                      className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)]/70 text-sm"
+                    />
+                    <p className="text-[11px] text-[var(--barn-terracotta)]">
+                      Auto-adds to {speciesProfile.name} Herd as {speciesProfile.femaleLabel}{' '}
+                      (Needs Attention)
+                    </p>
+                  </div>
+                ) : includeArchivedParents ? (
+                  <SearchableParentPicker
+                    label={`Dam (${speciesProfile.femaleLabel})`}
+                    value={damId}
+                    candidates={females}
+                    placeholder={`Search ${speciesProfile.femaleLabel}s (incl. archived)...`}
+                    onChange={(id) => setDamId(id)}
+                  />
+                ) : (
                   <select
                     value={damId}
                     onChange={(e) => setDamId(e.target.value)}
@@ -267,95 +450,102 @@ export function BreedingScreen({
                       </option>
                     ))}
                   </select>
-                </div>
+                )}
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-                    Breeding Date
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={bredDateIso}
-                    onChange={(e) => setBredDateIso(e.target.value)}
-                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-                    Initial Status
-                  </label>
-                  <select
-                    value={status}
-                    onChange={(e) => setStatus(e.target.value as BreedingStatus)}
-                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-                  >
-                    <option value="Bred">Bred Today / Confirmed Fall-Offs</option>
-                    <option value="Planned">Planned Pairing</option>
-                    <option value="Palpated Positive">Palpated / Confirmed Pregnant</option>
-                  </select>
-                </div>
-              </div>
-
-              <input
-                type="text"
-                placeholder="Cage-side notes (e.g. 2 fall-offs at 7:15 AM)"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
-              />
-
-              <label className="flex items-start gap-2.5 text-xs cursor-pointer pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  Breeding Date
+                </label>
                 <input
-                  type="checkbox"
-                  checked={autoCascade}
-                  onChange={(e) => setAutoCascade(e.target.checked)}
-                  className="mt-0.5"
+                  type="date"
+                  required
+                  value={bredDateIso}
+                  onChange={(e) => setBredDateIso(e.target.value)}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
                 />
-                <span>
-                  <strong>Auto-cascade {previewTasks.length} Master Task List chores</strong> (Expected{' '}
-                  {speciesProfile.birthEventLabel}:{' '}
-                  {formatReadableDate(addDaysIso(bredDateIso, speciesProfile.gestationDays))})
-                </span>
-              </label>
+              </div>
 
-              {autoCascade && previewTasks.length > 0 && (
-                <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1 text-xs">
-                  {previewTasks.map((pt, i) => (
-                    <div
-                      key={i}
-                      className="flex justify-between gap-3 text-[var(--barn-muted)] font-mono tabular-nums"
-                    >
-                      <span className="font-sans truncate text-[var(--barn-ink)]">{pt.title}</span>
-                      <span className="shrink-0">{formatReadableDate(pt.dueDateIso)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div>
+                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  Initial Status
+                </label>
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as BreedingStatus)}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                >
+                  <option value="Bred">Bred Today / Confirmed Fall-Offs</option>
+                  <option value="Planned">Planned Pairing</option>
+                  <option value="Palpated Positive">Palpated / Confirmed Pregnant</option>
+                </select>
+              </div>
+            </div>
 
-              <button
-                type="submit"
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-sm font-semibold hover:opacity-95 transition-opacity"
-              >
-                Log {speciesProfile.name} Breeding
-              </button>
-            </form>
-          )}
+            <input
+              type="text"
+              placeholder="Cage-side notes (e.g. 2 fall-offs at 7:15 AM)"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+            />
+
+            <label className="flex items-start gap-2.5 text-xs cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={autoCascade}
+                onChange={(e) => setAutoCascade(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <strong>Auto-cascade {previewTasks.length} Master Task List chores</strong> (Expected{' '}
+                {speciesProfile.birthEventLabel}:{' '}
+                {formatReadableDate(addDaysIso(bredDateIso, speciesProfile.gestationDays))})
+              </span>
+            </label>
+
+            {autoCascade && previewTasks.length > 0 && (
+              <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1 text-xs">
+                {previewTasks.map((pt, i) => (
+                  <div
+                    key={i}
+                    className="flex justify-between gap-3 text-[var(--barn-muted)] font-mono tabular-nums"
+                  >
+                    <span className="font-sans truncate text-[var(--barn-ink)]">
+                      {pt.displayTitle}
+                    </span>
+                    <span className="shrink-0">{formatReadableDate(pt.dueDateIso)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!canSubmitBreeding}
+              className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-sm font-semibold hover:opacity-95 disabled:opacity-45 disabled:pointer-events-none transition-opacity"
+            >
+              Log {speciesProfile.name} Breeding
+            </button>
+          </form>
         </section>
 
         {/* Right 6 Columns: Live Wright COI & Coat Color Punnett Breakdown */}
         <section className="lg:col-span-6 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-5">
-          <h2 className="font-display text-xl font-semibold">
-            Projected Kinship (Wright COI) &amp; Punnett Analysis
-          </h2>
+          <div className="space-y-2">
+            <h2 className="font-display text-xl font-semibold">
+              Projected Kinship (Wright COI) &amp; Punnett Analysis
+            </h2>
+            <WrightCoiNotice />
+          </div>
 
           {!coiAnalysis ? (
             <p className="text-sm text-[var(--barn-muted)]">
-              Pick a {speciesProfile.maleLabel} and {speciesProfile.femaleLabel} on the left to view
-              genetic projections.
+              {usingQuickSire || usingQuickDam
+                ? 'Quick-added parent records start with unknown lineage and genotype. Task scheduling still runs immediately — update the flagged record in Herd later to unlock COI and Punnett analysis.'
+                : `Pick a ${speciesProfile.maleLabel} and ${speciesProfile.femaleLabel} on the left to view genetic projections.`}
             </p>
           ) : (
             <div className="space-y-5">
@@ -470,10 +660,13 @@ export function BreedingScreen({
 
       {/* Species Breeding & Litter History Ledger */}
       <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
-        <h2 className="font-display text-lg font-semibold">
-          {speciesProfile.name} Breeding &amp; {speciesProfile.birthEventLabel} Ledger (
-          {breedings.length})
-        </h2>
+        <div className="space-y-2">
+          <h2 className="font-display text-lg font-semibold">
+            {speciesProfile.name} Breeding &amp; {speciesProfile.birthEventLabel} Ledger (
+            {breedings.length})
+          </h2>
+          {breedings.length > 0 && <WrightCoiNotice compact />}
+        </div>
 
         {breedings.length === 0 ? (
           <p className="text-sm text-[var(--barn-muted)]">
