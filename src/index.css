@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --barn-canvas: #f2e9da;
+  --barn-surface: #faf5eb;
+  --barn-subtle: #e6dac6;
+  --barn-border: #cfc0a8;
+  --barn-ink: #241e18;
+  --barn-muted: #63584a;
+  --barn-sage: #2d5e3f;
+  --barn-on-sage: #fff8f0;
+  --barn-sage-tint: #dcebd9;
+  --barn-accent-fill: #8c3f20;
+  --barn-accent-on-fill: #fff8f0;
+  --barn-terracotta: #a84b28;
+  --barn-terracotta-tint: #f5e1d5;
+  --barn-slate: #366685;
+  --barn-slate-tint: #dde8ef;
+  --barn-danger: #b5382b;
+}
+
+.dark {
+  --barn-canvas: #0f1611;
+  --barn-surface: #172219;
+  --barn-subtle: #212f24;
+  --barn-border: #2e4032;
+  --barn-ink: #efece4;
+  --barn-muted: #a7b4a6;
+  --barn-sage: #8dd6a3;
+  --barn-on-sage: #0d2616;
+  --barn-sage-tint: #1f3927;
+  --barn-accent-fill: #783519;
+  --barn-accent-on-fill: #fff8f0;
+  --barn-terracotta: #e89572;
+  --barn-terracotta-tint: #38251c;
+  --barn-slate: #88c0e6;
+  --barn-slate-tint: #1d3240;
+  --barn-danger: #f28b82;
+}
+
+html,
+body {
+  background-color: var(--barn-canvas);
+  color: var(--barn-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

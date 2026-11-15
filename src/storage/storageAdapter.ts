@@ -1,0 +1,82 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pluggable Cross-Platform Storage Adapter Interface.
+ *
+ * CROSS-PLATFORM MIGRATION GUARDRAIL:
+ * All UI screens and hooks communicate exclusively with `StorageAdapter`.
+ * - On Web / PWA: Implemented by `WebSqliteAdapter` (`sql.js` WASM SQLite persisted in IndexedDB).
+ * - On Android / iOS (Expo): Swap in `ExpoSqliteAdapter` (`expo-sqlite`) using the exact same SQL schema.
+ */
+
+import {
+  Animal,
+  AnimalPhoto,
+  BarnDatabaseSnapshot,
+  BarnSettings,
+  BarnTask,
+  BreedingRecord,
+  CageLocation,
+  CareLog,
+  ShowEvent,
+  SpeciesProfile,
+} from '../core/models';
+
+export interface StorageAdapter {
+  /** Human-readable description of the active local storage engine (e.g., `"SQLite WASM + IndexedDB"`). */
+  readonly engineName: string;
+
+  /** Initializes tables and seeds starter multi-species sample data on first launch if empty. */
+  initialize(): Promise<BarnDatabaseSnapshot>;
+
+  /** Reads the complete current database snapshot from local storage. */
+  loadSnapshot(): Promise<BarnDatabaseSnapshot>;
+
+  /** Replaces the entire local database with a new snapshot (used for Backup Import / Merge / Seed). */
+  replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void>;
+
+  /** Persists global BarnSettings. */
+  saveSettings(settings: BarnSettings): Promise<void>;
+
+  /** Upserts or deletes a SpeciesProfile (or batch-updates card sort order). */
+  saveSpeciesProfile(profile: SpeciesProfile): Promise<void>;
+  saveSpeciesProfilesBatch(profiles: SpeciesProfile[]): Promise<void>;
+  deleteSpeciesProfile(id: string): Promise<void>;
+
+  /** Upserts or deletes an Animal record (deleting an animal cascades its photos & care logs). */
+  saveAnimal(animal: Animal): Promise<void>;
+  deleteAnimal(id: string): Promise<void>;
+
+  /** Upserts or deletes optimized AnimalPhoto records (single or batch). */
+  saveAnimalPhoto(photo: AnimalPhoto): Promise<void>;
+  saveAnimalPhotosBatch(photos: AnimalPhoto[]): Promise<void>;
+  deleteAnimalPhoto(id: string): Promise<void>;
+
+  /** Upserts or deletes a CageLocation record. */
+  saveCage(cage: CageLocation): Promise<void>;
+  deleteCage(id: string): Promise<void>;
+
+  /** Upserts or deletes a BreedingRecord. */
+  saveBreeding(breeding: BreedingRecord): Promise<void>;
+  deleteBreeding(id: string): Promise<void>;
+
+  /** Upserts or deletes BarnTask records (single or batch for TaskMaster cascading). */
+  saveTask(task: BarnTask): Promise<void>;
+  saveTasksBatch(tasks: BarnTask[]): Promise<void>;
+  deleteTask(id: string): Promise<void>;
+
+  /** Upserts or deletes a CareLog entry. */
+  saveCareLog(log: CareLog): Promise<void>;
+  deleteCareLog(id: string): Promise<void>;
+
+  /** Upserts or deletes a ShowEvent. */
+  saveShow(show: ShowEvent): Promise<void>;
+  deleteShow(id: string): Promise<void>;
+
+  /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
+  exportRawSqliteBytes(): Promise<Uint8Array | null>;
+
+  /** Imports a raw unencrypted `.sqlite` binary database file and persists it locally. */
+  importRawSqliteBytes(bytes: Uint8Array): Promise<BarnDatabaseSnapshot>;
+}
