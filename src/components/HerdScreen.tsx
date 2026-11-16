@@ -45,6 +45,7 @@ import {
 } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
+  addDaysIso,
   Animal,
   BarnDatabaseSnapshot,
   BarnSettings,
@@ -52,16 +53,20 @@ import {
   CareLog,
   CareLogType,
   doesAnimalNeedAttention,
+  formatCurrencyCents,
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
   isAnimalArchived,
+  normalizeOwnershipType,
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
   SpeciesProfile,
   todayDateIso,
+  ULTRASOUND_RESULTS,
+  UltrasoundResult,
 } from '../core/models';
 import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
@@ -210,6 +215,15 @@ export function HerdScreen({
   const [logWeightInput, setLogWeightInput] = useState('');
   const [logShowLeg, setLogShowLeg] = useState(false);
   const [logNotes, setLogNotes] = useState('');
+  const [logMedicationName, setLogMedicationName] = useState('');
+  const [logDosage, setLogDosage] = useState('');
+  const [logAdministrationRoute, setLogAdministrationRoute] = useState('');
+  const [logWithdrawalDays, setLogWithdrawalDays] = useState('');
+  const [logBodyConditionScore, setLogBodyConditionScore] = useState('');
+  const [logFamachaScore, setLogFamachaScore] = useState('');
+  const [logFecalEggCount, setLogFecalEggCount] = useState('');
+  const [logUltrasoundResult, setLogUltrasoundResult] = useState<UltrasoundResult>('');
+  const [logUltrasoundFetalCount, setLogUltrasoundFetalCount] = useState('');
 
   // Live filter tab counts
   const maleCount = useMemo(() => animals.filter((a) => a.sex === 'Male').length, [animals]);
@@ -352,23 +366,69 @@ export function HerdScreen({
     }
   };
 
-  const submitCareLog = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeAnimal) return;
-    onAddCareLog({
-      species: speciesProfile.name,
-      animalId: activeAnimal.id,
-      dateIso: logDateIso || todayDateIso(),
-      type: logType,
-      title: logTitle.trim() || logType,
-      weightGrams: parseWeightInputToGrams(logWeightInput, effectiveWeightUnit),
-      showLegEarned: logShowLeg,
-      notes: logNotes.trim(),
-    });
+  const resetLogFields = () => {
+    setLogType('Weight Check');
+    setLogDateIso(todayDateIso());
     setLogTitle('');
     setLogWeightInput('');
     setLogShowLeg(false);
     setLogNotes('');
+    setLogMedicationName('');
+    setLogDosage('');
+    setLogAdministrationRoute('');
+    setLogWithdrawalDays('');
+    setLogBodyConditionScore('');
+    setLogFamachaScore('');
+    setLogFecalEggCount('');
+    setLogUltrasoundResult('');
+    setLogUltrasoundFetalCount('');
+  };
+
+  useEffect(() => {
+    setShowLogForm(false);
+    resetLogFields();
+  }, [speciesProfile.id, selectedAnimalId]);
+
+  const safeNonNegNumber = (raw: string, roundInt = false, max = Number.MAX_SAFE_INTEGER): number => {
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) return 0;
+    const bounded = Math.min(max, num);
+    return roundInt ? Math.round(bounded) : bounded;
+  };
+
+  const submitCareLog = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAnimal) return;
+    const effectiveDate = logDateIso || todayDateIso();
+    const withdrawalDays =
+      logType === 'Health / Vet' ? safeNonNegNumber(logWithdrawalDays, true, 3650) : 0;
+    const withdrawalClearDateIso =
+      withdrawalDays > 0 ? addDaysIso(effectiveDate, withdrawalDays) : '';
+    const isHealthScore = logType === 'Health Score / BCS';
+    const isScan = logType === 'Ultrasound' || logType === 'Palpation';
+    const parsedWeight = parseWeightInputToGrams(logWeightInput, effectiveWeightUnit);
+
+    onAddCareLog({
+      species: speciesProfile.name,
+      animalId: activeAnimal.id,
+      dateIso: effectiveDate,
+      type: logType,
+      title: logTitle.trim() || logType,
+      weightGrams: Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : 0,
+      showLegEarned: logShowLeg,
+      medicationName: logType === 'Health / Vet' ? logMedicationName.trim() : '',
+      dosage: logType === 'Health / Vet' ? logDosage.trim() : '',
+      administrationRoute: logType === 'Health / Vet' ? logAdministrationRoute.trim() : '',
+      withdrawalDays,
+      withdrawalClearDateIso,
+      bodyConditionScore: isHealthScore ? safeNonNegNumber(logBodyConditionScore, false, 20) : 0,
+      famachaScore: isHealthScore ? safeNonNegNumber(logFamachaScore, true, 5) : 0,
+      fecalEggCount: isHealthScore ? safeNonNegNumber(logFecalEggCount, true, 1_000_000) : 0,
+      ultrasoundResult: isScan ? logUltrasoundResult : '',
+      ultrasoundFetalCount: isScan ? safeNonNegNumber(logUltrasoundFetalCount, true, 100) : 0,
+      notes: logNotes.trim(),
+    });
+    resetLogFields();
     setShowLogForm(false);
   };
 
@@ -492,6 +552,10 @@ export function HerdScreen({
                 <div className="text-xs text-[var(--barn-muted)] font-mono">
                   {activeAnimal.tattoo || 'UNMARKED'} · {activeAnimal.species} ·{' '}
                   {activeAnimal.status}
+                  {normalizeOwnershipType(activeAnimal.ownershipType) !== 'Owned'
+                    ? ` · ${normalizeOwnershipType(activeAnimal.ownershipType)}`
+                    : ''}
+                  {activeAnimal.culled ? ' · Flagged for Cull' : ''}
                   {isAnimalArchived(activeAnimal) ? ' · Archived (Pedigree Retained)' : ''}
                   {activeAnimal.cageLocation ? ` · ${activeAnimal.cageLocation}` : ''}
                 </div>
@@ -502,6 +566,29 @@ export function HerdScreen({
                   {formatSexForSpecies(activeAnimal.sex, speciesProfile)} · {activeAnimal.breed}{' '}
                   {activeAnimal.variety} · DOB {formatReadableDate(activeAnimal.birthDateIso)}
                 </p>
+                {(activeAnimal.culled ||
+                  activeAnimal.status === 'Sold' ||
+                  activeAnimal.status === 'Deceased') && (
+                  <p className="text-xs text-[var(--barn-muted)] font-mono tabular-nums pt-0.5">
+                    {[
+                      activeAnimal.culled
+                        ? `Cull Flag${activeAnimal.cullDateIso ? ` (${formatReadableDate(activeAnimal.cullDateIso)})` : ''}${activeAnimal.cullReason ? `: ${activeAnimal.cullReason}` : ''}`
+                        : '',
+                      activeAnimal.status === 'Sold' &&
+                      (activeAnimal.soldDateIso ||
+                        (activeAnimal.salePriceCents ?? 0) > 0 ||
+                        activeAnimal.buyerName)
+                        ? `Sold${activeAnimal.soldDateIso ? ` ${formatReadableDate(activeAnimal.soldDateIso)}` : ''}${(activeAnimal.salePriceCents ?? 0) > 0 ? ` · ${formatCurrencyCents(activeAnimal.salePriceCents, settings.currencyCode)}` : ''}${activeAnimal.buyerName ? ` · Buyer: ${activeAnimal.buyerName}` : ''}`
+                        : '',
+                      activeAnimal.status === 'Deceased' &&
+                      (activeAnimal.deceasedDateIso || activeAnimal.deathCause)
+                        ? `Deceased${activeAnimal.deceasedDateIso ? ` ${formatReadableDate(activeAnimal.deceasedDateIso)}` : ''}${activeAnimal.deathCause ? ` · Cause: ${activeAnimal.deathCause}` : ''}`
+                        : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2 shrink-0">
@@ -927,10 +1014,147 @@ export function HerdScreen({
                     onChange={(e) => setLogNotes(e.target.value)}
                     className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
                   />
+
+                  {logType === 'Health / Vet' && (
+                    <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        Medication &amp; Withdrawal Details
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Medication / vaccine name"
+                          value={logMedicationName}
+                          onChange={(e) => setLogMedicationName(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Dosage (e.g. 0.5 mL)"
+                          value={logDosage}
+                          onChange={(e) => setLogDosage(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                        />
+                        <div>
+                          <input
+                            type="text"
+                            list="care-admin-route-suggestions"
+                            placeholder="Route (e.g. Oral, SubQ)"
+                            value={logAdministrationRoute}
+                            onChange={(e) => setLogAdministrationRoute(e.target.value)}
+                            className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                          />
+                          <datalist id="care-admin-route-suggestions">
+                            <option value="Oral" />
+                            <option value="SubQ" />
+                            <option value="IM" />
+                            <option value="Topical" />
+                            <option value="Ear / Drops" />
+                          </datalist>
+                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          max="365"
+                          placeholder="Withdrawal days"
+                          value={logWithdrawalDays}
+                          onChange={(e) => setLogWithdrawalDays(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                        />
+                      </div>
+                      {(Number(logWithdrawalDays) || 0) > 0 && (logDateIso || todayDateIso()) && (
+                        <div className="text-[11px] font-mono text-[var(--barn-terracotta)]">
+                          Withdrawal clears:{' '}
+                          {formatReadableDate(
+                            addDaysIso(
+                              logDateIso || todayDateIso(),
+                              Math.round(Number(logWithdrawalDays) || 0)
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {logType === 'Health Score / BCS' && (
+                    <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        Body Condition &amp; Parasite Scores
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          max="9"
+                          placeholder="BCS (e.g. 1–5 or 1–9)"
+                          value={logBodyConditionScore}
+                          onChange={(e) => setLogBodyConditionScore(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                        />
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          max="5"
+                          placeholder="FAMACHA eye score (1–5)"
+                          value={logFamachaScore}
+                          onChange={(e) => setLogFamachaScore(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                        />
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          placeholder="Fecal Egg Count (EPG)"
+                          value={logFecalEggCount}
+                          onChange={(e) => setLogFecalEggCount(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {(logType === 'Ultrasound' || logType === 'Palpation') && (
+                    <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        {logType === 'Ultrasound' ? 'Ultrasound Scan Result' : 'Palpation Finding'}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <select
+                          aria-label="Scan or palpation result"
+                          value={logUltrasoundResult}
+                          onChange={(e) =>
+                            setLogUltrasoundResult(e.target.value as UltrasoundResult)
+                          }
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                        >
+                          {ULTRASOUND_RESULTS.map((opt) => (
+                            <option key={opt.value || 'none'} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          max="30"
+                          placeholder="Estimated offspring count (optional)"
+                          value={logUltrasoundFetalCount}
+                          onChange={(e) => setLogUltrasoundFetalCount(e.target.value)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowLogForm(false)}
+                      onClick={() => {
+                        resetLogFields();
+                        setShowLogForm(false);
+                      }}
                       className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)]"
                     >
                       Cancel
@@ -949,40 +1173,60 @@ export function HerdScreen({
                 <p className="text-xs text-[var(--barn-muted)]">No care or weight entries yet.</p>
               ) : (
                 <div className="divide-y divide-[var(--barn-border)]">
-                  {activeAnimalLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="flex items-center justify-between gap-2 py-2.5 text-xs"
-                    >
-                      <div>
-                        <div className="font-medium">
-                          {log.title || log.type}
-                          {log.weightGrams > 0 && (
-                            <span className="font-mono tabular-nums text-[var(--barn-sage)] ml-2">
-                              {formatWeight(log.weightGrams, effectiveWeightUnit)}
-                            </span>
-                          )}
-                          {log.showLegEarned && (
-                            <span className="text-[var(--barn-terracotta)] ml-2 font-semibold">
-                              +1 Leg
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[var(--barn-muted)]">
-                          {formatReadableDate(log.dateIso)} · {log.type}
-                          {log.notes ? ` · ${log.notes}` : ''}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteCareLog(log.id)}
-                        aria-label="Delete care log"
-                        className="min-h-[34px] min-w-[34px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                  {activeAnimalLogs.map((log) => {
+                    const extraDetails = [
+                      log.medicationName
+                        ? `${log.medicationName}${log.dosage ? ` (${log.dosage})` : ''}${log.administrationRoute ? ` via ${log.administrationRoute}` : ''}`
+                        : '',
+                      (log.withdrawalDays ?? 0) > 0
+                        ? `Withdrawal ${log.withdrawalDays}d${log.withdrawalClearDateIso ? ` (clears ${formatReadableDate(log.withdrawalClearDateIso)})` : ''}`
+                        : '',
+                      (log.bodyConditionScore ?? 0) > 0 ? `BCS ${log.bodyConditionScore}` : '',
+                      (log.famachaScore ?? 0) > 0 ? `FAMACHA ${log.famachaScore}` : '',
+                      (log.fecalEggCount ?? 0) > 0 ? `FEC ${log.fecalEggCount} EPG` : '',
+                      log.ultrasoundResult
+                        ? `Scan: ${log.ultrasoundResult}${(log.ultrasoundFetalCount ?? 0) > 0 ? ` (est. ${log.ultrasoundFetalCount})` : ''}`
+                        : '',
+                      log.notes || '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ');
+
+                    return (
+                      <div
+                        key={log.id}
+                        className="flex items-center justify-between gap-2 py-2.5 text-xs"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
+                        <div>
+                          <div className="font-medium">
+                            {log.title || log.type}
+                            {log.weightGrams > 0 && (
+                              <span className="font-mono tabular-nums text-[var(--barn-sage)] ml-2">
+                                {formatWeight(log.weightGrams, effectiveWeightUnit)}
+                              </span>
+                            )}
+                            {log.showLegEarned && (
+                              <span className="text-[var(--barn-terracotta)] ml-2 font-semibold">
+                                +1 Leg
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[var(--barn-muted)]">
+                            {formatReadableDate(log.dateIso)} · {log.type}
+                            {extraDetails ? ` · ${extraDetails}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCareLog(log.id)}
+                          aria-label="Delete care log"
+                          className="min-h-[34px] min-w-[34px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1343,6 +1587,10 @@ export function HerdScreen({
                                   {formatSexForSpecies(a.sex, speciesProfile)}
                                 </span>{' '}
                                 · {a.breed} {a.variety} · {a.status}
+                                {normalizeOwnershipType(a.ownershipType) !== 'Owned'
+                                  ? ` · ${normalizeOwnershipType(a.ownershipType)}`
+                                  : ''}
+                                {a.culled ? ' · Flagged Cull' : ''}
                                 {a.cageLocation ? ` · ${a.cageLocation}` : ''}
                               </div>
                               {(() => {
@@ -1419,6 +1667,7 @@ export function HerdScreen({
           speciesAnimals={animals}
           speciesCages={cages}
           preferredUnit={effectiveWeightUnit}
+          currencyCode={settings.currencyCode}
           optimizationPresetId={settings.imageOptimizationPreset}
           defaultBreederName={settings.breederName}
           defaultOwnerName={settings.barnName}

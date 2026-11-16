@@ -308,10 +308,12 @@ function computeCommonAncestorContributions(
   sireId: string,
   damId: string,
   herdById: Map<string, Animal>,
-  engine: CoancestryEngine
+  engine: CoancestryEngine,
+  sirePathsOverride?: Map<string, string[][]>,
+  damPathsOverride?: Map<string, string[][]>
 ): AncestorContribution[] {
-  const sirePaths = collectSimplePaths(sireId, herdById, 8);
-  const damPaths = collectSimplePaths(damId, herdById, 8);
+  const sirePaths = sirePathsOverride ?? collectSimplePaths(sireId, herdById, 8);
+  const damPaths = damPathsOverride ?? collectSimplePaths(damId, herdById, 8);
 
   const contributions: AncestorContribution[] = [];
   for (const [ancestorId, sList] of sirePaths.entries()) {
@@ -347,6 +349,120 @@ function computeCommonAncestorContributions(
   }
 
   return contributions.sort((a, b) => b.coiContributionPercent - a.coiContributionPercent);
+}
+
+export interface SpeciesCoiEvaluator {
+  calculatePairingCoi: (
+    sireId: string,
+    damId: string,
+    overrideSubject?: Animal
+  ) => CoiAnalysis;
+  calculateAnimalCoi: (animal: Animal) => CoiAnalysis;
+}
+
+/**
+ * Creates a reusable per-species COI evaluator that shares one `CoancestryEngine`
+ * and caches ancestor simple paths & subtree counts across batch calculations
+ * (such as herd-wide COI maps or Breed-With pairing matrices).
+ */
+export function createSpeciesCoiEvaluator(
+  herdById: Map<string, Animal>
+): SpeciesCoiEvaluator {
+  const engine = new CoancestryEngine(herdById);
+  const pathsCache = new Map<string, Map<string, string[][]>>();
+  const subtree3Cache = new Map<string, number>();
+  const subtree4Cache = new Map<string, number>();
+
+  const getPaths = (id: string): Map<string, string[][]> => {
+    let cached = pathsCache.get(id);
+    if (!cached) {
+      cached = collectSimplePaths(id, herdById, 8);
+      pathsCache.set(id, cached);
+    }
+    return cached;
+  };
+
+  const getSubtree3 = (id: string): number => {
+    if (!id || !herdById.has(id)) return 0;
+    let cached = subtree3Cache.get(id);
+    if (cached === undefined) {
+      cached = countSubtree(id, herdById, 3);
+      subtree3Cache.set(id, cached);
+    }
+    return cached;
+  };
+
+  const getSubtree4 = (id: string): number => {
+    if (!id || !herdById.has(id)) return 0;
+    let cached = subtree4Cache.get(id);
+    if (cached === undefined) {
+      cached = countSubtree(id, herdById, 4);
+      subtree4Cache.set(id, cached);
+    }
+    return cached;
+  };
+
+  const evalPairing = (
+    sireId: string,
+    damId: string,
+    overrideSubject?: Animal
+  ): CoiAnalysis => {
+    const countKnown = (): [number, number] => {
+      if (overrideSubject) {
+        return [
+          countDirectAncestors(overrideSubject.id, herdById, 3, overrideSubject),
+          countDirectAncestors(overrideSubject.id, herdById, 4, overrideSubject),
+        ];
+      }
+      return [
+        getSubtree3(sireId) + getSubtree3(damId),
+        getSubtree4(sireId) + getSubtree4(damId),
+      ];
+    };
+
+    if (!sireId || !damId) {
+      const [g3, g4] = countKnown();
+      return {
+        coiFraction: 0,
+        coiPercent: 0,
+        risk: describeCoiRisk(0),
+        sharedAncestors: [],
+        knownAncestorsIn3Gen: g3,
+        knownAncestorsIn4Gen: g4,
+      };
+    }
+
+    const fraction = Math.min(1, Math.max(0, engine.kinship(sireId, damId)));
+    const percent = fraction * 100;
+    const sharedAncestors = computeCommonAncestorContributions(
+      sireId,
+      damId,
+      herdById,
+      engine,
+      getPaths(sireId),
+      getPaths(damId)
+    );
+    const [g3, g4] = countKnown();
+
+    return {
+      coiFraction: fraction,
+      coiPercent: percent,
+      risk: describeCoiRisk(percent),
+      sharedAncestors,
+      knownAncestorsIn3Gen: g3,
+      knownAncestorsIn4Gen: g4,
+    };
+  };
+
+  return {
+    calculatePairingCoi: evalPairing,
+    calculateAnimalCoi: (animal: Animal): CoiAnalysis => {
+      if (!animal.sireId || !animal.damId) {
+        return evalPairing('', '', animal);
+      }
+      return evalPairing(animal.sireId, animal.damId, animal);
+    },
+  };
 }
 
 /**

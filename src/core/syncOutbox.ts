@@ -30,6 +30,12 @@ import {
   SpeciesProfile,
 } from './models';
 import { sanitizeSpeciesMemo } from './speciesMemo';
+import {
+  isValidSyncOperation,
+  MAX_DELTA_OPERATIONS,
+  sanitizeCustomColors,
+  sanitizeSafeRasterImageDataUrl,
+} from './inputSanitization';
 
 export type SyncEntityType =
   | 'animal'
@@ -214,14 +220,20 @@ export function mergeDeltaOperations(
   incomingOps: SyncOperation[],
   _localDeviceId: string
 ): DeltaMergeResult {
+  if (incomingOps.length > MAX_DELTA_OPERATIONS) {
+    throw new Error(
+      `Delta sync payload contains ${incomingOps.length.toLocaleString()} operations, exceeding the rational limit of ${MAX_DELTA_OPERATIONS.toLocaleString()}. Import a full backup .ZIP instead.`
+    );
+  }
+
   const byOpId = new Map<string, SyncOperation>();
   for (const op of existingOps) {
-    if (op && op.op_id) byOpId.set(op.op_id, op);
+    if (isValidSyncOperation(op)) byOpId.set(op.op_id, op);
   }
 
   const unseenIncoming: SyncOperation[] = [];
   for (const op of incomingOps) {
-    if (!op || !op.op_id) continue;
+    if (!isValidSyncOperation(op)) continue;
     if (!byOpId.has(op.op_id)) {
       byOpId.set(op.op_id, op);
       unseenIncoming.push(op);
@@ -308,7 +320,14 @@ export function mergeDeltaOperations(
     const applyToMap = <T extends { id: string; updatedAt: string }>(map: Map<string, T>) => {
       if (op.field_name === '__create__' && op.new_value && typeof op.new_value === 'object') {
         if (!map.has(op.entity_uuid)) {
-          map.set(op.entity_uuid, op.new_value as T);
+          const clone = { ...(op.new_value as Record<string, unknown>), id: op.entity_uuid };
+          if (op.entity_type === 'photo') {
+            const safeData = sanitizeSafeRasterImageDataUrl(clone.dataUrl);
+            if (!safeData) return;
+            clone.dataUrl = safeData;
+            clone.thumbnailDataUrl = sanitizeSafeRasterImageDataUrl(clone.thumbnailDataUrl) || safeData;
+          }
+          map.set(op.entity_uuid, clone as unknown as T);
         }
         return;
       }
@@ -318,7 +337,16 @@ export function mergeDeltaOperations(
       }
       const target = map.get(op.entity_uuid);
       if (target) {
-        (target as Record<string, unknown>)[op.field_name] = op.new_value;
+        let nextVal = op.new_value;
+        if (
+          op.entity_type === 'photo' &&
+          (op.field_name === 'dataUrl' || op.field_name === 'thumbnailDataUrl')
+        ) {
+          const safeUrl = sanitizeSafeRasterImageDataUrl(nextVal);
+          if (!safeUrl) return;
+          nextVal = safeUrl;
+        }
+        (target as Record<string, unknown>)[op.field_name] = nextVal;
         target.updatedAt = op.timestamp;
       }
     };
@@ -350,7 +378,11 @@ export function mergeDeltaOperations(
         break;
       case 'settings':
         if (op.field_name !== '__create__' && op.field_name !== '__delete__') {
-          (settings as unknown as Record<string, unknown>)[op.field_name] = op.new_value;
+          const nextSettingsVal =
+            op.field_name === 'customColors'
+              ? sanitizeCustomColors(op.new_value)
+              : op.new_value;
+          (settings as unknown as Record<string, unknown>)[op.field_name] = nextSettingsVal;
           settings.updatedAt = op.timestamp;
         }
         break;

@@ -564,6 +564,26 @@ export function resolveAnimalsWithConflictChoices(
       cageLocation: pickNonEmptyText(ex.id, 'cageLocation', ex.cageLocation, inc.cageLocation),
       breederName: pickNonEmptyText(ex.id, 'breederName', ex.breederName, inc.breederName),
       ownerName: pickNonEmptyText(ex.id, 'ownerName', ex.ownerName, inc.ownerName),
+      ownershipType: ex.ownershipType || inc.ownershipType,
+      culled: Boolean(ex.culled || inc.culled),
+      cullDateIso: ex.cullDateIso || inc.cullDateIso || '',
+      cullReason: ex.cullReason || inc.cullReason || '',
+      deceasedDateIso: ex.deceasedDateIso || inc.deceasedDateIso || '',
+      deathCause: ex.deathCause || inc.deathCause || '',
+      soldDateIso: ex.soldDateIso || inc.soldDateIso || '',
+      salePriceCents:
+        ex.salePriceCents && ex.salePriceCents > 0
+          ? ex.salePriceCents
+          : inc.salePriceCents && inc.salePriceCents > 0
+          ? inc.salePriceCents
+          : 0,
+      purchaseCostCents:
+        ex.purchaseCostCents && ex.purchaseCostCents > 0
+          ? ex.purchaseCostCents
+          : inc.purchaseCostCents && inc.purchaseCostCents > 0
+          ? inc.purchaseCostCents
+          : 0,
+      buyerName: ex.buyerName || inc.buyerName || '',
       sireId: resolvedSireId === ex.id ? '' : resolvedSireId,
       damId: resolvedDamId === ex.id ? '' : resolvedDamId,
       notes: pickNonEmptyText(ex.id, 'notes', ex.notes, inc.notes),

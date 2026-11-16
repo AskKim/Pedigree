@@ -92,6 +92,11 @@ export function SpeciesEditorModal({
   const [rebreedDays, setRebreedDays] = useState(
     String(initialProfile?.rebreedDaysAfterBirth ?? 45)
   );
+  const [maturityDays, setMaturityDays] = useState(
+    initialProfile?.maturityDays && initialProfile.maturityDays > 0
+      ? String(initialProfile.maturityDays)
+      : ''
+  );
   const [birthEventLabel, setBirthEventLabel] = useState(
     initialProfile?.birthEventLabel || 'Birth'
   );
@@ -126,6 +131,7 @@ export function SpeciesEditorModal({
     setGestationDays('114');
     setWeanDays('56');
     setRebreedDays('45');
+    setMaturityDays('');
     setBirthEventLabel('Birth');
     setMaleLabel('Sire');
     setFemaleLabel('Dam');
@@ -144,6 +150,9 @@ export function SpeciesEditorModal({
     setGestationDays(String(preset.gestationDays));
     setRebreedDays(String(preset.rebreedDaysAfterBirth));
     setWeanDays(String(preset.weanDaysAfterBirth));
+    setMaturityDays(
+      preset.maturityDays && preset.maturityDays > 0 ? String(preset.maturityDays) : ''
+    );
     setBirthEventLabel(preset.birthEventLabel);
     setMaleLabel(preset.maleLabel);
     setFemaleLabel(preset.femaleLabel);
@@ -204,6 +213,8 @@ export function SpeciesEditorModal({
       gestationDays: Math.max(1, Number(gestationDays) || 31),
       rebreedDaysAfterBirth: Math.max(0, Number(rebreedDays) || 28),
       weanDaysAfterBirth: Math.max(1, Number(weanDays) || 42),
+      maturityDays:
+        Number(maturityDays) > 0 ? Math.max(1, Math.round(Number(maturityDays))) : undefined,
       birthEventLabel: birthEventLabel.trim() || 'Birth',
       maleLabel: maleLabel.trim() || 'Male',
       femaleLabel: femaleLabel.trim() || 'Female',
@@ -340,7 +351,7 @@ export function SpeciesEditorModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                 Gestation / Incubation (Days)
@@ -377,6 +388,20 @@ export function SpeciesEditorModal({
                 max={600}
                 value={rebreedDays}
                 onChange={(e) => setRebreedDays(e.target.value)}
+                className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Maturity Cutoff (Days, opt.)
+              </label>
+              <input
+                type="number"
+                min={14}
+                max={1500}
+                placeholder={`Auto (${Math.max(28, (Number(weanDays) || 42) * 2)}d)`}
+                value={maturityDays}
+                onChange={(e) => setMaturityDays(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
               />
             </div>

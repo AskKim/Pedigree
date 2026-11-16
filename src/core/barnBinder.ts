@@ -49,6 +49,10 @@ import {
 } from './pedigreeCalculator';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
+  escapeSafeHtml,
+  sanitizeSafeRasterImageDataUrl,
+} from './inputSanitization';
+import {
   CustomThemeColors,
   DEFAULT_WARM_THEME_COLORS,
   mixHex,
@@ -106,11 +110,7 @@ export interface AnimalKinshipSummary {
 }
 
 function escapeHtml(raw: string | undefined | null): string {
-  return String(raw || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return escapeSafeHtml(raw);
 }
 
 function escapeMultilineHtml(raw: string | undefined | null): string {
@@ -1349,8 +1349,7 @@ export function generateSpeciesBarnBinderHtml(
                     : `<div class="photo-grid">
                         ${animalPhotos
                           .map((p, pIdx) => {
-                            const safeUrl =
-                              p.dataUrl && p.dataUrl.startsWith('data:image/') ? p.dataUrl : '';
+                            const safeUrl = sanitizeSafeRasterImageDataUrl(p.dataUrl);
                             return `<figure class="photo-card">
                               ${safeUrl ? `<img src="${safeUrl}" alt="${escapeHtml(p.caption || `${animal.name} photo ${pIdx + 1}`)}" />` : ''}
                               <figcaption>

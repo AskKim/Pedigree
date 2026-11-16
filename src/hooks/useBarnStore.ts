@@ -37,13 +37,17 @@ import {
   isSameSpecies,
   normalizeCalendarSyncSettings,
   normalizeRufusLevel,
+  normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
+  normalizeUltrasoundResult,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
+  ServiceFeeDirection,
   ShowEvent,
   SpeciesHubBlockId,
   SpeciesProfile,
+  UltrasoundResult,
 } from '../core/models';
 import {
   buildIcsCalendarForTasks,
@@ -57,9 +61,9 @@ import {
 } from '../core/backupStatus';
 import {
   buildSpeciesHerdMap,
-  calculateAnimalCoi,
   calculatePairingCoi,
   CoiAnalysis,
+  createSpeciesCoiEvaluator,
 } from '../core/pedigreeCalculator';
 import {
   buildFullPredefinedSampleSnapshot,
@@ -563,8 +567,9 @@ export function useBarnStore() {
 
   /**
    * Strictly species-isolated slice of all records for `activeSpeciesName`.
+   * Decoupled from `route` so navigating between screens never re-filters/re-sorts herd records.
    */
-  const activeSpeciesData: ActiveSpeciesData | null = useMemo(() => {
+  const baseSpeciesData = useMemo(() => {
     if (!snapshot) return null;
     const speciesProfile = resolveSpeciesProfile(activeSpeciesName, snapshot.speciesProfiles);
     const animals = snapshot.animals
@@ -576,14 +581,6 @@ export function useBarnStore() {
     const archivedIds = new Set(archivedAnimals.map((a) => a.id));
 
     const herdById = buildSpeciesHerdMap(animals, speciesProfile.name);
-    const coiByAnimalId = new Map<string, CoiAnalysis>();
-    // Only precompute pedigree COI matrix on screens that render pedigree/lineage metrics
-    if (route === 'herd' || route === 'pedigree' || route === 'breeding') {
-      for (const animal of animals) {
-        coiByAnimalId.set(animal.id, calculateAnimalCoi(animal, herdById));
-      }
-    }
-
     const cages = snapshot.cages.filter((c) => isSameSpecies(c.species, speciesProfile.name));
     const breedings = snapshot.breedings
       .filter((b) => isSameSpecies(b.species, speciesProfile.name))
@@ -647,7 +644,6 @@ export function useBarnStore() {
       photosByAnimalId,
       primaryPhotoByAnimalId,
       herdById,
-      coiByAnimalId,
       cages,
       breedings,
       tasks,
@@ -657,7 +653,27 @@ export function useBarnStore() {
       nonTestingRecordCount,
       totalRecordCount,
     };
-  }, [snapshot, activeSpeciesName, route]);
+  }, [snapshot, activeSpeciesName]);
+
+  const coiByAnimalId = useMemo(() => {
+    const map = new Map<string, CoiAnalysis>();
+    if (!baseSpeciesData) return map;
+    if (route === 'herd' || route === 'pedigree' || route === 'breeding') {
+      const evaluator = createSpeciesCoiEvaluator(baseSpeciesData.herdById);
+      for (const animal of baseSpeciesData.animals) {
+        map.set(animal.id, evaluator.calculateAnimalCoi(animal));
+      }
+    }
+    return map;
+  }, [baseSpeciesData, route]);
+
+  const activeSpeciesData: ActiveSpeciesData | null = useMemo(() => {
+    if (!baseSpeciesData) return null;
+    return {
+      ...baseSpeciesData,
+      coiByAnimalId,
+    };
+  }, [baseSpeciesData, coiByAnimalId]);
 
   const effectiveLastBackupMeta: LastBackupMeta | null =
     snapshot?.settings.lastBackupMeta ?? localLastBackupMeta;
@@ -811,57 +827,143 @@ export function useBarnStore() {
     async (profile: SpeciesProfile) => {
       const ts = nowIsoUtc();
       const existing = snapshot?.speciesProfiles.find((sp) => sp.id === profile.id);
-      if (existing) {
-        const clean: SpeciesProfile = {
-          ...profile,
-          sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
-          name: profile.name.trim(),
-          defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
-          memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
-          memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
-          createdAt: profile.createdAt || existing.createdAt || ts,
-          updatedAt: ts,
-        };
-        await adapterRef.current!.saveSpeciesProfile(clean);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'species',
-            previous: existing,
-            next: clean,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
-        notify(`${clean.name} schedule saved.`);
-      } else {
-        const currentList = snapshot?.speciesProfiles ?? [];
-        const cleanNew: SpeciesProfile = {
-          ...profile,
-          id: profile.id || `species-${generateUuid()}`,
-          sortOrder: currentList.length,
-          name: profile.name.trim(),
-          defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
-          memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
-          memoUpdatedAt: profile.memoUpdatedAt ?? '',
-          createdAt: profile.createdAt || ts,
-          updatedAt: ts,
-        };
-        await adapterRef.current!.saveSpeciesProfile(cleanNew);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'species',
-            previous: undefined,
-            next: cleanNew,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
-        notify(`${cleanNew.name} added to your barn.`);
+      try {
+        if (existing) {
+          const clean: SpeciesProfile = {
+            ...profile,
+            sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
+            name: profile.name.trim(),
+            defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+            memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
+            memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
+            createdAt: profile.createdAt || existing.createdAt || ts,
+            updatedAt: ts,
+          };
+
+          const renamed =
+            snapshot && !isSameSpecies(existing.name, clean.name);
+          if (renamed && snapshot) {
+            const oldName = existing.name;
+            const newName = clean.name;
+            const oldKey = oldName.trim().toLowerCase();
+            const newKey = newName.trim().toLowerCase();
+
+            const nextDismissedTaskGroups = {
+              ...(snapshot.settings.dismissedTaskGroupKeys || {}),
+            };
+            if (oldKey in nextDismissedTaskGroups) {
+              nextDismissedTaskGroups[newKey] = nextDismissedTaskGroups[oldKey];
+              delete nextDismissedTaskGroups[oldKey];
+            }
+            const nextDismissedMemos = {
+              ...(snapshot.settings.dismissedMemoAlertSignatures || {}),
+            };
+            if (oldKey in nextDismissedMemos) {
+              nextDismissedMemos[newKey] = nextDismissedMemos[oldKey];
+              delete nextDismissedMemos[oldKey];
+            }
+
+            const renamedSnapshot: BarnDatabaseSnapshot = {
+              ...snapshot,
+              settings: {
+                ...snapshot.settings,
+                defaultSpecies: isSameSpecies(snapshot.settings.defaultSpecies, oldName)
+                  ? newName
+                  : snapshot.settings.defaultSpecies,
+                pinnedLandingSpecies: isSameSpecies(snapshot.settings.pinnedLandingSpecies, oldName)
+                  ? newName
+                  : snapshot.settings.pinnedLandingSpecies,
+                dismissedTaskGroupKeys: nextDismissedTaskGroups,
+                dismissedMemoAlertSignatures: nextDismissedMemos,
+                updatedAt: ts,
+              },
+              speciesProfiles: snapshot.speciesProfiles.map((sp) =>
+                sp.id === clean.id ? clean : sp
+              ),
+              animals: snapshot.animals.map((a) =>
+                isSameSpecies(a.species, oldName) ? { ...a, species: newName, updatedAt: ts } : a
+              ),
+              animalPhotos: (snapshot.animalPhotos ?? []).map((p) =>
+                isSameSpecies(p.species, oldName) ? { ...p, species: newName, updatedAt: ts } : p
+              ),
+              cages: snapshot.cages.map((c) =>
+                isSameSpecies(c.species, oldName) ? { ...c, species: newName, updatedAt: ts } : c
+              ),
+              breedings: snapshot.breedings.map((b) =>
+                isSameSpecies(b.species, oldName) ? { ...b, species: newName, updatedAt: ts } : b
+              ),
+              tasks: snapshot.tasks.map((t) =>
+                isSameSpecies(t.species, oldName) ? { ...t, species: newName, updatedAt: ts } : t
+              ),
+              careLogs: snapshot.careLogs.map((l) =>
+                isSameSpecies(l.species, oldName) ? { ...l, species: newName, updatedAt: ts } : l
+              ),
+              shows: snapshot.shows.map((s) =>
+                isSameSpecies(s.species, oldName) ? { ...s, species: newName, updatedAt: ts } : s
+              ),
+            };
+            await adapterRef.current!.replaceSnapshot(renamedSnapshot);
+            if (isSameSpecies(activeSpeciesName, oldName)) {
+              setActiveSpeciesName(newName);
+            }
+          } else {
+            await adapterRef.current!.saveSpeciesProfile(clean);
+          }
+
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'species',
+              previous: existing,
+              next: clean,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
+          notify(
+            renamed
+              ? `Renamed ${existing.name} to ${clean.name} across all barn records.`
+              : `${clean.name} schedule saved.`
+          );
+        } else {
+          const currentList = snapshot?.speciesProfiles ?? [];
+          const cleanNew: SpeciesProfile = {
+            ...profile,
+            id: profile.id || `species-${generateUuid()}`,
+            sortOrder: currentList.length,
+            name: profile.name.trim(),
+            defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+            memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
+            memoUpdatedAt: profile.memoUpdatedAt ?? '',
+            createdAt: profile.createdAt || ts,
+            updatedAt: ts,
+          };
+          await adapterRef.current!.saveSpeciesProfile(cleanNew);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'species',
+              previous: undefined,
+              next: cleanNew,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`${cleanNew.name} added to your barn.`);
+        }
+      } catch (err) {
+        reportPersistenceFailure(`save ${profile.name} species schedule`, err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [
+      snapshot,
+      activeSpeciesName,
+      deviceId,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const saveSpeciesMemo = useCallback(
@@ -1217,18 +1319,22 @@ export function useBarnStore() {
         );
       }
 
-      if (updatedBatch.length > 0) {
-        await adapterRef.current!.saveAnimalsBatch(updatedBatch);
+      try {
+        if (updatedBatch.length > 0) {
+          await adapterRef.current!.saveAnimalsBatch(updatedBatch);
+        }
+        await recordOutboxOps(ops);
+        await reloadFromAdapter();
+        notify(
+          archived
+            ? `Moved ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} to Archived (retained for pedigrees).`
+            : `Restored ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} back to Active herd.`
+        );
+      } catch (err) {
+        reportPersistenceFailure(archived ? 'archive animal(s)' : 'restore animal(s)', err);
       }
-      await recordOutboxOps(ops);
-      await reloadFromAdapter();
-      notify(
-        archived
-          ? `Moved ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} to Archived (retained for pedigrees).`
-          : `Restored ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} back to Active herd.`
-      );
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteAnimalsBatch = useCallback(
@@ -1482,29 +1588,37 @@ export function useBarnStore() {
         createdAt: prev?.createdAt || ts,
         updatedAt: ts,
       };
-      await adapterRef.current!.saveCage(cage);
-      await recordOutboxOps(
-        diffEntityFieldsToOperations({
-          entityType: 'cage',
-          previous: prev,
-          next: cage,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        })
-      );
-      await reloadFromAdapter();
-      notify(`Location ${cage.label} saved.`);
+      try {
+        await adapterRef.current!.saveCage(cage);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'cage',
+            previous: prev,
+            next: cage,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+        notify(`Location ${cage.label} saved.`);
+      } catch (err) {
+        reportPersistenceFailure(`save location ${cage.label}`, err);
+      }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteCage = useCallback(
     async (id: string) => {
-      await adapterRef.current!.deleteCage(id);
-      await reloadFromAdapter();
-      notify('Cage/location removed.');
+      try {
+        await adapterRef.current!.deleteCage(id);
+        await reloadFromAdapter();
+        notify('Cage/location removed.');
+      } catch (err) {
+        reportPersistenceFailure('delete cage location', err);
+      }
     },
-    [reloadFromAdapter, notify]
+    [reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   /**
@@ -1519,6 +1633,8 @@ export function useBarnStore() {
       quickDamName?: string;
       bredDateIso: string;
       status: BreedingRecord['status'];
+      serviceFeeCents?: number;
+      serviceFeeDirection?: ServiceFeeDirection;
       notes: string;
       autoScheduleChores: boolean;
     }) => {
@@ -1593,6 +1709,8 @@ export function useBarnStore() {
         weanedCount: 0,
         offspringCreated: false,
         status: params.status,
+        serviceFeeCents: Math.max(0, Math.round(Number(params.serviceFeeCents) || 0)),
+        serviceFeeDirection: normalizeServiceFeeDirection(params.serviceFeeDirection),
         notes: params.notes.trim(),
         createdAt: ts,
         updatedAt: ts,
@@ -1725,6 +1843,12 @@ export function useBarnStore() {
         stillbornCount: number;
         fosteredCount: number;
         weanedCount: number;
+        serviceFeeCents?: number;
+        serviceFeeDirection?: ServiceFeeDirection;
+        ultrasoundDateIso?: string;
+        ultrasoundResult?: UltrasoundResult;
+        ultrasoundFetalCount?: number;
+        ultrasoundProjectedDueIso?: string;
         notes: string;
         registerJuniorCount: number;
       }
@@ -1734,98 +1858,131 @@ export function useBarnStore() {
       const sp = resolveSpeciesProfile(existing.species, snapshot.speciesProfiles);
       const ops: SyncOperation[] = [];
 
-      let createdAny = existing.offspringCreated;
-      if (patch.registerJuniorCount > 0) {
-        const sire = snapshot.animals.find((a) => a.id === existing.sireId);
-        const dam = snapshot.animals.find((a) => a.id === existing.damId);
-        const count = Math.min(16, Math.max(0, patch.registerJuniorCount));
-        const createdJuniors: Animal[] = [];
-        for (let i = 1; i <= count; i++) {
-          const jr: Animal = {
-            id: generateUuid(),
-            tattoo: `${(dam?.tattoo || sp.name.slice(0, 3).toUpperCase()).slice(0, 6)}-K${i}`,
-            name: applyAnimalNamePrefix(
-              `${existing.damName} ${sp.offspringLabel} #${i}`,
-              sp.defaultAnimalPrefix
-            ),
-            species: sp.name,
-            breed: dam?.breed || sire?.breed || '',
-            variety: dam?.variety || sire?.variety || '',
-            sex: i % 2 === 0 ? 'Male' : 'Female',
-            status: 'Junior',
-            archived: false,
-            birthDateIso: patch.actualBirthDateIso || existing.expectedDueDateIso,
-            weightGrams: 0,
-            genotype: [],
-            genotypeRaw: '',
-            registrationNumber: '',
-            grandChampionNumber: '',
-            legsCount: 0,
-            cageLocation: dam?.cageLocation || '',
-            breederName: snapshot.settings.breederName || dam?.breederName || '',
-            ownerName: snapshot.settings.barnName || '',
-            sireId: existing.sireId,
-            damId: existing.damId,
-            notes: `Auto-registered from ${existing.sireName} × ${existing.damName} litter.`,
-            createdAt: ts,
-            updatedAt: ts,
-          };
-          createdJuniors.push(jr);
-          ops.push(
-            ...diffEntityFieldsToOperations({
-              entityType: 'animal',
-              previous: undefined,
-              next: jr,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-            })
-          );
+      try {
+        let createdAny = existing.offspringCreated;
+        if (patch.registerJuniorCount > 0) {
+          const sire = snapshot.animals.find((a) => a.id === existing.sireId);
+          const dam = snapshot.animals.find((a) => a.id === existing.damId);
+          const count = Math.min(16, Math.max(0, patch.registerJuniorCount));
+          const createdJuniors: Animal[] = [];
+          for (let i = 1; i <= count; i++) {
+            const jr: Animal = {
+              id: generateUuid(),
+              tattoo: `${(dam?.tattoo || sp.name.slice(0, 3).toUpperCase()).slice(0, 6)}-K${i}`,
+              name: applyAnimalNamePrefix(
+                `${existing.damName} ${sp.offspringLabel} #${i}`,
+                sp.defaultAnimalPrefix
+              ),
+              species: sp.name,
+              breed: dam?.breed || sire?.breed || '',
+              variety: dam?.variety || sire?.variety || '',
+              sex: i % 2 === 0 ? 'Male' : 'Female',
+              status: 'Junior',
+              archived: false,
+              birthDateIso: patch.actualBirthDateIso || existing.expectedDueDateIso,
+              weightGrams: 0,
+              genotype: [],
+              genotypeRaw: '',
+              registrationNumber: '',
+              grandChampionNumber: '',
+              legsCount: 0,
+              cageLocation: dam?.cageLocation || '',
+              breederName: snapshot.settings.breederName || dam?.breederName || '',
+              ownerName: snapshot.settings.barnName || '',
+              ownershipType: 'Owned',
+              sireId: existing.sireId,
+              damId: existing.damId,
+              notes: `Auto-registered from ${existing.sireName} × ${existing.damName} litter.`,
+              createdAt: ts,
+              updatedAt: ts,
+            };
+            createdJuniors.push(jr);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'animal',
+                previous: undefined,
+                next: jr,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+              })
+            );
+          }
+          await adapterRef.current!.saveAnimalsBatch(createdJuniors);
+          createdAny = true;
         }
-        await adapterRef.current!.saveAnimalsBatch(createdJuniors);
-        createdAny = true;
+
+        const updated: BreedingRecord = {
+          ...existing,
+          status: patch.status,
+          actualBirthDateIso: patch.actualBirthDateIso,
+          liveCount: patch.liveCount,
+          stillbornCount: patch.stillbornCount,
+          fosteredCount: patch.fosteredCount,
+          weanedCount: patch.weanedCount,
+          offspringCreated: createdAny,
+          serviceFeeCents:
+            patch.serviceFeeCents !== undefined
+              ? Math.max(0, Math.round(Number(patch.serviceFeeCents) || 0))
+              : existing.serviceFeeCents ?? 0,
+          serviceFeeDirection:
+            patch.serviceFeeDirection !== undefined
+              ? normalizeServiceFeeDirection(patch.serviceFeeDirection)
+              : normalizeServiceFeeDirection(existing.serviceFeeDirection),
+          ultrasoundDateIso:
+            patch.ultrasoundDateIso !== undefined
+              ? patch.ultrasoundDateIso
+              : existing.ultrasoundDateIso || '',
+          ultrasoundResult:
+            patch.ultrasoundResult !== undefined
+              ? normalizeUltrasoundResult(patch.ultrasoundResult)
+              : normalizeUltrasoundResult(existing.ultrasoundResult),
+          ultrasoundFetalCount:
+            patch.ultrasoundFetalCount !== undefined
+              ? Math.max(0, Math.round(Number(patch.ultrasoundFetalCount) || 0))
+              : existing.ultrasoundFetalCount ?? 0,
+          ultrasoundProjectedDueIso:
+            patch.ultrasoundProjectedDueIso !== undefined
+              ? patch.ultrasoundProjectedDueIso
+              : existing.ultrasoundProjectedDueIso || '',
+          notes: patch.notes,
+          updatedAt: ts,
+        };
+
+        await adapterRef.current!.saveBreeding(updated);
+        ops.push(
+          ...diffEntityFieldsToOperations({
+            entityType: 'breeding',
+            previous: existing,
+            next: updated,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await recordOutboxOps(ops);
+        await reloadFromAdapter();
+        notify(
+          patch.registerJuniorCount > 0
+            ? `Litter updated & ${patch.registerJuniorCount} ${sp.offspringLabel.toLowerCase()} records created.`
+            : 'Litter outcome saved.'
+        );
+      } catch (err) {
+        reportPersistenceFailure('save litter outcome', err);
       }
-
-      const updated: BreedingRecord = {
-        ...existing,
-        status: patch.status,
-        actualBirthDateIso: patch.actualBirthDateIso,
-        liveCount: patch.liveCount,
-        stillbornCount: patch.stillbornCount,
-        fosteredCount: patch.fosteredCount,
-        weanedCount: patch.weanedCount,
-        offspringCreated: createdAny,
-        notes: patch.notes,
-        updatedAt: ts,
-      };
-
-      await adapterRef.current!.saveBreeding(updated);
-      ops.push(
-        ...diffEntityFieldsToOperations({
-          entityType: 'breeding',
-          previous: existing,
-          next: updated,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        })
-      );
-      await recordOutboxOps(ops);
-      await reloadFromAdapter();
-      notify(
-        patch.registerJuniorCount > 0
-          ? `Litter updated & ${patch.registerJuniorCount} ${sp.offspringLabel.toLowerCase()} records created.`
-          : 'Litter outcome saved.'
-      );
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteBreeding = useCallback(
     async (id: string) => {
-      await adapterRef.current!.deleteBreeding(id);
-      await reloadFromAdapter();
-      notify('Breeding & linked chores removed.');
+      try {
+        await adapterRef.current!.deleteBreeding(id);
+        await reloadFromAdapter();
+        notify('Breeding & linked chores removed.');
+      } catch (err) {
+        reportPersistenceFailure('delete breeding record', err);
+      }
     },
-    [reloadFromAdapter, notify]
+    [reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const saveTask = useCallback(
@@ -1839,60 +1996,64 @@ export function useBarnStore() {
         createdAt: prev?.createdAt || ts,
         updatedAt: ts,
       };
-      await adapterRef.current!.saveTask(task);
-      await recordOutboxOps(
-        diffEntityFieldsToOperations({
-          entityType: 'task',
-          previous: prev,
-          next: task,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        })
-      );
-      await reloadFromAdapter();
+      try {
+        await adapterRef.current!.saveTask(task);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'task',
+            previous: prev,
+            next: task,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
 
-      let calendarNote = '';
-      if (!prev && task.dueDateIso) {
-        const calConfig = normalizeCalendarSyncSettings(snapshot?.settings.calendarSync);
-        if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
-          const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
-          if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
-            setPendingCalendarSync({
-              tasks: [task],
-              filenameHint: formatSystemTaskTitle(task, calConfig, snapshot ?? undefined),
-            });
-            calendarNote = ' Ready to add to Google Calendar.';
-          } else {
-            const appBaseUrl =
-              typeof window !== 'undefined'
-                ? `${window.location.origin}${window.location.pathname}`
-                : '';
-            const ics = buildIcsCalendarForTasks(
-              [task],
-              calConfig,
-              snapshot?.settings.barnName,
-              undefined,
-              {
-                animals: snapshot?.animals,
-                breedings: snapshot?.breedings,
-                speciesProfiles: snapshot?.speciesProfiles,
-                appBaseUrl,
+        let calendarNote = '';
+        if (!prev && task.dueDateIso) {
+          const calConfig = normalizeCalendarSyncSettings(snapshot?.settings.calendarSync);
+          if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
+            const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+            if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
+              setPendingCalendarSync({
+                tasks: [task],
+                filenameHint: formatSystemTaskTitle(task, calConfig, snapshot ?? undefined),
+              });
+              calendarNote = ' Ready to add to Google Calendar.';
+            } else {
+              const appBaseUrl =
+                typeof window !== 'undefined'
+                  ? `${window.location.origin}${window.location.pathname}`
+                  : '';
+              const ics = buildIcsCalendarForTasks(
+                [task],
+                calConfig,
+                snapshot?.settings.barnName,
+                undefined,
+                {
+                  animals: snapshot?.animals,
+                  breedings: snapshot?.breedings,
+                  speciesProfiles: snapshot?.speciesProfiles,
+                  appBaseUrl,
+                }
+              );
+              if (ics) {
+                downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+                calendarNote =
+                  calConfig.deliveryMode === 'google_calendar' && !isOnline
+                    ? ' Offline — downloaded .ICS fallback.'
+                    : ' Exported to calendar (.ICS).';
               }
-            );
-            if (ics) {
-              downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
-              calendarNote =
-                calConfig.deliveryMode === 'google_calendar' && !isOnline
-                  ? ' Offline — downloaded .ICS fallback.'
-                  : ' Exported to calendar (.ICS).';
             }
           }
         }
-      }
 
-      notify(calendarNote ? `Barn chore saved.${calendarNote}` : 'Barn chore saved.');
+        notify(calendarNote ? `Barn chore saved.${calendarNote}` : 'Barn chore saved.');
+      } catch (err) {
+        reportPersistenceFailure('save barn chore', err);
+      }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const downloadOfflineIcsForTasks = useCallback(
@@ -2145,27 +2306,35 @@ export function useBarnStore() {
         completed: !task.completed,
         updatedAt: nowIsoUtc(),
       };
-      await adapterRef.current!.saveTask(updated);
-      await recordOutboxOps(
-        diffEntityFieldsToOperations({
-          entityType: 'task',
-          previous: task,
-          next: updated,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        })
-      );
-      await reloadFromAdapter();
+      try {
+        await adapterRef.current!.saveTask(updated);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'task',
+            previous: task,
+            next: updated,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+      } catch (err) {
+        reportPersistenceFailure('update task completion', err);
+      }
     },
-    [deviceId, recordOutboxOps, reloadFromAdapter]
+    [deviceId, recordOutboxOps, reloadFromAdapter, reportPersistenceFailure]
   );
 
   const deleteTask = useCallback(
     async (id: string) => {
-      await adapterRef.current!.deleteTask(id);
-      await reloadFromAdapter();
+      try {
+        await adapterRef.current!.deleteTask(id);
+        await reloadFromAdapter();
+      } catch (err) {
+        reportPersistenceFailure('delete task', err);
+      }
     },
-    [reloadFromAdapter]
+    [reloadFromAdapter, reportPersistenceFailure]
   );
 
   const addCareLog = useCallback(
@@ -2178,48 +2347,56 @@ export function useBarnStore() {
         createdAt: ts,
         updatedAt: ts,
       };
-      await adapterRef.current!.saveCareLog(log);
-      const ops: SyncOperation[] = diffEntityFieldsToOperations({
-        entityType: 'careLog',
-        previous: undefined,
-        next: log,
-        deviceId,
-        nextCounter: allocateNextLogicalCounter,
-      });
+      try {
+        await adapterRef.current!.saveCareLog(log);
+        const ops: SyncOperation[] = diffEntityFieldsToOperations({
+          entityType: 'careLog',
+          previous: undefined,
+          next: log,
+          deviceId,
+          nextCounter: allocateNextLogicalCounter,
+        });
 
-      const animal = snapshot.animals.find((a) => a.id === draft.animalId);
-      if (animal && (draft.weightGrams > 0 || draft.showLegEarned)) {
-        const nextAnimal: Animal = {
-          ...animal,
-          weightGrams: draft.weightGrams > 0 ? draft.weightGrams : animal.weightGrams,
-          legsCount: draft.showLegEarned ? animal.legsCount + 1 : animal.legsCount,
-          updatedAt: ts,
-        };
-        await adapterRef.current!.saveAnimal(nextAnimal);
-        ops.push(
-          ...diffEntityFieldsToOperations({
-            entityType: 'animal',
-            previous: animal,
-            next: nextAnimal,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
+        const animal = snapshot.animals.find((a) => a.id === draft.animalId);
+        if (animal && (draft.weightGrams > 0 || draft.showLegEarned)) {
+          const nextAnimal: Animal = {
+            ...animal,
+            weightGrams: draft.weightGrams > 0 ? draft.weightGrams : animal.weightGrams,
+            legsCount: draft.showLegEarned ? animal.legsCount + 1 : animal.legsCount,
+            updatedAt: ts,
+          };
+          await adapterRef.current!.saveAnimal(nextAnimal);
+          ops.push(
+            ...diffEntityFieldsToOperations({
+              entityType: 'animal',
+              previous: animal,
+              next: nextAnimal,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+        }
+
+        await recordOutboxOps(ops);
+        await reloadFromAdapter();
+        notify(`${draft.type} logged.`);
+      } catch (err) {
+        reportPersistenceFailure(`save ${draft.type} entry`, err);
       }
-
-      await recordOutboxOps(ops);
-      await reloadFromAdapter();
-      notify(`${draft.type} logged.`);
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteCareLog = useCallback(
     async (id: string) => {
-      await adapterRef.current!.deleteCareLog(id);
-      await reloadFromAdapter();
+      try {
+        await adapterRef.current!.deleteCareLog(id);
+        await reloadFromAdapter();
+      } catch (err) {
+        reportPersistenceFailure('delete care log entry', err);
+      }
     },
-    [reloadFromAdapter]
+    [reloadFromAdapter, reportPersistenceFailure]
   );
 
   const saveShow = useCallback(
@@ -2233,29 +2410,37 @@ export function useBarnStore() {
         createdAt: prev?.createdAt || ts,
         updatedAt: ts,
       };
-      await adapterRef.current!.saveShow(show);
-      await recordOutboxOps(
-        diffEntityFieldsToOperations({
-          entityType: 'show',
-          previous: prev,
-          next: show,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        })
-      );
-      await reloadFromAdapter();
-      notify(`Show "${show.name}" saved.`);
+      try {
+        await adapterRef.current!.saveShow(show);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'show',
+            previous: prev,
+            next: show,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+        notify(`Show "${show.name}" saved.`);
+      } catch (err) {
+        reportPersistenceFailure(`save show "${show.name}"`, err);
+      }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify]
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteShow = useCallback(
     async (id: string) => {
-      await adapterRef.current!.deleteShow(id);
-      await reloadFromAdapter();
-      notify('Show removed.');
+      try {
+        await adapterRef.current!.deleteShow(id);
+        await reloadFromAdapter();
+        notify('Show removed.');
+      } catch (err) {
+        reportPersistenceFailure('delete show', err);
+      }
     },
-    [reloadFromAdapter, notify]
+    [reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const seedSpeciesSampleData = useCallback(

@@ -11,7 +11,7 @@
  */
 
 import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { downloadTextFile } from '../utils/webFileActions';
@@ -71,6 +71,7 @@ export function PrintPreviewModal({
   const initializedContentRef = useRef<string | null>(null);
   const wheelSyncTimerRef = useRef<number | null>(null);
   const printFallbackTimerRef = useRef<number | null>(null);
+  const printSafetyTimerRef = useRef<number | null>(null);
   const cleanupPrintStageRef = useRef<(() => void) | null>(null);
   const cleanupDocListenersRef = useRef<(() => void) | null>(null);
 
@@ -92,6 +93,9 @@ export function PrintPreviewModal({
       }
       if (printFallbackTimerRef.current !== null) {
         window.clearTimeout(printFallbackTimerRef.current);
+      }
+      if (printSafetyTimerRef.current !== null) {
+        window.clearTimeout(printSafetyTimerRef.current);
       }
       cleanupPrintStageRef.current?.();
       cleanupPrintStageRef.current = null;
@@ -375,7 +379,7 @@ export function PrintPreviewModal({
     downloadTextFile(filename, htmlContent, 'text/html');
   };
 
-  const canShareHtml = (() => {
+  const canShareHtml = useMemo(() => {
     if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') return false;
     if (typeof navigator.canShare !== 'function') return false;
     try {
@@ -384,7 +388,7 @@ export function PrintPreviewModal({
     } catch {
       return false;
     }
-  })();
+  }, [filename]);
 
   const handleShareHtm = async () => {
     try {
@@ -402,6 +406,10 @@ export function PrintPreviewModal({
     if (printFallbackTimerRef.current !== null) {
       window.clearTimeout(printFallbackTimerRef.current);
       printFallbackTimerRef.current = null;
+    }
+    if (printSafetyTimerRef.current !== null) {
+      window.clearTimeout(printSafetyTimerRef.current);
+      printSafetyTimerRef.current = null;
     }
 
     const parsedFallback = new DOMParser().parseFromString(htmlContent, 'text/html');
@@ -518,6 +526,10 @@ export function PrintPreviewModal({
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      if (printSafetyTimerRef.current !== null) {
+        window.clearTimeout(printSafetyTimerRef.current);
+        printSafetyTimerRef.current = null;
+      }
       window.removeEventListener('beforeprint', onBeforePrint);
       window.removeEventListener('afterprint', cleanup);
       styleEl.remove();
@@ -579,7 +591,7 @@ export function PrintPreviewModal({
       }, 450);
     } else {
       // Safety net in case afterprint does not fire in some WebViews
-      window.setTimeout(cleanup, 120000);
+      printSafetyTimerRef.current = window.setTimeout(cleanup, 120000);
     }
   };
 

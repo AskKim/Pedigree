@@ -1085,6 +1085,7 @@ export function PedigreeScreen({
           speciesAnimals={animals}
           speciesCages={cages}
           preferredUnit={resolveSpeciesWeightUnit(speciesProfile, settings)}
+          currencyCode={settings.currencyCode}
           optimizationPresetId={settings.imageOptimizationPreset}
           defaultBreederName={settings.breederName}
           defaultOwnerName={settings.barnName}

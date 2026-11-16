@@ -48,11 +48,16 @@ import {
   getWeightInputMeta,
   isAnimalArchived,
   isSameSpecies,
+  normalizeCurrencyCode,
+  normalizeOwnershipType,
   normalizeRufusLevel,
+  OWNERSHIP_TYPES,
+  OwnershipType,
   parseWeightInputToGrams,
   RUFUS_LEVEL_OPTIONS,
   RufusLevel,
   SpeciesProfile,
+  todayDateIso,
   WeightUnit,
 } from '../core/models';
 import {
@@ -72,6 +77,7 @@ interface AnimalEditorModalProps {
   speciesAnimals: Animal[];
   speciesCages: CageLocation[];
   preferredUnit: WeightUnit;
+  currencyCode?: string;
   optimizationPresetId?: ImageOptimizationPresetId;
   defaultBreederName: string;
   defaultOwnerName: string;
@@ -90,6 +96,7 @@ export function AnimalEditorModal({
   speciesAnimals,
   speciesCages,
   preferredUnit,
+  currencyCode,
   optimizationPresetId,
   defaultBreederName,
   defaultOwnerName,
@@ -167,6 +174,27 @@ export function AnimalEditorModal({
     initialAnimal?.breederName ?? defaultBreederName
   );
   const [ownerName, setOwnerName] = useState(initialAnimal?.ownerName ?? defaultOwnerName);
+  const [ownershipType, setOwnershipType] = useState<OwnershipType>(() =>
+    normalizeOwnershipType(initialAnimal?.ownershipType, 'Owned')
+  );
+  const [culled, setCulled] = useState<boolean>(Boolean(initialAnimal?.culled));
+  const [cullDateIso, setCullDateIso] = useState(initialAnimal?.cullDateIso || '');
+  const [cullReason, setCullReason] = useState(initialAnimal?.cullReason || '');
+  const [deceasedDateIso, setDeceasedDateIso] = useState(initialAnimal?.deceasedDateIso || '');
+  const [deathCause, setDeathCause] = useState(initialAnimal?.deathCause || '');
+  const [soldDateIso, setSoldDateIso] = useState(initialAnimal?.soldDateIso || '');
+  const [salePriceInput, setSalePriceInput] = useState(() =>
+    initialAnimal?.salePriceCents && initialAnimal.salePriceCents > 0
+      ? (initialAnimal.salePriceCents / 100).toFixed(2)
+      : ''
+  );
+  const [purchaseCostInput, setPurchaseCostInput] = useState(() =>
+    initialAnimal?.purchaseCostCents && initialAnimal.purchaseCostCents > 0
+      ? (initialAnimal.purchaseCostCents / 100).toFixed(2)
+      : ''
+  );
+  const [buyerName, setBuyerName] = useState(initialAnimal?.buyerName || '');
+  const resolvedCurrency = normalizeCurrencyCode(currencyCode, 'USD');
   const [sireId, setSireId] = useState(initialAnimal?.sireId || '');
   const [damId, setDamId] = useState(initialAnimal?.damId || '');
   const [notes, setNotes] = useState(initialAnimal?.notes || '');
@@ -372,6 +400,12 @@ export function AnimalEditorModal({
     );
   };
 
+  const parseMoneyToCents = (raw: string): number => {
+    const parsed = Number.parseFloat(raw.trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.round(parsed * 100);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -407,6 +441,16 @@ export function AnimalEditorModal({
         cageLocation: cageLocation.trim(),
         breederName: breederName.trim(),
         ownerName: ownerName.trim(),
+        ownershipType,
+        culled,
+        cullDateIso: culled ? cullDateIso : '',
+        cullReason: culled ? cullReason.trim() : '',
+        deceasedDateIso: status === 'Deceased' ? deceasedDateIso : initialAnimal?.deceasedDateIso || '',
+        deathCause: status === 'Deceased' ? deathCause.trim() : initialAnimal?.deathCause || '',
+        soldDateIso: status === 'Sold' ? soldDateIso : initialAnimal?.soldDateIso || '',
+        salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
+        purchaseCostCents: parseMoneyToCents(purchaseCostInput),
+        buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
         sireId,
         damId,
         notes: notes.trim(),
@@ -512,6 +556,12 @@ export function AnimalEditorModal({
                   if (next === 'Deceased' || next === 'Sold') {
                     setArchived(true);
                   }
+                  if (next === 'Sold' && !soldDateIso) {
+                    setSoldDateIso(todayDateIso());
+                  }
+                  if (next === 'Deceased' && !deceasedDateIso) {
+                    setDeceasedDateIso(todayDateIso());
+                  }
                 }}
                 className="w-full min-h-[44px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
               >
@@ -523,6 +573,137 @@ export function AnimalEditorModal({
               </select>
             </div>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Ownership Classification
+              </label>
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                {OWNERSHIP_TYPES.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setOwnershipType(opt.value)}
+                    className={`min-h-[36px] px-2 py-1 rounded-md text-xs font-medium transition-colors truncate ${
+                      ownershipType === opt.value
+                        ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                        : 'hover:bg-[var(--barn-subtle)]'
+                    }`}
+                  >
+                    {opt.value === 'Owned'
+                      ? 'Owned'
+                      : opt.value === 'Reference'
+                      ? 'Reference'
+                      : 'Outside'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Acquisition Cost ({resolvedCurrency}, opt.)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="0.00"
+                value={purchaseCostInput}
+                onChange={(e) => setPurchaseCostInput(e.target.value)}
+                className="w-full min-h-[44px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
+              />
+            </div>
+          </div>
+
+          {status === 'Sold' && (
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+              <div className="text-xs font-semibold text-[var(--barn-ink)]">Sold Stock Details</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Sold Date
+                  </label>
+                  <input
+                    type="date"
+                    value={soldDateIso}
+                    onChange={(e) => setSoldDateIso(e.target.value)}
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Sale Price ({resolvedCurrency})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={salePriceInput}
+                    onChange={(e) => setSalePriceInput(e.target.value)}
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Buyer Name
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Buyer / Farm name"
+                    value={buyerName}
+                    onChange={(e) => setBuyerName(e.target.value)}
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {status === 'Deceased' && (
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+              <div className="text-xs font-semibold text-[var(--barn-ink)]">
+                Mortality / Loss Details
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Date Deceased
+                  </label>
+                  <input
+                    type="date"
+                    value={deceasedDateIso}
+                    onChange={(e) => setDeceasedDateIso(e.target.value)}
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Cause / Category
+                  </label>
+                  <input
+                    type="text"
+                    list="death-cause-suggestions"
+                    placeholder="e.g. Illness, Predator, Birth Complication"
+                    value={deathCause}
+                    onChange={(e) => setDeathCause(e.target.value)}
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+                  />
+                  <datalist id="death-cause-suggestions">
+                    <option value="Illness" />
+                    <option value="Birth Complication" />
+                    <option value="Predator" />
+                    <option value="Injury" />
+                    <option value="Heat / Weather Stress" />
+                    <option value="Old Age" />
+                    <option value="Unknown" />
+                  </datalist>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs cursor-pointer">
@@ -567,6 +748,68 @@ export function AnimalEditorModal({
                 </span>
               </span>
             </label>
+          </div>
+
+          <div className="rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] p-3 space-y-3 text-xs">
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={culled}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setCulled(checked);
+                  if (checked && !cullDateIso) {
+                    setCullDateIso(todayDateIso());
+                  }
+                }}
+                className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-terracotta)]"
+              />
+              <span>
+                <strong className="text-[var(--barn-ink)]">
+                  Flagged for Cull / Breeding Removal
+                </strong>
+                <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                  Marks this animal for the Cull Decision Report with optional date and reason.
+                </span>
+              </span>
+            </label>
+
+            {culled && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Cull / Decision Date
+                  </label>
+                  <input
+                    type="date"
+                    value={cullDateIso}
+                    onChange={(e) => setCullDateIso(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Cull Reason
+                  </label>
+                  <input
+                    type="text"
+                    list="cull-reason-suggestions"
+                    placeholder="e.g. Conformation, Low Production, Disposition"
+                    value={cullReason}
+                    onChange={(e) => setCullReason(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+                  />
+                  <datalist id="cull-reason-suggestions">
+                    <option value="Conformation" />
+                    <option value="Low Production" />
+                    <option value="Mothering / Fertility" />
+                    <option value="Disposition" />
+                    <option value="Chronic Health" />
+                    <option value="Herd Size Reduction" />
+                  </datalist>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">

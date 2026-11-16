@@ -922,16 +922,13 @@ function getTraitStatusForParent(
 }
 
 /**
- * Evaluates shared Confirmed, Suspected, and Lineage-Potential carrier risks between Sire and Dam.
+ * Evaluates shared Confirmed, Suspected, and Lineage-Potential carrier risks from
+ * pre-computed Sire and Dam lineage analyses (O(1) pedigree walk for batch matrices).
  */
-export function analyzePairingCarrierRisks(
-  sire: Animal,
-  dam: Animal,
-  herdById: Map<string, Animal>
+export function analyzePairingCarrierRisksFromAnalyses(
+  sAnalysis: AnimalCarrierLineageAnalysis,
+  dAnalysis: AnimalCarrierLineageAnalysis
 ): PairingCarrierRisk[] {
-  const sAnalysis = analyzeAnimalCarrierLineage(sire, herdById);
-  const dAnalysis = analyzeAnimalCarrierLineage(dam, herdById);
-
   const candidateTraits: string[] = normalizeCarrierTraitList([
     ...sAnalysis.confirmed,
     ...sAnalysis.suspected,
@@ -986,6 +983,19 @@ export function analyzePairingCarrierRisks(
     const rank = { danger: 0, warning: 1, info: 2 };
     return rank[a.severity] - rank[b.severity] || a.trait.localeCompare(b.trait);
   });
+}
+
+/**
+ * Evaluates shared Confirmed, Suspected, and Lineage-Potential carrier risks between Sire and Dam.
+ */
+export function analyzePairingCarrierRisks(
+  sire: Animal,
+  dam: Animal,
+  herdById: Map<string, Animal>
+): PairingCarrierRisk[] {
+  const sAnalysis = analyzeAnimalCarrierLineage(sire, herdById);
+  const dAnalysis = analyzeAnimalCarrierLineage(dam, herdById);
+  return analyzePairingCarrierRisksFromAnalyses(sAnalysis, dAnalysis);
 }
 
 // ─── Herd Carrier Filter / Finder Helper ───────────────────────────────────────

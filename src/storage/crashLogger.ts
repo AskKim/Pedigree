@@ -90,7 +90,7 @@ const SESSION_HEARTBEAT_KEY = 'pedigree_session_heartbeat_v1';
 const MAX_RING_ENTRIES = 60;
 const MAX_IDB_ENTRIES = 500;
 const MEMORY_POLL_INTERVAL_MS = 30_000;
-const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
 const VERBOSE_MEMORY_HEARTBEAT_MS = 5 * 60_000;
 
 const DEFAULT_CONFIG: DiagnosticConfig = {
@@ -776,38 +776,57 @@ export function installGlobalCrashHandlers(): void {
     }
   };
 
+  const startVisibleWatchdogs = () => {
+    if (document.visibilityState === 'hidden') return;
+    if (!heartbeatIntervalId) {
+      heartbeatIntervalId = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          updateSessionHeartbeat(true);
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+    }
+    if (!memoryIntervalId) {
+      memoryIntervalId = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          void sampleMemoryPressure();
+        }
+      }, MEMORY_POLL_INTERVAL_MS);
+    }
+  };
+
+  const stopVisibleWatchdogs = () => {
+    if (heartbeatIntervalId) {
+      clearInterval(heartbeatIntervalId);
+      heartbeatIntervalId = null;
+    }
+    if (memoryIntervalId) {
+      clearInterval(memoryIntervalId);
+      memoryIntervalId = null;
+    }
+  };
+
   // 4. Clean exit & visibility lifecycle hooks
   window.addEventListener('pagehide', () => {
+    stopVisibleWatchdogs();
     updateSessionHeartbeat(false);
   });
 
   window.addEventListener('beforeunload', () => {
+    stopVisibleWatchdogs();
     updateSessionHeartbeat(false);
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+      stopVisibleWatchdogs();
       updateSessionHeartbeat(false);
     } else {
       updateSessionHeartbeat(true);
       void sampleMemoryPressure();
+      startVisibleWatchdogs();
     }
   });
 
-  // 5. Periodic heartbeat + memory watchdog
-  if (!heartbeatIntervalId) {
-    heartbeatIntervalId = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        updateSessionHeartbeat(true);
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-  }
-
-  if (!memoryIntervalId) {
-    memoryIntervalId = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void sampleMemoryPressure();
-      }
-    }, MEMORY_POLL_INTERVAL_MS);
-  }
+  // 5. Start heartbeat + memory watchdog only while foregrounded
+  startVisibleWatchdogs();
 }

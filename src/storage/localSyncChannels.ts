@@ -13,6 +13,13 @@
  * - Option C (Native Web Share API): `navigator.share()` with direct download fallback
  */
 
+import {
+  isValidSyncOperation,
+  MAX_DELTA_BATCH_FILES,
+  MAX_DELTA_JSON_BYTES,
+  MAX_DELTA_OPERATIONS,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
 import { generateUuid, nowIsoUtc } from '../core/models';
 import {
   DeltaExportFile,
@@ -219,14 +226,26 @@ export function buildDeltaFilePayload(
 }
 
 export function parseDeltaFileJson(text: string): SyncOperation[] {
+  const sizeCheck = validateUploadFileSize('delta.json', text.length, MAX_DELTA_JSON_BYTES, 'a sync delta file');
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
   const parsed = JSON.parse(text);
-  if (parsed && Array.isArray(parsed.operations)) {
-    return parsed.operations as SyncOperation[];
+  const rawOps =
+    parsed && Array.isArray(parsed.operations)
+      ? parsed.operations
+      : Array.isArray(parsed)
+      ? parsed
+      : null;
+  if (!rawOps) {
+    throw new Error('Selected file is not a valid Community Pedigree delta log.');
   }
-  if (Array.isArray(parsed)) {
-    return parsed as SyncOperation[];
+  if (rawOps.length > MAX_DELTA_OPERATIONS) {
+    throw new Error(
+      `Delta log contains ${rawOps.length.toLocaleString()} operations, exceeding the ${MAX_DELTA_OPERATIONS.toLocaleString()} operation safety limit.`
+    );
   }
-  throw new Error('Selected file is not a valid Community Pedigree delta log.');
+  return rawOps.filter((op: unknown): op is SyncOperation => isValidSyncOperation(op));
 }
 
 export function supportsDirectoryPicker(): boolean {
@@ -265,6 +284,7 @@ export async function syncWithPickedDirectory(params: {
   let peerFilesRead = 0;
 
   for await (const [name, handle] of dirHandle.entries()) {
+    if (peerFilesRead >= MAX_DELTA_BATCH_FILES) break;
     if (
       handle.kind === 'file' &&
       /^delta_.*\.json$/i.test(name) &&
@@ -272,6 +292,8 @@ export async function syncWithPickedDirectory(params: {
     ) {
       try {
         const file = await handle.getFile();
+        const check = validateUploadFileSize(file.name, file.size, MAX_DELTA_JSON_BYTES, 'a sync delta file');
+        if (!check.ok) continue;
         const text = await file.text();
         const ops = parseDeltaFileJson(text);
         incomingOps.push(...ops);

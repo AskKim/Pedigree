@@ -13,6 +13,9 @@
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import {
+  validateSqliteFileHeader,
+} from '../core/inputSanitization';
+import {
   Animal,
   AnimalPhoto,
   BarnDatabaseSnapshot,
@@ -23,7 +26,11 @@ import {
   CareLog,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   normalizeCalendarSyncSettings,
+  normalizeCurrencyCode,
+  normalizeOwnershipType,
   normalizeRufusLevel,
+  normalizeServiceFeeDirection,
+  normalizeUltrasoundResult,
   normalizeWeightUnit,
   nowIsoUtc,
   ShowEvent,
@@ -55,6 +62,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     barn_name TEXT NOT NULL,
     breeder_name TEXT NOT NULL,
     preferred_unit TEXT NOT NULL,
+    currency_code TEXT NOT NULL DEFAULT 'USD',
     default_species TEXT NOT NULL,
     pinned_landing_species TEXT NOT NULL,
     default_generations INTEGER NOT NULL,
@@ -76,6 +84,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     gestation_days INTEGER NOT NULL,
     rebreed_days_after_birth INTEGER NOT NULL,
     wean_days_after_birth INTEGER NOT NULL,
+    maturity_days INTEGER NOT NULL DEFAULT 0,
     birth_event_label TEXT NOT NULL,
     male_label TEXT NOT NULL,
     female_label TEXT NOT NULL,
@@ -111,6 +120,16 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     cage_location TEXT NOT NULL,
     breeder_name TEXT NOT NULL,
     owner_name TEXT NOT NULL,
+    ownership_type TEXT NOT NULL DEFAULT 'Owned',
+    culled INTEGER NOT NULL DEFAULT 0,
+    cull_date_iso TEXT NOT NULL DEFAULT '',
+    cull_reason TEXT NOT NULL DEFAULT '',
+    deceased_date_iso TEXT NOT NULL DEFAULT '',
+    death_cause TEXT NOT NULL DEFAULT '',
+    sold_date_iso TEXT NOT NULL DEFAULT '',
+    sale_price_cents INTEGER NOT NULL DEFAULT 0,
+    purchase_cost_cents INTEGER NOT NULL DEFAULT 0,
+    buyer_name TEXT NOT NULL DEFAULT '',
     sire_id TEXT NOT NULL,
     dam_id TEXT NOT NULL,
     notes TEXT NOT NULL,
@@ -167,6 +186,12 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     weaned_count INTEGER NOT NULL,
     offspring_created INTEGER NOT NULL,
     status TEXT NOT NULL,
+    service_fee_cents INTEGER NOT NULL DEFAULT 0,
+    service_fee_direction TEXT NOT NULL DEFAULT 'none',
+    ultrasound_date_iso TEXT NOT NULL DEFAULT '',
+    ultrasound_result TEXT NOT NULL DEFAULT '',
+    ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0,
+    ultrasound_projected_due_iso TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -196,6 +221,16 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     title TEXT NOT NULL,
     weight_grams INTEGER NOT NULL,
     show_leg_earned INTEGER NOT NULL,
+    medication_name TEXT NOT NULL DEFAULT '',
+    dosage TEXT NOT NULL DEFAULT '',
+    administration_route TEXT NOT NULL DEFAULT '',
+    withdrawal_days INTEGER NOT NULL DEFAULT 0,
+    withdrawal_clear_date_iso TEXT NOT NULL DEFAULT '',
+    body_condition_score REAL NOT NULL DEFAULT 0,
+    famacha_score INTEGER NOT NULL DEFAULT 0,
+    fecal_egg_count INTEGER NOT NULL DEFAULT 0,
+    ultrasound_result TEXT NOT NULL DEFAULT '',
+    ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -338,17 +373,45 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE barn_settings ADD COLUMN custom_colors_json TEXT NOT NULL DEFAULT '{}';",
     "ALTER TABLE barn_settings ADD COLUMN image_optimization_preset TEXT NOT NULL DEFAULT 'balanced';",
     "ALTER TABLE barn_settings ADD COLUMN extra_settings_json TEXT NOT NULL DEFAULT '{}';",
+    "ALTER TABLE barn_settings ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'USD';",
     'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE species_profiles ADD COLUMN default_animal_prefix TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN preferred_unit TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN memo_text TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE species_profiles ADD COLUMN maturity_days INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE animals ADD COLUMN suspected_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN confirmed_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN cleared_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN rufus_level TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN ownership_type TEXT NOT NULL DEFAULT 'Owned';",
+    'ALTER TABLE animals ADD COLUMN culled INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE animals ADD COLUMN cull_date_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN cull_reason TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN deceased_date_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN death_cause TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN sold_date_iso TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE animals ADD COLUMN sale_price_cents INTEGER NOT NULL DEFAULT 0;',
+    'ALTER TABLE animals ADD COLUMN purchase_cost_cents INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE animals ADD COLUMN buyer_name TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE breedings ADD COLUMN service_fee_cents INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE breedings ADD COLUMN service_fee_direction TEXT NOT NULL DEFAULT 'none';",
+    "ALTER TABLE breedings ADD COLUMN ultrasound_date_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE breedings ADD COLUMN ultrasound_result TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE breedings ADD COLUMN ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE breedings ADD COLUMN ultrasound_projected_due_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE care_logs ADD COLUMN medication_name TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE care_logs ADD COLUMN dosage TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE care_logs ADD COLUMN administration_route TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE care_logs ADD COLUMN withdrawal_days INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE care_logs ADD COLUMN withdrawal_clear_date_iso TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE care_logs ADD COLUMN body_condition_score REAL NOT NULL DEFAULT 0;',
+    'ALTER TABLE care_logs ADD COLUMN famacha_score INTEGER NOT NULL DEFAULT 0;',
+    'ALTER TABLE care_logs ADD COLUMN fecal_egg_count INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE care_logs ADD COLUMN ultrasound_result TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE care_logs ADD COLUMN ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0;',
   ];
   for (const stmt of alterStatements) {
     try {
@@ -533,6 +596,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           barnName: String(sRow.barn_name),
           breederName: String(sRow.breeder_name),
           preferredUnit: normalizeWeightUnit(sRow.preferred_unit, 'lbs_oz'),
+          currencyCode: normalizeCurrencyCode(sRow.currency_code, 'USD'),
           defaultSpecies: String(sRow.default_species || 'Rabbit'),
           pinnedLandingSpecies: String(sRow.pinned_landing_species ?? ''),
           defaultGenerations: parsedGen,
@@ -593,6 +657,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           barnName: 'Copper Creek Barn',
           breederName: '',
           preferredUnit: 'lbs_oz',
+          currencyCode: 'USD',
           defaultSpecies: 'Rabbit',
           pinnedLandingSpecies: '',
           defaultGenerations: 3,
@@ -628,6 +693,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       gestationDays: Number(r.gestation_days),
       rebreedDaysAfterBirth: Number(r.rebreed_days_after_birth),
       weanDaysAfterBirth: Number(r.wean_days_after_birth),
+      maturityDays: Number(r.maturity_days) > 0 ? Number(r.maturity_days) : undefined,
       birthEventLabel: String(r.birth_event_label),
       maleLabel: String(r.male_label),
       femaleLabel: String(r.female_label),
@@ -694,6 +760,16 @@ export class WebSqliteAdapter implements StorageAdapter {
           cageLocation: String(r.cage_location),
           breederName: String(r.breeder_name),
           ownerName: String(r.owner_name),
+          ownershipType: normalizeOwnershipType(r.ownership_type, 'Owned'),
+          culled: Number(r.culled) === 1,
+          cullDateIso: String(r.cull_date_iso || ''),
+          cullReason: String(r.cull_reason || ''),
+          deceasedDateIso: String(r.deceased_date_iso || ''),
+          deathCause: String(r.death_cause || ''),
+          soldDateIso: String(r.sold_date_iso || ''),
+          salePriceCents: Number(r.sale_price_cents) || 0,
+          purchaseCostCents: Number(r.purchase_cost_cents) || 0,
+          buyerName: String(r.buyer_name || ''),
           sireId: String(r.sire_id),
           damId: String(r.dam_id),
           notes: String(r.notes),
@@ -756,6 +832,12 @@ export class WebSqliteAdapter implements StorageAdapter {
       weanedCount: Number(r.weaned_count),
       offspringCreated: Number(r.offspring_created) === 1,
       status: (r.status as any) || 'Bred',
+      serviceFeeCents: Number(r.service_fee_cents) || 0,
+      serviceFeeDirection: normalizeServiceFeeDirection(r.service_fee_direction),
+      ultrasoundDateIso: String(r.ultrasound_date_iso || ''),
+      ultrasoundResult: normalizeUltrasoundResult(r.ultrasound_result),
+      ultrasoundFetalCount: Number(r.ultrasound_fetal_count) || 0,
+      ultrasoundProjectedDueIso: String(r.ultrasound_projected_due_iso || ''),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
@@ -789,6 +871,16 @@ export class WebSqliteAdapter implements StorageAdapter {
       title: String(r.title),
       weightGrams: Number(r.weight_grams),
       showLegEarned: Number(r.show_leg_earned) === 1,
+      medicationName: String(r.medication_name || ''),
+      dosage: String(r.dosage || ''),
+      administrationRoute: String(r.administration_route || ''),
+      withdrawalDays: Number(r.withdrawal_days) || 0,
+      withdrawalClearDateIso: String(r.withdrawal_clear_date_iso || ''),
+      bodyConditionScore: Number(r.body_condition_score) || 0,
+      famachaScore: Number(r.famacha_score) || 0,
+      fecalEggCount: Number(r.fecal_egg_count) || 0,
+      ultrasoundResult: normalizeUltrasoundResult(r.ultrasound_result),
+      ultrasoundFetalCount: Number(r.ultrasound_fetal_count) || 0,
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
@@ -880,13 +972,14 @@ export class WebSqliteAdapter implements StorageAdapter {
     });
     this.db?.run(
       `INSERT OR REPLACE INTO barn_settings
-       (id, barn_name, breeder_name, preferred_unit, default_species, pinned_landing_species, default_generations, theme_mode, custom_colors_json, image_optimization_preset, extra_settings_json, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, barn_name, breeder_name, preferred_unit, currency_code, default_species, pinned_landing_species, default_generations, theme_mode, custom_colors_json, image_optimization_preset, extra_settings_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id || 'barn_settings',
         s.barnName,
         s.breederName,
         s.preferredUnit,
+        normalizeCurrencyCode(s.currencyCode, 'USD'),
         s.defaultSpecies,
         s.pinnedLandingSpecies,
         s.defaultGenerations,
@@ -902,8 +995,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
@@ -915,6 +1008,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         sp.gestationDays,
         sp.rebreedDaysAfterBirth,
         sp.weanDaysAfterBirth,
+        sp.maturityDays && sp.maturityDays > 0 ? Math.round(sp.maturityDays) : 0,
         sp.birthEventLabel,
         sp.maleLabel,
         sp.femaleLabel,
@@ -935,8 +1029,8 @@ export class WebSqliteAdapter implements StorageAdapter {
     );
     this.db?.run(
       `INSERT OR REPLACE INTO animals
-       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, sire_id, dam_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, ownership_type, culled, cull_date_iso, cull_reason, deceased_date_iso, death_cause, sold_date_iso, sale_price_cents, purchase_cost_cents, buyer_name, sire_id, dam_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         a.id,
         a.tattoo,
@@ -962,6 +1056,16 @@ export class WebSqliteAdapter implements StorageAdapter {
         a.cageLocation,
         a.breederName,
         a.ownerName,
+        normalizeOwnershipType(a.ownershipType, 'Owned'),
+        a.culled ? 1 : 0,
+        a.cullDateIso || '',
+        a.cullReason || '',
+        a.deceasedDateIso || '',
+        a.deathCause || '',
+        a.soldDateIso || '',
+        a.salePriceCents && a.salePriceCents > 0 ? Math.round(a.salePriceCents) : 0,
+        a.purchaseCostCents && a.purchaseCostCents > 0 ? Math.round(a.purchaseCostCents) : 0,
+        a.buyerName || '',
         a.sireId,
         a.damId,
         a.notes,
@@ -1009,8 +1113,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertBreedingRow(b: BreedingRecord): void {
     this.db?.run(
       `INSERT OR REPLACE INTO breedings
-       (id, species, sire_id, dam_id, sire_name, dam_name, bred_date_iso, expected_due_date_iso, actual_birth_date_iso, projected_coi_percent, live_count, stillborn_count, fostered_count, weaned_count, offspring_created, status, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, species, sire_id, dam_id, sire_name, dam_name, bred_date_iso, expected_due_date_iso, actual_birth_date_iso, projected_coi_percent, live_count, stillborn_count, fostered_count, weaned_count, offspring_created, status, service_fee_cents, service_fee_direction, ultrasound_date_iso, ultrasound_result, ultrasound_fetal_count, ultrasound_projected_due_iso, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         b.id,
         b.species,
@@ -1028,6 +1132,14 @@ export class WebSqliteAdapter implements StorageAdapter {
         b.weanedCount,
         b.offspringCreated ? 1 : 0,
         b.status,
+        b.serviceFeeCents && b.serviceFeeCents > 0 ? Math.round(b.serviceFeeCents) : 0,
+        normalizeServiceFeeDirection(b.serviceFeeDirection),
+        b.ultrasoundDateIso || '',
+        normalizeUltrasoundResult(b.ultrasoundResult),
+        b.ultrasoundFetalCount && b.ultrasoundFetalCount > 0
+          ? Math.round(b.ultrasoundFetalCount)
+          : 0,
+        b.ultrasoundProjectedDueIso || '',
         b.notes,
         b.createdAt,
         b.updatedAt,
@@ -1060,8 +1172,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertCareLogRow(l: CareLog): void {
     this.db?.run(
       `INSERT OR REPLACE INTO care_logs
-       (id, species, animal_id, date_iso, type, title, weight_grams, show_leg_earned, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, species, animal_id, date_iso, type, title, weight_grams, show_leg_earned, medication_name, dosage, administration_route, withdrawal_days, withdrawal_clear_date_iso, body_condition_score, famacha_score, fecal_egg_count, ultrasound_result, ultrasound_fetal_count, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         l.id,
         l.species,
@@ -1071,6 +1183,18 @@ export class WebSqliteAdapter implements StorageAdapter {
         l.title,
         l.weightGrams,
         l.showLegEarned ? 1 : 0,
+        l.medicationName || '',
+        l.dosage || '',
+        l.administrationRoute || '',
+        l.withdrawalDays && l.withdrawalDays > 0 ? Math.round(l.withdrawalDays) : 0,
+        l.withdrawalClearDateIso || '',
+        l.bodyConditionScore && l.bodyConditionScore > 0 ? Number(l.bodyConditionScore) : 0,
+        l.famachaScore && l.famachaScore > 0 ? Math.round(l.famachaScore) : 0,
+        l.fecalEggCount && l.fecalEggCount > 0 ? Math.round(l.fecalEggCount) : 0,
+        normalizeUltrasoundResult(l.ultrasoundResult),
+        l.ultrasoundFetalCount && l.ultrasoundFetalCount > 0
+          ? Math.round(l.ultrasoundFetalCount)
+          : 0,
         l.notes,
         l.createdAt,
         l.updatedAt,
@@ -1434,6 +1558,10 @@ export class WebSqliteAdapter implements StorageAdapter {
   async importRawSqliteBytes(bytes: Uint8Array): Promise<BarnDatabaseSnapshot> {
     if (!this.SQL) {
       throw new Error('SQLite WebAssembly engine is not available in this browser.');
+    }
+    const headerCheck = validateSqliteFileHeader(bytes);
+    if (!headerCheck.ok) {
+      throw new Error(headerCheck.error);
     }
     const importedDb = new this.SQL.Database(bytes);
     applySchemaMigrations(importedDb);

@@ -27,6 +27,13 @@ import {
   resolveImageOptimizationPreset,
 } from '../core/imageOptimizationSpec';
 import { StagedImportedPhoto } from '../core/importers/importerTypes';
+import {
+  isSvgImageInput,
+  MAX_IMAGE_PIXEL_DIMENSION,
+  MAX_IMAGE_TOTAL_PIXELS,
+  MAX_PHOTO_UPLOAD_BYTES,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
 import { AnimalPhoto, nowIsoUtc } from '../core/models';
 
 interface DecodedCanvasSource {
@@ -143,11 +150,40 @@ export async function optimizeImageBlob(
   originalFileName: string,
   presetId?: ImageOptimizationPresetId
 ): Promise<OptimizedImagePayload> {
+  const sizeCheck = validateUploadFileSize(
+    originalFileName || 'photo',
+    blob.size,
+    MAX_PHOTO_UPLOAD_BYTES,
+    'a photo upload'
+  );
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
+  const headBytes = new Uint8Array(await blob.slice(0, 512).arrayBuffer());
+  if (isSvgImageInput(blob.type, originalFileName, headBytes)) {
+    throw new Error(
+      `SVG image "${originalFileName || 'image.svg'}" cannot be imported as a raster animal photo. Please upload a JPG, PNG, WebP, or GIF image.`
+    );
+  }
+
   const preset = resolveImageOptimizationPreset(presetId);
   const originalBytes = blob.size;
   const decoded = await decodeBlobToCanvasSource(blob, originalFileName);
 
   try {
+    if (
+      !Number.isFinite(decoded.width) ||
+      !Number.isFinite(decoded.height) ||
+      decoded.width <= 0 ||
+      decoded.height <= 0 ||
+      decoded.width > MAX_IMAGE_PIXEL_DIMENSION ||
+      decoded.height > MAX_IMAGE_PIXEL_DIMENSION ||
+      decoded.width * decoded.height > MAX_IMAGE_TOTAL_PIXELS
+    ) {
+      throw new Error(
+        `Image "${originalFileName || 'photo'}" (${decoded.width}x${decoded.height} px) exceeds the safe pixel resolution limit (${MAX_IMAGE_PIXEL_DIMENSION.toLocaleString()}px / 100 MP).`
+      );
+    }
     let activePreset = preset;
     let mainDims = computeScaledDimensions(
       decoded.width,

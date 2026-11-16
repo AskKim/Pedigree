@@ -36,7 +36,11 @@ import {
   normalizeAnimalStatus,
   normalizeBiologicalSex,
   normalizeCalendarSyncSettings,
+  normalizeCurrencyCode,
+  normalizeOwnershipType,
   normalizeRufusLevel,
+  normalizeServiceFeeDirection,
+  normalizeUltrasoundResult,
   normalizeWeightUnit,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -55,6 +59,16 @@ import {
   PedigreeSlot,
 } from './pedigreeCalculator';
 import { sanitizeSpeciesMemo } from './speciesMemo';
+import {
+  escapeSafeHtml,
+  MAX_JSON_BACKUP_BYTES,
+  sanitizeCustomColors,
+  sanitizePlainDictionary,
+  sanitizePlainText,
+  sanitizeSafeRasterImageDataUrl,
+  sanitizeSingleLineText,
+  validateUploadFileSize,
+} from './inputSanitization';
 
 /**
  * Deterministic UUID + ISO-8601 `updatedAt` record merge helper.
@@ -366,8 +380,17 @@ export function parseBarnBackupJson(
   jsonText: string,
   fallbackSettings: BarnSettings
 ): BarnDatabaseSnapshot {
+  const sizeCheck = validateUploadFileSize(
+    'backup.json',
+    jsonText.length,
+    MAX_JSON_BACKUP_BYTES,
+    'a JSON backup file'
+  );
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
   const raw = JSON.parse(jsonText);
-  if (!raw || typeof raw !== 'object') {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Backup file is not a valid JSON object.');
   }
 
@@ -377,15 +400,18 @@ export function parseBarnBackupJson(
   const settings: BarnSettings = {
     id: 'barn_settings',
     barnName:
-      rawSettings.barnName ||
-      rawSettings.warrenName ||
+      sanitizeSingleLineText(rawSettings.barnName || rawSettings.warrenName, 160) ||
       fallbackSettings.barnName ||
       'My Barn',
-    breederName: rawSettings.breederName || fallbackSettings.breederName || '',
+    breederName: sanitizeSingleLineText(rawSettings.breederName, 160) || fallbackSettings.breederName || '',
     preferredUnit: normalizeWeightUnit(rawSettings.preferredUnit, fallbackSettings.preferredUnit || 'lbs_oz'),
-    defaultSpecies: rawSettings.defaultSpecies || fallbackSettings.defaultSpecies || 'Rabbit',
+    currencyCode: normalizeCurrencyCode(rawSettings.currencyCode, fallbackSettings.currencyCode || 'USD'),
+    defaultSpecies:
+      sanitizeSingleLineText(rawSettings.defaultSpecies, 100) || fallbackSettings.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies:
-      rawSettings.pinnedLandingSpecies ?? fallbackSettings.pinnedLandingSpecies ?? '',
+      rawSettings.pinnedLandingSpecies !== undefined
+        ? sanitizeSingleLineText(rawSettings.pinnedLandingSpecies, 100)
+        : fallbackSettings.pinnedLandingSpecies ?? '',
     defaultGenerations:
       rawSettings.defaultGenerations === 4 ||
       rawSettings.defaultGenerations === 5 ||
@@ -398,7 +424,7 @@ export function parseBarnBackupJson(
         : fallbackSettings.themeMode,
     customColors:
       rawSettings.customColors && typeof rawSettings.customColors === 'object'
-        ? rawSettings.customColors
+        ? sanitizeCustomColors(rawSettings.customColors) ?? fallbackSettings.customColors
         : fallbackSettings.customColors,
     imageOptimizationPreset:
       rawSettings.imageOptimizationPreset === 'compact' ||
@@ -415,22 +441,38 @@ export function parseBarnBackupJson(
         ? rawSettings.barnNameOnboarded
         : fallbackSettings.barnNameOnboarded ?? true,
     ignoredTaskIds: Array.isArray(rawSettings.ignoredTaskIds)
-      ? rawSettings.ignoredTaskIds.filter((x: unknown) => typeof x === 'string')
+      ? rawSettings.ignoredTaskIds
+          .filter((x: unknown): x is string => typeof x === 'string')
+          .map((x: string) => sanitizeSingleLineText(x, 120))
+          .filter(Boolean)
       : fallbackSettings.ignoredTaskIds ?? [],
     dismissedTaskGroupKeys:
       rawSettings.dismissedTaskGroupKeys &&
       typeof rawSettings.dismissedTaskGroupKeys === 'object'
-        ? rawSettings.dismissedTaskGroupKeys
+        ? sanitizePlainDictionary<string | string[]>(rawSettings.dismissedTaskGroupKeys, (val) => {
+            if (typeof val === 'string') return sanitizeSingleLineText(val, 200);
+            if (Array.isArray(val)) {
+              return val
+                .filter((x): x is string => typeof x === 'string')
+                .map((x) => sanitizeSingleLineText(x, 200))
+                .filter(Boolean);
+            }
+            return undefined;
+          })
         : fallbackSettings.dismissedTaskGroupKeys ?? {},
     dismissedMemoAlertSignatures:
       rawSettings.dismissedMemoAlertSignatures &&
       typeof rawSettings.dismissedMemoAlertSignatures === 'object'
-        ? rawSettings.dismissedMemoAlertSignatures
+        ? sanitizePlainDictionary<string>(rawSettings.dismissedMemoAlertSignatures, (val) =>
+            typeof val === 'string' ? sanitizeSingleLineText(val, 200) : undefined
+          )
         : fallbackSettings.dismissedMemoAlertSignatures ?? {},
     speciesHubBlockOrder:
       rawSettings.speciesHubBlockOrder &&
       typeof rawSettings.speciesHubBlockOrder === 'object'
-        ? rawSettings.speciesHubBlockOrder
+        ? sanitizePlainDictionary(rawSettings.speciesHubBlockOrder, (val) =>
+            Array.isArray(val) ? val : undefined
+          )
         : fallbackSettings.speciesHubBlockOrder ?? {},
     includePhotoOnPedigree:
       typeof rawSettings.includePhotoOnPedigree === 'boolean'
@@ -439,7 +481,7 @@ export function parseBarnBackupJson(
     calendarSync: normalizeCalendarSyncSettings(
       rawSettings.calendarSync ?? fallbackSettings.calendarSync
     ),
-    updatedAt: rawSettings.updatedAt || ts,
+    updatedAt: sanitizeSingleLineText(rawSettings.updatedAt || ts, 64) || ts,
   };
 
   const rawSpeciesList: unknown[] = Array.isArray(raw.speciesProfiles)
@@ -468,6 +510,7 @@ export function parseBarnBackupJson(
             gestationDays: Number(item.gestationDays) || 31,
             rebreedDaysAfterBirth: Number(item.rebreedDaysAfterBirth) || 28,
             weanDaysAfterBirth: Number(item.weanDaysAfterBirth) || 42,
+            maturityDays: Number(item.maturityDays) > 0 ? Number(item.maturityDays) : undefined,
             birthEventLabel: item.birthEventLabel || 'Kindling',
             maleLabel: item.maleLabel || 'Buck',
             femaleLabel: item.femaleLabel || 'Doe',
@@ -544,6 +587,17 @@ export function parseBarnBackupJson(
       cageLocation: a.cageLocation || '',
       breederName: a.breederName || '',
       ownerName: a.ownerName || '',
+      ownershipType: normalizeOwnershipType(a.ownershipType, 'Owned'),
+      culled: Boolean(a.culled),
+      cullDateIso: String(a.cullDateIso || ''),
+      cullReason: String(a.cullReason || ''),
+      deceasedDateIso: String(a.deceasedDateIso || ''),
+      deathCause: String(a.deathCause || ''),
+      soldDateIso: String(a.soldDateIso || ''),
+      salePriceCents: Number(a.salePriceCents) > 0 ? Math.round(Number(a.salePriceCents)) : 0,
+      purchaseCostCents:
+        Number(a.purchaseCostCents) > 0 ? Math.round(Number(a.purchaseCostCents)) : 0,
+      buyerName: String(a.buyerName || ''),
       sireId: a.sireId || '',
       damId: a.damId || '',
       notes: a.notes || '',
@@ -598,6 +652,13 @@ export function parseBarnBackupJson(
         weanedCount: Number(b.weanedCount) || 0,
         offspringCreated: Boolean(b.offspringCreated),
         status: mapLegacyBreedingStatus(b.status || 'Bred'),
+        serviceFeeCents: Number(b.serviceFeeCents) > 0 ? Math.round(Number(b.serviceFeeCents)) : 0,
+        serviceFeeDirection: normalizeServiceFeeDirection(b.serviceFeeDirection),
+        ultrasoundDateIso: String(b.ultrasoundDateIso || ''),
+        ultrasoundResult: normalizeUltrasoundResult(b.ultrasoundResult),
+        ultrasoundFetalCount:
+          Number(b.ultrasoundFetalCount) > 0 ? Math.round(Number(b.ultrasoundFetalCount)) : 0,
+        ultrasoundProjectedDueIso: String(b.ultrasoundProjectedDueIso || ''),
         notes: b.notes || '',
         createdAt: b.createdAt || ts,
         updatedAt: b.updatedAt || ts,
@@ -633,6 +694,17 @@ export function parseBarnBackupJson(
     title: l.title || '',
     weightGrams: Number(l.weightGrams) || 0,
     showLegEarned: Boolean(l.showLegEarned),
+    medicationName: String(l.medicationName || ''),
+    dosage: String(l.dosage || ''),
+    administrationRoute: String(l.administrationRoute || ''),
+    withdrawalDays: Number(l.withdrawalDays) > 0 ? Math.round(Number(l.withdrawalDays)) : 0,
+    withdrawalClearDateIso: String(l.withdrawalClearDateIso || ''),
+    bodyConditionScore: Number(l.bodyConditionScore) > 0 ? Number(l.bodyConditionScore) : 0,
+    famachaScore: Number(l.famachaScore) > 0 ? Math.round(Number(l.famachaScore)) : 0,
+    fecalEggCount: Number(l.fecalEggCount) > 0 ? Math.round(Number(l.fecalEggCount)) : 0,
+    ultrasoundResult: normalizeUltrasoundResult(l.ultrasoundResult),
+    ultrasoundFetalCount:
+      Number(l.ultrasoundFetalCount) > 0 ? Math.round(Number(l.ultrasoundFetalCount)) : 0,
     notes: l.notes || '',
     createdAt: l.createdAt || ts,
     updatedAt: l.updatedAt || ts,
@@ -658,25 +730,31 @@ export function parseBarnBackupJson(
   const animalPhotos: AnimalPhoto[] = (
     Array.isArray(raw.animalPhotos) ? raw.animalPhotos : []
   )
-    .filter((p: any) => p && typeof p.dataUrl === 'string' && p.animalId)
-    .map((p: any, idx: number) => ({
-      id: p.id || generateUuid(),
-      species: p.species || animalById.get(p.animalId)?.species || 'Rabbit',
-      animalId: String(p.animalId),
-      isPrimary: Boolean(p.isPrimary),
-      sortOrder: typeof p.sortOrder === 'number' ? p.sortOrder : idx,
-      caption: String(p.caption || ''),
-      originalFileName: String(p.originalFileName || ''),
-      mimeType: String(p.mimeType || 'image/webp'),
-      width: Number(p.width) || 0,
-      height: Number(p.height) || 0,
-      originalBytes: Number(p.originalBytes) || 0,
-      storedBytes: Number(p.storedBytes) || 0,
-      thumbnailDataUrl: String(p.thumbnailDataUrl || p.dataUrl),
-      dataUrl: String(p.dataUrl),
-      createdAt: p.createdAt || ts,
-      updatedAt: p.updatedAt || ts,
-    }));
+    .map((p: any, idx: number) => {
+      if (!p || typeof p !== 'object' || !p.animalId) return null;
+      const safeDataUrl = sanitizeSafeRasterImageDataUrl(p.dataUrl);
+      if (!safeDataUrl) return null;
+      const safeThumbUrl = sanitizeSafeRasterImageDataUrl(p.thumbnailDataUrl) || safeDataUrl;
+      return {
+        id: sanitizeSingleLineText(p.id, 120) || generateUuid(),
+        species: sanitizeSingleLineText(p.species || animalById.get(p.animalId)?.species || 'Rabbit', 100) || 'Rabbit',
+        animalId: sanitizeSingleLineText(p.animalId, 120),
+        isPrimary: Boolean(p.isPrimary),
+        sortOrder: typeof p.sortOrder === 'number' && Number.isFinite(p.sortOrder) ? p.sortOrder : idx,
+        caption: sanitizePlainText(p.caption || '', 2000),
+        originalFileName: sanitizeSingleLineText(p.originalFileName || '', 260),
+        mimeType: sanitizeSingleLineText(p.mimeType || 'image/webp', 80) || 'image/webp',
+        width: Math.max(0, Number(p.width) || 0),
+        height: Math.max(0, Number(p.height) || 0),
+        originalBytes: Math.max(0, Number(p.originalBytes) || 0),
+        storedBytes: Math.max(0, Number(p.storedBytes) || 0),
+        thumbnailDataUrl: safeThumbUrl,
+        dataUrl: safeDataUrl,
+        createdAt: sanitizeSingleLineText(p.createdAt || ts, 64) || ts,
+        updatedAt: sanitizeSingleLineText(p.updatedAt || ts, 64) || ts,
+      } satisfies AnimalPhoto;
+    })
+    .filter((p): p is AnimalPhoto => Boolean(p));
 
   return {
     settings,
@@ -715,11 +793,7 @@ export type {
 } from './barnBinder';
 
 function escapeHtml(raw: string): string {
-  return (raw || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return escapeSafeHtml(raw);
 }
 
 export interface PedigreePrintOptions {
@@ -832,10 +906,7 @@ export function generateEvansHtmPedigree(
     includeLineage: true,
     includeCleared: true,
   });
-  const safePhoto =
-    primaryPhotoDataUrl && primaryPhotoDataUrl.startsWith('data:image/')
-      ? primaryPhotoDataUrl
-      : '';
+  const safePhoto = sanitizeSafeRasterImageDataUrl(primaryPhotoDataUrl);
 
   const genHeaders: string[] = [
     '<th>Parents (Gen 1)</th>',
@@ -1089,6 +1160,12 @@ export interface PdfReadyBarnReport {
     genotype: string;
     carrierDisclosures: string;
     cageLocation: string;
+    ownershipType: string;
+    culled: boolean;
+    soldDateIso: string;
+    salePriceCents: number;
+    deceasedDateIso: string;
+    deathCause: string;
     sireSummary: string;
     damSummary: string;
   }>;
@@ -1137,6 +1214,12 @@ export function buildPdfReadyBarnSnapshot(
         genotype: a.genotypeRaw || formatGenotypeArray(a.genotype),
         carrierDisclosures: formatCompactCarrierDisclosure(a),
         cageLocation: a.cageLocation,
+        ownershipType: normalizeOwnershipType(a.ownershipType, 'Owned'),
+        culled: Boolean(a.culled),
+        soldDateIso: a.soldDateIso || '',
+        salePriceCents: a.salePriceCents || 0,
+        deceasedDateIso: a.deceasedDateIso || '',
+        deathCause: a.deathCause || '',
         sireSummary: sire ? `${sire.name} (${sire.tattoo})` : 'Unknown',
         damSummary: dam ? `${dam.name} (${dam.tattoo})` : 'Unknown',
       };

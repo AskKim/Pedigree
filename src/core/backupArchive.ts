@@ -10,8 +10,18 @@
  * portability archives run identically on Web PWA and React Native / Expo.
  */
 
-import { strFromU8, strToU8, unzipSync, zipSync, Zippable } from 'fflate';
+import { strFromU8, strToU8, zipSync, Zippable } from 'fflate';
 import { generateSpeciesBarnBinderHtml } from './barnBinder';
+import {
+  isSvgImageInput,
+  MAX_JSON_BACKUP_BYTES,
+  MAX_ZIP_ARCHIVE_BYTES,
+  safeUnzipArchive,
+  sanitizePlainText,
+  sanitizeSafeRasterImageDataUrl,
+  sanitizeSingleLineText,
+  validateUploadFileSize,
+} from './inputSanitization';
 import {
   Animal,
   AnimalPhoto,
@@ -146,16 +156,24 @@ export function dataUrlToBinary(
   const mimeType = header.split(';')[0] || fallbackMime;
   const payload = dataUrl.slice(commaIdx + 1);
   if (!header.includes(';base64')) {
-    return { mimeType, bytes: strToU8(decodeURIComponent(payload)) };
+    try {
+      return { mimeType, bytes: strToU8(decodeURIComponent(payload)) };
+    } catch {
+      return null;
+    }
   }
   return { mimeType, bytes: base64ToBytesPure(payload) };
 }
 
 /**
- * Converts binary image bytes + MIME type back into a `data:image/...;base64,...` URI.
+ * Converts binary image bytes + MIME type back into a safe `data:image/...;base64,...` URI.
+ * Blocks `image/svg+xml` payloads to avoid embedded script smuggling.
  */
 export function binaryToDataUrl(mimeType: string, bytes: Uint8Array): string {
-  const safeMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/webp';
+  const normalizedMime = (mimeType || '').split(';')[0].trim().toLowerCase();
+  const isAllowedRaster =
+    /^image\/(webp|jpeg|jpg|png|gif|avif|bmp)$/i.test(normalizedMime);
+  const safeMime = isAllowedRaster ? normalizedMime : 'image/webp';
   return `data:${safeMime};base64,${bytesToBase64Pure(bytes)}`;
 }
 
@@ -545,6 +563,16 @@ export function parseBackupArchiveInput(
   const lowerName = (fileName || '').toLowerCase();
   const isZip = isZipMagicBytes(bytes) || lowerName.endsWith('.zip');
 
+  const sizeCheck = validateUploadFileSize(
+    fileName || 'backup',
+    bytes.byteLength,
+    isZip ? MAX_ZIP_ARCHIVE_BYTES : MAX_JSON_BACKUP_BYTES,
+    isZip ? 'a backup .ZIP archive' : 'a JSON backup file'
+  );
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
+
   if (!isZip) {
     const jsonText = strFromU8(bytes);
     const snapshot = parseBarnBackupJson(jsonText, fallbackSettings);
@@ -556,12 +584,7 @@ export function parseBackupArchiveInput(
     };
   }
 
-  let unzipped: Record<string, Uint8Array>;
-  try {
-    unzipped = unzipSync(bytes);
-  } catch {
-    throw new Error('Could not open ZIP backup archive. Ensure the file is a valid .zip archive.');
-  }
+  const unzipped = safeUnzipArchive(bytes, { archiveName: fileName || 'backup.zip' });
 
   const ts = nowIsoUtc();
   const manifestBytes = findEntryCaseInsensitive(unzipped, 'photos/manifest.json');
@@ -569,6 +592,9 @@ export function parseBackupArchiveInput(
   const reconstructedPhotos: AnimalPhoto[] = [];
 
   if (manifestBytes) {
+    if (manifestBytes.byteLength > MAX_JSON_BACKUP_BYTES) {
+      throw new Error('ZIP archive photos/manifest.json exceeds the maximum safe JSON size limit.');
+    }
     try {
       const parsedManifest = JSON.parse(strFromU8(manifestBytes));
       const rawList: any[] = Array.isArray(parsedManifest?.photos)
@@ -580,30 +606,35 @@ export function parseBackupArchiveInput(
 
       for (let i = 0; i < rawList.length; i++) {
         const entry = rawList[i];
-        const archivePath = String(entry?.archivePath || '');
+        const archivePath = sanitizeSingleLineText(entry?.archivePath || '', 400);
         if (!archivePath || !entry?.animalId) continue;
         const imgBytes = findEntryCaseInsensitive(unzipped, archivePath);
         if (!imgBytes || imgBytes.byteLength === 0) continue;
 
-        const mimeType = String(entry.mimeType || 'image/webp');
-        const dataUrl = binaryToDataUrl(mimeType, imgBytes);
+        const mimeType = sanitizeSingleLineText(entry.mimeType || 'image/webp', 80) || 'image/webp';
+        if (isSvgImageInput(mimeType, archivePath, imgBytes)) {
+          continue;
+        }
+        const dataUrl = sanitizeSafeRasterImageDataUrl(binaryToDataUrl(mimeType, imgBytes));
+        if (!dataUrl) continue;
+        const safeThumb = sanitizeSafeRasterImageDataUrl(entry.thumbnailDataUrl) || dataUrl;
         reconstructedPhotos.push({
-          id: String(entry.id || generateUuid()),
-          species: String(entry.species || 'Rabbit'),
-          animalId: String(entry.animalId),
+          id: sanitizeSingleLineText(entry.id, 120) || generateUuid(),
+          species: sanitizeSingleLineText(entry.species || 'Rabbit', 100) || 'Rabbit',
+          animalId: sanitizeSingleLineText(entry.animalId, 120),
           isPrimary: Boolean(entry.isPrimary),
-          sortOrder: typeof entry.sortOrder === 'number' ? entry.sortOrder : i,
-          caption: String(entry.caption || ''),
-          originalFileName: String(entry.originalFileName || ''),
+          sortOrder: typeof entry.sortOrder === 'number' && Number.isFinite(entry.sortOrder) ? entry.sortOrder : i,
+          caption: sanitizePlainText(entry.caption || '', 2000),
+          originalFileName: sanitizeSingleLineText(entry.originalFileName || '', 260),
           mimeType,
-          width: Number(entry.width) || 0,
-          height: Number(entry.height) || 0,
-          originalBytes: Number(entry.originalBytes) || imgBytes.byteLength,
+          width: Math.max(0, Number(entry.width) || 0),
+          height: Math.max(0, Number(entry.height) || 0),
+          originalBytes: Math.max(0, Number(entry.originalBytes) || imgBytes.byteLength),
           storedBytes: imgBytes.byteLength,
-          thumbnailDataUrl: String(entry.thumbnailDataUrl || dataUrl),
+          thumbnailDataUrl: safeThumb,
           dataUrl,
-          createdAt: String(entry.createdAt || ts),
-          updatedAt: String(entry.updatedAt || ts),
+          createdAt: sanitizeSingleLineText(entry.createdAt || ts, 64) || ts,
+          updatedAt: sanitizeSingleLineText(entry.updatedAt || ts, 64) || ts,
         });
       }
     } catch {
@@ -620,7 +651,8 @@ export function parseBackupArchiveInput(
         normalized.endsWith('.json') &&
         !normalized.endsWith('photos/manifest.json') &&
         !normalized.startsWith('binder/') &&
-        !normalized.includes('__macosx')
+        !normalized.includes('__macosx') &&
+        entryVal.byteLength <= MAX_JSON_BACKUP_BYTES
       ) {
         const txt = strFromU8(entryVal);
         if (txt.includes('"animals"') || txt.includes('"speciesProfiles"')) {
@@ -632,6 +664,9 @@ export function parseBackupArchiveInput(
   }
 
   if (mainBackupBytes) {
+    if (mainBackupBytes.byteLength > MAX_JSON_BACKUP_BYTES) {
+      throw new Error('Backup JSON inside ZIP archive exceeds the rational 150 MB size limit.');
+    }
     const parsedSnap = parseBarnBackupJson(strFromU8(mainBackupBytes), fallbackSettings);
     const mergedPhotos =
       reconstructedPhotos.length > 0 ? reconstructedPhotos : parsedSnap.animalPhotos;

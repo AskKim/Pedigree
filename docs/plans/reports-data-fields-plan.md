@@ -1,7 +1,7 @@
 # Reports Data Fields & Execution Plan
 
 - **Project:** Community Pedigree (`AskKim/Pedigree`)
-- **Status:** Proposed / Pending Implementation
+- **Status:** All Phases Complete (1–4 Shipped)
 - **Related Preview UI:** `src/components/ReportsScreen.tsx`, `src/core/reportCatalog.ts`
 - **Primary Target Modules:** `src/core/models.ts`, `src/storage/webSqliteAdapter.ts`, `src/core/syncAndExports.ts`, `src/core/importers/conflictResolver.ts`, `src/components/AnimalEditorModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/ReportsScreen.tsx`
 
@@ -126,7 +126,7 @@
 
 ## Phased Delivery Order
 
-1. **Phase 1 — Models, Migrations & Round-Trip Tests:** Add fields to `models.ts`, `webSqliteAdapter.ts`, `syncAndExports.ts`, and `vitest` round-trip tests.
-2. **Phase 2 — Capture UI:** Add conditional structured inputs in `AnimalEditorModal.tsx`, `HerdScreen.tsx`, and `BreedingScreen.tsx` (keeping forms uncluttered unless the relevant status/log type is chosen).
-3. **Phase 3 — Pure Report Generators (`src/core/reportGenerators.ts`):** Implement pure TypeScript report builders per added species (`filter: Male | Female | Non-Adult Male | Non-Adult Female | All`), respecting `resolveSpeciesWeightUnit` and excluding any unadded species.
-4. **Phase 4 — Interactive Reports Screen & Export:** Activate report links in `ReportsScreen.tsx` with on-screen preview, print/PDF, and CSV download, and remove the `"not working yet"` banner once verified.
+1. **Phase 1 — Models, Migrations & Round-Trip Tests *(Completed)*:** Add fields to `models.ts`, `webSqliteAdapter.ts`, `syncAndExports.ts`, `csvExport.ts`, `conflictResolver.ts`, and `vitest` round-trip tests (`reportsPhase1.test.ts`).
+2. **Phase 2 — Capture UI *(Completed)*:** Add conditional structured inputs in `AnimalEditorModal.tsx`, `HerdScreen.tsx`, `BreedingScreen.tsx`, `SpeciesEditorModal.tsx`, and `SettingsAndSyncScreen.tsx` (keeping forms uncluttered unless the relevant status/log type is chosen).
+3. **Phase 3 — Pure Report Generators *(Completed)*:** Implemented `src/core/reportGenerators.ts` pure TypeScript report builders per added species (`filter: Male | Female | Non-Adult Male | Non-Adult Female | All`), respecting `resolveSpeciesWeightUnit` and excluding any unadded species, with unit coverage across all 22 report templates in `reportGenerators.test.ts`.
+4. **Phase 4 — Interactive Reports Screen & Export *(Completed)*:** Activated all 22 report templates in `ReportsScreen.tsx` with audience/category/date/text filtering, on-screen tabular preview, animal deep-links, Print / Save PDF via `PrintPreviewModal`, and CSV download; removed the placeholder `"not working yet"` banner.

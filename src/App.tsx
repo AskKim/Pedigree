@@ -859,8 +859,14 @@ export default function App() {
 
         {route === 'reports' && (
           <ReportsScreen
+            snapshot={snapshot}
             activeSpeciesName={activeSpeciesName}
             speciesProfiles={snapshot.speciesProfiles}
+            onSelectSpecies={(name) => store.selectSpeciesWorkspace(name, 'reports')}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
           />
         )}
 

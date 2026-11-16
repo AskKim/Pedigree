@@ -58,6 +58,7 @@ import {
   CalendarDeliveryMode,
   CalendarSyncSettings,
   normalizeCalendarSyncSettings,
+  normalizeCurrencyCode,
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
@@ -211,6 +212,9 @@ export function SettingsAndSyncScreen({
   const [barnName, setBarnName] = useState(settings.barnName);
   const [breederName, setBreederName] = useState(settings.breederName);
   const [preferredUnit, setPreferredUnit] = useState<WeightUnit>(settings.preferredUnit);
+  const [currencyCode, setCurrencyCode] = useState<string>(() =>
+    normalizeCurrencyCode(settings.currencyCode, 'USD')
+  );
   const [defaultSpecies, setDefaultSpecies] = useState(settings.defaultSpecies);
   const [pinnedLandingSpecies, setPinnedLandingSpecies] = useState(settings.pinnedLandingSpecies);
   const [defaultGenerations, setDefaultGenerations] = useState<3 | 4 | 5 | 6>(
@@ -263,6 +267,7 @@ export function SettingsAndSyncScreen({
     setBarnName(settings.barnName);
     setBreederName(settings.breederName);
     setPreferredUnit(settings.preferredUnit);
+    setCurrencyCode(normalizeCurrencyCode(settings.currencyCode, 'USD'));
     setDefaultSpecies(settings.defaultSpecies);
     setPinnedLandingSpecies(settings.pinnedLandingSpecies);
     setDefaultGenerations(settings.defaultGenerations);
@@ -325,6 +330,7 @@ export function SettingsAndSyncScreen({
       barnNameOnboarded: true,
       breederName: breederName.trim(),
       preferredUnit,
+      currencyCode: normalizeCurrencyCode(currencyCode, 'USD'),
       defaultSpecies,
       pinnedLandingSpecies,
       defaultGenerations,
@@ -758,7 +764,7 @@ export function SettingsAndSyncScreen({
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                 <div>
                   <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                     Default Species
@@ -773,6 +779,24 @@ export function SettingsAndSyncScreen({
                         {sp.name}
                       </option>
                     ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Report Currency
+                  </label>
+                  <select
+                    value={currencyCode}
+                    onChange={(e) => setCurrencyCode(e.target.value)}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
+                  >
+                    <option value="USD">USD ($)</option>
+                    <option value="CAD">CAD (CA$)</option>
+                    <option value="GBP">GBP (£)</option>
+                    <option value="EUR">EUR (€)</option>
+                    <option value="AUD">AUD (A$)</option>
+                    <option value="NZD">NZD (NZ$)</option>
                   </select>
                 </div>
 

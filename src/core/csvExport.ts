@@ -22,14 +22,18 @@ import {
 } from './carrierGenetics';
 import { formatGenotypeArray } from './geneticsEngine';
 import { buildSpeciesHerdMap } from './pedigreeCalculator';
+import { sanitizeCsvFormulaCell, sanitizePlainText } from './inputSanitization';
 import {
   Animal,
   AnimalPhoto,
   BarnSettings,
+  formatCurrencyCents,
   formatSexForSpecies,
   formatWeight,
   isAnimalArchived,
   isSameSpecies,
+  normalizeCurrencyCode,
+  normalizeOwnershipType,
   resolveSpeciesProfile,
   resolveSpeciesWeightUnit,
   SpeciesProfile,
@@ -50,10 +54,11 @@ function slugifyFileSegment(value: string, fallback: string): string {
 
 /**
  * Escapes a single CSV cell according to RFC 4180 so commas, double quotes,
- * and CR/LF line breaks inside fields (such as multi-line notes) stay intact in one cell.
+ * and CR/LF line breaks inside fields (such as multi-line notes) stay intact in one cell,
+ * while neutralizing formula-injection prefixes and control characters.
  */
 export function escapeCsvCell(value: unknown): string {
-  const s = String(value ?? '');
+  const s = sanitizeCsvFormulaCell(sanitizePlainText(String(value ?? '')));
   if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
@@ -172,6 +177,15 @@ export function exportAnimalsCsv(
     'Needs_Attention',
     'Notes',
     'Updated_At_UTC',
+    'Ownership',
+    'Culled',
+    'Cull_Date',
+    'Cull_Reason',
+    'Sold_Date',
+    'Sale_Price',
+    'Buyer',
+    'Deceased_Date',
+    'Death_Cause',
   ];
 
   const herdMapsBySpecies = new Map<string, Map<string, Animal>>();
@@ -236,6 +250,17 @@ export function exportAnimalsCsv(
       a.needsAttention ? 'Yes' : 'No',
       a.notes,
       a.updatedAt,
+      normalizeOwnershipType(a.ownershipType, 'Owned'),
+      a.culled ? 'Yes' : 'No',
+      a.cullDateIso || '',
+      a.cullReason || '',
+      a.soldDateIso || '',
+      a.salePriceCents && a.salePriceCents > 0
+        ? formatCurrencyCents(a.salePriceCents, normalizeCurrencyCode(settings.currencyCode))
+        : '',
+      a.buyerName || '',
+      a.deceasedDateIso || '',
+      a.deathCause || '',
     ];
     lines.push(cells.map(escapeCsvCell).join(','));
   }

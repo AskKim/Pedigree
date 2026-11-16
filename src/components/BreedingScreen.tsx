@@ -21,9 +21,16 @@ import {
   BreedingRecord,
   BreedingStatus,
   formatBreedingStatusForSpecies,
+  formatCurrencyCents,
   formatReadableDate,
   isAnimalArchived,
+  normalizeCurrencyCode,
+  normalizeServiceFeeDirection,
+  normalizeUltrasoundResult,
+  ServiceFeeDirection,
   todayDateIso,
+  ULTRASOUND_RESULTS,
+  UltrasoundResult,
 } from '../core/models';
 import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
@@ -41,6 +48,8 @@ interface BreedingScreenProps {
     quickDamName?: string;
     bredDateIso: string;
     status: BreedingStatus;
+    serviceFeeCents?: number;
+    serviceFeeDirection?: ServiceFeeDirection;
     notes: string;
     autoScheduleChores: boolean;
   }) => void;
@@ -53,6 +62,12 @@ interface BreedingScreenProps {
       stillbornCount: number;
       fosteredCount: number;
       weanedCount: number;
+      serviceFeeCents?: number;
+      serviceFeeDirection?: ServiceFeeDirection;
+      ultrasoundDateIso?: string;
+      ultrasoundResult?: UltrasoundResult;
+      ultrasoundFetalCount?: number;
+      ultrasoundProjectedDueIso?: string;
       notes: string;
       registerJuniorCount: number;
     }
@@ -102,8 +117,11 @@ export function BreedingScreen({
   const [quickDamName, setQuickDamName] = useState<string>('');
   const [bredDateIso, setBredDateIso] = useState<string>(todayDateIso());
   const [status, setStatus] = useState<BreedingStatus>('Bred');
+  const [serviceFeeDirection, setServiceFeeDirection] = useState<ServiceFeeDirection>('none');
+  const [serviceFeeInput, setServiceFeeInput] = useState<string>('');
   const [autoCascade, setAutoCascade] = useState<boolean>(true);
   const [notes, setNotes] = useState<string>('');
+  const resolvedCurrency = normalizeCurrencyCode(settings?.currencyCode, 'USD');
 
   // Keep selected Sire & Dam synchronized whenever user switches active species or toggles Include Archived
   useEffect(() => {
@@ -137,6 +155,12 @@ export function BreedingScreen({
   const [outFostered, setOutFostered] = useState('0');
   const [outWeaned, setOutWeaned] = useState('0');
   const [outRegisterCount, setOutRegisterCount] = useState('0');
+  const [outFeeDirection, setOutFeeDirection] = useState<ServiceFeeDirection>('none');
+  const [outFeeInput, setOutFeeInput] = useState('');
+  const [outUltrasoundDateIso, setOutUltrasoundDateIso] = useState('');
+  const [outUltrasoundResult, setOutUltrasoundResult] = useState<UltrasoundResult>('');
+  const [outUltrasoundFetalCount, setOutUltrasoundFetalCount] = useState('');
+  const [outUltrasoundProjectedDueIso, setOutUltrasoundProjectedDueIso] = useState('');
   const [outNotes, setOutNotes] = useState('');
 
   const usingQuickSire = quickAddSire || males.length === 0;
@@ -265,6 +289,12 @@ export function BreedingScreen({
     (usingQuickDam ? Boolean(quickDamName.trim()) : Boolean(selectedDam)) &&
     Boolean(bredDateIso);
 
+  const parseMoneyToCents = (raw: string): number => {
+    const parsed = Number.parseFloat(raw.trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.round(parsed * 100);
+  };
+
   const handleLogSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmitBreeding) return;
@@ -275,10 +305,14 @@ export function BreedingScreen({
       quickDamName: usingQuickDam ? quickDamName.trim() : undefined,
       bredDateIso,
       status,
+      serviceFeeDirection,
+      serviceFeeCents: serviceFeeDirection === 'none' ? 0 : parseMoneyToCents(serviceFeeInput),
       notes,
       autoScheduleChores: autoCascade,
     });
     setNotes('');
+    setServiceFeeDirection('none');
+    setServiceFeeInput('');
     if (usingQuickSire) {
       setQuickSireName('');
       if (males.length > 0) setQuickAddSire(false);
@@ -298,6 +332,19 @@ export function BreedingScreen({
     setOutFostered(String(rec.fosteredCount || 0));
     setOutWeaned(String(rec.weanedCount || 0));
     setOutRegisterCount('0');
+    const feeDir = normalizeServiceFeeDirection(rec.serviceFeeDirection);
+    setOutFeeDirection(feeDir);
+    setOutFeeInput(
+      rec.serviceFeeCents && rec.serviceFeeCents > 0 ? (rec.serviceFeeCents / 100).toFixed(2) : ''
+    );
+    setOutUltrasoundDateIso(rec.ultrasoundDateIso || '');
+    setOutUltrasoundResult(normalizeUltrasoundResult(rec.ultrasoundResult));
+    setOutUltrasoundFetalCount(
+      rec.ultrasoundFetalCount && rec.ultrasoundFetalCount > 0
+        ? String(rec.ultrasoundFetalCount)
+        : ''
+    );
+    setOutUltrasoundProjectedDueIso(rec.ultrasoundProjectedDueIso || '');
     setOutNotes(rec.notes || '');
   };
 
@@ -306,11 +353,20 @@ export function BreedingScreen({
     if (!editingRecord) return;
     onUpdateOutcome(editingRecord, {
       status: outStatus,
-      actualBirthDateIso: outBirthIso,
+      actualBirthDateIso:
+        outStatus === 'Born' || outStatus === 'Weaned' || editingRecord.actualBirthDateIso
+          ? outBirthIso
+          : '',
       liveCount: Math.max(0, Number(outLive) || 0),
       stillbornCount: Math.max(0, Number(outStillborn) || 0),
       fosteredCount: Number(outFostered) || 0,
       weanedCount: Math.max(0, Number(outWeaned) || 0),
+      serviceFeeDirection: outFeeDirection,
+      serviceFeeCents: outFeeDirection === 'none' ? 0 : parseMoneyToCents(outFeeInput),
+      ultrasoundDateIso: outUltrasoundDateIso,
+      ultrasoundResult: outUltrasoundResult,
+      ultrasoundFetalCount: Math.max(0, Math.round(Number(outUltrasoundFetalCount) || 0)),
+      ultrasoundProjectedDueIso: outUltrasoundProjectedDueIso,
       notes: outNotes,
       registerJuniorCount: Math.max(0, Number(outRegisterCount) || 0),
     });
@@ -488,6 +544,41 @@ export function BreedingScreen({
                   <option value="Palpated Positive">Palpated / Confirmed Pregnant</option>
                 </select>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  Stud / Service Fee (Optional)
+                </label>
+                <select
+                  aria-label="Stud or service fee direction"
+                  value={serviceFeeDirection}
+                  onChange={(e) => setServiceFeeDirection(e.target.value as ServiceFeeDirection)}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                >
+                  <option value="none">No Stud / Service Fee</option>
+                  <option value="earned">Stud Fee Earned (My {speciesProfile.maleLabel})</option>
+                  <option value="paid">Service Fee Paid (Outside {speciesProfile.maleLabel})</option>
+                </select>
+              </div>
+
+              {serviceFeeDirection !== 'none' && (
+                <div>
+                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                    Fee Amount ({resolvedCurrency})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={serviceFeeInput}
+                    onChange={(e) => setServiceFeeInput(e.target.value)}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
+                  />
+                </div>
+              )}
             </div>
 
             <input
@@ -867,12 +958,19 @@ export function BreedingScreen({
                   </div>
                   <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
                     Bred {formatReadableDate(b.bredDateIso)} · Due{' '}
-                    {formatReadableDate(b.expectedDueDateIso)}
+                    {formatReadableDate(b.ultrasoundProjectedDueIso || b.expectedDueDateIso)}
+                    {b.ultrasoundProjectedDueIso ? ' (US est.)' : ''}
+                    {b.ultrasoundResult
+                      ? ` · Scan: ${b.ultrasoundResult}${b.ultrasoundFetalCount ? ` (${b.ultrasoundFetalCount})` : ''}`
+                      : ''}
                     {b.actualBirthDateIso
                       ? ` · ${speciesProfile.birthEventLabel}: ${formatReadableDate(b.actualBirthDateIso)}`
                       : ''}
                     {b.liveCount > 0 || b.stillbornCount > 0
                       ? ` · ${b.liveCount} live / ${b.stillbornCount} stillborn / ${b.weanedCount} weaned`
+                      : ''}
+                    {(b.serviceFeeCents ?? 0) > 0 && b.serviceFeeDirection && b.serviceFeeDirection !== 'none'
+                      ? ` · Fee ${b.serviceFeeDirection}: ${formatCurrencyCents(b.serviceFeeCents, resolvedCurrency)}`
                       : ''}
                   </div>
                   {b.notes && <div className="text-xs text-[var(--barn-muted)]">{b.notes}</div>}
@@ -911,7 +1009,7 @@ export function BreedingScreen({
         >
           <form
             onSubmit={submitOutcome}
-            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4"
+            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 space-y-4"
           >
             <h3 className="font-display text-lg font-semibold">
               Update {speciesProfile.birthEventLabel}: {editingRecord.damName} ×{' '}
@@ -923,7 +1021,17 @@ export function BreedingScreen({
                 <label className="block text-[var(--barn-muted)] mb-1">Status</label>
                 <select
                   value={outStatus}
-                  onChange={(e) => setOutStatus(e.target.value as BreedingStatus)}
+                  onChange={(e) => {
+                    const next = e.target.value as BreedingStatus;
+                    setOutStatus(next);
+                    if ((next === 'Born' || next === 'Weaned') && !outBirthIso) {
+                      setOutBirthIso(
+                        editingRecord.actualBirthDateIso ||
+                          editingRecord.expectedDueDateIso ||
+                          todayDateIso()
+                      );
+                    }
+                  }}
                   className="w-full min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
                 >
                   {BREEDING_STATUSES.map((st) => (
@@ -986,6 +1094,91 @@ export function BreedingScreen({
                   className="w-full min-h-[40px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
                 />
               </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
+              <div className="font-semibold text-[var(--barn-ink)]">
+                Ultrasound Confirmation (Optional)
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[var(--barn-muted)] mb-1">Scan Date</label>
+                  <input
+                    type="date"
+                    value={outUltrasoundDateIso}
+                    onChange={(e) => setOutUltrasoundDateIso(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[var(--barn-muted)] mb-1">Scan Result</label>
+                  <select
+                    value={outUltrasoundResult}
+                    onChange={(e) => setOutUltrasoundResult(e.target.value as UltrasoundResult)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                  >
+                    {ULTRASOUND_RESULTS.map((opt) => (
+                      <option key={opt.value || 'none'} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[var(--barn-muted)] mb-1">Est. Fetal Count</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    placeholder="Optional"
+                    value={outUltrasoundFetalCount}
+                    onChange={(e) => setOutUltrasoundFetalCount(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[var(--barn-muted)] mb-1">
+                    Ultrasound Due Date Override
+                  </label>
+                  <input
+                    type="date"
+                    value={outUltrasoundProjectedDueIso}
+                    onChange={(e) => setOutUltrasoundProjectedDueIso(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 text-xs">
+              <div>
+                <label className="block text-[var(--barn-muted)] mb-1">Stud / Service Fee</label>
+                <select
+                  value={outFeeDirection}
+                  onChange={(e) => setOutFeeDirection(e.target.value as ServiceFeeDirection)}
+                  className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                >
+                  <option value="none">No Service Fee</option>
+                  <option value="earned">Earned (Stud Income)</option>
+                  <option value="paid">Paid (Outside Service)</option>
+                </select>
+              </div>
+              {outFeeDirection !== 'none' && (
+                <div>
+                  <label className="block text-[var(--barn-muted)] mb-1">
+                    Amount ({resolvedCurrency})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={outFeeInput}
+                    onChange={(e) => setOutFeeInput(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="text-xs">

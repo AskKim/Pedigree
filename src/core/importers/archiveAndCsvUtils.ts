@@ -9,7 +9,18 @@
  * dependencies so multi-ZIP imports run identically on Web and React Native / Expo.
  */
 
-import { unzipSync } from 'fflate';
+import {
+  MAX_CSV_ROWS,
+  MAX_CSV_TEXT_BYTES,
+  MAX_ZIP_ARCHIVE_BYTES,
+  MAX_ZIP_ENTRY_BYTES,
+  MAX_ZIP_ENTRY_COUNT,
+  MAX_ZIP_UNCOMPRESSED_TOTAL_BYTES,
+  safeUnzipArchive,
+  sanitizePlainText,
+  sanitizeSingleLineText,
+  validateUploadFileSize,
+} from '../inputSanitization';
 import { RawArchiveInput, VirtualArchiveEntry } from './importerTypes';
 
 const TEXT_EXTENSIONS = new Set([
@@ -100,19 +111,42 @@ export function extractVirtualEntries(
   maxDepth = 2
 ): VirtualArchiveEntry[] {
   const entries: VirtualArchiveEntry[] = [];
+  let cumulativeEntries = 0;
+  let cumulativeBytes = 0;
 
   const processBuffer = (archiveName: string, entryPath: string, bytes: Uint8Array, depth: number) => {
     if (isSystemJunkPath(entryPath)) return;
+    cumulativeEntries++;
+    if (cumulativeEntries > MAX_ZIP_ENTRY_COUNT) {
+      throw new Error(
+        `Import archives contain more than ${MAX_ZIP_ENTRY_COUNT.toLocaleString()} files and were rejected to protect memory.`
+      );
+    }
+
     const ext = getExtension(entryPath);
     const baseName = getBaseName(entryPath);
 
     // Unpack ZIP archives (and nested ZIPs up to maxDepth)
     if (ext === 'zip' && depth <= maxDepth) {
-      const unzipped = unzipSync(bytes);
+      const remainingBytes = Math.max(1024, MAX_ZIP_UNCOMPRESSED_TOTAL_BYTES - cumulativeBytes);
+      const unzipped = safeUnzipArchive(bytes, {
+        archiveName: entryPath || archiveName,
+        maxArchiveBytes: MAX_ZIP_ARCHIVE_BYTES,
+        maxEntries: MAX_ZIP_ENTRY_COUNT - cumulativeEntries + 1,
+        maxEntryBytes: MAX_ZIP_ENTRY_BYTES,
+        maxTotalUncompressedBytes: remainingBytes,
+      });
       for (const [innerPath, innerBytes] of Object.entries(unzipped)) {
         processBuffer(archiveName, innerPath, innerBytes, depth + 1);
       }
       return;
+    }
+
+    cumulativeBytes += bytes.byteLength;
+    if (cumulativeBytes > MAX_ZIP_UNCOMPRESSED_TOTAL_BYTES) {
+      throw new Error(
+        `Total extracted import data exceeded the rational ${Math.round(MAX_ZIP_UNCOMPRESSED_TOTAL_BYTES / (1024 * 1024))} MB limit.`
+      );
     }
 
     if (MEDIA_OR_BINARY_EXTENSIONS.has(ext)) {
@@ -131,6 +165,15 @@ export function extractVirtualEntries(
     }
 
     if (TEXT_EXTENSIONS.has(ext) || looksMostlyText(bytes)) {
+      const textLimitCheck = validateUploadFileSize(
+        entryPath || archiveName,
+        bytes.byteLength,
+        MAX_CSV_TEXT_BYTES,
+        'a tabular text / JSON import file'
+      );
+      if (!textLimitCheck.ok) {
+        throw new Error(textLimitCheck.error);
+      }
       entries.push({
         archiveName,
         entryPath,
@@ -192,6 +235,11 @@ function detectDelimiter(headerSample: string): string {
  * optional Excel `sep=,` first line, and normalized key lookup.
  */
 export function parseDelimitedTable(rawText: string): ParsedDelimitedTable {
+  if (rawText.length > MAX_CSV_TEXT_BYTES) {
+    throw new Error(
+      `Text table exceeds the rational ${Math.round(MAX_CSV_TEXT_BYTES / (1024 * 1024))} MB limit and was rejected.`
+    );
+  }
   let text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
   if (!text) return { headers: [], rows: [] };
 
@@ -233,6 +281,11 @@ export function parseDelimitedTable(rawText: string): ParsedDelimitedTable {
         currentRow.push(currentCell.trim());
         currentCell = '';
         if (currentRow.some((cell) => cell.length > 0)) {
+          if (matrix.length >= MAX_CSV_ROWS) {
+            throw new Error(
+              `Spreadsheet table exceeds the ${MAX_CSV_ROWS.toLocaleString()}-row safety limit.`
+            );
+          }
           matrix.push(currentRow);
         }
         currentRow = [];
@@ -248,7 +301,9 @@ export function parseDelimitedTable(rawText: string): ParsedDelimitedTable {
 
   if (matrix.length === 0) return { headers: [], rows: [] };
 
-  const rawHeaders = matrix[0].map((h, idx) => h.trim() || `column_${idx + 1}`);
+  const rawHeaders = matrix[0].map(
+    (h, idx) => sanitizeSingleLineText(h, 200) || `column_${idx + 1}`
+  );
   const rows: Array<Record<string, string>> = [];
 
   for (let r = 1; r < matrix.length; r++) {
@@ -256,7 +311,7 @@ export function parseDelimitedTable(rawText: string): ParsedDelimitedTable {
     const obj: Record<string, string> = {};
     let hasValue = false;
     for (let c = 0; c < rawHeaders.length; c++) {
-      const val = (values[c] ?? '').trim();
+      const val = sanitizePlainText(values[c] ?? '', 20_000).trim();
       if (val !== '') hasValue = true;
       obj[rawHeaders[c]] = val;
     }

@@ -62,9 +62,85 @@ export type CareLogType =
   | 'Weight Check'
   | 'Show / Leg'
   | 'Palpation'
+  | 'Ultrasound'
   | 'Health / Vet'
+  | 'Health Score / BCS'
   | 'Grooming & Hoof'
   | 'Journal Note';
+
+export type OwnershipType = 'Owned' | 'Reference' | 'Outside';
+
+export const OWNERSHIP_TYPES: ReadonlyArray<{ value: OwnershipType; label: string }> = [
+  { value: 'Owned', label: 'Owned in My Barn' },
+  { value: 'Reference', label: 'Pedigree Reference' },
+  { value: 'Outside', label: 'Outside Stock' },
+];
+
+export function normalizeOwnershipType(
+  raw: unknown,
+  fallback: OwnershipType = 'Owned'
+): OwnershipType {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'owned' || clean === 'in barn' || clean === 'my barn') return 'Owned';
+  if (clean === 'reference' || clean === 'pedigree reference') return 'Reference';
+  if (clean === 'outside' || clean === 'outside stock') return 'Outside';
+  return fallback;
+}
+
+export type ServiceFeeDirection = 'earned' | 'paid' | 'none';
+
+export function normalizeServiceFeeDirection(raw: unknown): ServiceFeeDirection {
+  if (raw === 'earned' || raw === 'paid' || raw === 'none') return raw;
+  return 'none';
+}
+
+export type UltrasoundResult = '' | 'Positive' | 'Negative' | 'Inconclusive';
+
+export const ULTRASOUND_RESULTS: ReadonlyArray<{ value: UltrasoundResult; label: string }> = [
+  { value: '', label: 'Not recorded' },
+  { value: 'Positive', label: 'Positive (Pregnant)' },
+  { value: 'Negative', label: 'Negative (Open)' },
+  { value: 'Inconclusive', label: 'Inconclusive / Recheck' },
+];
+
+export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
+  if (typeof raw !== 'string') return '';
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'positive' || clean === 'pregnant' || clean === 'pos' || clean === '+') {
+    return 'Positive';
+  }
+  if (clean === 'negative' || clean === 'open' || clean === 'neg' || clean === '-') {
+    return 'Negative';
+  }
+  if (clean === 'inconclusive' || clean === 'recheck') {
+    return 'Inconclusive';
+  }
+  return '';
+}
+
+export function normalizeCurrencyCode(raw: unknown, fallback = 'USD'): string {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(clean) ? clean : fallback;
+}
+
+export function formatCurrencyCents(
+  cents: number | undefined,
+  currencyCode = 'USD'
+): string {
+  const safeCents = Number.isFinite(Number(cents)) ? Math.round(Number(cents)) : 0;
+  const amount = safeCents / 100;
+  const code = normalizeCurrencyCode(currencyCode, 'USD');
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: code,
+    }).format(amount);
+  } catch {
+    return `${code} ${amount.toFixed(2)}`;
+  }
+}
 
 /**
  * Single coat-color or trait locus pair (e.g., Rabbit Extension locus `{ locus: 'E', allele1: 'e', allele2: 'e' }`).
@@ -254,6 +330,7 @@ export interface BarnSettings {
   barnName: string;
   breederName: string;
   preferredUnit: WeightUnit;
+  currencyCode?: string;
   defaultSpecies: string;
   pinnedLandingSpecies: string;
   defaultGenerations: 3 | 4 | 5 | 6;
@@ -303,6 +380,7 @@ export interface SpeciesProfile {
   gestationDays: number;
   rebreedDaysAfterBirth: number;
   weanDaysAfterBirth: number;
+  maturityDays?: number;
   birthEventLabel: string;
   maleLabel: string;
   femaleLabel: string;
@@ -343,6 +421,16 @@ export interface Animal {
   cageLocation: string;
   breederName: string;
   ownerName: string;
+  ownershipType?: OwnershipType;
+  culled?: boolean;
+  cullDateIso?: string;
+  cullReason?: string;
+  deceasedDateIso?: string;
+  deathCause?: string;
+  soldDateIso?: string;
+  salePriceCents?: number;
+  purchaseCostCents?: number;
+  buyerName?: string;
   sireId: string;
   damId: string;
   notes: string;
@@ -384,6 +472,12 @@ export interface BreedingRecord {
   weanedCount: number;
   offspringCreated: boolean;
   status: BreedingStatus;
+  serviceFeeCents?: number;
+  serviceFeeDirection?: ServiceFeeDirection;
+  ultrasoundDateIso?: string;
+  ultrasoundResult?: UltrasoundResult;
+  ultrasoundFetalCount?: number;
+  ultrasoundProjectedDueIso?: string;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -419,6 +513,16 @@ export interface CareLog {
   title: string;
   weightGrams: number;
   showLegEarned: boolean;
+  medicationName?: string;
+  dosage?: string;
+  administrationRoute?: string;
+  withdrawalDays?: number;
+  withdrawalClearDateIso?: string;
+  bodyConditionScore?: number;
+  famachaScore?: number;
+  fecalEggCount?: number;
+  ultrasoundResult?: UltrasoundResult;
+  ultrasoundFetalCount?: number;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -516,7 +620,9 @@ export const CARE_LOG_TYPES: CareLogType[] = [
   'Weight Check',
   'Show / Leg',
   'Palpation',
+  'Ultrasound',
   'Health / Vet',
+  'Health Score / BCS',
   'Grooming & Hoof',
   'Journal Note',
 ];
@@ -928,6 +1034,13 @@ export function formatReadableDate(dateIso: string): string {
   const parts = dateIso.split('-').map(Number);
   if (parts.length !== 3 || parts.some(Number.isNaN)) return dateIso;
   const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  if (
+    dt.getUTCFullYear() !== parts[0] ||
+    dt.getUTCMonth() !== parts[1] - 1 ||
+    dt.getUTCDate() !== parts[2]
+  ) {
+    return dateIso;
+  }
   return dt.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -1390,4 +1503,26 @@ export function resolveSpeciesProfile(
  */
 export function doesAnimalNeedAttention(animal: Animal | null | undefined): boolean {
   return Boolean(animal?.needsAttention);
+}
+
+/**
+ * Classifies whether an animal is a non-adult (juvenile/pre-maturity) based on `status === 'Junior'`
+ * or age against `speciesProfile.maturityDays` (falling back to `weanDaysAfterBirth * 2`).
+ */
+export function isAnimalNonAdult(
+  animal: Pick<Animal, 'status' | 'birthDateIso'>,
+  speciesProfile?: Pick<SpeciesProfile, 'maturityDays' | 'weanDaysAfterBirth'>,
+  referenceDateIso: string = todayDateIso()
+): boolean {
+  if (animal.status === 'Junior') return true;
+  if (!animal.birthDateIso || !referenceDateIso) return false;
+  const birthMs = Date.parse(`${animal.birthDateIso}T00:00:00Z`);
+  const refMs = Date.parse(`${referenceDateIso}T00:00:00Z`);
+  if (!Number.isFinite(birthMs) || !Number.isFinite(refMs) || refMs < birthMs) return false;
+  const ageDays = Math.floor((refMs - birthMs) / 86_400_000);
+  const cutoff =
+    speciesProfile?.maturityDays && speciesProfile.maturityDays > 0
+      ? speciesProfile.maturityDays
+      : Math.max(28, (speciesProfile?.weanDaysAfterBirth || 42) * 2);
+  return ageDays < cutoff;
 }
