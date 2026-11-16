@@ -407,6 +407,11 @@ export class WebSqliteAdapter implements StorageAdapter {
       );
       if (saved && (saved.animals.length > 0 || saved.speciesProfiles.length > 0)) {
         this.fallbackSnapshot = saved;
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message: `Corrective action: Auto-recovered ${saved.animals.length} animals from IndexedDB JSON fallback mirror`,
+        });
         return saved;
       }
 
@@ -420,7 +425,7 @@ export class WebSqliteAdapter implements StorageAdapter {
             logDiagnosticEvent({
               level: 'warn',
               category: 'storage',
-              message: `Auto-recovered ${recovered.animals.length} animals from rolling backup "${item.key}" (${item.savedAtIso})`,
+              message: `Corrective action: Auto-recovered ${recovered.animals.length} animals from rolling backup "${item.key}" (${item.savedAtIso})`,
             });
             return recovered;
           }
@@ -431,6 +436,11 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       const seeded = buildFullPredefinedSampleSnapshot();
       this.fallbackSnapshot = seeded;
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: `Corrective action: Primary & fallback stores unavailable — initialized clean starter snapshot (${seeded.animals.length} sample animals)`,
+      });
       try {
         await idbSet(IDB_FALLBACK_SNAPSHOT_KEY, seeded);
       } catch {
@@ -483,6 +493,22 @@ export class WebSqliteAdapter implements StorageAdapter {
     return rows;
   }
 
+  private safeParseJson<T>(raw: unknown, fallback: T, contextLabel: string): T {
+    if (raw === null || raw === undefined || raw === '') return fallback;
+    try {
+      const parsed = JSON.parse(String(raw));
+      return parsed === null || parsed === undefined ? fallback : (parsed as T);
+    } catch (err) {
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: `Corrective action: Auto-recovered malformed JSON in ${contextLabel} using safe default`,
+        error: err,
+      });
+      return fallback;
+    }
+  }
+
   async loadSnapshot(): Promise<BarnDatabaseSnapshot> {
     if (!this.db) {
       return this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
@@ -490,14 +516,13 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     const settingsRows = this.queryObjects('SELECT * FROM barn_settings LIMIT 1');
     const sRow = settingsRows[0];
-    let extraSettings: Record<string, any> = {};
-    try {
-      if (sRow?.extra_settings_json) {
-        extraSettings = JSON.parse(String(sRow.extra_settings_json)) || {};
-      }
-    } catch {
-      extraSettings = {};
-    }
+    const extraSettings = sRow?.extra_settings_json
+      ? this.safeParseJson<Record<string, any>>(
+          sRow.extra_settings_json,
+          {},
+          'barn_settings.extra_settings_json'
+        )
+      : {};
     const rawGen = Number(sRow?.default_generations);
     const parsedGen: 3 | 4 | 5 | 6 =
       rawGen === 4 || rawGen === 5 || rawGen === 6 ? rawGen : 3;
@@ -513,7 +538,11 @@ export class WebSqliteAdapter implements StorageAdapter {
           defaultGenerations: parsedGen,
           themeMode: sRow.theme_mode === 'dark' ? 'dark' : 'light',
           customColors: sRow.custom_colors_json
-            ? JSON.parse(String(sRow.custom_colors_json))
+            ? this.safeParseJson(
+                sRow.custom_colors_json,
+                undefined,
+                'barn_settings.custom_colors_json'
+              )
             : undefined,
           imageOptimizationPreset:
             sRow.image_optimization_preset === 'compact' ||
@@ -603,32 +632,38 @@ export class WebSqliteAdapter implements StorageAdapter {
       maleLabel: String(r.male_label),
       femaleLabel: String(r.female_label),
       offspringLabel: String(r.offspring_label),
-      exampleBreeds: JSON.parse(String(r.example_breeds_json || '[]')),
-      milestones: JSON.parse(String(r.milestones_json || '[]')),
+      exampleBreeds: this.safeParseJson<string[]>(
+        r.example_breeds_json || '[]',
+        [],
+        `species_profiles(${String(r.name)}).example_breeds_json`
+      ),
+      milestones: this.safeParseJson(
+        r.milestones_json || '[]',
+        [],
+        `species_profiles(${String(r.name)}).milestones_json`
+      ),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     }));
 
     const animals: Animal[] = this.queryObjects('SELECT * FROM animals ORDER BY name ASC').map(
       (r) => {
-        let suspectedRaw: unknown = [];
-        let confirmedRaw: unknown = [];
-        let clearedRaw: unknown = [];
-        try {
-          suspectedRaw = JSON.parse(String(r.suspected_carrier_of_json || '[]'));
-        } catch {
-          suspectedRaw = [];
-        }
-        try {
-          confirmedRaw = JSON.parse(String(r.confirmed_carrier_of_json || '[]'));
-        } catch {
-          confirmedRaw = [];
-        }
-        try {
-          clearedRaw = JSON.parse(String(r.cleared_carrier_of_json || '[]'));
-        } catch {
-          clearedRaw = [];
-        }
+        const animalLabel = String(r.name || r.id || 'unknown');
+        const suspectedRaw = this.safeParseJson<unknown>(
+          r.suspected_carrier_of_json || '[]',
+          [],
+          `animals(${animalLabel}).suspected_carrier_of_json`
+        );
+        const confirmedRaw = this.safeParseJson<unknown>(
+          r.confirmed_carrier_of_json || '[]',
+          [],
+          `animals(${animalLabel}).confirmed_carrier_of_json`
+        );
+        const clearedRaw = this.safeParseJson<unknown>(
+          r.cleared_carrier_of_json || '[]',
+          [],
+          `animals(${animalLabel}).cleared_carrier_of_json`
+        );
         const carriers = reconcileCarrierTraitLists(suspectedRaw, confirmedRaw, clearedRaw);
         return {
           id: String(r.id),
@@ -643,7 +678,11 @@ export class WebSqliteAdapter implements StorageAdapter {
           needsAttention: Number(r.needs_attention) === 1,
           birthDateIso: String(r.birth_date_iso),
           weightGrams: Number(r.weight_grams),
-          genotype: JSON.parse(String(r.genotype_json || '[]')),
+          genotype: this.safeParseJson(
+            r.genotype_json || '[]',
+            [],
+            `animals(${animalLabel}).genotype_json`
+          ),
           genotypeRaw: String(r.genotype_raw),
           rufusLevel: normalizeRufusLevel(r.rufus_level),
           suspectedCarrierOf: carriers.suspectedCarrierOf,
@@ -765,7 +804,11 @@ export class WebSqliteAdapter implements StorageAdapter {
       sanctioningBody: String(r.sanctioning_body),
       eventDateIso: String(r.event_date_iso),
       entryDeadlineIso: String(r.entry_deadline_iso),
-      enteredAnimalIds: JSON.parse(String(r.entered_animal_ids_json || '[]')),
+      enteredAnimalIds: this.safeParseJson<string[]>(
+        r.entered_animal_ids_json || '[]',
+        [],
+        `shows(${String(r.name || r.id)}).entered_animal_ids_json`
+      ),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),

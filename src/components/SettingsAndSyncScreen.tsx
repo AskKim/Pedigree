@@ -16,6 +16,7 @@ import {
   FileSpreadsheet,
   FolderSync,
   HardDrive,
+  HelpCircle,
   Images,
   LogOut,
   Moon,
@@ -217,6 +218,7 @@ export function SettingsAndSyncScreen({
   );
   const [imageOptimizationPreset, setImageOptimizationPreset] =
     useState<ImageOptimizationPresetId>(settings.imageOptimizationPreset || 'balanced');
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [showHomeSummaryGrid, setShowHomeSummaryGrid] = useState<boolean>(
     settings.showHomeSummaryGrid !== false
   );
@@ -1978,6 +1980,56 @@ export function SettingsAndSyncScreen({
               </button>
             </div>
           </section>
+
+          {/* Non-intrusive Help & Keyboard Shortcuts Footer */}
+          <footer className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-5 py-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-[var(--barn-muted)]">
+                Need quick screen navigation or modal keyboard controls?
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShortcutHelp((prev) => !prev)}
+                aria-expanded={showShortcutHelp}
+                aria-controls="settings-keyboard-shortcuts-panel"
+                className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium text-[var(--barn-ink)] inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <HelpCircle className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                {showShortcutHelp ? 'Hide Help & Shortcuts' : 'Help · Keyboard Shortcuts'}
+              </button>
+            </div>
+
+            {showShortcutHelp && (
+              <div
+                id="settings-keyboard-shortcuts-panel"
+                className="border-t border-[var(--barn-border)] pt-3 space-y-2 text-xs"
+              >
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Active navigation keys (active when not typing in a field or dialog):
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {[
+                    { key: 'H', label: 'All Species Home' },
+                    { key: 'D', label: 'Species Dashboard' },
+                    { key: 'R', label: 'Herd Registry (or Picker on Home)' },
+                    { key: 'B', label: 'Breeding Lab' },
+                    { key: 'P', label: 'Pedigree Explorer' },
+                    { key: '?', label: 'Quick Shortcuts Help Dialog' },
+                  ].map((item) => (
+                    <div
+                      key={item.key}
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                    >
+                      <span className="text-[var(--barn-ink)] font-medium">{item.label}</span>
+                      <kbd className="px-2 py-0.5 rounded bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px] font-semibold shrink-0">
+                        {item.key}
+                      </kbd>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </footer>
         </div>
       </div>
 

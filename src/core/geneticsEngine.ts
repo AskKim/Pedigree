@@ -188,7 +188,7 @@ export const RABBIT_VARIETY_PRESET_DEFS: VarietyPresetDefinition[] = [
   },
   {
     variety: 'Fawn',
-    conservativeGenotype: 'A_ B_ C_ dd ee',
+    conservativeGenotype: 'A_ B_ C_ dd ee __',
     optionalConfirmations: [WIDE_BAND_CONFIRM_OPTION],
   },
   {
@@ -255,7 +255,7 @@ function classifyRabbitPhenotype(loci: Record<string, string>): string {
   const isConfirmedNormalBand = w.startsWith('W') && w !== 'W_';
   const hasUnknownWideBand = w.includes('_');
 
-  if (c === 'chch') {
+  if (c === 'chch' || c === 'chc' || c === 'ch_') {
     if (isChocolate && isDilute) return `${patternPrefix}Lilac Himalayan / Pointed White`;
     if (isChocolate) return `${patternPrefix}Chocolate Himalayan / Pointed White`;
     if (isDilute) return `${patternPrefix}Blue Himalayan / Pointed White`;
@@ -359,9 +359,9 @@ function classifyCatPhenotype(loci: Record<string, string>, sex?: BiologicalSex)
   const pointSuffix =
     c === 'cbcs' || c === 'cscb'
       ? ' Mink'
-      : c === 'cscs'
+      : c === 'cscs' || c === 'csc' || c === 'cs_'
       ? ' Point'
-      : c === 'cbcb'
+      : c === 'cbcb' || c === 'cbc' || c === 'cb_'
       ? ' Sepia'
       : '';
 
@@ -619,7 +619,7 @@ function classifyGuineaPigPhenotype(loci: Record<string, string>): string {
   const white = s === 'ss' ? ' & White' : '';
   const pinkEye = p === 'pp';
 
-  if (c === 'cr' || c === 'crcr') return `${roan}Himalayan / California Pointed${white}`;
+  if (c === 'cr' || c === 'crcr' || c === 'crca' || c === 'cr_') return `${roan}Himalayan / California Pointed${white}`;
   if (e === 'ee') return `${roan}${pinkEye ? 'Saffron / Gold (Pink-Eyed)' : c.startsWith('cd') ? 'Cream' : 'Red / Golden'}${white}`;
   if (e.startsWith('ep')) return `${roan}Tortoiseshell / Brindle${white}`;
 
@@ -1079,6 +1079,81 @@ export function formatGenotypeArray(pairs: GenotypeAllelePair[]): string {
 }
 
 /**
+ * Updates a single locus within a shorthand genotype string while preserving canonical species
+ * locus ordering and positional `'__'` alignment for preceding blank loci.
+ */
+export function setLocusInGenotypeString(
+  raw: string,
+  locusCode: string,
+  rawAllele1: string,
+  rawAllele2: string,
+  speciesName?: string,
+  sex?: BiologicalSex
+): string {
+  const spec = getGeneticsSpecForSpecies(speciesName);
+  if (!spec) return (raw || '').trim();
+
+  const locusDef = spec.loci.find((l) => l.locus === locusCode);
+  if (!locusDef) return (raw || '').trim();
+
+  const existingPairs = parseGenotypeString(raw, speciesName);
+  const byLocus = new Map<string, GenotypeAllelePair>();
+  for (const p of existingPairs) {
+    byLocus.set(p.locus, { ...p });
+  }
+
+  const cleanA1 = (rawAllele1 || '_').trim() || '_';
+  const cleanA2 =
+    locusDef.inheritanceMode === 'x_linked' && sex === 'Male'
+      ? 'Y'
+      : (rawAllele2 || '_').trim() || '_';
+
+  const normalized = normalizePairWithSpec(locusDef, cleanA1, cleanA2);
+  const isUnsetXMale =
+    locusDef.inheritanceMode === 'x_linked' &&
+    normalized.allele2 === 'Y' &&
+    normalized.allele1 === '_';
+  const isUnsetPair = normalized.allele1 === '_' && normalized.allele2 === '_';
+
+  if (isUnsetPair || isUnsetXMale) {
+    byLocus.delete(locusCode);
+  } else {
+    byLocus.set(locusCode, {
+      locus: locusCode,
+      allele1: normalized.allele1,
+      allele2: normalized.allele2,
+    });
+  }
+
+  let lastActiveIdx = -1;
+  spec.loci.forEach((def, idx) => {
+    const pair = byLocus.get(def.locus);
+    if (pair && (pair.allele1 !== '_' || (pair.allele2 !== '_' && pair.allele2 !== 'Y'))) {
+      lastActiveIdx = idx;
+    }
+  });
+
+  if (lastActiveIdx === -1) return '';
+
+  const ordered: GenotypeAllelePair[] = [];
+  for (let i = 0; i <= lastActiveIdx; i++) {
+    const def = spec.loci[i];
+    const existing = byLocus.get(def.locus);
+    if (existing) {
+      ordered.push(existing);
+    } else {
+      ordered.push({
+        locus: def.locus,
+        allele1: '_',
+        allele2: def.inheritanceMode === 'x_linked' && sex === 'Male' ? 'Y' : '_',
+      });
+    }
+  }
+
+  return formatGenotypeArray(ordered);
+}
+
+/**
  * Parses a shorthand genotype string into structured `GenotypeAllelePair[]` for the given species.
  * Returns `[]` when `speciesName` is a custom/unrecognized species (zero Rabbit cross-bleed).
  */
@@ -1233,7 +1308,8 @@ export function inferHiddenAlleles(
     current.allele2 = initNorm.allele2;
 
     if (locusDef.inheritanceMode === 'x_linked') {
-      // X-linked parent-to-offspring inference (Males are hemizygous allele1 + 'Y')
+      // X-linked inference:
+      // 1) Male XY gets his single X allele from Dam; Female XX gets Sire's single X allele
       if (subject.sex === 'Male' && dam) {
         const damPairs = getAnimalPairsForSpecies(dam, effectiveSpecies);
         const damLocus = damPairs.find((x) => x.locus === locusDef.locus);
@@ -1251,6 +1327,66 @@ export function inferHiddenAlleles(
           } else if (current.allele1 !== dAllele) {
             conflicts.push(
               `${locusDef.name} (${locusDef.locus}): Dam ${dam.name} is ${dAllele}${dAllele}, conflicting with male ${subject.name}'s recorded ${current.allele1}Y.`
+            );
+          }
+        }
+      } else if (subject.sex === 'Female' && sire) {
+        const sirePairs = getAnimalPairsForSpecies(sire, effectiveSpecies);
+        const sireLocus = sirePairs.find((x) => x.locus === locusDef.locus);
+        if (sireLocus && sireLocus.allele1 !== '_') {
+          const sAllele = sireLocus.allele1;
+          const hasAllele = current.allele1 === sAllele || current.allele2 === sAllele;
+          if ((current.allele1 === '_' || current.allele2 === '_') && !hasAllele) {
+            const before = `${current.allele1}${current.allele2}`;
+            const filled = normalizePairWithSpec(
+              locusDef,
+              current.allele1 === '_' ? sAllele : current.allele1,
+              current.allele2 === '_' ? sAllele : current.allele2
+            );
+            current.allele1 = filled.allele1;
+            current.allele2 = filled.allele2;
+            notes.push({
+              locus: locusDef.locus,
+              before,
+              after: `${current.allele1}${current.allele2}`,
+              reason: `Sire (${sire.name}) is ${sAllele}Y and must pass '${sAllele}' to female offspring.`,
+            });
+          } else if (current.allele1 !== '_' && current.allele2 !== '_' && !hasAllele) {
+            conflicts.push(
+              `${locusDef.name} (${locusDef.locus}): Sire ${sire.name} is ${sAllele}Y, conflicting with female ${subject.name}'s recorded ${current.allele1}${current.allele2}.`
+            );
+          }
+        }
+      }
+
+      // 2) Dam gets proven X-linked allele from any recorded Male offspring (kY -> Dam carries k)
+      if (subject.sex === 'Female') {
+        for (const kit of offspring) {
+          if (kit.sex !== 'Male') continue;
+          const kLocus = getAnimalPairsForSpecies(kit, effectiveSpecies).find(
+            (x) => x.locus === locusDef.locus
+          );
+          if (!kLocus || kLocus.allele1 === '_') continue;
+          const sonAllele = kLocus.allele1;
+          const hasAllele = current.allele1 === sonAllele || current.allele2 === sonAllele;
+          if ((current.allele1 === '_' || current.allele2 === '_') && !hasAllele) {
+            const before = `${current.allele1}${current.allele2}`;
+            const filled = normalizePairWithSpec(
+              locusDef,
+              current.allele1 === '_' ? sonAllele : current.allele1,
+              current.allele2 === '_' ? sonAllele : current.allele2
+            );
+            current.allele1 = filled.allele1;
+            current.allele2 = filled.allele2;
+            notes.push({
+              locus: locusDef.locus,
+              before,
+              after: `${current.allele1}${current.allele2}`,
+              reason: `Son ${kit.name} expresses ${sonAllele}Y, proving Dam ${subject.name} carries '${sonAllele}'.`,
+            });
+          } else if (current.allele1 !== '_' && current.allele2 !== '_' && !hasAllele) {
+            conflicts.push(
+              `${locusDef.name} (${locusDef.locus}): Son ${kit.name} is ${sonAllele}Y, impossible if Dam ${subject.name} is ${current.allele1}${current.allele2}.`
             );
           }
         }
@@ -1485,9 +1621,16 @@ export function simulatePairingGenetics(
   for (const locus of allLoci) {
     const s = sireMap.get(locus);
     const d = damMap.get(locus);
-    if (!s || !d) continue;
-
     const locusDef = spec.loci.find((l) => l.locus === locus);
+    if (!s || !d) {
+      if (sirePairs.length > 0 && damPairs.length > 0) {
+        hasUnknownAlleles = true;
+        uncertainLociNotes.push(
+          `${locusDef?.name ?? `Locus ${locus}`} (${locus}): Recorded on ${s ? sire.name : dam.name} only — enter ${locus} on ${s ? dam.name : sire.name} to simulate this locus.`
+        );
+      }
+      continue;
+    }
 
     if (locusDef?.inheritanceMode === 'x_linked') {
       const sX = s.allele1 || '_';

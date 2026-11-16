@@ -26,13 +26,35 @@ import {
 } from '../core/calendarExport';
 import { BarnTask, CalendarSyncSettings } from '../core/models';
 
+import { logDiagnosticEvent } from '../storage/crashLogger';
+
 export const GOOGLE_CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
 ] as const;
 
-const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
+let cachedAuth: ReturnType<typeof getAuth> | null = null;
+let authInitAttempted = false;
+
+function getFirebaseAuthSafe(): ReturnType<typeof getAuth> | null {
+  if (cachedAuth) return cachedAuth;
+  if (authInitAttempted) return null;
+  authInitAttempted = true;
+  try {
+    const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    cachedAuth = getAuth(firebaseApp);
+    return cachedAuth;
+  } catch (err) {
+    logDiagnosticEvent({
+      level: 'warn',
+      category: 'runtime',
+      message:
+        'Corrective action: Firebase Auth unavailable during startup — continuing in offline .ICS calendar mode',
+      error: err,
+    });
+    return null;
+  }
+}
 
 function createCalendarProvider(): GoogleAuthProvider {
   const provider = new GoogleAuthProvider();
@@ -64,24 +86,45 @@ export function initGoogleCalendarAuth(
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: (user: User | null) => void
 ): () => void {
-  return onAuthStateChanged(auth, (user: User | null) => {
-    if (user && cachedAccessToken) {
-      onAuthSuccess?.(user, cachedAccessToken);
-    } else if (!isSigningIn) {
-      cachedAccessToken = null;
-      onAuthFailure?.(user);
-    }
-  });
+  const authInstance = getFirebaseAuthSafe();
+  if (!authInstance) {
+    onAuthFailure?.(null);
+    return () => {};
+  }
+  try {
+    return onAuthStateChanged(authInstance, (user: User | null) => {
+      if (user && cachedAccessToken) {
+        onAuthSuccess?.(user, cachedAccessToken);
+      } else if (!isSigningIn) {
+        cachedAccessToken = null;
+        onAuthFailure?.(user);
+      }
+    });
+  } catch (err) {
+    logDiagnosticEvent({
+      level: 'warn',
+      category: 'runtime',
+      message:
+        'Corrective action: Google Calendar auth listener could not attach — using offline .ICS fallback',
+      error: err,
+    });
+    onAuthFailure?.(null);
+    return () => {};
+  }
 }
 
 export async function signInGoogleCalendar(): Promise<{
   user: User;
   accessToken: string;
 }> {
+  const authInstance = getFirebaseAuthSafe();
+  if (!authInstance) {
+    throw new Error('Google Calendar sign-in is unavailable in this browser environment. Use offline .ICS export instead.');
+  }
   try {
     isSigningIn = true;
     const provider = createCalendarProvider();
-    const result = await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(authInstance, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
       throw new Error('Failed to obtain Google Calendar access token.');
@@ -95,7 +138,10 @@ export async function signInGoogleCalendar(): Promise<{
 
 export async function signOutGoogleCalendar(): Promise<void> {
   cachedAccessToken = null;
-  await auth.signOut();
+  const authInstance = getFirebaseAuthSafe();
+  if (authInstance) {
+    await authInstance.signOut();
+  }
 }
 
 export function getGoogleCalendarAccessToken(): string | null {
@@ -103,7 +149,7 @@ export function getGoogleCalendarAccessToken(): string | null {
 }
 
 export function getCurrentGoogleCalendarUser(): User | null {
-  return auth.currentUser;
+  return getFirebaseAuthSafe()?.currentUser ?? null;
 }
 
 export async function listWritableGoogleCalendars(

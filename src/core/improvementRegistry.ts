@@ -517,6 +517,49 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Use `IMPROVEMENTS.md` or the downloaded `pedigree-improvements-log.json` to restore missing helpers and wiring.',
     ],
   },
+  {
+    id: 'IMP-012',
+    title: 'Startup Self-Healing, Lazy Firebase Auth Guard & Corrective Action Logging',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Prevents initial-load crashes and infinite loading hangs by lazily initializing Firebase Auth, wrapping SQLite JSON parsing in safe recovery helpers, isolating secondary startup promises with Promise.allSettled, running automatic startup health self-repair, falling back to rolling/starter snapshots on fatal DB load errors, and logging every corrective action via logDiagnosticEvent.',
+    userIntent:
+      'Auto-fix any initial loading or crash errors on startup and log every corrective action for debugging.',
+    files: [
+      'src/hooks/useBarnStore.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/utils/googleCalendarClient.ts',
+      'src/App.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: ['normalizeRufusLevel', 'Promise.allSettled', 'Corrective action:'],
+        rationale: 'Startup must import normalizeRufusLevel, isolate secondary boot promises, and log corrective recovery actions.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: ['safeParseJson', 'Corrective action:'],
+        rationale: 'Malformed SQLite row JSON must auto-recover cleanly and record a diagnostic log entry.',
+      },
+      {
+        filePath: 'src/utils/googleCalendarClient.ts',
+        requiredSubstrings: ['getFirebaseAuthSafe', 'Corrective action:'],
+        rationale: 'Firebase Auth must initialize lazily so offline/restricted browsers never crash before React mounts.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['Local Database Recovery Needed'],
+        rationale: 'Render a non-blocking recovery UI if snapshot loading fails instead of trapping users on a loading skeleton.',
+      },
+    ],
+    restorePlaybook: [
+      'Ensure `normalizeRufusLevel` is imported from `../core/models` in `src/hooks/useBarnStore.ts`.',
+      'Keep lazy `getFirebaseAuthSafe()` in `src/utils/googleCalendarClient.ts` and `safeParseJson()` in `src/storage/webSqliteAdapter.ts`.',
+      'Keep startup `Promise.allSettled`, `repairBarnDataHealth`, emergency recovery, and `Corrective action:` `logDiagnosticEvent` calls in `src/hooks/useBarnStore.ts`.',
+    ],
+  },
 ];
 
 /**

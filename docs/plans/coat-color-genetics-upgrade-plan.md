@@ -1,7 +1,24 @@
+# Session Context & Execution Rules: Coat Color Genetics Upgrade Plan (All Species)
+
+You are assisting in completing the **"Coat Color Genetics Upgrade Plan (All Species)"** across all 11 predefined species, custom-species fallback, and UI genetics surfaces. To maintain repository stability and zero regressions, the remaining work is structured as a sequential multi-step process.
+
+## Core Directives for the AI:
+* **Data Integrity**: Do not lose data, introduce false homozygous assumptions (such as backfilling `ww` on Red rabbits without explicit confirmation), or drop `ColorGeneticsNotice` from any genetics screen.
+* **Sequential Multi-Step Execution**: Complete and verify each remaining step cleanly before moving to the next:
+  * **Step 1 — Interactive Per-Species Locus Builder UI (`AnimalEditorModal.tsx`)**: Replace static raw-only genotype editing with dynamic per-species locus builder rows and allele quick-picks (handling autosomal, codominant, incomplete-dominant, and X-linked male `OY`/`oY` vs female pairs, while keeping custom species isolated as plain text).
+  * **Step 2 — Dominance & Preset Refinements + Full 11-Species Test Matrix (`geneticsEngine.ts`, `geneticsEngine.test.ts`)**: Fix remaining heterozygote dominance gaps (`chc`/`ch_` Himalayan in Rabbit, `csc`/`cbc` in Cat, conservative `__` slot on Rabbit `Fawn`), and add dedicated per-species phenotype, Punnett, and inference tests across all 11 predefined species.
+  * **Step 3 — Breeding & Herd Notes Polish + Expert Sign-Off**: Surface `uncertainLociNotes` clearly in `BreedingScreen.tsx`, confirm species-scoped locus naming in inference panels, and prepare the complete suite for domain-expert species genetics sign-off before altering `ColorGeneticsNotice`.
+* **Key Technical Scope**:
+  * Dynamic species-scoped locus UI & allele quick-picks with safe positional `'__'` serialization.
+  * Complete dominance/recessive phenotype parity across Rabbit, Cat, Dog, Goat, Sheep, Cattle, Swine / Pig, Alpaca, Guinea Pig, Chinchilla, and Ferret.
+  * Strict isolation of manually created / custom species (`getGeneticsSpecForSpecies(sp) === null`).
+
+---
+
 # Coat Color Genetics Upgrade Plan (All Species)
 
 - **Project:** Community Pedigree (`AskKim/Pedigree`)
-- **Status:** Implemented (Pending Expert Species Genetics Sign-Off)
+- **Status:** Code Complete (Steps 1–3 Implemented & Tested) — Pending Domain-Expert Species Genetics Sign-Off Before Removing `ColorGeneticsNotice`
 - **Primary Target Modules:** `src/core/geneticsEngine.ts`, `src/core/carrierGenetics.ts`, `src/core/models.ts`, `src/core/importers/herdBossImporter.ts`, `src/core/importers/conflictResolver.ts`, `src/core/__tests__/geneticsEngine.test.ts`, `src/core/__tests__/carrierGenetics.test.ts`, `src/components/AnimalEditorModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/ColorGeneticsNotice.tsx`
 
 > **Mandatory Guardrail:** `ColorGeneticsNotice` ("not working yet / needs expert verification") **must remain visible** anywhere coat color genotypes, allele inference, or Punnett predictions are shown—even after this upgrade is implemented—until a species coat-color genetics expert reviews and signs off on each species ruleset.

@@ -23,6 +23,7 @@ import {
   getGeneticsSpecForSpecies,
   getSpeciesVarietyPresets,
   parseGenotypeString,
+  setLocusInGenotypeString,
   VarietyPresetDefinition,
 } from '../core/geneticsEngine';
 import {
@@ -138,6 +139,7 @@ export function AnimalEditorModal({
   const idLabels = getSpeciesIdentifierLabels(speciesProfile.name);
   // Conservative default: NEVER silently auto-fill unverified modifiers like 'ww' on new animals
   const [genotypeRaw, setGenotypeRaw] = useState(initialAnimal?.genotypeRaw || '');
+  const [showLocusBuilder, setShowLocusBuilder] = useState(false);
   const [rufusLevel, setRufusLevel] = useState<RufusLevel>(() =>
     normalizeRufusLevel(initialAnimal?.rufusLevel)
   );
@@ -271,6 +273,15 @@ export function AnimalEditorModal({
     () => getSpeciesVarietyPresets(speciesProfile.name),
     [speciesProfile.name]
   );
+
+  const parsedLocusPairsByCode = useMemo(() => {
+    const map = new Map<string, { allele1: string; allele2: string }>();
+    if (!speciesGeneticsSpec) return map;
+    for (const pair of parseGenotypeString(genotypeRaw, speciesProfile.name)) {
+      map.set(pair.locus, { allele1: pair.allele1 || '_', allele2: pair.allele2 || '_' });
+    }
+    return map;
+  }, [speciesGeneticsSpec, genotypeRaw, speciesProfile.name]);
 
   const liveHomozygousClearances = useMemo(
     () =>
@@ -751,17 +762,145 @@ export function AnimalEditorModal({
               </div>
             )}
 
-            <input
-              type="text"
-              placeholder={
-                speciesGeneticsSpec
-                  ? `e.g. ${speciesVarietyPresets[0]?.conservativeGenotype || speciesGeneticsSpec.loci.map(() => '__').join(' ')}`
-                  : 'Custom species plain-text genotype or DNA notes (stored verbatim)'
-              }
-              value={genotypeRaw}
-              onChange={(e) => setGenotypeRaw(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
-            />
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                placeholder={
+                  speciesGeneticsSpec
+                    ? `e.g. ${speciesVarietyPresets[0]?.conservativeGenotype || speciesGeneticsSpec.loci.map(() => '__').join(' ')}`
+                    : 'Custom species plain-text genotype or DNA notes (stored verbatim)'
+                }
+                value={genotypeRaw}
+                onChange={(e) => setGenotypeRaw(e.target.value)}
+                className="flex-1 min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
+              />
+              {speciesGeneticsSpec && (
+                <button
+                  type="button"
+                  onClick={() => setShowLocusBuilder((v) => !v)}
+                  aria-expanded={showLocusBuilder}
+                  className="min-h-[42px] px-3.5 py-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium whitespace-nowrap shrink-0"
+                >
+                  {showLocusBuilder
+                    ? 'Hide Locus Builder'
+                    : `Locus Builder (${speciesGeneticsSpec.loci.length} Loci)`}
+                </button>
+              )}
+            </div>
+
+            {speciesGeneticsSpec && showLocusBuilder && (
+              <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-[var(--barn-ink)]">
+                    {speciesProfile.name} Locus Allele Builder
+                  </span>
+                  {genotypeRaw.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setGenotypeRaw('')}
+                      className="text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] underline"
+                    >
+                      Clear all loci
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {speciesGeneticsSpec.loci.map((locusDef) => {
+                    const pair = parsedLocusPairsByCode.get(locusDef.locus);
+                    const isXLinkedMale =
+                      locusDef.inheritanceMode === 'x_linked' && sex === 'Male';
+                    const a1 = pair?.allele1 || '_';
+                    const a2 = isXLinkedMale ? 'Y' : pair?.allele2 || '_';
+                    const modeNote =
+                      locusDef.inheritanceMode === 'x_linked'
+                        ? 'X-linked'
+                        : locusDef.inheritanceMode === 'codominant'
+                        ? 'Codominant'
+                        : locusDef.inheritanceMode === 'incomplete_dominant'
+                        ? 'Incomplete dom.'
+                        : '';
+
+                    return (
+                      <div
+                        key={locusDef.locus}
+                        className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-xs font-semibold text-[var(--barn-ink)] truncate">
+                            <span className="font-mono">{locusDef.locus}</span> · {locusDef.name}
+                          </span>
+                          {modeNote && (
+                            <span className="text-[10px] text-[var(--barn-muted)] shrink-0">
+                              {modeNote}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            aria-label={`${locusDef.name} allele 1`}
+                            value={a1}
+                            onChange={(e) =>
+                              setGenotypeRaw((prev) =>
+                                setLocusInGenotypeString(
+                                  prev,
+                                  locusDef.locus,
+                                  e.target.value,
+                                  a2,
+                                  speciesProfile.name,
+                                  sex
+                                )
+                              )
+                            }
+                            className="flex-1 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono"
+                          >
+                            <option value="_">_ (Unverified)</option>
+                            {locusDef.alleles.map((al) => (
+                              <option key={al} value={al}>
+                                {al}
+                              </option>
+                            ))}
+                          </select>
+                          {isXLinkedMale ? (
+                            <span className="min-h-[34px] px-2.5 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono text-[var(--barn-muted)] inline-flex items-center">
+                              Y
+                            </span>
+                          ) : (
+                            <select
+                              aria-label={`${locusDef.name} allele 2`}
+                              value={a2}
+                              onChange={(e) =>
+                                setGenotypeRaw((prev) =>
+                                  setLocusInGenotypeString(
+                                    prev,
+                                    locusDef.locus,
+                                    a1,
+                                    e.target.value,
+                                    speciesProfile.name,
+                                    sex
+                                  )
+                                )
+                              }
+                              className="flex-1 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono"
+                            >
+                              <option value="_">_ (Unverified)</option>
+                              {locusDef.alleles.map((al) => (
+                                <option key={al} value={al}>
+                                  {al}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-[var(--barn-muted)] leading-snug">
+                          {locusDef.description}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {!speciesGeneticsSpec && (
               <p className="text-[11px] text-[var(--barn-muted)]">
                 Custom species stores genotypes as plain-text breeder notes without Rabbit locus assumptions.

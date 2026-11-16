@@ -36,6 +36,7 @@ import {
   isAnimalArchived,
   isSameSpecies,
   normalizeCalendarSyncSettings,
+  normalizeRufusLevel,
   normalizeSpeciesHubBlockOrder,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -130,6 +131,7 @@ import {
 import {
   checkStorageStatus,
   isQuotaExceededError,
+  listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
   requestPersistentStorage,
   saveRollingSnapshotBackup,
@@ -302,12 +304,93 @@ export function useBarnStore() {
     (async () => {
       try {
         const adapter = adapterRef.current!;
-        const [initial, persistedStatus, ops, conflicts] = await Promise.all([
-          adapter.initialize(),
+        let initial = await adapter.initialize();
+
+        const [persistedRes, opsRes, conflictsRes] = await Promise.allSettled([
           requestPersistentStorage(),
           loadAllSyncOperationsFromIdb(),
           loadAllSyncConflictsFromIdb(),
         ]);
+
+        const persistedStatus: StorageProtectionStatus | null =
+          persistedRes.status === 'fulfilled'
+            ? persistedRes.value
+            : (() => {
+                logDiagnosticEvent({
+                  level: 'warn',
+                  category: 'storage',
+                  message:
+                    'Corrective action: Persistent storage status check failed on startup — continuing with standard storage probe',
+                  error: persistedRes.reason,
+                });
+                return null;
+              })();
+
+        const ops: SyncOperation[] =
+          opsRes.status === 'fulfilled'
+            ? opsRes.value
+            : (() => {
+                logDiagnosticEvent({
+                  level: 'warn',
+                  category: 'storage',
+                  message:
+                    'Corrective action: Failed loading local sync outbox on startup — initialized empty outbox queue',
+                  error: opsRes.reason,
+                });
+                return [];
+              })();
+
+        const conflicts: SyncConflictEntry[] =
+          conflictsRes.status === 'fulfilled'
+            ? conflictsRes.value
+            : (() => {
+                logDiagnosticEvent({
+                  level: 'warn',
+                  category: 'storage',
+                  message:
+                    'Corrective action: Failed loading sync conflicts on startup — initialized empty conflict list',
+                  error: conflictsRes.reason,
+                });
+                return [];
+              })();
+
+        // Run non-destructive startup health check & auto-repair if structural issues exist
+        try {
+          const healthReport = analyzeBarnDataHealth(initial);
+          if (healthReport.autoRepairableCount > 0) {
+            const repaired = repairBarnDataHealth(initial);
+            if (repaired.repairsApplied.length > 0) {
+              initial = repaired.nextSnapshot;
+              try {
+                await adapter.replaceSnapshot(initial);
+              } catch (persistRepairErr) {
+                logDiagnosticEvent({
+                  level: 'warn',
+                  category: 'storage',
+                  message:
+                    'Corrective action: Startup auto-repair applied in memory (disk re-save deferred)',
+                  error: persistRepairErr,
+                  details: repaired.repairsApplied,
+                });
+              }
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: `Corrective action: Startup health auto-repair fixed ${repaired.repairsApplied.length} database issue(s): ${repaired.repairsApplied.join(' | ')}`,
+                details: repaired.repairsApplied,
+              });
+            }
+          }
+        } catch (healthErr) {
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message:
+              'Corrective action: Startup health scan skipped due to unexpected error — kept loaded snapshot intact',
+            error: healthErr,
+          });
+        }
+
         if (!mounted) return;
         setSnapshot(initial);
         setPedigreeGenerations(initial.settings.defaultGenerations);
@@ -365,7 +448,17 @@ export function useBarnStore() {
           typeof window !== 'undefined' &&
           (deepTaskId || deepSpecies || deepRoute)
         ) {
-          window.history.replaceState({}, '', window.location.pathname);
+          try {
+            window.history.replaceState({}, '', window.location.pathname);
+          } catch (historyErr) {
+            logDiagnosticEvent({
+              level: 'warn',
+              category: 'runtime',
+              message:
+                'Corrective action: Could not clean deep-link URL query parameters via history.replaceState — continuing normally',
+              error: historyErr,
+            });
+          }
         }
         logDiagnosticEvent({
           level: 'info',
@@ -377,10 +470,45 @@ export function useBarnStore() {
         logDiagnosticEvent({
           level: 'fatal',
           category: isMemoryLikeError(err) ? 'memory' : 'storage',
-          message: 'Database initialization failed during app startup',
+          message: 'Database initialization failed during app startup — attempting emergency recovery',
           error: err,
         });
+
+        let emergencySnapshot: BarnDatabaseSnapshot | null = null;
+        let recoverySource = 'starter snapshot';
+        try {
+          const rollingList = await listRollingSnapshotBackups();
+          for (const item of rollingList) {
+            const recovered = await loadRollingSnapshotBackup(item.key);
+            if (recovered) {
+              emergencySnapshot = recovered;
+              recoverySource = `rolling backup (${item.savedAtIso})`;
+              break;
+            }
+          }
+        } catch {
+          // Ignore rolling backup lookup failure
+        }
+
+        if (!emergencySnapshot) {
+          emergencySnapshot = buildFullPredefinedSampleSnapshot();
+        }
+
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message: `Corrective action: Startup crash auto-recovered using ${recoverySource} (${emergencySnapshot.animals.length} animals)`,
+          error: err,
+        });
+
         if (mounted) {
+          setSnapshot(emergencySnapshot);
+          setPedigreeGenerations(emergencySnapshot.settings.defaultGenerations || 3);
+          setActiveSpeciesName(emergencySnapshot.settings.defaultSpecies || 'Rabbit');
+          setRoute('home');
+          setErrorMessage(
+            `Local database hit a startup error and automatically recovered using ${recoverySource}. Open Import & Settings -> Diagnostics & Support to inspect logs.`
+          );
           setIsLoading(false);
         }
       }
@@ -937,11 +1065,21 @@ export function useBarnStore() {
     ): Promise<string> => {
       const ts = nowIsoUtc();
       const previous = draft.id ? snapshot?.animals.find((a) => a.id === draft.id) : undefined;
+      const hasExplicitRaw = typeof draft.genotypeRaw === 'string';
+      const trimmedRaw = (draft.genotypeRaw || '').trim();
       const parsedGeno =
-        draft.genotype && draft.genotype.length > 0
+        hasExplicitRaw
+          ? trimmedRaw
+            ? draft.genotype &&
+              draft.genotype.length > 0 &&
+              formatGenotypeArray(draft.genotype) === trimmedRaw
+              ? draft.genotype
+              : parseGenotypeString(trimmedRaw, draft.species)
+            : []
+          : draft.genotype && draft.genotype.length > 0
           ? draft.genotype
-          : parseGenotypeString(draft.genotypeRaw, draft.species);
-      const normalizedRaw = draft.genotypeRaw?.trim() || formatGenotypeArray(parsedGeno);
+          : [];
+      const normalizedRaw = trimmedRaw || (hasExplicitRaw ? '' : formatGenotypeArray(parsedGeno));
 
       const carriers = reconcileCarrierTraitLists(
         draft.suspectedCarrierOf,

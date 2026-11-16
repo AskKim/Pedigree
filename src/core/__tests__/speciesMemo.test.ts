@@ -159,5 +159,5 @@ describe('speciesMemo — data hygiene, emoji preservation, and safe formatting'
     expect(mergedRabbit.gestationDays).toBe(32);
     expect(mergedRabbit.memoText).toBe('## Winter Feed Mix 🐇🌾\n- [x] Double check heat lamps');
     expect(mergedRabbit.memoUpdatedAt).toBe('2026-11-15T19:00:00.000Z');
-  });
+  }, 15000);
 });

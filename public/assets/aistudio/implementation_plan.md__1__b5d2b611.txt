@@ -1,0 +1,191 @@
+# Session Context & Execution Rules: Unified Coat Color Genetics & Carrier Lineage Plan
+
+You are assisting in implementing the "Unified Coat Color Genetics, Variety Safety & Carrier Lineage Plan[span_1](start_span)"[span_1](end_span). We are working under free-tier token limitations, so this implementation will be delivered across sequential chunks.
+
+## Core Directives for the AI:
+* **Data Integrity**: Do not lose data, introduce false assumptions (such as backfilling `ww` on Red rabbits without verification)[span_2](start_span)[span_2](end_span), or alter specification logic across chunks.
+* **Progressive Ingestion**: Acknowledge and store each incoming chunk as it is provided. Wait for the final chunk before attempting a full code generation or implementation build.
+* **Key Technical Scope**: 
+  * Conservative variety presets with interactive verification gates[span_3](start_span)[span_3](end_span).
+  * Polygenic Rufus intensity tracked independently of Mendelian Wide-Band[span_4](start_span)[span_4](end_span).
+  * Hybrid "Cleared" firewall with independent Sire/Dam branch propagation[span_5](start_span)[span_5](end_span).
+  * Species-scoped color engine covering all predefined species with strict non-assumption import boundaries[span_6](start_span)[span_6](end_span).
+
+
+
+# Unified Coat Color Genetics, Variety Safety & Carrier Lineage Plan
+
+This plan unifies the existing multi-species Coat Color Genetics Upgrade roadmap with the Herd & Pedigree Carrier Disclosure system, solving false homozygous assumptions (such as assuming Wide-Band `ww` on every Red rabbit), adding non-Mendelian Rufus tracking, and introducing branch-level lineage clearing across pedigrees, breeding simulations, imports, and printable outputs.
+
+---
+
+## User Review & Critical Decisions
+
+> [!IMPORTANT]
+> **Summary of Confirmed Choices & Open Rollout Question**
+> Your earlier answers locked in how variety presets, Rufus intensity, and branch clearing will behave. The final item below translates the rollout-order question into plain English with a clear recommended default—click **Proceed** if it looks right, or request revisions if you prefer building everything at once.
+
+- **Confirmed — Conservative Presets with Interactive Verification Gate**: New animals will no longer silently auto-fill homozygous modifiers (like `ww` on a newly added Rabbit). Picking a variety like **New Zealand Red** pre-fills only what the visible color guarantees (`A_ B_ C_ D_ ee __`, keeping Wide-Band unknown as `__`), accompanied by a brief optional checklist asking whether you want to verify hidden/modifier loci (`ww` proven by pedigree/test) before locking them in.
+- **Confirmed — Separate Rufus Intensity Selector**: A dedicated profile selector (`Unspecified`, `Low Rufus`, `Medium Rufus`, `High Rufus`) records polygenic richness separately from Mendelian Wide-Band (`W` / `w`), so low-Rufus or non-wideband Reds never create false `ww` certainty.
+- **Confirmed — Hybrid "Cleared" Firewall (Proof-Backed + Genotype-Assisted)**: An ancestor's suspected carrier trait stops propagating down a lineage branch only when an intervening animal explicitly records that trait as **Cleared / Non-Carrier** (with optional proof type and negative test-breeding count, e.g., `Test Bred · 3x` or `DNA Tested`) **OR** has an explicitly user-verified homozygous dominant coat locus (such as `CC`, `DD`, `BB`, `VV`, or `WW`—never auto-filled guesses). Health traits always require explicit proof or breeder confirmation.
+- **Open Choice — Recommended Two-Milestone Delivery Order**:
+  - **Milestone 1 — Breeder Safety First *(Recommended First Release)*:** Fixes the Rabbit Wide-Band (`ww` / `__`) trap, adds the Interactive Preset Verification Gate and Rufus Intensity selector, hardens HerdBoss/CSV imports against false assumptions, launches the **Cleared** Carrier Firewall + independent Sire/Dam lineage propagation, and adds the **Herd Carrier Finder** filter + **Breeding Lab** shared-carrier alerts and updates the repository coat-color roadmap doc to reflect this unified spec.
+  - **Milestone 2 — Full 11-Species & X-Linked Color Engine:** Delivers the complete multi-species genotype registry, homozygous/intermediate inference fixes, unknown `_` outcome separation, Cat `O/o` sex-split Punnett grids, remaining Rabbit ARBA patterns (`at`, `chl`, `ch`, `vv`, `dudu`, `ej`, `Es`), custom-species plain-text isolation, and lethal/sensory alerts (`EnEn`, `MM`, `RnRn`, `WhWh`/`TOTO`, Ferret Blaze/Panda).
+  - *Alternative*: Combine Milestones 1 and 2 into a single larger build before release.
+
+---
+
+## 1. Overview & Core Concept
+
+- **What It Does**: Combines accurate multi-species coat color genetics with transparent lineage-wide carrier tracking. Breeders can record **Confirmed**, **Suspected**, and **Cleared (Non-Carrier)** genetic traits alongside conservative Mendelian genotypes and polygenic modifiers like Rufus—propagating ancestry risks accurately without overwriting reality with optimistic breed-standard guesses.
+- **Target Audience / Persona**: Pedigree livestock and show breeders (starting with New Zealand Red rabbit breeders, scaling cleanly across all 11 predefined species plus custom species) who rely on truthful Punnett projections, clean show/sale pedigrees, and fast herd screening.
+- **Key Value**: Prevents hidden surprises (e.g., two show Reds carrying `W` unexpectedly producing non-wideband offspring, or silent health-gene carriers in a bloodline) while honoring proven outcross test-breedings that clear a branch—and keeping the mandatory Genetics Verification Notice visible everywhere coat predictions appear until expert sign-off.
+
+---
+
+## 2. User Experience & Visual Design
+
+### Key User Flows
+
+1. **Adding or Editing an Animal (Conservative Preset + Verification Gate)**
+   - Creating a new animal starts with blank/unknown modifier slots rather than hardcoding `ww`.
+   - Selecting a variety preset (e.g., *New Zealand Red*) fills only guaranteed visible loci (`A_ B_ C_ D_ ee __`) and opens an inline verification prompt:
+     - Optional checkboxes such as *"Confirm Wide-Band (`ww` verified by pedigree or test breeding)"*—leaving it unchecked keeps `__` (`W_`/`__`), preventing false 100% wide-band locks.
+   - Right alongside coat color fields sits the standalone **Rufus Intensity** control (`Unspecified`, `High`, `Medium`, `Low`) for polygenic shade depth.
+   - Below genotype loci, the **Hidden Genetic Traits & Carrier Disclosures** panel presents three synchronized lists: **Confirmed Carrier Of**, **Suspected Carrier Of**, and **Cleared / Confirmed Non-Carrier Of** (with quick proof selector: *Test Bred + breeding count*, *DNA Tested*, *Verified Homozygous Coat Locus*, or *Breeder Verified*).
+
+2. **Viewing Profiles & Pedigrees (Sire-Side & Dam-Side Branch Firewall)**
+   - On any animal profile and in 3–6 generation pedigree cells (in-app, Evans `.HTM`, and Printable Barn Binders), the engine walks upward through both parental branches independently:
+     - If an ancestor is **Confirmed** or **Suspected** and no descendant between that ancestor and the subject is marked **Cleared** for that trait, the subject automatically displays quiet unboxed `"Lineage Potential: <Trait> (via <Parent>)"` context—distinct from directly entered Suspected/Confirmed traits.
+     - If an animal in the middle of the Sire line is **Cleared** (e.g., *Dilute · Test Bred 4x* or verified `DD`), the Sire branch stops passing Dilute forward—while an uncleared Dam branch would still independently warn of potential Dam-side carriage.
+
+3. **Screening the Herd (Carrier Finder Toolbar)**
+   - In the Herd registry, a lightweight **Carrier Filter** control (filter by **Any Carrier / Potential**, **Confirmed Only**, **Suspected Only**, **Cleared Only**, or search a specific trait such as *Wide Band*, *Dilute*, or *Megacolon*) immediately surfaces matching animals with live counts without crowding card titles.
+
+4. **Breeding Lab (Combined Genetic & Carrier Risk Panel)**
+   - Selecting a Sire and Dam displays:
+     - Split **Confirmed Punnett Outcomes** vs **Unconfirmed Carrier Possibilities** when either parent contains `_` or `__` (never generating fake `100% __` offspring or falsely guaranteeing `100% ww`).
+     - Sex-split Male/Female Punnett rows for X-linked loci (Cat `O/o`).
+     - Prominent **Breeding Risk Alerts** combining coat/lethal warnings (`EnEn` Charlie megacolon, `MM` Double Merle, `RnRn`, `WhWh`/`TOTO`, Ferret Blaze/Panda) and any shared **Confirmed / Suspected / Lineage-Potential** carrier traits between Sire and Dam.
+
+5. **Spreadsheet / HerdBoss Imports**
+   - Imported records populate variety and color labels cleanly without guessing unrecorded genotypes (e.g., `"Red"` never backfills `ww`), keeping imported animals safe until a breeder inspects and confirms them.
+
+### Visual Identity & Theme
+
+- **Aesthetic Direction**: Warm agrarian ledger & field-ready breeder workbench matching the app's established paper-and-ink craft—clean, high-contrast surfaces designed for outdoor barn legibility and printable ink safety.
+- **Color Palette & Mood**: Uses existing semantic design tokens (`--barn-canvas` warm parchment / deep forest slate dark canvas, `--barn-surface` elevated sheet, `--barn-border` hairline dividers, `--barn-ink` primary text, `--barn-muted` secondary metadata, `--barn-sage` primary confirmations & cleared proof accents, `--barn-terracotta` suspected/caution disclosures, `--barn-danger` confirmed risk & lethal alerts). Status is always paired with explicit text labels (`Confirmed`, `Suspected`, `Cleared`, `Lineage`), never color alone.
+- **Typography & Hierarchy**: `Fraunces` editorial display headings (`text-wrap: balance`), `Plus Jakarta Sans` UI prose (13px–16px body, regular 400 and semibold 600), and `JetBrains Mono` tabular figures (`tabular-nums`) for COI %, Punnett odds, locus pairs, and test-breeding counts.
+- **Component Styling & Layout**: Zero-pill metadata using crisp typographic separators (`·`, `/`) inside structured panels separated by whitespace and `1px` hairline borders (`rounded-2xl` / `rounded-xl`, single elevation level). All interactive triggers meet $\ge 44 \times 44\text{px}$ mobile touch hitboxes while spanning full desktop grids comfortably.
+- **Mandatory Genetics Verification Guardrail**: The existing Genetics Verification Notice remains pinned across the Animal Editor, Herd Animal Detail, and Breeding Lab until an expert signs off on each species ruleset.
+
+---
+
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1 — Conservative Variety Presets + Interactive Verification Prompt**
+  - *Chosen Approach*: Variety presets populate only phenotype-proven alleles (e.g., Red = `A_ B_ C_ D_ ee __`), leave unverified modifiers unknown (`__` / `allele_`), and prompt the breeder with optional verification toggles before committing optional recessive alleles like `ww`. Newly added Rabbits start blank until a variety or manual genotype is chosen.
+  - *Why*: Eliminates the "New Zealand Red trap" where crossing two unverified Red rabbits falsely predicts 100% `ww` offspring, while keeping quick data entry fast for breeders who have genuinely test-bred their stock.
+  - *Alternatives Considered*: Leaving all genotypes permanently manual (too slow for casual entry) or auto-filling `ww` automatically (scientifically inaccurate for show herds).
+
+- **Decision 2 — Polygenic Rufus Intensity Stored Independently of `W`/`w`**
+  - *Chosen Approach*: Add a dedicated `rufusLevel` field (`High`, `Medium`, `Low`, or blank) with a clean profile selector, excluded from Mendelian Punnett allele crossing.
+  - *Why*: Breed depth in Red New Zealands depends heavily on Rufus modifiers as well as Wide-Band (`ww`); conflating visual brightness with `ww` misleads both test-breeding inference and pedigree expectations.
+  - *Alternatives Considered*: Packing Rufus notes into free-text notes or carrier tags (harder to filter cleanly alongside color data).
+
+- **Decision 3 — Branch-Level `Cleared` Firewall Evaluated Per Parental Line**
+  - *Chosen Approach*: Add `clearedCarrierOf` storing trait name + structured clearance proof (`Test Bred` with count, `DNA Tested`, `Verified Homozygous Dominant Coat Locus`, or `Breeder Verified`), reconcilable with Confirmed/Suspected lists. Ancestral lineage propagation evaluates Sire and Dam paths separately to depth limit, halting upward traversal along any branch that hits a Cleared record—or a user-verified homozygous dominant coat locus such as `DD` or `WW` (strictly rejecting auto-filled/guessed genotypes).
+  - *Why*: Mirrors real-world breeding math: proving a buck is `DD` or test-breeding him cleanly removes recessive risk through *his* half of the pedigree without hiding an independent risk coming down the doe's side.
+  - *Alternatives Considered*: Manual-only lineage clearing with no genotype assist (forces duplicate entry when `DD` is already DNA/test-proven) or global non-branch clearing (could wrongly mask the other parent's lineage risk).
+
+- **Decision 4 — Strict Non-Assumption Boundary for Imports & Legacy Records**
+  - *Chosen Approach*: Importers only record genotype strings explicitly present in genotype/DNA columns, and existing records loaded from SQLite preserve whatever `genotypeRaw` was stored without upgrading `"Red"` to `ww`.
+  - *Why*: Prevents bulk CSV/HerdBoss imports from silently injecting unverified homozygous alleles into foundation pedigrees.
+
+- **Decision 5 — Unified Species-Scoped Color Engine + Preserved Verification Notice**
+  - *Chosen Approach*: Refactor the genetics core into a pure TypeScript `SpeciesGeneticsSpec` registry spanning all 11 predefined species (fixing homozygous-dominant inference, `allele_` slot normalization, intermediate recessive detection, `_` Punnett separation, Cat X-linked `O/o`, missing Rabbit varieties, lethal pairing alerts, and custom-species plain-text isolation) while keeping the expert-verification notice visible across every genetics surface.
+  - *Why*: Prevents Rabbit dominance rules from mislabeling Cats, Dogs, Goats, Guinea Pigs, or custom species, and ensures domain-expert review precedes removing caution notices.
+
+---
+
+## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+
+### System Architecture & Data Flow
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                     PURE CORE ENGINE (Zero DOM / Offline)                  │
+│                                                                            │
+│  ┌────────────────────────────────┐    ┌────────────────────────────────┐  │
+│  │  Species Coat Color Registry   │    │  Carrier & Lineage Firewall    │  │
+│  │  • 11 Predefined Species Specs │    │  • Confirmed / Suspected       │  │
+│  │  • Null Fallback (Custom Spp.) │◄──►│  • Cleared + Proof Metadata    │  │
+│  │  • Conservative Presets + Gate │    │  • Verified-Locus Clearance    │  │
+│  │  • Split Punnett (_ vs Known)  │    │  • Independent Sire/Dam Scan   │  │
+│  │  • X-Linked & Lethal Warnings  │    │  • Shared-Risk Pairing Check   │  │
+│  └───────────────┬────────────────┘    └───────────────┬────────────────┘  │
+└──────────────────┼─────────────────────────────────────┼───────────────────┘
+                   │                                     │
+                   ▼                                     ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                LOCAL PERSISTENCE, IMPORTS & DOCUMENT EXPORTS               │
+│  • Local SQLite + Schema Migrations (rufus_level, cleared_carrier_of_json) │
+│  • Non-Assuming HerdBoss / CSV / JSON Import & Sync Merge Engine           │
+│  • Pedigree Renderers (In-App, Evans .HTM, CSV, Printable Barn Binders)    │
+└──────────────────┬─────────────────────────────────────┬───────────────────┘
+                   │                                     │
+                   ▼                                     ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                       PRESENTATION & WORKFLOW SCREENS                      │
+│  • Animal Editor Modal: Preset Verify Gate, Rufus Selector, 3-List Combo   │
+│  • Herd Screen: Carrier Finder Filter + Profile Genotype/Lineage Panel     │
+│  • Pedigree Screen: Compact Confirmed / Suspected / Cleared / Lineage Tags │
+│  • Breeding Lab: COI + Split Punnett + X-Linked Grid + Combined Risk Alert │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Independent Branch Propagation & Firewall Logic
+
+```
+                  [Great-Grandparent: Confirmed "Dilute (dd)"]
+                                       │
+                                       ▼
+                [Grandparent: Cleared "Dilute (dd)" · Test Bred 4x]
+                                       │   (OR verified homozygous "DD")
+                          ═════════════╪═════════════   <-- FIREWALL STOPS BRANCH
+                                       X   (Does NOT pass Dilute down Sire side)
+
+  [Sire: No Dilute carried forward]         [Dam-side Ancestor: Suspected "Wide Band (ww)"]
+                 │                                              │
+                 └──────────────────────┬───────────────────────┘
+                                        ▼
+                      [Subject / Projected Kit]
+                      • Dilute: Clear on Sire line (Firewall blocked)
+                      • Wide Band: Lineage Potential via Dam line
+```
+
+### Data Model & State Entities
+
+- **Animal Record Extensions**:
+  - `rufusLevel`: Optional enumerated modifier (`'Low' | 'Medium' | 'High' | ''`) for Red coat depth tracking independent of Mendelian loci.
+  - `suspectedCarrierOf`: Normalized array of unconfirmed trait names.
+  - `confirmedCarrierOf`: Normalized array of proven carrier trait names (automatically supersedes duplicates in Suspected or Cleared when promoted).
+  - `clearedCarrierOf`: Array of structured non-carrier clearances `{ trait: string; proofType: 'test_bred' | 'dna_tested' | 'homozygous_locus' | 'breeder_verified'; testBreedingCount?: number; note?: string; recordedAt?: string }`.
+  - Backward-compatible JSON serialization & SQLite `ALTER TABLE` column migrations so existing backups and herds upgrade seamlessly with zero data loss.
+- **Species Genetics Specification**:
+  - Per-species locus definitions (`autosomal`, `x_linked`, `incomplete_dominant`, `codominant`), ordered dominance hierarchies, conservative variety presets with optional `optionalConfirmations` prompts (e.g., confirming `ww` on Red), lethal/health genotype rules, and `null` fallback for user-created species.
+
+### Interactive Component & State Mapping
+
+- **Animal Editor Modal**:
+  - *State*: Draft genotype string, conservative preset confirmation modal/inline drawer, active `rufusLevel`, and reconciled three-way carrier lists (`confirmed`, `suspected`, `cleared` + proof editor).
+  - *Handlers*: Selecting a species variety runs the conservative preset engine -> sets confirmed visible loci -> reveals optional locus confirmation checkboxes before writing uncertain alleles like `ww`; adding a trait to `Confirmed`, `Suspected`, or `Cleared` atomically reconciles collisions so a trait never lives in conflicting states on the same animal.
+- **Herd Registry Screen**:
+  - *State*: Existing tabs (`All`, `Males`, `Females`, `Juniors`, `Active`, `Archived`, `Needs Attention`) + new Carrier Finder controls (`carrierStatusFilter`, `carrierTraitQuery`).
+  - *Handlers*: Live client-side filter evaluates direct carriers AND computed lineage potential; Animal Detail page invokes `inferHiddenAlleles` scoped by active species, displays Rufus intensity + Lineage Firewall summary, and preserves the Genetics Verification Notice banner.
+- **Pedigree & Print Outputs (In-App Chart, Evans `.HTM`, Printable Barn Binder, CSV Export)**:
+  - *State / Computation*: Pedigree node formatter combines direct `Confirmed` / `Suspected` disclosures with `Cleared` proof indicators and computed `Lineage Potential` ancestry notes (respecting per-branch firewalls) cleanly across tight pedigree boxes, CSV columns, and full Barn Binder genetics pages.
+- **Breeding Lab Screen**:
+  - *State / Computation*: Combines Wright COI calculation, species-scoped split Punnett outcomes (separating known-allele percentages from `_` / `__` carrier possibilities and sex-split rows for X-linked loci), lethal pairing checks, and mutual Sire/Dam carrier overlaps into one unified Genetic Projection card.
+- **Importers & Offline Verification**:
+  - HerdBoss, JSON, and CSV importers strictly import explicit genotype tokens without inferring `ww` or `cleared` from coat color words, covered by automated Vitest suites verifying NZ Red `ee __` uncertainty, Sire/Dam firewall isolation, homozygous/intermediate inference, X-linked crosses, custom-species isolation, and build checks (`vitest`, `verify:improvements`, TypeScript compile & lint).

@@ -23,6 +23,7 @@ import {
   CalendarCheck,
   FileBarChart2,
   GitFork,
+  HelpCircle,
   Home,
   ListFilter,
   Moon,
@@ -33,7 +34,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BreedingScreen } from './components/BreedingScreen';
 import { CalendarSyncConfirmModal } from './components/CalendarIntegrationModals';
 import { HerdScreen } from './components/HerdScreen';
@@ -54,18 +55,235 @@ export default function App() {
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
 
   const [showHerdSpeciesPicker, setShowHerdSpeciesPicker] = useState(false);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
+  const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
+
+  const shortcutToastTimerRef = useRef<number | null>(null);
+  const herdPickerModalRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusedBeforePickerRef = useRef<HTMLElement | null>(null);
+  const navigatedFromPickerRef = useRef(false);
+  const shortcutsModalRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusedBeforeHelpRef = useRef<HTMLElement | null>(null);
+
+  const triggerShortcutToast = useCallback((key: string, label: string) => {
+    if (shortcutToastTimerRef.current !== null) {
+      window.clearTimeout(shortcutToastTimerRef.current);
+    }
+    setShortcutToast({ key, label });
+    shortcutToastTimerRef.current = window.setTimeout(() => {
+      setShortcutToast(null);
+      shortcutToastTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (shortcutToastTimerRef.current !== null) {
+        window.clearTimeout(shortcutToastTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!showHerdSpeciesPicker) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowHerdSpeciesPicker(false);
+
+    navigatedFromPickerRef.current = false;
+    lastFocusedBeforePickerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const container = herdPickerModalRef.current;
+      if (!container) return [];
+      const selector =
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(
+        (el) => el.getClientRects().length > 0
+      );
     };
+
+    const rafId = window.requestAnimationFrame(() => {
+      const focusables = getFocusableElements();
+      if (focusables.length > 0) {
+        focusables[0].focus();
+      } else {
+        herdPickerModalRef.current?.focus();
+      }
+    });
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowHerdSpeciesPicker(false);
+        return;
+      }
+
+      if (e.key !== 'Tab') return;
+
+      const focusables = getFocusableElements();
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const activeEl = document.activeElement as HTMLElement | null;
+
+      if (!herdPickerModalRef.current?.contains(activeEl)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+
+      if (e.shiftKey && activeEl === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && activeEl === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('keydown', onKey);
+      if (
+        !navigatedFromPickerRef.current &&
+        lastFocusedBeforePickerRef.current &&
+        lastFocusedBeforePickerRef.current.isConnected
+      ) {
+        lastFocusedBeforePickerRef.current.focus();
+      }
+    };
   }, [showHerdSpeciesPicker]);
 
-  if (store.isLoading || !store.snapshot || !store.activeSpeciesData) {
+  useEffect(() => {
+    if (!showShortcutsHelp) return;
+
+    lastFocusedBeforeHelpRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const container = shortcutsModalRef.current;
+      if (!container) return [];
+      const selector =
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(
+        (el) => el.getClientRects().length > 0
+      );
+    };
+
+    const rafId = window.requestAnimationFrame(() => {
+      const focusables = getFocusableElements();
+      if (focusables.length > 0) {
+        focusables[0].focus();
+      }
+    });
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowShortcutsHelp(false);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const focusables = getFocusableElements();
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (!shortcutsModalRef.current?.contains(activeEl)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && activeEl === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && activeEl === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('keydown', onKey);
+      if (lastFocusedBeforeHelpRef.current && lastFocusedBeforeHelpRef.current.isConnected) {
+        lastFocusedBeforeHelpRef.current.focus();
+      }
+    };
+  }, [showShortcutsHelp]);
+
+  useEffect(() => {
+    const onGlobalShortcut = (e: KeyboardEvent) => {
+      if (store.isLoading || !store.snapshot || !store.activeSpeciesData) return;
+      if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (showHerdSpeciesPicker || showShortcutsHelp || store.pendingCalendarSync) return;
+      if (typeof document !== 'undefined' && document.querySelector('[role="dialog"]')) return;
+
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcutsHelp(true);
+        triggerShortcutToast('?', 'Keyboard Shortcuts');
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      const shortcutMap: Record<string, { route: WorkspaceRoute; label: string }> = {
+        h: { route: 'home', label: 'All Species' },
+        d: { route: 'dashboard', label: 'Dashboard' },
+        r: { route: 'herd', label: 'Herd' },
+        b: { route: 'breeding', label: 'Breeding' },
+        p: { route: 'pedigree', label: 'Pedigree' },
+      };
+      const entry = shortcutMap[key];
+      if (!entry) return;
+
+      e.preventDefault();
+      if (entry.route === 'herd' && store.route === 'home') {
+        setShowHerdSpeciesPicker(true);
+        triggerShortcutToast(key.toUpperCase(), 'Select Herd');
+      } else {
+        store.setRoute(entry.route);
+        triggerShortcutToast(key.toUpperCase(), entry.label);
+      }
+    };
+
+    window.addEventListener('keydown', onGlobalShortcut);
+    return () => window.removeEventListener('keydown', onGlobalShortcut);
+  }, [
+    store.isLoading,
+    store.snapshot,
+    store.activeSpeciesData,
+    store.route,
+    store.setRoute,
+    store.pendingCalendarSync,
+    showHerdSpeciesPicker,
+    showShortcutsHelp,
+    triggerShortcutToast,
+  ]);
+
+  if (store.isLoading) {
     return (
       <main className="min-h-screen bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3">
@@ -74,6 +292,38 @@ export default function App() {
           <p className="text-xs text-[var(--barn-muted)] pt-1">
             Opening local offline database...
           </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!store.snapshot || !store.activeSpeciesData) {
+    return (
+      <main className="min-h-screen bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
+          <h1 className="font-display text-lg font-semibold">
+            Local Database Recovery Needed
+          </h1>
+          <p className="text-xs text-[var(--barn-muted)]">
+            {store.errorMessage ||
+              'The local offline database did not finish loading. You can reconnect or purge stale browser caches safely.'}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void store.resetDatabaseConnection()}
+              className="min-h-[40px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+            >
+              Reconnect Database
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium"
+            >
+              Reload App
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -93,13 +343,13 @@ export default function App() {
     setRoute(target);
   };
 
-  const navItems: Array<{ id: WorkspaceRoute; label: string }> = [
-    { id: 'home', label: 'All Species' },
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'herd', label: 'Herd' },
-    { id: 'breeding', label: 'Breeding' },
-    { id: 'pedigree', label: 'Pedigree' },
-    { id: 'reports', label: 'Reports' },
+  const navItems: Array<{ id: WorkspaceRoute; label: string; shortcut: string }> = [
+    { id: 'home', label: 'All Species', shortcut: 'h' },
+    { id: 'dashboard', label: 'Dashboard', shortcut: 'd' },
+    { id: 'herd', label: 'Herd', shortcut: 'r' },
+    { id: 'breeding', label: 'Breeding', shortcut: 'b' },
+    { id: 'pedigree', label: 'Pedigree', shortcut: 'p' },
+    { id: 'reports', label: 'Reports', shortcut: '' },
   ];
 
   const showInstallReminder =
@@ -107,6 +357,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen overflow-x-clip bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex flex-col pb-16 md:pb-8">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:rounded-xl focus:bg-[var(--barn-sage)] focus:text-[var(--barn-on-sage)] focus:text-xs focus:font-semibold"
+      >
+        Skip to main content
+      </a>
+
       {/* 3-Zone Top Navigation Bar */}
       <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-4 lg:gap-8 overflow-x-clip">
         {/* Zone 1: Single-line Brand Wordmark */}
@@ -130,6 +387,9 @@ export default function App() {
                 key={item.id}
                 type="button"
                 onClick={() => handlePrimaryNavClick(item.id)}
+                aria-current={active ? 'page' : undefined}
+                aria-keyshortcuts={item.shortcut || undefined}
+                title={item.shortcut ? `${item.label} (Shortcut: ${item.shortcut.toUpperCase()})` : item.label}
                 className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
                   active
                     ? 'border-[var(--barn-sage)] text-[var(--barn-ink)] font-semibold'
@@ -193,7 +453,19 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() => setShowShortcutsHelp(true)}
+            title="Keyboard shortcuts help (?)"
+            aria-label="Keyboard shortcuts help"
+            aria-keyshortcuts="?"
+            className="hidden sm:inline-flex min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+          >
+            <HelpCircle className="w-4 h-4" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
             onClick={() => setRoute(route === 'settings' ? 'dashboard' : 'settings')}
+            aria-current={route === 'settings' ? 'page' : undefined}
             aria-label={
               route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import and Settings'
             }
@@ -213,7 +485,11 @@ export default function App() {
       </header>
 
       {/* Main Content Container */}
-      <main className="flex-1 w-full min-w-0 max-w-7xl mx-auto px-3 sm:px-6 pt-5 space-y-5">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="flex-1 w-full min-w-0 max-w-7xl mx-auto px-3 sm:px-6 pt-5 space-y-5 focus:outline-none"
+      >
         {/* Offline Barn Mode Banner on Mobile */}
         {!isOnline && (
           <div className="sm:hidden bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-xl px-3.5 py-2 text-xs font-medium flex items-center gap-2">
@@ -653,6 +929,27 @@ export default function App() {
             onRefreshGoogleCalendars={store.refreshGoogleCalendars}
           />
         )}
+
+        {/* Quiet Desktop Keyboard Shortcuts Hint Footer */}
+        {route !== 'settings' && (
+          <footer className="hidden md:flex items-center justify-between gap-4 pt-3 pb-1 border-t border-[var(--barn-border)]/60 text-[11px] text-[var(--barn-muted)]">
+            <span>
+              Shortcuts: <kbd className="font-mono font-semibold text-[var(--barn-ink)]">H</kbd> Home ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">D</kbd> Dashboard ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">R</kbd> Herd ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowShortcutsHelp(true)}
+              className="inline-flex items-center gap-1 hover:text-[var(--barn-ink)] underline underline-offset-2"
+            >
+              <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
+              Help &amp; Shortcuts (?)
+            </button>
+          </footer>
+        )}
       </main>
 
       {/* Online Google Calendar Confirmation + Automatic Offline .ICS Fallback */}
@@ -684,13 +981,22 @@ export default function App() {
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Choose Livestock Species Herd"
+          aria-labelledby="herd-species-picker-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowHerdSpeciesPicker(false);
+          }}
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
         >
-          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4">
+          <div
+            ref={herdPickerModalRef}
+            tabIndex={-1}
+            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4 focus:outline-none"
+          >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="font-display text-xl font-semibold">Select Livestock Herd</h2>
+                <h2 id="herd-species-picker-title" className="font-display text-xl font-semibold">
+                  Select Livestock Herd
+                </h2>
                 <p className="text-xs text-[var(--barn-muted)] mt-0.5">
                   Each species keeps its own separate herd, pedigree tree, and records.
                 </p>
@@ -711,6 +1017,7 @@ export default function App() {
                   key={sp.id}
                   type="button"
                   onClick={() => {
+                    navigatedFromPickerRef.current = true;
                     setShowHerdSpeciesPicker(false);
                     store.selectSpeciesWorkspace(sp.name, 'herd');
                   }}
@@ -727,6 +1034,87 @@ export default function App() {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Keyboard Shortcuts Quick-Reference Modal */}
+      {showShortcutsHelp && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="keyboard-shortcuts-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowShortcutsHelp(false);
+          }}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            ref={shortcutsModalRef}
+            tabIndex={-1}
+            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-md p-6 space-y-4 focus:outline-none"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="keyboard-shortcuts-title" className="font-display text-xl font-semibold">
+                  Keyboard Shortcuts &amp; Navigation
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                  Single-key navigation works anywhere outside text inputs or open modals.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShortcutsHelp(false)}
+                aria-label="Close keyboard shortcuts help"
+                className="min-h-[38px] min-w-[38px] rounded-lg hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl text-xs bg-[var(--barn-canvas)]">
+              {[
+                { key: 'H', label: 'All Species Home', desc: 'View barn summary & species hub list' },
+                { key: 'D', label: 'Species Dashboard', desc: 'Open active species overview & tasks' },
+                { key: 'R', label: 'Herd Registry', desc: 'Open Herd (or Select Livestock Herd from Home)' },
+                { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
+                { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
+                { key: '?', label: 'Shortcuts Help', desc: 'Open this quick keyboard reference' },
+                { key: 'Tab / Esc', label: 'Dialog Controls', desc: 'Cycle controls inside modals or press Esc to close' },
+              ].map((item) => (
+                <div
+                  key={item.key}
+                  className="px-3.5 py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="font-semibold text-[var(--barn-ink)]">{item.label}</div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">{item.desc}</div>
+                  </div>
+                  <kbd className="px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px] font-semibold text-[var(--barn-ink)] shrink-0">
+                    {item.key}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Brief Floating Toast for Keyboard Shortcut Navigation */}
+      {shortcutToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-16 md:bottom-5 right-4 z-40 pointer-events-none bg-[var(--barn-surface)] border border-[var(--barn-sage)] text-[var(--barn-ink)] shadow-lg rounded-xl px-3.5 py-2 text-xs font-medium flex items-center gap-2"
+        >
+          <kbd className="px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/40 font-mono text-[11px] font-semibold text-[var(--barn-sage)]">
+            {shortcutToast.key}
+          </kbd>
+          <span>
+            {shortcutToast.label === 'Select Herd' || shortcutToast.label === 'Keyboard Shortcuts'
+              ? `Opened ${shortcutToast.label}`
+              : `Navigated to ${shortcutToast.label}`}
+          </span>
         </div>
       )}
 
@@ -751,6 +1139,7 @@ export default function App() {
               key={id}
               type="button"
               onClick={() => handlePrimaryNavClick(id)}
+              aria-current={active ? 'page' : undefined}
               className={`h-full min-w-0 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
                 active ? 'text-[var(--barn-ink)] font-semibold' : 'text-[var(--barn-muted)]'
               }`}

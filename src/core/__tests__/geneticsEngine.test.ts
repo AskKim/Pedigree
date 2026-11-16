@@ -6,6 +6,7 @@ import {
   getSpeciesVarietyPresets,
   inferHiddenAlleles,
   parseGenotypeString,
+  setLocusInGenotypeString,
   simulatePairingGenetics,
 } from '../geneticsEngine';
 import { PREDEFINED_SPECIES_PRESETS } from '../models';
@@ -31,6 +32,24 @@ describe('geneticsEngine — genotype parsing, allele inference & Punnett simula
   it('normalizes leading blanks (_a -> a_) during parsing and inference', () => {
     const parsed = parseGenotypeString('_a _b CC D_ E_', 'Rabbit');
     expect(formatGenotypeArray(parsed)).toBe('a_ b_ CC D_ E_');
+  });
+
+  it('updates individual loci interactively via setLocusInGenotypeString without corrupting positional slots', () => {
+    const step1 = setLocusInGenotypeString('', 'En', 'En', 'en', 'Rabbit');
+    expect(step1).toBe('__ __ __ __ __ __ Enen');
+    const step2 = setLocusInGenotypeString(step1, 'E', 'e', 'e', 'Rabbit');
+    expect(step2).toBe('__ __ __ __ ee __ Enen');
+    const cleared = setLocusInGenotypeString(step2, 'En', '_', '_', 'Rabbit');
+    expect(cleared).toBe('__ __ __ __ ee');
+    expect(setLocusInGenotypeString(cleared, 'E', '_', '_', 'Rabbit')).toBe('');
+
+    // Cat X-linked Male OY formatting & Female pairing normalization
+    expect(setLocusInGenotypeString('aa BB', 'O', 'O', '_', 'Cat', 'Male')).toBe(
+      'aa BB __ __ OY'
+    );
+    expect(setLocusInGenotypeString('aa BB', 'O', 'o', 'O', 'Cat', 'Female')).toBe(
+      'aa BB __ __ Oo'
+    );
   });
 
   it('keeps New Zealand Red / Red variety presets conservative (__ for Wide-Band) unless explicitly confirmed ww', () => {
@@ -323,6 +342,199 @@ describe('geneticsEngine — genotype parsing, allele inference & Punnett simula
       'Ferret'
     );
     expect(ferretSim.lethalOrHealthAlerts.some((a) => a.title.includes('Waardenburg'))).toBe(true);
+  });
+
+  it('classifies Rabbit ARBA varieties (at, chl, chc, vv, dudu, ej, Es) and keeps Fawn Wide-Band conservative', () => {
+    const fawn = getSpeciesVarietyPresets('Rabbit').find((p) => p.variety === 'Fawn');
+    expect(fawn?.conservativeGenotype).toBe('A_ B_ C_ dd ee __');
+
+    const hima = simulatePairingGenetics(
+      makeAnimal('hs', { species: 'Rabbit', sex: 'Male', genotypeRaw: 'aa BB chc DD EE WW enen VV DuDu' }),
+      makeAnimal('hd', { species: 'Rabbit', sex: 'Female', genotypeRaw: 'aa BB cc DD EE WW enen VV DuDu' }),
+      'Rabbit'
+    );
+    expect(hima.predictedPhenotypes.some((p) => p.label.includes('Himalayan'))).toBe(true);
+
+    const bew = simulatePairingGenetics(
+      makeAnimal('bs', { species: 'Rabbit', sex: 'Male', genotypeRaw: 'AA BB CC DD EE WW enen vv DuDu' }),
+      makeAnimal('bd', { species: 'Rabbit', sex: 'Female', genotypeRaw: 'AA BB CC DD EE WW enen vv DuDu' }),
+      'Rabbit'
+    );
+    expect(bew.predictedPhenotypes[0].label).toBe('Blue-Eyed White (BEW)');
+
+    const dutchSteel = simulatePairingGenetics(
+      makeAnimal('ds', { species: 'Rabbit', sex: 'Male', genotypeRaw: 'at_ BB chl_ DD EsEs WW enen VV dudu' }),
+      makeAnimal('dd', { species: 'Rabbit', sex: 'Female', genotypeRaw: 'at_ BB chl_ DD EsEs WW enen VV dudu' }),
+      'Rabbit'
+    );
+    expect(dutchSteel.predictedPhenotypes.some((p) => p.label.includes('Dutch'))).toBe(true);
+  });
+
+  it('covers species-specific genetics across Cat, Dog, Goat, Sheep, Cattle, Swine, Alpaca, Guinea Pig, Chinchilla, and Ferret', () => {
+    // Cat csc Point & cbc Sepia & cbcs Mink heterozygote dominance
+    const catPoint = simulatePairingGenetics(
+      makeAnimal('c1', { species: 'Cat', sex: 'Male', genotypeRaw: 'aa BB csc DD oY ww ii' }),
+      makeAnimal('c2', { species: 'Cat', sex: 'Female', genotypeRaw: 'aa BB cbc DD oo ww ii' }),
+      'Cat'
+    );
+    expect(catPoint.predictedPhenotypes.some((p) => p.label.includes('Mink'))).toBe(true);
+    expect(catPoint.predictedPhenotypes.some((p) => p.label.includes('Point'))).toBe(true);
+    expect(catPoint.predictedPhenotypes.some((p) => p.label.includes('Sepia'))).toBe(true);
+
+    // Dog epistatic ee Cream vs KB Black
+    const dogSim = simulatePairingGenetics(
+      makeAnimal('dg1', { species: 'Dog', sex: 'Male', genotypeRaw: 'atat kyky ee BB DD mm SS ii' }),
+      makeAnimal('dg2', { species: 'Dog', sex: 'Female', genotypeRaw: 'atat kyky ee BB DD mm SS ii' }),
+      'Dog'
+    );
+    expect(dogSim.predictedPhenotypes[0].label).toBe('Cream');
+
+    // Goat codominant Agouti (Ab + As)
+    const goatSim = simulatePairingGenetics(
+      makeAnimal('gt1', { species: 'Goat', sex: 'Male', genotypeRaw: 'AbAb BB E+E+ spsp msms rnrn' }),
+      makeAnimal('gt2', { species: 'Goat', sex: 'Female', genotypeRaw: 'AsAs BB E+E+ spsp msms rnrn' }),
+      'Goat'
+    );
+    expect(goatSim.predictedPhenotypes[0].label).toContain('Codominant Badgerface + Swiss Markings');
+
+    // Sheep Moorit Brown (bb) & inference
+    const sheepSim = simulatePairingGenetics(
+      makeAnimal('sh1', { species: 'Sheep', sex: 'Male', genotypeRaw: 'AaAa bb E+E+ SS' }),
+      makeAnimal('sh2', { species: 'Sheep', sex: 'Female', genotypeRaw: 'AaAa bb E+E+ SS' }),
+      'Sheep'
+    );
+    expect(sheepSim.predictedPhenotypes[0].label).toBe('Solid Moorit Brown');
+
+    // Cattle codominant Roan (Rr x Rr -> 25% RR Roan-White, 50% Roan, 25% Red/Black)
+    const cattleSim = simulatePairingGenetics(
+      makeAnimal('ct1', { species: 'Cattle', sex: 'Male', genotypeRaw: 'ee dd Rr SS' }),
+      makeAnimal('ct2', { species: 'Cattle', sex: 'Female', genotypeRaw: 'ee dd Rr SS' }),
+      'Cattle'
+    );
+    expect(cattleSim.predictedPhenotypes.some((p) => p.label === 'Roan-White' && p.probabilityPercent === 25)).toBe(
+      true
+    );
+    expect(cattleSim.predictedPhenotypes.some((p) => p.label === 'Red Roan' && p.probabilityPercent === 50)).toBe(
+      true
+    );
+
+    // Swine Hampshire Belted Red vs Dominant White
+    const swineSim = simulatePairingGenetics(
+      makeAnimal('sw1', { species: 'Swine / Pig', sex: 'Male', genotypeRaw: 'ee ii BeBe rnrn' }),
+      makeAnimal('sw2', { species: 'Swine / Pig', sex: 'Female', genotypeRaw: 'ee ii bebe rnrn' }),
+      'Swine / Pig'
+    );
+    expect(swineSim.predictedPhenotypes[0].label).toBe('Red Hampshire Belted');
+
+    // Alpaca True Black with Grey & Pinto
+    const alpacaSim = simulatePairingGenetics(
+      makeAnimal('al1', { species: 'Alpaca', sex: 'Male', genotypeRaw: 'EE aa Gg ss' }),
+      makeAnimal('al2', { species: 'Alpaca', sex: 'Female', genotypeRaw: 'EE aa gg ss' }),
+      'Alpaca'
+    );
+    expect(alpacaSim.predictedPhenotypes.some((p) => p.label === 'True Black (Grey Pinto/Appaloosa)')).toBe(
+      true
+    );
+
+    // Guinea Pig Himalayan crca + Pink-eyed Lilac pp
+    const gpHima = simulatePairingGenetics(
+      makeAnimal('gp1', { species: 'Guinea Pig', sex: 'Male', genotypeRaw: 'aa BB crca EE PP SS rnrn' }),
+      makeAnimal('gp2', { species: 'Guinea Pig', sex: 'Female', genotypeRaw: 'aa BB caca EE PP SS rnrn' }),
+      'Guinea Pig'
+    );
+    expect(gpHima.predictedPhenotypes.some((p) => p.label === 'Himalayan / California Pointed')).toBe(
+      true
+    );
+
+    // Chinchilla Bgbg x Bgbg incomplete dominance
+    const chinBeige = simulatePairingGenetics(
+      makeAnimal('ch1', { species: 'Chinchilla', sex: 'Male', genotypeRaw: 'whwh toto Bgbg VV SS EbEb AlAl' }),
+      makeAnimal('ch2', { species: 'Chinchilla', sex: 'Female', genotypeRaw: 'whwh toto Bgbg VV SS EbEb AlAl' }),
+      'Chinchilla'
+    );
+    expect(chinBeige.predictedPhenotypes.some((p) => p.label === 'Homozygous Beige' && p.probabilityPercent === 25)).toBe(
+      true
+    );
+    expect(chinBeige.predictedPhenotypes.some((p) => p.label === 'Beige' && p.probabilityPercent === 50)).toBe(
+      true
+    );
+
+    // Ferret Chocolate Champagne bb
+    const ferretChoc = simulatePairingGenetics(
+      makeAnimal('fe1', { species: 'Ferret', sex: 'Male', genotypeRaw: 'bb CC papa blbl roro mtmt' }),
+      makeAnimal('fe2', { species: 'Ferret', sex: 'Female', genotypeRaw: 'bb CC papa blbl roro mtmt' }),
+      'Ferret'
+    );
+    expect(ferretChoc.predictedPhenotypes[0].label).toBe('Chocolate / Champagne');
+  });
+
+  it('infers Cat X-linked Female/Dam alleles symmetrically and notes one-sided loci in Punnett predictions', () => {
+    const orangeTom = makeAnimal('ot', {
+      species: 'Cat',
+      name: 'Marmalade',
+      sex: 'Male',
+      genotypeRaw: 'aa BB CC DD OY ww ii',
+    });
+    const blackDam = makeAnimal('bd', {
+      species: 'Cat',
+      name: 'Shadow',
+      sex: 'Female',
+      genotypeRaw: 'aa BB CC DD O_ ww ii',
+    });
+    const tortieDaughter = makeAnimal('td', {
+      species: 'Cat',
+      name: 'Ember',
+      sex: 'Female',
+      sireId: orangeTom.id,
+      damId: blackDam.id,
+      genotypeRaw: 'aa BB CC DD o_ ww ii',
+    });
+    const nonRedSon = makeAnimal('nrs', {
+      species: 'Cat',
+      name: 'Coal',
+      sex: 'Male',
+      damId: blackDam.id,
+      genotypeRaw: 'aa BB CC DD oY ww ii',
+    });
+
+    const catHerd = [orangeTom, blackDam, tortieDaughter, nonRedSon];
+    const catMap = buildSpeciesHerdMap(catHerd, 'Cat');
+
+    // Daughter o_ gets 'O' from OY Sire -> Oo
+    const daughterInf = inferHiddenAlleles(tortieDaughter, catMap, catHerd, 'Cat');
+    expect(daughterInf.conflicts).toHaveLength(0);
+    expect(daughterInf.updatedPairs.find((p) => p.locus === 'O')).toEqual({
+      locus: 'O',
+      allele1: 'O',
+      allele2: 'o',
+    });
+
+    // Dam O_ gets 'o' proven by non-red son oY -> Oo
+    const damInf = inferHiddenAlleles(blackDam, catMap, catHerd, 'Cat');
+    expect(damInf.conflicts).toHaveLength(0);
+    expect(damInf.updatedPairs.find((p) => p.locus === 'O')).toEqual({
+      locus: 'O',
+      allele1: 'O',
+      allele2: 'o',
+    });
+
+    // One-sided missing locus in simulatePairingGenetics surfaces an uncertainLociNote
+    const partialBuck = makeAnimal('pb', {
+      species: 'Rabbit',
+      name: 'Partial Buck',
+      sex: 'Male',
+      genotypeRaw: 'AA BB CC DD ee ww',
+    });
+    const partialDoe = makeAnimal('pd', {
+      species: 'Rabbit',
+      name: 'Partial Doe',
+      sex: 'Female',
+      genotypeRaw: 'AA BB CC DD ee',
+    });
+    const sim = simulatePairingGenetics(partialBuck, partialDoe, 'Rabbit');
+    expect(sim.uncertainLociNotes.some((n) => n.includes('(W)') && n.includes('Partial Doe'))).toBe(
+      true
+    );
   });
 });
 

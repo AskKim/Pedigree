@@ -26,6 +26,7 @@ import {
   Printer,
   Search,
   Trash2,
+  X,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -267,7 +268,10 @@ export function HerdScreen({
       if (!q) return true;
       return (
         a.name.toLowerCase().includes(q) ||
+        a.id.toLowerCase().includes(q) ||
         a.tattoo.toLowerCase().includes(q) ||
+        a.registrationNumber.toLowerCase().includes(q) ||
+        a.grandChampionNumber.toLowerCase().includes(q) ||
         a.breed.toLowerCase().includes(q) ||
         a.variety.toLowerCase().includes(q) ||
         a.cageLocation.toLowerCase().includes(q)
@@ -816,12 +820,16 @@ export function HerdScreen({
 
                 {alleleInference && alleleInference.notes.length > 0 && (
                   <div className="space-y-1 text-xs text-[var(--barn-sage)]">
-                    {alleleInference.notes.map((n, i) => (
-                      <div key={i}>
-                        Inferred {n.locus}: <span className="font-mono">{n.before}</span> →{' '}
-                        <span className="font-mono font-semibold">{n.after}</span> — {n.reason}
-                      </div>
-                    ))}
+                    {alleleInference.notes.map((n, i) => {
+                      const locusDef = speciesGeneticsSpec?.loci.find((l) => l.locus === n.locus);
+                      return (
+                        <div key={i}>
+                          Inferred {locusDef ? `${locusDef.name} (${n.locus})` : n.locus}:{' '}
+                          <span className="font-mono">{n.before}</span> →{' '}
+                          <span className="font-mono font-semibold">{n.after}</span> — {n.reason}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -997,12 +1005,23 @@ export function HerdScreen({
                   aria-hidden="true"
                 />
                 <input
-                  type="search"
-                  placeholder={`Search ${speciesProfile.name} name, ${idLabels.shortLabel.toLowerCase()}, cage/pen, variety...`}
+                  type="text"
+                  aria-label={`Search ${speciesProfile.name} by name, ID, or tag`}
+                  placeholder={`Search by name, ID, ${idLabels.shortLabel.toLowerCase()}, breed, variety, or cage...`}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  className="w-full min-h-[42px] pl-10 pr-3 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+                  className="w-full min-h-[42px] pl-10 pr-9 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
                 />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    aria-label="Clear herd search"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[30px] min-w-[30px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-1 p-1 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] overflow-x-auto">
@@ -1200,6 +1219,15 @@ export function HerdScreen({
                 <p className="text-sm text-[var(--barn-muted)]">
                   No {speciesProfile.name.toLowerCase()} records match this filter.
                 </p>
+                {animals.length > 0 && query.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="min-h-[38px] px-4 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium"
+                  >
+                    Clear Search &ldquo;{query.trim()}&rdquo;
+                  </button>
+                )}
                 {animals.length === 0 && (
                   <button
                     type="button"

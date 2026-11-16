@@ -686,6 +686,9 @@ export function PedigreeScreen({
 
         <div
           ref={viewportRef}
+          tabIndex={0}
+          role="region"
+          aria-label={`${subject.name} ${generations}-generation pedigree chart`}
           style={{
             touchAction: 'pan-x pan-y',
             overscrollBehavior: 'auto',

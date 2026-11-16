@@ -63,6 +63,11 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+:focus-visible {
+  outline: 2px solid var(--barn-sage);
+  outline-offset: 2px;
+}
+
 @media print {
   :root,
   .dark,

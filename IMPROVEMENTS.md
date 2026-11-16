@@ -22,7 +22,7 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 
 ---
 
-## Logged Improvements (11)
+## Logged Improvements (12)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -161,3 +161,17 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 **Restoration Playbook if Overwritten:**
 1. Run `npm run verify:improvements` after any pull/merge from GitHub to list wiped invariants.
 2. Use `IMPROVEMENTS.md` or the downloaded `pedigree-improvements-log.json` to restore missing helpers and wiring.
+
+### IMP-012: Startup Self-Healing, Lazy Firebase Auth Guard & Corrective Action Logging
+
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Auto-fix any initial loading or crash errors on startup and log every corrective action for debugging.
+- **Summary:** Prevents initial-load crashes and infinite loading hangs by lazily initializing Firebase Auth, wrapping SQLite JSON parsing in safe recovery helpers, isolating secondary startup promises with `Promise.allSettled`, running automatic startup health self-repair, falling back to rolling/starter snapshots on fatal DB load errors, and logging every corrective action via `logDiagnosticEvent`.
+- **Tracked Files:** `src/hooks/useBarnStore.ts`, `src/storage/webSqliteAdapter.ts`, `src/utils/googleCalendarClient.ts`, `src/App.tsx`
+
+**Restoration Playbook if Overwritten:**
+1. Ensure `normalizeRufusLevel` is imported from `../core/models` in `src/hooks/useBarnStore.ts`.
+2. Keep lazy `getFirebaseAuthSafe()` in `src/utils/googleCalendarClient.ts` and `safeParseJson()` in `src/storage/webSqliteAdapter.ts`.
+3. Keep startup `Promise.allSettled`, `repairBarnDataHealth`, emergency recovery, and `Corrective action:` `logDiagnosticEvent` calls in `src/hooks/useBarnStore.ts`.
+

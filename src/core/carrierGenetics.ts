@@ -16,7 +16,7 @@
  * alongside health disclosures such as Megacolon / Charlie Risk or G6S).
  */
 
-import { parseGenotypeString } from './geneticsEngine';
+import { getGeneticsSpecForSpecies, parseGenotypeString } from './geneticsEngine';
 import {
   Animal,
   CLEARED_CARRIER_PROOF_LABELS,
@@ -348,72 +348,227 @@ export function getAnimalCarrierDisclosures(
 // ─── Coat-Locus Homozygous Clearance Detection ─────────────────────────────────
 
 interface CoatLocusClearRule {
+  speciesKey: string;
   traitLabel: string;
   locus: string;
-  carriedAllele: string;
+  excludedAlleles: string[];
   matchKeywords: string[];
 }
 
 const COAT_LOCUS_CLEAR_RULES: CoatLocusClearRule[] = [
+  // Rabbit
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Wide Band (ww)',
     locus: 'W',
-    carriedAllele: 'w',
+    excludedAlleles: ['w'],
     matchKeywords: ['(ww)', 'wide band', 'wideband', 'wide-band'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Dilute / Blue-Lilac-Fawn (dd)',
     locus: 'D',
-    carriedAllele: 'd',
+    excludedAlleles: ['d'],
     matchKeywords: ['(dd)', 'dilute'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'REW / Ruby-Eyed White (cc)',
     locus: 'C',
-    carriedAllele: 'c',
+    excludedAlleles: ['c'],
     matchKeywords: ['(cc)', 'rew', 'ruby-eyed white', 'albino'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Chocolate / Brown (bb)',
     locus: 'B',
-    carriedAllele: 'b',
+    excludedAlleles: ['b'],
     matchKeywords: ['(bb)', 'chocolate'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'BEW / Vienna (vv)',
     locus: 'V',
-    carriedAllele: 'v',
+    excludedAlleles: ['v'],
     matchKeywords: ['(vv)', 'vienna', 'bew'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Self (aa)',
     locus: 'A',
-    carriedAllele: 'a',
+    excludedAlleles: ['a'],
     matchKeywords: ['(aa)', 'self (aa)', 'recessive black'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Non-Extension / Red-Tort (ee)',
     locus: 'E',
-    carriedAllele: 'e',
+    excludedAlleles: ['e'],
     matchKeywords: ['(ee)', 'non-extension', 'red factor'],
   },
   {
+    speciesKey: 'rabbit',
     traitLabel: 'Dutch Pattern (du)',
     locus: 'Du',
-    carriedAllele: 'du',
+    excludedAlleles: ['du'],
     matchKeywords: ['(du)', '(dudu)', 'dutch pattern'],
+  },
+  // Cat
+  {
+    speciesKey: 'cat',
+    traitLabel: 'Dilute (dd)',
+    locus: 'D',
+    excludedAlleles: ['d'],
+    matchKeywords: ['(dd)', 'dilute'],
+  },
+  {
+    speciesKey: 'cat',
+    traitLabel: 'Chocolate / Cinnamon (b / bl)',
+    locus: 'B',
+    excludedAlleles: ['b', 'b1'],
+    matchKeywords: ['(bb)', 'chocolate', 'cinnamon'],
+  },
+  {
+    speciesKey: 'cat',
+    traitLabel: 'Colorpoint / Siamese (cs)',
+    locus: 'C',
+    excludedAlleles: ['cb', 'cs', 'c'],
+    matchKeywords: ['(cs)', 'colorpoint', 'siamese', 'burmese', 'albino', '(cc)'],
+  },
+  // Dog
+  {
+    speciesKey: 'dog',
+    traitLabel: 'Dilute (dd)',
+    locus: 'D',
+    excludedAlleles: ['d'],
+    matchKeywords: ['(dd)', 'dilute'],
+  },
+  {
+    speciesKey: 'dog',
+    traitLabel: 'Chocolate / Liver (bb)',
+    locus: 'B',
+    excludedAlleles: ['b'],
+    matchKeywords: ['(bb)', 'chocolate', 'liver'],
+  },
+  {
+    speciesKey: 'dog',
+    traitLabel: 'Recessive Red / Cream (ee)',
+    locus: 'E',
+    excludedAlleles: ['e'],
+    matchKeywords: ['(ee)', 'recessive red'],
+  },
+  {
+    speciesKey: 'dog',
+    traitLabel: 'Merle (M)',
+    locus: 'M',
+    excludedAlleles: ['M'],
+    matchKeywords: ['merle'],
+  },
+  // Guinea Pig
+  {
+    speciesKey: 'guinea pig',
+    traitLabel: 'Chocolate (bb)',
+    locus: 'B',
+    excludedAlleles: ['b'],
+    matchKeywords: ['(bb)', 'chocolate'],
+  },
+  {
+    speciesKey: 'guinea pig',
+    traitLabel: 'Self / PEW (cc)',
+    locus: 'C',
+    excludedAlleles: ['cr', 'ca'],
+    matchKeywords: ['(cc)', 'pew', 'albino', 'himalayan'],
+  },
+  {
+    speciesKey: 'guinea pig',
+    traitLabel: 'Dilute / Lilac (pp / dd)',
+    locus: 'P',
+    excludedAlleles: ['p'],
+    matchKeywords: ['lilac', '(pp', 'dilute'],
+  },
+  {
+    speciesKey: 'guinea pig',
+    traitLabel: 'Lethal White / Roan (Wh)',
+    locus: 'Rn',
+    excludedAlleles: ['Rn'],
+    matchKeywords: ['roan', 'dalmatian', 'lethal white'],
+  },
+  // Chinchilla
+  {
+    speciesKey: 'chinchilla',
+    traitLabel: 'Violet (vv)',
+    locus: 'V',
+    excludedAlleles: ['v'],
+    matchKeywords: ['(vv)', 'violet'],
+  },
+  {
+    speciesKey: 'chinchilla',
+    traitLabel: 'Sapphire (ss)',
+    locus: 'S',
+    excludedAlleles: ['s'],
+    matchKeywords: ['(ss)', 'sapphire'],
+  },
+  {
+    speciesKey: 'chinchilla',
+    traitLabel: 'Lethal White Factor',
+    locus: 'Wh',
+    excludedAlleles: ['Wh'],
+    matchKeywords: ['lethal white', 'wilson white'],
+  },
+  // Ferret
+  {
+    speciesKey: 'ferret',
+    traitLabel: 'Albino (cc)',
+    locus: 'C',
+    excludedAlleles: ['c'],
+    matchKeywords: ['(cc)', 'albino'],
+  },
+  {
+    speciesKey: 'ferret',
+    traitLabel: 'Cinnamon / Chocolate',
+    locus: 'B',
+    excludedAlleles: ['b'],
+    matchKeywords: ['chocolate', 'cinnamon'],
+  },
+  // Cattle
+  {
+    speciesKey: 'cattle',
+    traitLabel: 'Red Factor (e)',
+    locus: 'E',
+    excludedAlleles: ['e'],
+    matchKeywords: ['red factor', '(e)'],
+  },
+  // Sheep
+  {
+    speciesKey: 'sheep',
+    traitLabel: 'Black / Moorit Recessive',
+    locus: 'B',
+    excludedAlleles: ['b'],
+    matchKeywords: ['moorit'],
+  },
+  // Swine / Pig
+  {
+    speciesKey: 'swine / pig',
+    traitLabel: 'Red / Duroc Recessive',
+    locus: 'E',
+    excludedAlleles: ['e'],
+    matchKeywords: ['duroc', 'red / duroc'],
   },
 ];
 
 /**
  * Inspects an animal's explicitly entered genotype pairs (strictly ignoring any pair containing `'_'`)
- * to identify coat-color loci proven homozygous non-carrier (e.g., `WW` cannot pass `w`, `DD` cannot pass `d`).
+ * to identify species-specific coat-color loci proven homozygous non-carrier (e.g., `WW` cannot pass `w`, `DD` cannot pass `d`).
+ * Returns `[]` for custom/unrecognized species to prevent Rabbit rule leakage.
  */
 export function extractHomozygousCoatClearances(
   animal: Partial<Animal> | null | undefined
 ): Array<{ trait: string; locus: string; pair: string }> {
   if (!animal) return [];
   const speciesName = animal.species || 'Rabbit';
+  const spec = getGeneticsSpecForSpecies(speciesName);
+  if (!spec) return [];
+
   const parsed =
     animal.genotype && animal.genotype.length > 0 && !animal.genotypeRaw
       ? animal.genotype
@@ -429,13 +584,21 @@ export function extractHomozygousCoatClearances(
     ...direct.suspected.map((t) => t.toLowerCase()),
   ]);
 
+  const specKeyLower = spec.speciesKey.toLowerCase();
+  const speciesRules = COAT_LOCUS_CLEAR_RULES.filter((r) => r.speciesKey === specKeyLower);
+
   const cleared: Array<{ trait: string; locus: string; pair: string }> = [];
-  for (const rule of COAT_LOCUS_CLEAR_RULES) {
+  for (const rule of speciesRules) {
     const pair = byLocus.get(rule.locus);
     if (!pair) continue;
     // CRITICAL: '_' or empty NEVER qualifies as homozygous non-carrier!
     if (!pair.allele1 || !pair.allele2 || pair.allele1 === '_' || pair.allele2 === '_') continue;
-    if (pair.allele1 === rule.carriedAllele || pair.allele2 === rule.carriedAllele) continue;
+    if (
+      rule.excludedAlleles.includes(pair.allele1) ||
+      rule.excludedAlleles.includes(pair.allele2)
+    ) {
+      continue;
+    }
     // Never auto-clear if user directly marked Confirmed or Suspected for this trait
     if (
       Array.from(directRiskKeys).some((k) =>
@@ -454,11 +617,14 @@ export function extractHomozygousCoatClearances(
   return cleared;
 }
 
-function matchesTraitOrRule(traitA: string, traitB: string): boolean {
+function matchesTraitOrRule(traitA: string, traitB: string, speciesKey?: string): boolean {
   const a = traitA.trim().toLowerCase();
   const b = traitB.trim().toLowerCase();
   if (a === b) return true;
-  for (const rule of COAT_LOCUS_CLEAR_RULES) {
+  const rules = speciesKey
+    ? COAT_LOCUS_CLEAR_RULES.filter((r) => r.speciesKey === speciesKey.toLowerCase())
+    : COAT_LOCUS_CLEAR_RULES;
+  for (const rule of rules) {
     const aHits = rule.matchKeywords.some((kw) => a.includes(kw));
     const bHits = rule.matchKeywords.some((kw) => b.includes(kw));
     if (aHits && bHits) return true;
@@ -513,22 +679,25 @@ function getClearedProofForTrait(
   anc: Animal,
   traitName: string
 ): { isCleared: boolean; proofLabel: string } {
+  const ancSpeciesKey = getGeneticsSpecForSpecies(anc.species)?.speciesKey;
   const direct = getAnimalCarrierDisclosures(anc);
   // Direct Confirmed/Suspected on the ancestor prevents self-bypass
   if (
-    direct.confirmed.some((t) => matchesTraitOrRule(t, traitName)) ||
-    direct.suspected.some((t) => matchesTraitOrRule(t, traitName))
+    direct.confirmed.some((t) => matchesTraitOrRule(t, traitName, ancSpeciesKey)) ||
+    direct.suspected.some((t) => matchesTraitOrRule(t, traitName, ancSpeciesKey))
   ) {
     return { isCleared: false, proofLabel: '' };
   }
 
-  const explicitCleared = direct.cleared.find((c) => matchesTraitOrRule(c.trait, traitName));
+  const explicitCleared = direct.cleared.find((c) =>
+    matchesTraitOrRule(c.trait, traitName, ancSpeciesKey)
+  );
   if (explicitCleared) {
     return { isCleared: true, proofLabel: formatClearedProofBadge(explicitCleared) };
   }
 
   const genoCleared = extractHomozygousCoatClearances(anc).find((g) =>
-    matchesTraitOrRule(g.trait, traitName)
+    matchesTraitOrRule(g.trait, traitName, ancSpeciesKey)
   );
   if (genoCleared) {
     return { isCleared: true, proofLabel: `Homozygous ${genoCleared.pair}` };

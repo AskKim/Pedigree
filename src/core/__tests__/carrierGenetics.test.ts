@@ -298,5 +298,61 @@ describe('carrierGenetics & pedigree disclosure outputs', () => {
     expect(imported.genotype).toEqual([]);
     expect(imported.rufusLevel).toBeUndefined();
   });
+
+  it('scopes homozygous coat-locus clearances strictly by species and isolates custom species', () => {
+    // Chinchilla VV must clear Violet (vv), NEVER Rabbit BEW / Vienna (vv)
+    const chinSir = makeAnimal('ch_pgs', {
+      species: 'Chinchilla',
+      sex: 'Male',
+      confirmedCarrierOf: ['Violet (vv)'],
+    });
+    const chinNonVioletDam = makeAnimal('ch_dam', {
+      species: 'Chinchilla',
+      sex: 'Female',
+      sireId: chinSir.id,
+      genotypeRaw: 'whwh toto bgbg VV SS EbEb AlAl',
+    });
+    const chinClear = extractHomozygousCoatClearances(chinNonVioletDam);
+    expect(chinClear.some((c) => c.trait === 'Violet (vv)' && c.pair === 'VV')).toBe(true);
+    expect(chinClear.some((c) => c.trait.includes('BEW'))).toBe(false);
+
+    const chinKit = makeAnimal('ch_kit', {
+      species: 'Chinchilla',
+      sex: 'Male',
+      damId: chinNonVioletDam.id,
+    });
+    const chinHerd = buildSpeciesHerdMap([chinSir, chinNonVioletDam, chinKit], 'Chinchilla');
+    const chinLineage = analyzeAnimalCarrierLineage(chinKit, chinHerd);
+    expect(chinLineage.lineagePotential).toHaveLength(0);
+    expect(chinLineage.blockedBranches.some((b) => b.proofLabel === 'Homozygous VV')).toBe(true);
+
+    // Cat: Bb1 carries cinnamon so must NOT clear Chocolate/Cinnamon; BB DOES clear it. Ccs must NOT clear Colorpoint; CC DOES.
+    const catCarrierB1 = makeAnimal('cat_b1', {
+      species: 'Cat',
+      sex: 'Female',
+      genotypeRaw: 'aa Bb1 Ccs DD oo ww ii',
+    });
+    const catCarrierClear = extractHomozygousCoatClearances(catCarrierB1);
+    expect(catCarrierClear.some((c) => c.locus === 'B')).toBe(false);
+    expect(catCarrierClear.some((c) => c.locus === 'C')).toBe(false);
+    expect(catCarrierClear.some((c) => c.locus === 'D')).toBe(true);
+
+    const catPure = makeAnimal('cat_pure', {
+      species: 'Cat',
+      sex: 'Female',
+      genotypeRaw: 'aa BB CC DD oo ww ii',
+    });
+    const catPureClear = extractHomozygousCoatClearances(catPure);
+    expect(catPureClear.some((c) => c.locus === 'B' && c.pair === 'BB')).toBe(true);
+    expect(catPureClear.some((c) => c.locus === 'C' && c.pair === 'CC')).toBe(true);
+
+    // Custom species with pre-populated genotype pairs MUST return []
+    const customDuck = makeAnimal('duck1', {
+      species: 'Heritage Duck',
+      genotypeRaw: 'VV DD WW',
+      genotype: [{ locus: 'V', allele1: 'V', allele2: 'V' }],
+    });
+    expect(extractHomozygousCoatClearances(customDuck)).toEqual([]);
+  });
 });
 

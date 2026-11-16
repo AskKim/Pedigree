@@ -674,8 +674,23 @@ export function BreedingScreen({
 
               {geneticsPreview &&
                 !geneticsPreview.isCustomSpeciesFallback &&
+                geneticsPreview.locusBreakdowns.length === 0 &&
+                geneticsPreview.lethalOrHealthAlerts.length === 0 &&
+                geneticsPreview.uncertainLociNotes.length === 0 && (
+                <div className="border-t border-[var(--barn-border)] pt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--barn-muted)]">
+                  <span>
+                    Record coat color genotype loci on both parents in Herd to preview{' '}
+                    {geneticsPreview.speciesName} Punnett predictions.
+                  </span>
+                  <ColorGeneticsNotice compact />
+                </div>
+              )}
+
+              {geneticsPreview &&
+                !geneticsPreview.isCustomSpeciesFallback &&
                 (geneticsPreview.locusBreakdowns.length > 0 ||
-                  geneticsPreview.lethalOrHealthAlerts.length > 0) && (
+                  geneticsPreview.lethalOrHealthAlerts.length > 0 ||
+                  geneticsPreview.uncertainLociNotes.length > 0) && (
                 <div className="space-y-3 border-t border-[var(--barn-border)] pt-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -710,6 +725,19 @@ export function BreedingScreen({
                           </p>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {geneticsPreview.uncertainLociNotes.length > 0 && (
+                    <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)]/55 border border-[var(--barn-terracotta)]/60 space-y-1 text-xs">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        Provisional &lsquo;_&rsquo; Loci Uncertainty ({geneticsPreview.uncertainLociNotes.length})
+                      </div>
+                      <ul className="space-y-0.5 text-[11px] text-[var(--barn-muted)] list-disc pl-4">
+                        {geneticsPreview.uncertainLociNotes.map((note, idx) => (
+                          <li key={idx}>{note}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
 
