@@ -199,7 +199,7 @@ export function HomeSpeciesScreen({
         <div className="space-y-1.5 max-w-2xl">
           <div className="space-y-0.5">
             <p className="text-xs text-[var(--barn-muted)]">
-              Multi**Species Pedigree &amp; Management System
+              Multi-Species Pedigree &amp; Management System
             </p>
             <p className="text-xs text-[var(--barn-muted)]">
               100% local app ownership — offline-first with zero cloud lock-in.
@@ -328,7 +328,7 @@ export function HomeSpeciesScreen({
                     aria-pressed={agendaHorizonDays === 7}
                     className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-medium border ${
                       agendaHorizonDays === 7
-                        ? 'bg-[var(--barn-forest)] text-white border-[var(--barn-forest)]'
+                        ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-[var(--barn-sage)]'
                         : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)]'
                     }`}
                   >
@@ -340,7 +340,7 @@ export function HomeSpeciesScreen({
                     aria-pressed={agendaHorizonDays === 14}
                     className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-medium border ${
                       agendaHorizonDays === 14
-                        ? 'bg-[var(--barn-forest)] text-white border-[var(--barn-forest)]'
+                        ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-[var(--barn-sage)]'
                         : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)]'
                     }`}
                   >

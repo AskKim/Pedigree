@@ -877,7 +877,7 @@ export function buildSampleDataForSpecies(
       archived: Boolean(params.archived),
       birthDateIso: addDaysIso(today, -params.daysOld),
       weightGrams: params.weightGrams,
-      genotype: parseGenotypeString(genoRaw),
+      genotype: parseGenotypeString(genoRaw, spec.species),
       genotypeRaw: genoRaw,
       registrationNumber: params.regSuffix ? `REG-${spec.tagPrefix}-${params.regSuffix}` : '',
       grandChampionNumber: params.legs >= 3 ? `GC-${spec.tagPrefix}-${params.idx}` : '',

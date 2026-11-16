@@ -142,7 +142,7 @@ export function ReportsScreen({ activeSpeciesName, speciesProfiles }: ReportsScr
                   aria-pressed={isSelected}
                   className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
                     isSelected
-                      ? 'bg-[var(--barn-forest)] text-white border-[var(--barn-forest)]'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-[var(--barn-sage)]'
                       : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)] hover:bg-[var(--barn-canvas)]'
                   }`}
                 >

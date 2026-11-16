@@ -24,6 +24,7 @@ import {
   CareLog,
   CareLogType,
   isSameSpecies,
+  normalizeRufusLevel,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -1299,6 +1300,13 @@ export const HerdBossImporter: PlatformImporter = {
           'codon171',
           'scrapiegenotype',
         ]);
+        const rufusRaw = pickCell(row, table.normHeaderMap, usedCols, [
+          'rufus',
+          'rufuslevel',
+          'rufusintensity',
+          'rufusfactor',
+        ]);
+        const rufusLevel = normalizeRufusLevel(rufusRaw);
 
         const location = pickCell(row, table.normHeaderMap, usedCols, [
           'group',
@@ -1397,8 +1405,9 @@ export const HerdBossImporter: PlatformImporter = {
             : Boolean(preexistingMatch?.animal.archived),
           birthDateIso,
           weightGrams: bestWeightGrams,
-          genotype: parseGenotypeString(genotypeRaw),
+          genotype: parseGenotypeString(genotypeRaw, sp.name),
           genotypeRaw,
+          ...(rufusLevel ? { rufusLevel } : {}),
           registrationNumber: regNum,
           grandChampionNumber: gcNum,
           legsCount: preexistingMatch?.animal.legsCount || 0,

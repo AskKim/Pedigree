@@ -12,8 +12,18 @@
 import { AlertCircle, Camera, Trash2, X } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  extractHomozygousCoatClearances,
+  getAnimalCarrierDisclosures,
+  getCarrierTraitSuggestionsForSpecies,
+  normalizeCarrierTraitList,
+  reconcileCarrierTraitLists,
+} from '../core/carrierGenetics';
+import {
+  buildPresetGenotypeWithConfirmations,
+  getGeneticsSpecForSpecies,
+  getSpeciesVarietyPresets,
   parseGenotypeString,
-  RABBIT_VARIETY_GENOTYPE_PRESETS,
+  VarietyPresetDefinition,
 } from '../core/geneticsEngine';
 import {
   calculateSavingsPercent,
@@ -28,13 +38,19 @@ import {
   AnimalStatus,
   BiologicalSex,
   CageLocation,
+  CLEARED_CARRIER_PROOF_LABELS,
+  ClearedCarrierProofType,
+  ClearedCarrierRecord,
   doesAnimalNeedAttention,
   formatWeightInputValue,
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
   isAnimalArchived,
   isSameSpecies,
+  normalizeRufusLevel,
   parseWeightInputToGrams,
+  RUFUS_LEVEL_OPTIONS,
+  RufusLevel,
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
@@ -45,6 +61,7 @@ import {
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
+import { CarrierTraitCombobox } from './CarrierTraitCombobox';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -94,9 +111,7 @@ export function AnimalEditorModal({
         ? 'New Zealand'
         : speciesProfile.exampleBreeds[0] || '')
   );
-  const [variety, setVariety] = useState(
-    initialAnimal?.variety || (isSameSpecies(speciesProfile.name, 'Rabbit') ? 'Red' : '')
-  );
+  const [variety, setVariety] = useState(initialAnimal?.variety || '');
   const [sex, setSex] = useState<BiologicalSex>(forcedSex || initialAnimal?.sex || 'Female');
   const [status, setStatus] = useState<AnimalStatus>(initialAnimal?.status || 'Active');
   const [archived, setArchived] = useState<boolean>(
@@ -121,9 +136,22 @@ export function AnimalEditorModal({
   );
   const weightMeta = getWeightInputMeta(preferredUnit);
   const idLabels = getSpeciesIdentifierLabels(speciesProfile.name);
-  const [genotypeRaw, setGenotypeRaw] = useState(
-    initialAnimal?.genotypeRaw ||
-      (isSameSpecies(speciesProfile.name, 'Rabbit') && !isEditing ? 'A_ B_ C_ D_ ee ww' : '')
+  // Conservative default: NEVER silently auto-fill unverified modifiers like 'ww' on new animals
+  const [genotypeRaw, setGenotypeRaw] = useState(initialAnimal?.genotypeRaw || '');
+  const [rufusLevel, setRufusLevel] = useState<RufusLevel>(() =>
+    normalizeRufusLevel(initialAnimal?.rufusLevel)
+  );
+  const [stagedPreset, setStagedPreset] = useState<VarietyPresetDefinition | null>(null);
+  const [stagedPresetChecks, setStagedPresetChecks] = useState<Record<string, boolean>>({});
+  const initialCarriers = getAnimalCarrierDisclosures(initialAnimal);
+  const [suspectedCarrierOf, setSuspectedCarrierOf] = useState<string[]>(
+    initialCarriers.suspected
+  );
+  const [confirmedCarrierOf, setConfirmedCarrierOf] = useState<string[]>(
+    initialCarriers.confirmed
+  );
+  const [clearedCarrierOf, setClearedCarrierOf] = useState<ClearedCarrierRecord[]>(
+    initialCarriers.cleared
   );
   const [registrationNumber, setRegistrationNumber] = useState(
     initialAnimal?.registrationNumber || ''
@@ -234,9 +262,113 @@ export function AnimalEditorModal({
     return calculatePairingCoi(sireId, damId, herdById);
   }, [sireId, damId, herdById]);
 
+  const speciesGeneticsSpec = useMemo(
+    () => getGeneticsSpecForSpecies(speciesProfile.name),
+    [speciesProfile.name]
+  );
+
+  const speciesVarietyPresets = useMemo(
+    () => getSpeciesVarietyPresets(speciesProfile.name),
+    [speciesProfile.name]
+  );
+
+  const liveHomozygousClearances = useMemo(
+    () =>
+      extractHomozygousCoatClearances({
+        species: speciesProfile.name,
+        genotypeRaw,
+        confirmedCarrierOf,
+        suspectedCarrierOf,
+        clearedCarrierOf,
+      }),
+    [speciesProfile.name, genotypeRaw, confirmedCarrierOf, suspectedCarrierOf, clearedCarrierOf]
+  );
+
+  const carrierTraitSuggestions = useMemo(() => {
+    const presetList = getCarrierTraitSuggestionsForSpecies(speciesProfile.name);
+    const herdCustom: string[] = [];
+    for (const a of speciesAnimals) {
+      if (a.suspectedCarrierOf) herdCustom.push(...a.suspectedCarrierOf);
+      if (a.confirmedCarrierOf) herdCustom.push(...a.confirmedCarrierOf);
+      if (a.clearedCarrierOf) herdCustom.push(...a.clearedCarrierOf.map((c) => c.trait));
+    }
+    return normalizeCarrierTraitList([...presetList, ...herdCustom]);
+  }, [speciesProfile.name, speciesAnimals]);
+
+  const handleSelectVarietyPreset = (varietyName: string) => {
+    if (!varietyName) return;
+    const preset = speciesVarietyPresets.find((p) => p.variety === varietyName);
+    if (!preset) return;
+    if (preset.optionalConfirmations && preset.optionalConfirmations.length > 0) {
+      setStagedPreset(preset);
+      setStagedPresetChecks({});
+    } else {
+      setStagedPreset(null);
+      setStagedPresetChecks({});
+      setGenotypeRaw(preset.conservativeGenotype);
+    }
+  };
+
+  const handleApplyStagedPreset = () => {
+    if (!stagedPreset) return;
+    const checkedLoci = Object.entries(stagedPresetChecks)
+      .filter(([, checked]) => checked)
+      .map(([locus]) => locus);
+    const built = buildPresetGenotypeWithConfirmations(
+      stagedPreset,
+      checkedLoci,
+      speciesProfile.name
+    );
+    setGenotypeRaw(built);
+    setStagedPreset(null);
+    setStagedPresetChecks({});
+  };
+
+  const handleClearedTraitsChange = (nextTraits: string[]) => {
+    const existingByKey = new Map(
+      clearedCarrierOf.map((c) => [c.trait.trim().toLowerCase(), c])
+    );
+    const nextRecords: ClearedCarrierRecord[] = nextTraits.map((trait) => {
+      const prev = existingByKey.get(trait.trim().toLowerCase());
+      return (
+        prev || {
+          trait,
+          proofType: 'test_bred',
+          testBreedingCount: 2,
+        }
+      );
+    });
+    const reconciled = reconcileCarrierTraitLists(
+      suspectedCarrierOf,
+      confirmedCarrierOf,
+      nextRecords,
+      'cleared'
+    );
+    setClearedCarrierOf(reconciled.clearedCarrierOf);
+    setConfirmedCarrierOf(reconciled.confirmedCarrierOf);
+    setSuspectedCarrierOf(reconciled.suspectedCarrierOf);
+  };
+
+  const updateClearedProof = (
+    trait: string,
+    patch: Partial<Pick<ClearedCarrierRecord, 'proofType' | 'testBreedingCount'>>
+  ) => {
+    const lower = trait.trim().toLowerCase();
+    setClearedCarrierOf((prev) =>
+      prev.map((rec) =>
+        rec.trait.trim().toLowerCase() === lower ? { ...rec, ...patch } : rec
+      )
+    );
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    const reconciled = reconcileCarrierTraitLists(
+      suspectedCarrierOf,
+      confirmedCarrierOf,
+      clearedCarrierOf
+    );
     onSave(
       {
         id: initialAnimal?.id,
@@ -252,8 +384,12 @@ export function AnimalEditorModal({
         needsAttention,
         birthDateIso,
         weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
-        genotype: parseGenotypeString(genotypeRaw),
+        genotype: parseGenotypeString(genotypeRaw, speciesProfile.name),
         genotypeRaw: genotypeRaw.trim(),
+        rufusLevel,
+        suspectedCarrierOf: reconciled.suspectedCarrierOf,
+        confirmedCarrierOf: reconciled.confirmedCarrierOf,
+        clearedCarrierOf: reconciled.clearedCarrierOf,
         registrationNumber: registrationNumber.trim(),
         grandChampionNumber: grandChampionNumber.trim(),
         legsCount: Math.max(0, Number(legsCount) || 0),
@@ -521,40 +657,272 @@ export function AnimalEditorModal({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-xs font-medium text-[var(--barn-muted)]">
-                  {isSameSpecies(speciesProfile.name, 'Rabbit')
-                    ? 'Coat Color Genotype Loci (A, B, C, D, E, W, En, V, Du)'
+                  {speciesGeneticsSpec
+                    ? `${speciesProfile.name} Coat Color Genotype Loci (${speciesGeneticsSpec.loci.map((l) => l.locus).join(', ')})`
                     : `${speciesProfile.name} Color / DNA Genotype Notes`}
                 </label>
                 <ColorGeneticsNotice compact />
               </div>
-              {isSameSpecies(speciesProfile.name, 'Rabbit') && (
+              {speciesVarietyPresets.length > 0 && (
                 <select
-                  defaultValue=""
-                  onChange={(e) => {
-                    if (e.target.value) setGenotypeRaw(e.target.value);
-                  }}
+                  value=""
+                  onChange={(e) => handleSelectVarietyPreset(e.target.value)}
                   className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
                 >
-                  <option value="">Auto-fill baseline from ARBA variety...</option>
-                  {Object.entries(RABBIT_VARIETY_GENOTYPE_PRESETS).map(([varName, geno]) => (
-                    <option key={varName} value={geno}>
-                      {varName} ({geno})
+                  <option value="">
+                    Conservative baseline from {speciesProfile.name} variety...
+                  </option>
+                  {speciesVarietyPresets.map((preset) => (
+                    <option key={preset.variety} value={preset.variety}>
+                      {preset.variety} ({preset.conservativeGenotype})
                     </option>
                   ))}
                 </select>
               )}
             </div>
+
+            {stagedPreset && (
+              <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-sage)] space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-[var(--barn-ink)]">
+                      Verify Optional Modifiers for &ldquo;{stagedPreset.variety}&rdquo;
+                    </div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">
+                      Conservative baseline:{' '}
+                      <code className="font-mono text-[var(--barn-ink)]">
+                        {buildPresetGenotypeWithConfirmations(
+                          stagedPreset,
+                          Object.entries(stagedPresetChecks)
+                            .filter(([, v]) => v)
+                            .map(([k]) => k),
+                          speciesProfile.name
+                        )}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+                {(stagedPreset.optionalConfirmations || []).map((opt) => (
+                  <label
+                    key={opt.locus}
+                    className="flex items-start gap-2.5 p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(stagedPresetChecks[opt.locus])}
+                      onChange={(e) =>
+                        setStagedPresetChecks((prev) => ({
+                          ...prev,
+                          [opt.locus]: e.target.checked,
+                        }))
+                      }
+                      className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                    />
+                    <span>
+                      <strong className="text-[var(--barn-ink)]">{opt.label}</strong>
+                      <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                        {opt.explanation}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+                {stagedPreset.note && (
+                  <p className="text-[11px] text-[var(--barn-muted)]">{stagedPreset.note}</p>
+                )}
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStagedPreset(null);
+                      setStagedPresetChecks({});
+                    }}
+                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApplyStagedPreset}
+                    className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+                  >
+                    Apply Preset
+                  </button>
+                </div>
+              </div>
+            )}
+
             <input
               type="text"
               placeholder={
-                isSameSpecies(speciesProfile.name, 'Rabbit')
-                  ? 'e.g. A_ B_ C_ D_ ee ww'
-                  : 'Optional genotype or DNA marker notes'
+                speciesGeneticsSpec
+                  ? `e.g. ${speciesVarietyPresets[0]?.conservativeGenotype || speciesGeneticsSpec.loci.map(() => '__').join(' ')}`
+                  : 'Custom species plain-text genotype or DNA notes (stored verbatim)'
               }
               value={genotypeRaw}
               onChange={(e) => setGenotypeRaw(e.target.value)}
               className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
             />
+            {!speciesGeneticsSpec && (
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                Custom species stores genotypes as plain-text breeder notes without Rabbit locus assumptions.
+              </p>
+            )}
+
+            {(speciesGeneticsSpec?.supportsRufusIntensity || rufusLevel) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label
+                    htmlFor="editor-rufus-select"
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Rufus Intensity (Polygenic Pigment Richness)
+                  </label>
+                  <select
+                    id="editor-rufus-select"
+                    value={rufusLevel}
+                    onChange={(e) => setRufusLevel(normalizeRufusLevel(e.target.value))}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                  >
+                    {RUFUS_LEVEL_OPTIONS.map((opt) => (
+                      <option key={opt.value || 'none'} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <p className="text-[11px] text-[var(--barn-muted)] pb-1">
+                    Tracked separately from Mendelian Wide-Band (<code className="font-mono">W / w</code>): rich Reds can have High Rufus without being proven{' '}
+                    <code className="font-mono">ww</code>.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 space-y-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-xs font-medium text-[var(--barn-muted)]">
+                  Hidden Genetic Traits, Carrier Disclosures &amp; Branch Clearances
+                </span>
+                <span className="text-[11px] text-[var(--barn-muted)]">
+                  Displayed compactly on this animal&apos;s and descendants&apos; pedigrees
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <CarrierTraitCombobox
+                  label="Suspected Carrier Of"
+                  tone="suspected"
+                  selected={suspectedCarrierOf}
+                  suggestions={carrierTraitSuggestions}
+                  disabledTraits={[
+                    ...confirmedCarrierOf,
+                    ...clearedCarrierOf.map((c) => c.trait),
+                  ]}
+                  disabledReason="Confirmed or Cleared"
+                  placeholder="Select or type suspected recessive/trait..."
+                  helperText="Possible carrier from lineage, phenotype clues, or partial test breedings."
+                  onChange={(next) => {
+                    const reconciled = reconcileCarrierTraitLists(
+                      next,
+                      confirmedCarrierOf,
+                      clearedCarrierOf
+                    );
+                    setSuspectedCarrierOf(reconciled.suspectedCarrierOf);
+                  }}
+                />
+                <CarrierTraitCombobox
+                  label="Confirmed Carrier Of"
+                  tone="confirmed"
+                  selected={confirmedCarrierOf}
+                  suggestions={carrierTraitSuggestions}
+                  placeholder="Select or type confirmed recessive/trait..."
+                  helperText="Verified via DNA test, pedigree certainty, or offspring produced."
+                  onChange={(next) => {
+                    const reconciled = reconcileCarrierTraitLists(
+                      suspectedCarrierOf,
+                      next,
+                      clearedCarrierOf,
+                      'confirmed'
+                    );
+                    setConfirmedCarrierOf(reconciled.confirmedCarrierOf);
+                    setSuspectedCarrierOf(reconciled.suspectedCarrierOf);
+                    setClearedCarrierOf(reconciled.clearedCarrierOf);
+                  }}
+                />
+              </div>
+
+              <div className="pt-1 space-y-2">
+                <CarrierTraitCombobox
+                  label="Cleared / Verified Non-Carrier Of (Stops Ancestral Propagation)"
+                  tone="cleared"
+                  selected={clearedCarrierOf.map((c) => c.trait)}
+                  suggestions={carrierTraitSuggestions}
+                  placeholder="Select or type trait cleared by test breeding or DNA..."
+                  helperText="Marks this animal proven non-carrier on its branch so earlier ancestral suspicions do not pass forward to offspring."
+                  onChange={handleClearedTraitsChange}
+                />
+
+                {clearedCarrierOf.length > 0 && (
+                  <div className="space-y-1.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] p-3">
+                    <div className="text-[11px] font-medium text-[var(--barn-muted)]">
+                      Clearance Verification Details
+                    </div>
+                    {clearedCarrierOf.map((rec) => (
+                      <div
+                        key={rec.trait}
+                        className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b last:border-b-0 border-[var(--barn-border)]/60"
+                      >
+                        <span className="font-medium text-[var(--barn-ink)]">{rec.trait}</span>
+                        <div className="flex items-center gap-2">
+                          <select
+                            aria-label={`Proof type for ${rec.trait}`}
+                            value={rec.proofType}
+                            onChange={(e) =>
+                              updateClearedProof(rec.trait, {
+                                proofType: e.target.value as ClearedCarrierProofType,
+                              })
+                            }
+                            className="min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                          >
+                            {Object.entries(CLEARED_CARRIER_PROOF_LABELS).map(([k, lbl]) => (
+                              <option key={k} value={k}>
+                                {lbl}
+                              </option>
+                            ))}
+                          </select>
+                          {rec.proofType === 'test_bred' && (
+                            <label className="inline-flex items-center gap-1 text-[11px] text-[var(--barn-muted)]">
+                              <span>Matings:</span>
+                              <input
+                                type="number"
+                                min="1"
+                                max="99"
+                                value={rec.testBreedingCount ?? 2}
+                                onChange={(e) =>
+                                  updateClearedProof(rec.trait, {
+                                    testBreedingCount: Math.max(1, Number(e.target.value) || 1),
+                                  })
+                                }
+                                className="w-14 min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums text-xs"
+                              />
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {liveHomozygousClearances.length > 0 && (
+                  <p className="text-[11px] text-[var(--barn-sage)]">
+                    Explicit homozygous genotype loci also clear ancestral alerts automatically:{' '}
+                    <span className="font-mono">
+                      {liveHomozygousClearances.map((g) => `${g.trait} (${g.pair})`).join(', ')}
+                    </span>
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
@@ -810,7 +1178,7 @@ export function AnimalEditorModal({
                       onDelete(initialAnimal!);
                       onClose();
                     }}
-                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-white text-xs font-semibold"
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold"
                   >
                     Yes, Delete
                   </button>

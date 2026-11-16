@@ -921,7 +921,7 @@ export function DiagnosticsAndSupportPanel({
                       setBusyAction(false);
                     }
                   }}
-                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-white text-[11px] font-semibold"
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold"
                 >
                   Download Backup &amp; Rebuild DB
                 </button>

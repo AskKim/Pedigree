@@ -76,6 +76,48 @@ export interface GenotypeAllelePair {
   allele2: string;
 }
 
+/**
+ * Polygenic red/amber pigment richness modifier (tracked independently of Mendelian Wide-Band `ww`).
+ */
+export type RufusLevel = '' | 'Low' | 'Medium' | 'High';
+
+export const RUFUS_LEVEL_OPTIONS: ReadonlyArray<{ value: RufusLevel; label: string }> = [
+  { value: '', label: 'Unspecified' },
+  { value: 'High', label: 'High Rufus (Deep Rich Red)' },
+  { value: 'Medium', label: 'Medium Rufus' },
+  { value: 'Low', label: 'Low Rufus (Pale / Washy)' },
+];
+
+export function normalizeRufusLevel(raw: unknown): RufusLevel {
+  if (typeof raw !== 'string') return '';
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'high' || clean === 'high rufus') return 'High';
+  if (clean === 'medium' || clean === 'med' || clean === 'medium rufus') return 'Medium';
+  if (clean === 'low' || clean === 'low rufus') return 'Low';
+  return '';
+}
+
+export type ClearedCarrierProofType =
+  | 'test_bred'
+  | 'dna_tested'
+  | 'homozygous_locus'
+  | 'breeder_verified';
+
+export const CLEARED_CARRIER_PROOF_LABELS: Record<ClearedCarrierProofType, string> = {
+  test_bred: 'Test Bred (Clear)',
+  dna_tested: 'DNA Tested Clear',
+  homozygous_locus: 'Verified Homozygous Coat Locus',
+  breeder_verified: 'Breeder Verified Clear',
+};
+
+export interface ClearedCarrierRecord {
+  trait: string;
+  proofType: ClearedCarrierProofType;
+  testBreedingCount?: number;
+  note?: string;
+  recordedAt?: string;
+}
+
 export type SpeciesHubBlockId = 'tasks' | 'breedings' | 'cages' | 'shows';
 
 export const DEFAULT_SPECIES_HUB_BLOCK_ORDER: SpeciesHubBlockId[] = [
@@ -291,6 +333,10 @@ export interface Animal {
   weightGrams: number;
   genotype: GenotypeAllelePair[];
   genotypeRaw: string;
+  rufusLevel?: RufusLevel;
+  suspectedCarrierOf?: string[];
+  confirmedCarrierOf?: string[];
+  clearedCarrierOf?: ClearedCarrierRecord[];
   registrationNumber: string;
   grandChampionNumber: string;
   legsCount: number;

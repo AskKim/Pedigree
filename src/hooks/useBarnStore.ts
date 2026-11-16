@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { formatGenotypeArray, parseGenotypeString } from '../core/geneticsEngine';
 import {
   calculateSavingsPercent,
@@ -81,8 +82,7 @@ import {
   parseBackupArchiveInput,
 } from '../core/backupArchive';
 import {
-  buildSpeciesSafetyBackupFileName,
-  exportSpeciesBackupJson,
+  buildSpeciesZipBackupFileName,
   formatTimestampedBackupSlug,
   mergeBarnSnapshots,
   parseBarnBackupJson,
@@ -910,15 +910,21 @@ export function useBarnStore() {
   const exportTimestampedSpeciesBackup = useCallback(
     (speciesName: string, reason: SpeciesBackupReason = 'manual') => {
       if (!snapshot) return;
-      const filename = buildSpeciesSafetyBackupFileName(
+      const filename = buildSpeciesZipBackupFileName(
         snapshot.settings.barnName,
         speciesName,
         reason
       );
-      const json = exportSpeciesBackupJson(snapshot, speciesName, { reason });
-      downloadTextFile(filename, json, 'application/json');
-      void recordBackupExport('json', filename);
-      notify(`Saved timestamped backup: ${filename}`);
+      const archive = buildCompleteBackupZipArchive(snapshot, speciesName, {
+        backupScope: 'species',
+        backupReason: reason,
+        targetSpecies: speciesName,
+      });
+      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      void recordBackupExport('zip', filename);
+      notify(
+        `Saved ${speciesName} backup archive: ${filename} (${archive.animalCount} animals, ${archive.photoCount} photos, Printable Barn Binder included)`
+      );
     },
     [snapshot, recordBackupExport, notify]
   );
@@ -934,8 +940,14 @@ export function useBarnStore() {
       const parsedGeno =
         draft.genotype && draft.genotype.length > 0
           ? draft.genotype
-          : parseGenotypeString(draft.genotypeRaw);
+          : parseGenotypeString(draft.genotypeRaw, draft.species);
       const normalizedRaw = draft.genotypeRaw?.trim() || formatGenotypeArray(parsedGeno);
+
+      const carriers = reconcileCarrierTraitLists(
+        draft.suspectedCarrierOf,
+        draft.confirmedCarrierOf,
+        draft.clearedCarrierOf
+      );
 
       const animal: Animal = {
         ...draft,
@@ -946,6 +958,10 @@ export function useBarnStore() {
         needsAttention: Boolean(draft.needsAttention),
         genotype: parsedGeno,
         genotypeRaw: normalizedRaw,
+        rufusLevel: normalizeRufusLevel(draft.rufusLevel),
+        suspectedCarrierOf: carriers.suspectedCarrierOf,
+        confirmedCarrierOf: carriers.confirmedCarrierOf,
+        clearedCarrierOf: carriers.clearedCarrierOf,
         createdAt: draft.createdAt || ts,
         updatedAt: ts,
       };

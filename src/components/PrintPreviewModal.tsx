@@ -12,6 +12,7 @@
 
 import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import type { BarnBinderOptions } from '../core/barnBinder';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { downloadTextFile } from '../utils/webFileActions';
 
@@ -31,6 +32,9 @@ interface PrintPreviewModalProps {
   onToggleIncludePrimaryPhoto?: (include: boolean) => void;
   pedigreePrintOptions?: PedigreePrintOptions;
   onChangePedigreePrintOptions?: (next: PedigreePrintOptions) => void;
+  binderPrintOptions?: BarnBinderOptions;
+  onChangeBinderPrintOptions?: (next: BarnBinderOptions) => void;
+  binderArchivedCount?: number;
   onClose: () => void;
 }
 
@@ -43,6 +47,9 @@ export function PrintPreviewModal({
   onToggleIncludePrimaryPhoto,
   pedigreePrintOptions,
   onChangePedigreePrintOptions,
+  binderPrintOptions,
+  onChangeBinderPrintOptions,
+  binderArchivedCount = 0,
   onClose,
 }: PrintPreviewModalProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -455,6 +462,11 @@ export function PrintPreviewModal({
     stageEl.setAttribute('aria-hidden', 'true');
     stageEl.innerHTML = bodyHtml;
 
+    const preserveAccentInk = Boolean(
+      sourceDoc.querySelector('meta[name="barn-preserve-accent-ink"][content="true"]') ??
+        parsedFallback.querySelector('meta[name="barn-preserve-accent-ink"][content="true"]')
+    );
+
     const styleEl = document.createElement('style');
     styleEl.id = 'barn-print-stage-style';
     styleEl.textContent = `
@@ -463,13 +475,15 @@ export function PrintPreviewModal({
         #barn-print-stage { display: none !important; }
       }
       @media print {
-        html, body {
+        :root, .dark, html, body, #root, #barn-print-stage {
+          color-scheme: light only !important;
           margin: 0 !important;
           padding: 0 !important;
           background: #ffffff !important;
-          color: #000000 !important;
-          -webkit-print-color-adjust: exact !important;
-          print-color-adjust: exact !important;
+          background-color: #ffffff !important;
+          ${preserveAccentInk ? '' : 'color: #000000 !important;'}
+          -webkit-print-color-adjust: ${preserveAccentInk ? 'exact' : 'economy'} !important;
+          print-color-adjust: ${preserveAccentInk ? 'exact' : 'economy'} !important;
         }
         body > *:not(#barn-print-stage) {
           display: none !important;
@@ -480,6 +494,22 @@ export function PrintPreviewModal({
           box-sizing: border-box !important;
         }
         ${scopedRules.join('\n')}
+        #barn-print-stage,
+        #barn-print-stage div,
+        #barn-print-stage section,
+        #barn-print-stage article,
+        #barn-print-stage figure,
+        #barn-print-stage table,
+        #barn-print-stage thead,
+        #barn-print-stage tbody,
+        #barn-print-stage tr,
+        #barn-print-stage th,
+        #barn-print-stage td {
+          background: #ffffff !important;
+          background-color: #ffffff !important;
+          ${preserveAccentInk ? '' : 'color: #000000 !important;'}
+          box-shadow: none !important;
+        }
       }
     `;
 
@@ -713,6 +743,183 @@ export function PrintPreviewModal({
           </div>
         )}
 
+        {binderPrintOptions && onChangeBinderPrintOptions && (
+          <div className="px-3 sm:px-5 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/80 space-y-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Color vs Ink Saver Mode (Paper is always locked #FFFFFF) */}
+              <div
+                role="group"
+                aria-label="Binder color mode"
+                className="inline-flex items-center p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeBinderPrintOptions({ ...binderPrintOptions, colorMode: 'color' })
+                  }
+                  className={`min-h-[30px] px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    binderPrintOptions.colorMode === 'color'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Barn Colors (White Paper)
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeBinderPrintOptions({ ...binderPrintOptions, colorMode: 'ink_saver' })
+                  }
+                  className={`min-h-[30px] px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    binderPrintOptions.colorMode === 'ink_saver'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Ink Saver (B&amp;W)
+                </button>
+              </div>
+
+              {/* Active Default vs Full Archive Toggle */}
+              <label className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includeArchived}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includeArchived: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>
+                  Include Archived / Sold / Deceased
+                  {binderArchivedCount > 0 ? ` (${binderArchivedCount})` : ''}
+                </span>
+              </label>
+
+              {/* Pedigree Depth */}
+              <div
+                role="group"
+                aria-label="Binder pedigree depth"
+                className="inline-flex items-center gap-1 p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+              >
+                <span className="px-1.5 text-[11px] text-[var(--barn-muted)]">Pedigree:</span>
+                {([3, 4, 5, 6] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() =>
+                      onChangeBinderPrintOptions({ ...binderPrintOptions, generations: g })
+                    }
+                    className={`min-h-[28px] px-2 py-0.5 rounded-md font-mono text-[11px] font-semibold transition-colors ${
+                      binderPrintOptions.generations === g
+                        ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                        : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                    }`}
+                  >
+                    {g}G
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includeCoverAndSignature}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includeCoverAndSignature: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Cover &amp; Signature Page</span>
+              </label>
+
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includeSpeciesOverview}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includeSpeciesOverview: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Index, Schedule, Cages &amp; Memo</span>
+              </label>
+
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includePhotos}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includePhotos: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Photos &amp; Captions</span>
+              </label>
+
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includeHealthAndLitters}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includeHealthAndLitters: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Medical &amp; Litters</span>
+              </label>
+
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={binderPrintOptions.includeShowsAndKinship}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      includeShowsAndKinship: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>Shows, Reg # &amp; Relatives</span>
+              </label>
+
+              {binderPrintOptions.includeCoverAndSignature && (
+                <input
+                  type="text"
+                  value={binderPrintOptions.breederTransferNote ?? ''}
+                  onChange={(e) =>
+                    onChangeBinderPrintOptions({
+                      ...binderPrintOptions,
+                      breederTransferNote: e.target.value,
+                    })
+                  }
+                  placeholder="Optional breeder contact / sale transfer note..."
+                  aria-label="Optional breeder contact or sale transfer note"
+                  className="flex-1 min-w-[210px] min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs text-[var(--barn-ink)] placeholder:text-[var(--barn-muted)]"
+                />
+              )}
+            </div>
+          </div>
+        )}
+
         {headerNotice && (
           <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60">
             {headerNotice}
@@ -799,6 +1006,8 @@ export function PrintPreviewModal({
                 height: `${docSize.height}px`,
                 transform: `scale(${zoom})`,
                 transformOrigin: 'top left',
+                colorScheme: 'light',
+                backgroundColor: '#ffffff',
               }}
               className="bg-white rounded-lg border border-neutral-300 shadow-sm block"
             />

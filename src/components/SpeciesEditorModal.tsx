@@ -601,7 +601,7 @@ export function SpeciesEditorModal({
                     onDelete(initialProfile);
                     onClose();
                   }}
-                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-danger)] text-white text-xs font-semibold"
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold"
                 >
                   Confirm Remove {initialProfile.name}
                 </button>

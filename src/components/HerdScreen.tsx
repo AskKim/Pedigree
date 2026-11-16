@@ -28,7 +28,20 @@ import {
   Trash2,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
-import { formatGenotypeArray, inferHiddenAlleles } from '../core/geneticsEngine';
+import {
+  analyzeAnimalCarrierLineage,
+  AnimalCarrierLineageAnalysis,
+  doesAnimalMatchCarrierFilter,
+  formatClearedProofBadge,
+  getAnimalCarrierDisclosures,
+  getCarrierTraitSuggestionsForSpecies,
+  HerdCarrierFilterMode,
+} from '../core/carrierGenetics';
+import {
+  formatGenotypeArray,
+  getGeneticsSpecForSpecies,
+  inferHiddenAlleles,
+} from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   Animal,
@@ -147,6 +160,8 @@ export function HerdScreen({
 
   const [query, setQuery] = useState('');
   const [filterKey, setFilterKey] = useState<HerdFilterTab>('all');
+  const [carrierFilterMode, setCarrierFilterMode] = useState<HerdCarrierFilterMode>('all');
+  const [carrierTraitQuery, setCarrierTraitQuery] = useState('');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(HERD_PAGE_SIZE);
@@ -159,12 +174,14 @@ export function HerdScreen({
     setCheckedIds([]);
     setConfirmBatchDelete(false);
     setMigrationModalState(null);
+    setCarrierFilterMode('all');
+    setCarrierTraitQuery('');
     setVisibleLimit(HERD_PAGE_SIZE);
   }, [speciesProfile.name]);
 
   useEffect(() => {
     setVisibleLimit(HERD_PAGE_SIZE);
-  }, [filterKey, query]);
+  }, [filterKey, query, carrierFilterMode, carrierTraitQuery]);
 
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
@@ -210,8 +227,27 @@ export function HerdScreen({
     [animals]
   );
 
+  const speciesGeneticsSpec = useMemo(
+    () => getGeneticsSpecForSpecies(speciesProfile.name),
+    [speciesProfile.name]
+  );
+
+  const carrierSuggestions = useMemo(
+    () => getCarrierTraitSuggestionsForSpecies(speciesProfile.name),
+    [speciesProfile.name]
+  );
+
+  const carrierAnalysisById = useMemo(() => {
+    const map = new Map<string, AnimalCarrierLineageAnalysis>();
+    for (const a of animals) {
+      map.set(a.id, analyzeAnimalCarrierLineage(a, herdById));
+    }
+    return map;
+  }, [animals, herdById]);
+
   const filteredAnimals = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const hasCarrierFilter = carrierFilterMode !== 'all' || carrierTraitQuery.trim().length > 0;
     return animals.filter((a) => {
       const archived = isAnimalArchived(a);
       if (filterKey === 'Male' && a.sex !== 'Male') return false;
@@ -220,6 +256,13 @@ export function HerdScreen({
       if (filterKey === 'Active' && archived) return false;
       if (filterKey === 'Archived' && !archived) return false;
       if (filterKey === 'NeedsAttention' && !doesAnimalNeedAttention(a)) return false;
+
+      if (hasCarrierFilter) {
+        const analysis = carrierAnalysisById.get(a.id);
+        if (!analysis || !doesAnimalMatchCarrierFilter(analysis, carrierFilterMode, carrierTraitQuery)) {
+          return false;
+        }
+      }
 
       if (!q) return true;
       return (
@@ -230,7 +273,7 @@ export function HerdScreen({
         a.cageLocation.toLowerCase().includes(q)
       );
     });
-  }, [animals, query, filterKey]);
+  }, [animals, query, filterKey, carrierFilterMode, carrierTraitQuery, carrierAnalysisById]);
 
   // Only show dedicated Animal Page when user explicitly opened an animal (`selectedAnimalId`)
   const activeAnimal = useMemo(() => {
@@ -262,8 +305,21 @@ export function HerdScreen({
   );
 
   const alleleInference = useMemo(
-    () => (activeAnimal ? inferHiddenAlleles(activeAnimal, herdById, animals) : null),
-    [activeAnimal, herdById, animals]
+    () =>
+      activeAnimal
+        ? inferHiddenAlleles(activeAnimal, herdById, animals, speciesProfile.name)
+        : null,
+    [activeAnimal, herdById, animals, speciesProfile.name]
+  );
+
+  const activeCarriers = useMemo(
+    () => getAnimalCarrierDisclosures(activeAnimal),
+    [activeAnimal]
+  );
+
+  const activeLineageAnalysis = useMemo(
+    () => (activeAnimal ? carrierAnalysisById.get(activeAnimal.id) ?? null : null),
+    [activeAnimal, carrierAnalysisById]
   );
 
   const visibleAnimals = useMemo(
@@ -628,15 +684,20 @@ export function HerdScreen({
               )}
             </div>
 
-            {/* Coat Color Genotype & Allele Inference Panel */}
+            {/* Coat Color Genotype, Carrier Disclosures & Allele Inference Panel */}
             {(activeAnimal.genotypeRaw ||
               activeAnimal.genotype.length > 0 ||
-              activeAnimal.species === 'Rabbit') && (
-              <div className="space-y-2.5 border-b border-[var(--barn-border)] pb-5">
+              speciesGeneticsSpec ||
+              activeAnimal.rufusLevel ||
+              activeCarriers.hasAny ||
+              Boolean(activeLineageAnalysis?.hasAnyLineagePotential) ||
+              (activeLineageAnalysis?.genotypeCleared.length ?? 0) > 0 ||
+              (activeLineageAnalysis?.blockedBranches.length ?? 0) > 0) && (
+              <div className="space-y-3 border-b border-[var(--barn-border)] pb-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold">
-                      Coat Color Genotype &amp; Allele Inference
+                      Genetics, Carrier Disclosures &amp; Allele Inference
                     </h3>
                     <ColorGeneticsNotice compact />
                   </div>
@@ -657,11 +718,101 @@ export function HerdScreen({
                   )}
                 </div>
 
-                <div className="font-mono text-sm px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
-                  {activeAnimal.genotypeRaw ||
-                    formatGenotypeArray(activeAnimal.genotype) ||
-                    'No loci entered yet'}
-                </div>
+                {(activeAnimal.genotypeRaw ||
+                  activeAnimal.genotype.length > 0 ||
+                  speciesGeneticsSpec ||
+                  activeAnimal.rufusLevel) && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm">
+                    <span className="font-mono">
+                      {activeAnimal.genotypeRaw ||
+                        formatGenotypeArray(activeAnimal.genotype) ||
+                        'No loci entered yet'}
+                    </span>
+                    {activeAnimal.rufusLevel && (
+                      <span className="text-xs font-medium text-[var(--barn-terracotta)]">
+                        Rufus Intensity: {activeAnimal.rufusLevel}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {(activeCarriers.hasAny || (activeLineageAnalysis?.genotypeCleared.length ?? 0) > 0) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                      <div className="text-[var(--barn-muted)] font-medium">Confirmed Carrier Of</div>
+                      <div className="mt-1 font-medium text-[var(--barn-ink)]">
+                        {activeCarriers.confirmed.length > 0
+                          ? activeCarriers.confirmed.join(', ')
+                          : 'None recorded'}
+                      </div>
+                    </div>
+                    <div className="px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                      <div className="text-[var(--barn-muted)] font-medium">Suspected Carrier Of</div>
+                      <div className="mt-1 font-medium text-[var(--barn-terracotta)]">
+                        {activeCarriers.suspected.length > 0
+                          ? activeCarriers.suspected.join(', ')
+                          : 'None recorded'}
+                      </div>
+                    </div>
+                    <div className="px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                      <div className="text-[var(--barn-muted)] font-medium">
+                        Cleared / Verified Non-Carrier
+                      </div>
+                      <div className="mt-1 font-medium text-[var(--barn-sage)]">
+                        {activeCarriers.cleared.length > 0 ||
+                        (activeLineageAnalysis?.genotypeCleared.length ?? 0) > 0
+                          ? [
+                              ...activeCarriers.cleared.map(
+                                (c) => `${c.trait} (${formatClearedProofBadge(c)})`
+                              ),
+                              ...(activeLineageAnalysis?.genotypeCleared || []).map(
+                                (g) => `${g.trait} (${g.pair})`
+                              ),
+                            ].join(', ')
+                          : 'None recorded'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeLineageAnalysis && activeLineageAnalysis.lineagePotential.length > 0 && (
+                  <div className="px-3 py-2.5 rounded-xl bg-[var(--barn-terracotta-tint)]/60 border border-[var(--barn-terracotta)]/70 text-xs space-y-1">
+                    <div className="font-semibold text-[var(--barn-ink)]">
+                      Lineage Potential Carriers (Inherited from Uncleared Pedigree Branches)
+                    </div>
+                    {activeLineageAnalysis.lineagePotential.map((lp) => (
+                      <div key={lp.trait} className="text-[var(--barn-ink)]">
+                        <span className="font-medium">{lp.trait}</span>{' '}
+                        <span className="text-[var(--barn-muted)]">
+                          via {lp.viaBranches.join(' & ')} line (
+                          {lp.sourceAncestors
+                            .slice(0, 2)
+                            .map((s) => `${s.name} [Gen ${s.generation}, ${s.status}]`)
+                            .join(', ')}
+                          )
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {activeLineageAnalysis && activeLineageAnalysis.blockedBranches.length > 0 && (
+                  <div className="px-3 py-2 rounded-xl bg-[var(--barn-sage-tint)]/60 border border-[var(--barn-sage)]/70 text-xs space-y-0.5">
+                    <div className="font-medium text-[var(--barn-ink)]">
+                      Cleared Pedigree Branch Firewalls Active
+                    </div>
+                    {activeLineageAnalysis.blockedBranches.map((blk, i) => (
+                      <div
+                        key={`${blk.branch}-${blk.trait}-${i}`}
+                        className="text-[11px] text-[var(--barn-muted)]"
+                      >
+                        {blk.trait} on {blk.branch} line stopped by{' '}
+                        <strong className="text-[var(--barn-ink)]">{blk.clearedByName}</strong> (
+                        {blk.proofLabel})
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {alleleInference && alleleInference.notes.length > 0 && (
                   <div className="space-y-1 text-xs text-[var(--barn-sage)]">
@@ -899,6 +1050,57 @@ export function HerdScreen({
             </button>
           </div>
 
+          {/* Carrier Trait Screening & Finder Strip */}
+          <div className="flex flex-wrap items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs">
+            <span className="font-medium text-[var(--barn-muted)] shrink-0">
+              Carrier Finder:
+            </span>
+            <select
+              aria-label="Carrier disclosure filter mode"
+              value={carrierFilterMode}
+              onChange={(e) => setCarrierFilterMode(e.target.value as HerdCarrierFilterMode)}
+              className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+            >
+              <option value="all">All Carrier States</option>
+              <option value="any_risk">Any Risk (Confirmed, Suspected, or Lineage)</option>
+              <option value="confirmed">Confirmed Carriers Only</option>
+              <option value="suspected">Suspected Carriers Only</option>
+              <option value="lineage_potential">Lineage Potential Only</option>
+              <option value="cleared">Cleared / Homozygous Non-Carrier</option>
+            </select>
+            <input
+              type="search"
+              list="herd-carrier-trait-list"
+              aria-label="Filter by carrier trait"
+              placeholder="Filter specific trait (e.g. Dilute, ww, cc)..."
+              value={carrierTraitQuery}
+              onChange={(e) => setCarrierTraitQuery(e.target.value)}
+              className="flex-1 min-w-[200px] max-w-xs min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+            />
+            <datalist id="herd-carrier-trait-list">
+              {carrierSuggestions.map((t) => (
+                <option key={t} value={t} />
+              ))}
+            </datalist>
+            {(carrierFilterMode !== 'all' || carrierTraitQuery.trim()) && (
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="font-mono tabular-nums text-[var(--barn-muted)]">
+                  {filteredAnimals.length} matching
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCarrierFilterMode('all');
+                    setCarrierTraitQuery('');
+                  }}
+                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs"
+                >
+                  Clear Filter
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Multi-Select Bulk Action Bar */}
           {checkedIds.length > 0 && (
             <div className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-2xl px-4 py-3 space-y-2.5">
@@ -953,7 +1155,7 @@ export function HerdScreen({
                           setCheckedIds([]);
                           setConfirmBatchDelete(false);
                         }}
-                        className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-danger)] text-white text-xs font-semibold whitespace-nowrap"
+                        className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold whitespace-nowrap"
                       >
                         Confirm Delete ({checkedIds.length})
                       </button>
@@ -1115,6 +1317,35 @@ export function HerdScreen({
                                 · {a.breed} {a.variety} · {a.status}
                                 {a.cageLocation ? ` · ${a.cageLocation}` : ''}
                               </div>
+                              {(() => {
+                                const rowAnalysis = carrierAnalysisById.get(a.id);
+                                const parts: string[] = [];
+                                if (a.rufusLevel) parts.push(`Rufus: ${a.rufusLevel}`);
+                                if (rowAnalysis?.confirmed.length) {
+                                  parts.push(`Conf: ${rowAnalysis.confirmed.join(', ')}`);
+                                }
+                                if (rowAnalysis?.suspected.length) {
+                                  parts.push(`Susp: ${rowAnalysis.suspected.join(', ')}`);
+                                }
+                                if (rowAnalysis?.lineagePotential.length) {
+                                  parts.push(
+                                    `Lineage: ${rowAnalysis.lineagePotential
+                                      .map((l) => l.trait)
+                                      .join(', ')}`
+                                  );
+                                }
+                                if (rowAnalysis?.cleared.length) {
+                                  parts.push(
+                                    `Cleared: ${rowAnalysis.cleared.map((c) => c.trait).join(', ')}`
+                                  );
+                                }
+                                if (parts.length === 0) return null;
+                                return (
+                                  <div className="text-[11px] text-[var(--barn-terracotta)] mt-0.5 truncate">
+                                    {parts.join(' · ')}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
 

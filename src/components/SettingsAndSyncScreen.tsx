@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Database,
   Download,
+  FileSpreadsheet,
   FolderSync,
   HardDrive,
   Images,
@@ -59,9 +60,9 @@ import {
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
+import { buildCleanCsvExportFileName, exportAnimalsCsv } from '../core/csvExport';
 import {
   buildPdfReadyBarnSnapshot,
-  exportAnimalsCsv,
   exportBarnBackupJson,
   formatTimestampedBackupSlug,
 } from '../core/syncAndExports';
@@ -341,6 +342,22 @@ export function SettingsAndSyncScreen({
     );
   };
 
+  const handleExportCsv = () => {
+    setImportError(null);
+    const filename = buildCleanCsvExportFileName(settings.barnName);
+    const csvContent = exportAnimalsCsv(
+      snapshot.animals,
+      snapshot.speciesProfiles,
+      settings,
+      undefined,
+      allPhotos
+    );
+    downloadTextFile(filename, csvContent, 'text/csv');
+    setPortabilityFeedback(
+      `Exported ${snapshot.animals.length} animal record(s) to ${filename} (UTF-8 CSV with resolved parent names & tattoos).`
+    );
+  };
+
   const handleDownloadCompleteZip = () => {
     setImportError(null);
     const stampSlug = formatTimestampedBackupSlug();
@@ -349,7 +366,7 @@ export function SettingsAndSyncScreen({
     downloadBinaryFile(filename, archive.bytes, 'application/zip');
     void recordBackupExport('zip', filename);
     setPortabilityFeedback(
-      `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${formatByteSizePure(archive.bytes.byteLength)}).`
+      `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(archive.bytes.byteLength)}).`
     );
   };
 
@@ -1675,10 +1692,11 @@ export function SettingsAndSyncScreen({
                 <button
                   type="button"
                   onClick={handleDownloadCompleteZip}
+                  title="Includes database JSON, organized animal photos, and printable Barn Binder .HTM per species"
                   className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Archive className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Complete Archive + Photos (.ZIP)
+                  Complete Archive + Binders (.ZIP)
                 </button>
 
                 <button
@@ -1716,23 +1734,11 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  onClick={() =>
-                    downloadTextFile(
-                      `herd-all-species-${stamp}.csv`,
-                      exportAnimalsCsv(
-                        snapshot.animals,
-                        snapshot.speciesProfiles,
-                        settings,
-                        undefined,
-                        allPhotos
-                      ),
-                      'text/csv'
-                    )
-                  }
+                  onClick={handleExportCsv}
                   className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
-                  <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Export All Animals (.CSV)
+                  <FileSpreadsheet className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  Export CSV
                 </button>
 
                 <button
@@ -1886,7 +1892,7 @@ export function SettingsAndSyncScreen({
                       onClearAllRecords();
                       setConfirmGlobalDeleteAll(false);
                     }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-white text-xs font-semibold whitespace-nowrap"
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold whitespace-nowrap"
                   >
                     Confirm Delete All Animal Data
                   </button>
@@ -1944,7 +1950,7 @@ export function SettingsAndSyncScreen({
                       onRestoreFactoryDefaults();
                       setConfirmFactoryRestore(false);
                     }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-white text-xs font-semibold whitespace-nowrap"
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold whitespace-nowrap"
                   >
                     Confirm Factory Restore
                   </button>

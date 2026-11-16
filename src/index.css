@@ -24,6 +24,7 @@
   --barn-slate: #366685;
   --barn-slate-tint: #dde8ef;
   --barn-danger: #b5382b;
+  --barn-on-danger: #fff8f0;
 }
 
 .dark {
@@ -43,6 +44,7 @@
   --barn-slate: #88c0e6;
   --barn-slate-tint: #1d3240;
   --barn-danger: #f28b82;
+  --barn-on-danger: #0d2616;
 }
 
 html,
@@ -59,4 +61,24 @@ body {
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  :root,
+  .dark,
+  html,
+  body,
+  #root {
+    color-scheme: light only !important;
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    -webkit-print-color-adjust: economy !important;
+    print-color-adjust: economy !important;
+  }
 }

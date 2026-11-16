@@ -10,6 +10,10 @@
  * calls so the exact same serializers run in React Native / Expo (`expo-file-system` / `expo-print`).
  */
 
+import {
+  formatCompactCarrierDisclosure,
+  reconcileCarrierTraitLists,
+} from './carrierGenetics';
 import { formatGenotypeArray, parseGenotypeString } from './geneticsEngine';
 import {
   Animal,
@@ -32,6 +36,7 @@ import {
   normalizeAnimalStatus,
   normalizeBiologicalSex,
   normalizeCalendarSyncSettings,
+  normalizeRufusLevel,
   normalizeWeightUnit,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -198,12 +203,12 @@ function slugifyFileSegment(value: string, fallback: string): string {
 }
 
 /**
- * Builds clean, human-readable filenames for external backups.
+ * Builds clean, human-readable filenames for external backups and exports.
  * Default `"My Barn"` normalizes to `"pedigree"` so downloads look tidy.
  */
 export function buildCleanBackupFileName(
   barnName: string | undefined,
-  format: 'json' | 'sqlite',
+  format: 'json' | 'sqlite' | 'csv',
   dateSlug?: string
 ): string {
   const trimmed = (barnName || '').trim();
@@ -212,6 +217,9 @@ export function buildCleanBackupFileName(
   const stamp = dateSlug || todayDateIso();
   if (format === 'sqlite') {
     return `${prefix}-${stamp}.sqlite`;
+  }
+  if (format === 'csv') {
+    return `${prefix}-export-${stamp}.csv`;
   }
   return `${prefix}-backup-${stamp}.json`;
 }
@@ -239,6 +247,21 @@ export function buildSpeciesSafetyBackupFileName(
       : 'backup';
   const stamp = timestampSlug || formatTimestampedBackupSlug();
   return `${prefix}-${spSlug}-${reasonSlug}-${stamp}.json`;
+}
+
+/**
+ * Builds a collision-free timestamped Species `.ZIP` backup filename (JSON + Photos + Printable Barn Binder `.HTM`).
+ */
+export function buildSpeciesZipBackupFileName(
+  barnName: string | undefined,
+  speciesName: string,
+  reason: SpeciesBackupReason = 'manual',
+  timestampSlug?: string
+): string {
+  return buildSpeciesSafetyBackupFileName(barnName, speciesName, reason, timestampSlug).replace(
+    /\.json$/i,
+    '.zip'
+  );
 }
 
 /**
@@ -473,9 +496,13 @@ export function parseBarnBackupJson(
         }));
 
   const animals: Animal[] = (Array.isArray(raw.animals) ? raw.animals : []).map((a: any) => {
+    const speciesName = a.species || 'Rabbit';
     const genoArray = Array.isArray(a.genotype)
       ? a.genotype
-      : parseGenotypeString(typeof a.genotype === 'string' ? a.genotype : a.genotypeRaw || '');
+      : parseGenotypeString(
+          typeof a.genotype === 'string' ? a.genotype : a.genotypeRaw || '',
+          speciesName
+        );
     const genoStr =
       typeof a.genotypeRaw === 'string' && a.genotypeRaw
         ? a.genotypeRaw
@@ -483,11 +510,17 @@ export function parseBarnBackupJson(
         ? a.genotype
         : formatGenotypeArray(genoArray);
 
+    const carriers = reconcileCarrierTraitLists(
+      a.suspectedCarrierOf,
+      a.confirmedCarrierOf,
+      a.clearedCarrierOf
+    );
+
     return {
       id: a.id || generateUuid(),
       tattoo: a.tattoo ?? a.earTag ?? '',
       name: a.name || 'Unnamed',
-      species: a.species || 'Rabbit',
+      species: speciesName,
       breed: a.breed || '',
       variety: a.variety || '',
       sex: normalizeBiologicalSex(a.sex || 'Unknown'),
@@ -501,6 +534,10 @@ export function parseBarnBackupJson(
       weightGrams: Number(a.weightGrams) || 0,
       genotype: genoArray,
       genotypeRaw: genoStr,
+      rufusLevel: normalizeRufusLevel(a.rufusLevel),
+      suspectedCarrierOf: carriers.suspectedCarrierOf,
+      confirmedCarrierOf: carriers.confirmedCarrierOf,
+      clearedCarrierOf: carriers.clearedCarrierOf,
       registrationNumber: a.registrationNumber || '',
       grandChampionNumber: a.grandChampionNumber || '',
       legsCount: Number(a.legsCount) || 0,
@@ -654,101 +691,28 @@ export function parseBarnBackupJson(
   };
 }
 
-function escapeCsvCell(value: unknown): string {
-  const s = String(value ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
+export {
+  buildCleanCsvExportFileName,
+  escapeCsvCell,
+  exportAnimalsCsv,
+  formatParentReferenceForCsv,
+  UTF8_BOM,
+} from './csvExport';
 
-/**
- * Generates an RFC-4180 CSV spreadsheet of animals (optionally filtered to a single species).
- */
-export function exportAnimalsCsv(
-  animals: Animal[],
-  speciesProfiles: SpeciesProfile[],
-  settings: BarnSettings,
-  filterSpecies?: string,
-  animalPhotos: AnimalPhoto[] = []
-): string {
-  const rows = filterSpecies
-    ? animals.filter((a) => isSameSpecies(a.species, filterSpecies))
-    : animals;
-
-  const photosByAnimal = new Map<string, AnimalPhoto[]>();
-  for (const p of animalPhotos) {
-    const arr = photosByAnimal.get(p.animalId) || [];
-    arr.push(p);
-    photosByAnimal.set(p.animalId, arr);
-  }
-
-  const headers = [
-    'UUID',
-    'Species',
-    'Tattoo_ID',
-    'Name',
-    'Sex',
-    'Status',
-    'Archived',
-    'Breed',
-    'Variety',
-    'Birth_Date',
-    'Weight',
-    'Weight_Grams',
-    'Genotype',
-    'Registration_No',
-    'Grand_Champion_No',
-    'Show_Legs',
-    'Cage_Location',
-    'Sire_UUID',
-    'Dam_UUID',
-    'Breeder',
-    'Owner',
-    'Photo_Count',
-    'Primary_Photo_File',
-    'Needs_Attention',
-    'Notes',
-    'Updated_At_UTC',
-  ];
-
-  const lines = [headers.join(',')];
-  for (const a of rows) {
-    const sp = resolveSpeciesProfile(a.species, speciesProfiles);
-    const aPhotos = photosByAnimal.get(a.id) || [];
-    const primaryPhoto = aPhotos.find((p) => p.isPrimary) || aPhotos[0];
-    const cells = [
-      a.id,
-      a.species,
-      a.tattoo,
-      a.name,
-      formatSexForSpecies(a.sex, sp),
-      a.status,
-      a.archived ? 'Yes' : 'No',
-      a.breed,
-      a.variety,
-      a.birthDateIso,
-      formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, settings)),
-      a.weightGrams,
-      a.genotypeRaw || formatGenotypeArray(a.genotype),
-      a.registrationNumber,
-      a.grandChampionNumber,
-      a.legsCount,
-      a.cageLocation,
-      a.sireId,
-      a.damId,
-      a.breederName,
-      a.ownerName,
-      aPhotos.length,
-      primaryPhoto?.originalFileName || '',
-      a.needsAttention ? 'Yes' : 'No',
-      a.notes,
-      a.updatedAt,
-    ];
-    lines.push(cells.map(escapeCsvCell).join(','));
-  }
-  return lines.join('\n');
-}
+export {
+  buildBarnBinderFileName,
+  buildDefaultBarnBinderOptions,
+  computeAnimalKinshipSummary,
+  generateSpeciesBarnBinderHtml,
+  resolveBinderPalette,
+} from './barnBinder';
+export type {
+  AnimalKinshipSummary,
+  BarnBinderColorMode,
+  BarnBinderOptions,
+  BinderRelatedAnimalEntry,
+  ResolvedBinderPalette,
+} from './barnBinder';
 
 function escapeHtml(raw: string): string {
   return (raw || '')
@@ -811,6 +775,16 @@ export function generateEvansHtmPedigree(
       </td>`;
     }
     const geno = showGenotypes ? a.genotypeRaw || formatGenotypeArray(a.genotype) : '';
+    const fullCarrierText = formatCompactCarrierDisclosure(a, {
+      herdById,
+      includeCleared: true,
+    });
+    const carrierText = formatCompactCarrierDisclosure(a, {
+      herdById,
+      includeCleared: true,
+      ultraCompact: compactMode,
+      maxItemsPerGroup: compactMode ? 2 : 4,
+    });
     const metaParts = [
       a.tattoo ? `ID: ${escapeHtml(a.tattoo)}` : '',
       !compactMode && a.variety ? escapeHtml(a.variety) : '',
@@ -831,6 +805,7 @@ export function generateEvansHtmPedigree(
       ${!compactMode && a.birthDateIso ? `<div class="meta">DOB: ${escapeHtml(formatReadableDate(a.birthDateIso))}</div>` : ''}
       ${!compactMode && regParts.length ? `<div class="meta">${regParts.join(' &middot; ')}</div>` : ''}
       ${showGenotypes && !compactMode && geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
+      ${carrierText ? `<div class="carrier" title="${escapeHtml(fullCarrierText)}">${escapeHtml(carrierText)}</div>` : ''}
     </td>`;
   };
 
@@ -852,6 +827,11 @@ export function generateEvansHtmPedigree(
   const subjectGeno = showGenotypes
     ? subject.genotypeRaw || formatGenotypeArray(subject.genotype)
     : '';
+  const subjectCarriers = formatCompactCarrierDisclosure(subject, {
+    herdById,
+    includeLineage: true,
+    includeCleared: true,
+  });
   const safePhoto =
     primaryPhotoDataUrl && primaryPhotoDataUrl.startsWith('data:image/')
       ? primaryPhotoDataUrl
@@ -870,27 +850,42 @@ export function generateEvansHtmPedigree(
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<meta name="color-scheme" content="light only" />
 <title>Pedigree - ${escapeHtml(subject.name)} (${escapeHtml(subject.tattoo || subject.id)})</title>
 <style>
   @page { size: landscape; margin: ${compactMode ? '8mm' : '12mm'}; }
-  body { font-family: Georgia, "Times New Roman", serif; color: #1e241e; background: #fff; margin: ${compactMode ? '8px' : '16px'}; }
+  :root, html, body { color-scheme: light only; background: #ffffff; color: #1e241e; }
+  body { font-family: Georgia, "Times New Roman", serif; margin: ${compactMode ? '8px' : '16px'}; }
   .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2d5a3d; padding-bottom: 8px; margin-bottom: 10px; }
-  .barn-title { font-size: 20px; font-weight: bold; color: #2d5a3d; }
-  .sub-title { font-size: 11.5px; color: #535d52; }
-  .subject-wrap { border: 1px solid #bbb; padding: 10px 14px; margin-bottom: 10px; background: #faf7f2; display: flex; align-items: center; gap: 16px; }
+  .barn-title { font-size: 20px; font-weight: bold; color: #1e3f2a; }
+  .sub-title { font-size: 11.5px; color: #434d42; }
+  .subject-wrap { border: 1px solid #999; padding: 10px 14px; margin-bottom: 10px; background: #ffffff; display: flex; align-items: center; gap: 16px; }
   .subject-photo { width: 84px; height: 84px; object-fit: cover; border-radius: 6px; border: 1px solid #8c8678; flex-shrink: 0; }
   .subject-box { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; flex: 1; }
-  table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.pedigree th { background: #2d5a3d; color: #fff; font-size: ${compactMode ? '10px' : '12px'}; padding: ${compactMode ? '4px' : '6px'}; text-align: left; border: 1px solid #2d5a3d; }
-  td.cell { border: 1px solid #c5c0b5; padding: ${compactMode ? '2px 4px' : '6px 8px'}; vertical-align: middle; font-size: ${compactMode ? '9px' : '11.5px'}; line-height: ${compactMode ? '1.15' : '1.35'}; word-break: break-word; }
-  td.sire { background: #f7fafd; }
-  td.dam { background: #fdf9f7; }
-  td.empty { color: #555555; font-style: italic; background: #f6f6f4; }
+  table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; background: #ffffff; }
+  table.pedigree th { background: #ffffff; color: #1e3f2a; font-size: ${compactMode ? '10px' : '12px'}; padding: ${compactMode ? '4px' : '6px'}; text-align: left; border: 1px solid #2d5a3d; border-bottom: 2px solid #2d5a3d; }
+  td.cell { border: 1px solid #b8b3a8; padding: ${compactMode ? '2px 4px' : '6px 8px'}; vertical-align: middle; font-size: ${compactMode ? '9px' : '11.5px'}; line-height: ${compactMode ? '1.15' : '1.35'}; word-break: break-word; background: #ffffff; }
+  td.sire { background: #ffffff; border-left: 3px solid #366685; }
+  td.dam { background: #ffffff; border-left: 3px solid #8c3f20; }
+  td.empty { color: #555555; font-style: italic; background: #ffffff; }
   .name { font-weight: bold; font-size: ${compactMode ? '9.5px' : '12.5px'}; color: #111; }
   .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
-  .geno { color: #2d5a3d; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
-  .footer { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #444; border-top: 1px solid #ccc; padding-top: 8px; }
-  .footer-contact { width: 100%; font-size: 10.5px; color: #2d5a3d; font-weight: bold; }
+  .geno { color: #1e3f2a; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
+  .carrier { color: #6e3b1b; font-family: Arial, Helvetica, sans-serif; font-size: ${compactMode ? '8px' : '9.5px'}; font-weight: 600; margin-top: 2px; line-height: 1.2; }
+  .footer { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #333; border-top: 1px solid #ccc; padding-top: 8px; }
+  .footer-contact { width: 100%; font-size: 10.5px; color: #1e3f2a; font-weight: bold; }
+  @media print {
+    :root, html, body, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .footer {
+      color-scheme: light only !important;
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      color: #000000 !important;
+    }
+    * {
+      -webkit-print-color-adjust: economy !important;
+      print-color-adjust: economy !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -914,7 +909,9 @@ export function generateEvansHtmPedigree(
       ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
       ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
       ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
+      ${subject.rufusLevel ? `<div><strong>Rufus Intensity:</strong> ${escapeHtml(subject.rufusLevel)}</div>` : ''}
       ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
+      ${subjectCarriers ? `<div><strong>Carrier Disclosures:</strong> ${escapeHtml(subjectCarriers)}</div>` : ''}
     </div>
   </div>
 
@@ -1013,17 +1010,31 @@ export function generateThermalCageCardHtml(
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<meta name="color-scheme" content="light only" />
 <title>Cage Card - ${escapeHtml(animal.tattoo || animal.name)}</title>
 <style>
   @page { size: 4in 2.25in; margin: 0.12in; }
-  body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 8px; color: #000; }
-  .card { border: 2px solid #000; padding: 8px 10px; max-width: 3.75in; }
+  :root, html, body { color-scheme: light only; background: #ffffff; color: #000000; }
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 8px; }
+  .card { border: 2px solid #000; padding: 8px 10px; max-width: 3.75in; background: #ffffff; color: #000000; }
   .top { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
   .tattoo { font-family: "Courier New", monospace; font-size: 18px; font-weight: bold; }
   .cage { font-family: "Courier New", monospace; font-size: 12px; font-weight: bold; }
   .name { font-size: 15px; font-weight: bold; margin-top: 4px; }
   .row { font-size: 11px; margin-top: 3px; display: flex; justify-content: space-between; gap: 8px; }
   .mono { font-family: "Courier New", monospace; font-size: 10.5px; margin-top: 4px; }
+  @media print {
+    :root, html, body, .card {
+      color-scheme: light only !important;
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      color: #000000 !important;
+    }
+    * {
+      -webkit-print-color-adjust: economy !important;
+      print-color-adjust: economy !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -1076,6 +1087,7 @@ export interface PdfReadyBarnReport {
     weightFormatted: string;
     coiPercent: string;
     genotype: string;
+    carrierDisclosures: string;
     cageLocation: string;
     sireSummary: string;
     damSummary: string;
@@ -1123,6 +1135,7 @@ export function buildPdfReadyBarnSnapshot(
         weightFormatted: formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, snapshot.settings)),
         coiPercent: `${coi.coiPercent.toFixed(2)}%`,
         genotype: a.genotypeRaw || formatGenotypeArray(a.genotype),
+        carrierDisclosures: formatCompactCarrierDisclosure(a),
         cageLocation: a.cageLocation,
         sireSummary: sire ? `${sire.name} (${sire.tattoo})` : 'Unknown',
         damSummary: dam ? `${dam.name} (${dam.tattoo})` : 'Unknown',

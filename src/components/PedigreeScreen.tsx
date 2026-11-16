@@ -13,6 +13,7 @@
 
 import { ArrowLeft, ChevronRight, FileText, Plus, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { formatCompactCarrierDisclosure } from '../core/carrierGenetics';
 import { formatGenotypeArray } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
@@ -475,12 +476,12 @@ export function PedigreeScreen({
   // Dynamic card dimensions across 3, 4, 5, and 6 generations
   const layoutConfig =
     generations === 6
-      ? { colWidth: 174, cardWidth: 150, cardHeight: 36, rowPitch: 42, compact: true }
+      ? { colWidth: 174, cardWidth: 150, cardHeight: 44, rowPitch: 50, compact: true }
       : generations === 5
-      ? { colWidth: 198, cardWidth: 170, cardHeight: 48, rowPitch: 56, compact: true }
+      ? { colWidth: 198, cardWidth: 170, cardHeight: 56, rowPitch: 64, compact: true }
       : generations === 4
-      ? { colWidth: 235, cardWidth: 198, cardHeight: 64, rowPitch: 76, compact: false }
-      : { colWidth: 265, cardWidth: 222, cardHeight: 76, rowPitch: 96, compact: false };
+      ? { colWidth: 235, cardWidth: 198, cardHeight: 78, rowPitch: 88, compact: false }
+      : { colWidth: 265, cardWidth: 222, cardHeight: 90, rowPitch: 108, compact: false };
 
   const { colWidth, cardWidth, cardHeight, rowPitch, compact } = layoutConfig;
   const leafCount = 1 << generations;
@@ -570,6 +571,21 @@ export function PedigreeScreen({
                         Incomplete pedigree ({comp.known3Gen}/{comp.max3Gen} 3-gen ancestors recorded) — 0.00% reflects missing ancestry.
                       </div>
                     )}
+                    {(() => {
+                      const subjCarriers = formatCompactCarrierDisclosure(subject, {
+                        herdById,
+                        includeLineage: true,
+                        includeCleared: true,
+                      });
+                      if (!subjCarriers && !subject.rufusLevel) return null;
+                      return (
+                        <div className="text-[11px] font-medium text-[var(--barn-terracotta)]">
+                          {subject.rufusLevel ? `Rufus: ${subject.rufusLevel}` : ''}
+                          {subject.rufusLevel && subjCarriers ? ' · ' : ''}
+                          {subjCarriers ? `Carrier Disclosures: ${subjCarriers}` : ''}
+                        </div>
+                      );
+                    })()}
                   </>
                 );
               })()}
@@ -749,66 +765,97 @@ export function PedigreeScreen({
                       : 'bg-[var(--barn-canvas)]/65 dark:bg-[var(--barn-subtle)]/75 border-dashed border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60'
                   }`}
                 >
-                  {a ? (
-                    <>
-                      <div className="flex items-center justify-between gap-1 min-w-0">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            slot.generation === 0
-                              ? onOpenAnimalInHerd(a.id)
-                              : handleDrillToAnimal(a.id)
-                          }
-                          className={`font-semibold text-left truncate hover:underline ${
-                            compact ? 'text-[10.5px] leading-tight' : 'text-xs'
-                          }`}
-                          title={`${a.name} — click to focus`}
-                        >
-                          {a.name}
-                        </button>
-                        {isLinebred && (
-                          <span className="font-mono text-[9.5px] font-semibold text-[var(--barn-sage)] shrink-0">
-                            {slot.occurrenceCount}×
-                          </span>
-                        )}
-                      </div>
-
-                      {!compact ? (
-                        <>
-                          <div className="text-[11px] text-[var(--barn-muted)] font-mono truncate">
-                            {a.tattoo || 'No ID'} · {a.variety || a.breed}
-                            {a.weightGrams > 0
-                              ? ` · ${formatWeight(a.weightGrams, resolveSpeciesWeightUnit(speciesProfile, settings))}`
-                              : ''}
-                          </div>
-
-                          <div className="flex items-center justify-between gap-2 text-[10px] text-[var(--barn-muted)] truncate">
-                            <span
-                              className={
-                                a.sex === 'Male'
-                                  ? 'text-[var(--barn-slate)] font-medium'
-                                  : 'text-[var(--barn-terracotta)] font-medium'
-                              }
-                            >
-                              {formatSexForSpecies(a.sex, speciesProfile)}
+                  {a ? (() => {
+                    const fullCarrier = formatCompactCarrierDisclosure(a, {
+                      herdById,
+                      includeCleared: true,
+                    });
+                    const cardCarrier = formatCompactCarrierDisclosure(a, {
+                      herdById,
+                      includeCleared: true,
+                      ultraCompact: compact,
+                      maxItemsPerGroup: compact ? 2 : 3,
+                    });
+                    return (
+                      <>
+                        <div className="flex items-center justify-between gap-1 min-w-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              slot.generation === 0
+                                ? onOpenAnimalInHerd(a.id)
+                                : handleDrillToAnimal(a.id)
+                            }
+                            className={`font-semibold text-left truncate hover:underline ${
+                              compact ? 'text-[10.5px] leading-tight' : 'text-xs'
+                            }`}
+                            title={`${a.name} — click to focus`}
+                          >
+                            {a.name}
+                          </button>
+                          {isLinebred && (
+                            <span className="font-mono text-[9.5px] font-semibold text-[var(--barn-sage)] shrink-0">
+                              {slot.occurrenceCount}×
                             </span>
-                            <span className="font-mono truncate">
-                              {a.genotypeRaw ||
-                                formatGenotypeArray(a.genotype) ||
-                                a.registrationNumber}
-                            </span>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="text-[9.5px] text-[var(--barn-muted)] font-mono truncate leading-tight">
-                          {a.tattoo || formatSexForSpecies(a.sex, speciesProfile)}
-                          {generations === 5 && (a.variety || a.breed)
-                            ? ` · ${a.variety || a.breed}`
-                            : ''}
+                          )}
                         </div>
-                      )}
-                    </>
-                  ) : (
+
+                        {!compact ? (
+                          <>
+                            <div className="text-[11px] text-[var(--barn-muted)] font-mono truncate">
+                              {a.tattoo || 'No ID'} · {a.variety || a.breed}
+                              {a.weightGrams > 0
+                                ? ` · ${formatWeight(a.weightGrams, resolveSpeciesWeightUnit(speciesProfile, settings))}`
+                                : ''}
+                            </div>
+
+                            {cardCarrier && (
+                              <div
+                                title={fullCarrier}
+                                className="text-[10px] font-medium text-[var(--barn-terracotta)] truncate leading-tight"
+                              >
+                                {cardCarrier}
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between gap-2 text-[10px] text-[var(--barn-muted)] truncate">
+                              <span
+                                className={
+                                  a.sex === 'Male'
+                                    ? 'text-[var(--barn-slate)] font-medium'
+                                    : 'text-[var(--barn-terracotta)] font-medium'
+                                }
+                              >
+                                {formatSexForSpecies(a.sex, speciesProfile)}
+                              </span>
+                              <span className="font-mono truncate">
+                                {a.genotypeRaw ||
+                                  formatGenotypeArray(a.genotype) ||
+                                  a.registrationNumber}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-[9.5px] text-[var(--barn-muted)] font-mono truncate leading-tight">
+                              {a.tattoo || formatSexForSpecies(a.sex, speciesProfile)}
+                              {generations === 5 && (a.variety || a.breed)
+                                ? ` · ${a.variety || a.breed}`
+                                : ''}
+                            </div>
+                            {cardCarrier && (
+                              <div
+                                title={fullCarrier}
+                                className="text-[8.5px] font-medium text-[var(--barn-terracotta)] truncate leading-none"
+                              >
+                                {cardCarrier}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </>
+                    );
+                  })() : (
                     <div
                       className={`h-full flex items-center justify-between gap-1.5 text-[var(--barn-muted)] dark:text-[var(--barn-ink)]/85 ${
                         compact ? 'text-[10px]' : 'text-xs'

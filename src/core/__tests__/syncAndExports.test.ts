@@ -18,6 +18,7 @@ import {
   exportBarnBackupJson,
   exportSpeciesBackupJson,
   generateEvansHtmPedigree,
+  generateThermalCageCardHtml,
   mergeBarnSnapshots,
   parseBarnBackupJson,
 } from '../syncAndExports';
@@ -335,5 +336,39 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(noFooterHtml).toContain('<strong>Weight:</strong>');
     expect(noFooterHtml).toContain('<strong>Genotype:</strong>');
     expect(noFooterHtml).not.toContain('Breeder Signature:');
+  });
+
+  it('forces light-only color-scheme and white #ffffff print backgrounds with zero dark background fills in .HTM exports', () => {
+    const subj = makeAnimal('p-ink', {
+      name: 'Ink Saver',
+      tattoo: 'INK-1',
+      species: 'Rabbit',
+    });
+    const darkThemeSettings = makeSettings({ themeMode: 'dark' });
+    const snap = makeEmptySnapshot({ settings: darkThemeSettings, animals: [subj] });
+
+    const pedigreeHtml = generateEvansHtmPedigree(
+      subj,
+      snap.animals,
+      snap.speciesProfiles,
+      darkThemeSettings,
+      3
+    );
+    expect(pedigreeHtml).toContain('<meta name="color-scheme" content="light only" />');
+    expect(pedigreeHtml).toContain('@media print');
+    expect(pedigreeHtml).toContain('background: #ffffff !important;');
+    expect(pedigreeHtml).not.toContain('background: #2d5a3d');
+    expect(pedigreeHtml).not.toContain('#0f1611');
+
+    const cardHtml = generateThermalCageCardHtml(
+      subj,
+      snap.animals,
+      snap.speciesProfiles,
+      darkThemeSettings
+    );
+    expect(cardHtml).toContain('<meta name="color-scheme" content="light only" />');
+    expect(cardHtml).toContain('@media print');
+    expect(cardHtml).toContain('background: #ffffff !important;');
+    expect(cardHtml).not.toContain('#0f1611');
   });
 });

@@ -16,6 +16,7 @@
  *    keeping parsed genotypes and pedigree cycle guards strictly valid.
  */
 
+import { reconcileCarrierTraitLists } from '../carrierGenetics';
 import { parseGenotypeString } from '../geneticsEngine';
 import {
   Animal,
@@ -24,6 +25,7 @@ import {
   formatSexForSpecies,
   formatWeight,
   isSameSpecies,
+  normalizeRufusLevel,
   nowIsoUtc,
   resolveSpeciesProfile,
   resolveSpeciesWeightUnit,
@@ -46,6 +48,7 @@ export type AnimalConflictFieldKey =
   | 'registrationNumber'
   | 'grandChampionNumber'
   | 'genotypeRaw'
+  | 'rufusLevel'
   | 'cageLocation'
   | 'breederName'
   | 'ownerName'
@@ -352,6 +355,13 @@ export function buildAnimalContradictions(
     true
   );
   checkText('genotypeRaw', 'Genotype / DNA', existing.genotypeRaw, incoming.genotypeRaw);
+  checkText(
+    'rufusLevel',
+    'Rufus Intensity',
+    existing.rufusLevel || '',
+    incoming.rufusLevel || '',
+    true
+  );
   checkText('cageLocation', 'Cage / Group Location', existing.cageLocation, incoming.cageLocation, true);
   checkText('breederName', 'Breeder', existing.breederName, incoming.breederName, true);
   checkText('ownerName', 'Owner', existing.ownerName, incoming.ownerName, true);
@@ -512,6 +522,10 @@ export function resolveAnimalsWithConflictChoices(
           ? Boolean(inc.archived)
           : Boolean(ex.archived);
 
+    const resolvedRufusLevel = normalizeRufusLevel(
+      pickNonEmptyText(ex.id, 'rufusLevel', ex.rufusLevel || '', inc.rufusLevel || '')
+    );
+
     return {
       id: ex.id,
       species: ex.species,
@@ -525,7 +539,15 @@ export function resolveAnimalsWithConflictChoices(
       variety: pickNonEmptyText(ex.id, 'variety', ex.variety, inc.variety),
       weightGrams: resolvedWeight,
       genotypeRaw: resolvedGenotypeRaw,
-      genotype: resolvedGenotypeRaw ? parseGenotypeString(resolvedGenotypeRaw) : ex.genotype,
+      genotype: resolvedGenotypeRaw
+        ? parseGenotypeString(resolvedGenotypeRaw, ex.species)
+        : ex.genotype,
+      rufusLevel: resolvedRufusLevel,
+      ...reconcileCarrierTraitLists(
+        [...(ex.suspectedCarrierOf || []), ...(inc.suspectedCarrierOf || [])],
+        [...(ex.confirmedCarrierOf || []), ...(inc.confirmedCarrierOf || [])],
+        [...(ex.clearedCarrierOf || []), ...(inc.clearedCarrierOf || [])]
+      ),
       registrationNumber: pickNonEmptyText(
         ex.id,
         'registrationNumber',

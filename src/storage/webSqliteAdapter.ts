@@ -23,12 +23,14 @@ import {
   CareLog,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   normalizeCalendarSyncSettings,
+  normalizeRufusLevel,
   normalizeWeightUnit,
   nowIsoUtc,
   ShowEvent,
   SpeciesProfile,
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
+import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
 import { StorageAdapter } from './storageAdapter';
@@ -99,6 +101,10 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     weight_grams INTEGER NOT NULL,
     genotype_json TEXT NOT NULL,
     genotype_raw TEXT NOT NULL,
+    rufus_level TEXT NOT NULL DEFAULT '',
+    suspected_carrier_of_json TEXT NOT NULL DEFAULT '[]',
+    confirmed_carrier_of_json TEXT NOT NULL DEFAULT '[]',
+    cleared_carrier_of_json TEXT NOT NULL DEFAULT '[]',
     registration_number TEXT NOT NULL,
     grand_champion_number TEXT NOT NULL,
     legs_count INTEGER NOT NULL,
@@ -339,6 +345,10 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE animals ADD COLUMN suspected_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
+    "ALTER TABLE animals ADD COLUMN confirmed_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
+    "ALTER TABLE animals ADD COLUMN cleared_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
+    "ALTER TABLE animals ADD COLUMN rufus_level TEXT NOT NULL DEFAULT '';",
   ];
   for (const stmt of alterStatements) {
     try {
@@ -600,33 +610,58 @@ export class WebSqliteAdapter implements StorageAdapter {
     }));
 
     const animals: Animal[] = this.queryObjects('SELECT * FROM animals ORDER BY name ASC').map(
-      (r) => ({
-        id: String(r.id),
-        tattoo: String(r.tattoo),
-        name: String(r.name),
-        species: String(r.species),
-        breed: String(r.breed),
-        variety: String(r.variety),
-        sex: (r.sex as any) || 'Unknown',
-        status: (r.status as any) || 'Active',
-        archived: Number(r.archived) === 1,
-        needsAttention: Number(r.needs_attention) === 1,
-        birthDateIso: String(r.birth_date_iso),
-        weightGrams: Number(r.weight_grams),
-        genotype: JSON.parse(String(r.genotype_json || '[]')),
-        genotypeRaw: String(r.genotype_raw),
-        registrationNumber: String(r.registration_number),
-        grandChampionNumber: String(r.grand_champion_number),
-        legsCount: Number(r.legs_count),
-        cageLocation: String(r.cage_location),
-        breederName: String(r.breeder_name),
-        ownerName: String(r.owner_name),
-        sireId: String(r.sire_id),
-        damId: String(r.dam_id),
-        notes: String(r.notes),
-        createdAt: String(r.created_at),
-        updatedAt: String(r.updated_at),
-      })
+      (r) => {
+        let suspectedRaw: unknown = [];
+        let confirmedRaw: unknown = [];
+        let clearedRaw: unknown = [];
+        try {
+          suspectedRaw = JSON.parse(String(r.suspected_carrier_of_json || '[]'));
+        } catch {
+          suspectedRaw = [];
+        }
+        try {
+          confirmedRaw = JSON.parse(String(r.confirmed_carrier_of_json || '[]'));
+        } catch {
+          confirmedRaw = [];
+        }
+        try {
+          clearedRaw = JSON.parse(String(r.cleared_carrier_of_json || '[]'));
+        } catch {
+          clearedRaw = [];
+        }
+        const carriers = reconcileCarrierTraitLists(suspectedRaw, confirmedRaw, clearedRaw);
+        return {
+          id: String(r.id),
+          tattoo: String(r.tattoo),
+          name: String(r.name),
+          species: String(r.species),
+          breed: String(r.breed),
+          variety: String(r.variety),
+          sex: (r.sex as any) || 'Unknown',
+          status: (r.status as any) || 'Active',
+          archived: Number(r.archived) === 1,
+          needsAttention: Number(r.needs_attention) === 1,
+          birthDateIso: String(r.birth_date_iso),
+          weightGrams: Number(r.weight_grams),
+          genotype: JSON.parse(String(r.genotype_json || '[]')),
+          genotypeRaw: String(r.genotype_raw),
+          rufusLevel: normalizeRufusLevel(r.rufus_level),
+          suspectedCarrierOf: carriers.suspectedCarrierOf,
+          confirmedCarrierOf: carriers.confirmedCarrierOf,
+          clearedCarrierOf: carriers.clearedCarrierOf,
+          registrationNumber: String(r.registration_number),
+          grandChampionNumber: String(r.grand_champion_number),
+          legsCount: Number(r.legs_count),
+          cageLocation: String(r.cage_location),
+          breederName: String(r.breeder_name),
+          ownerName: String(r.owner_name),
+          sireId: String(r.sire_id),
+          damId: String(r.dam_id),
+          notes: String(r.notes),
+          createdAt: String(r.created_at),
+          updatedAt: String(r.updated_at),
+        };
+      }
     );
 
     const animalPhotos: AnimalPhoto[] = this.queryObjects(
@@ -850,10 +885,15 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   private upsertAnimalRow(a: Animal): void {
+    const carriers = reconcileCarrierTraitLists(
+      a.suspectedCarrierOf,
+      a.confirmedCarrierOf,
+      a.clearedCarrierOf
+    );
     this.db?.run(
       `INSERT OR REPLACE INTO animals
-       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, sire_id, dam_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, sire_id, dam_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         a.id,
         a.tattoo,
@@ -869,6 +909,10 @@ export class WebSqliteAdapter implements StorageAdapter {
         a.weightGrams,
         JSON.stringify(a.genotype),
         a.genotypeRaw,
+        normalizeRufusLevel(a.rufusLevel),
+        JSON.stringify(carriers.suspectedCarrierOf),
+        JSON.stringify(carriers.confirmedCarrierOf),
+        JSON.stringify(carriers.clearedCarrierOf),
         a.registrationNumber,
         a.grandChampionNumber,
         a.legsCount,

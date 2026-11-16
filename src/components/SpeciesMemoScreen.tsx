@@ -405,7 +405,7 @@ export function SpeciesMemoScreen({
                 <button
                   type="button"
                   onClick={handleClearMemo}
-                  className="min-h-[30px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-white font-semibold"
+                  className="min-h-[30px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] font-semibold"
                 >
                   Confirm Clear
                 </button>

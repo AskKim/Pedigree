@@ -11,6 +11,7 @@
  */
 
 import { strFromU8, strToU8, unzipSync, zipSync, Zippable } from 'fflate';
+import { generateSpeciesBarnBinderHtml } from './barnBinder';
 import {
   Animal,
   AnimalPhoto,
@@ -20,7 +21,11 @@ import {
   isSameSpecies,
   nowIsoUtc,
 } from './models';
-import { exportBarnBackupJson, parseBarnBackupJson } from './syncAndExports';
+import {
+  exportBarnBackupJson,
+  parseBarnBackupJson,
+  SpeciesBackupReason,
+} from './syncAndExports';
 
 export interface BackupPhotoManifestEntry {
   id: string;
@@ -47,6 +52,7 @@ export interface BackupArchiveBuildResult {
   bytes: Uint8Array;
   photoCount: number;
   animalCount: number;
+  binderCount: number;
   totalImageBinaryBytes: number;
 }
 
@@ -329,6 +335,7 @@ export function buildPhotosOnlyZipArchive(
     bytes: zipSync(zipFiles),
     photoCount: manifest.length,
     animalCount,
+    binderCount: 0,
     totalImageBinaryBytes,
   };
 }
@@ -343,11 +350,17 @@ export function buildPhotosOnlyZipArchive(
  */
 export function buildCompleteBackupZipFiles(
   snapshot: BarnDatabaseSnapshot,
-  filterSpecies?: string
+  filterSpecies?: string,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
 ): {
   zipFiles: Zippable;
   photoCount: number;
   animalCount: number;
+  binderCount: number;
   totalImageBinaryBytes: number;
 } {
   const { zipFiles, manifest, totalImageBinaryBytes } = buildArchivePhotoEntries(
@@ -374,8 +387,68 @@ export function buildCompleteBackupZipFiles(
         animalPhotos: [],
       };
 
-  const mainJsonText = exportBarnBackupJson(scopedSnapshot);
+  const resolvedMeta = extraMeta
+    ? extraMeta
+    : filterSpecies
+    ? {
+        backupScope: 'species' as const,
+        backupReason: 'manual' as SpeciesBackupReason,
+        targetSpecies: filterSpecies,
+      }
+    : undefined;
+
+  const mainJsonText = exportBarnBackupJson(scopedSnapshot, resolvedMeta);
   zipFiles['pedigree-backup.json'] = [strToU8(mainJsonText), { level: 6 }];
+
+  // Always auto-include human-readable Printable Barn Binder (.HTM) per species
+  // with ALL records (including archived/sold/deceased), photos, and all dossier sections.
+  const targetSpeciesNames: string[] = [];
+  const seenSpecies = new Set<string>();
+  const registerTargetSpecies = (rawName: string | undefined) => {
+    const clean = (rawName || '').trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seenSpecies.has(key)) return;
+    seenSpecies.add(key);
+    targetSpeciesNames.push(clean);
+  };
+
+  if (filterSpecies) {
+    const matched = snapshot.speciesProfiles.find((sp) => isSameSpecies(sp.name, filterSpecies));
+    registerTargetSpecies(matched?.name || filterSpecies);
+  } else {
+    for (const sp of snapshot.speciesProfiles) {
+      registerTargetSpecies(sp.name);
+    }
+    for (const a of snapshot.animals) {
+      registerTargetSpecies(a.species);
+    }
+  }
+
+  let binderCount = 0;
+  const usedBinderPaths = new Set<string>();
+  for (const spName of targetSpeciesNames) {
+    const spSlug = sanitizePathSegment(spName.toLowerCase(), 'species');
+    let binderPath = `binder/${spSlug}-binder.htm`;
+    let suffix = 2;
+    while (usedBinderPaths.has(binderPath)) {
+      binderPath = `binder/${spSlug}-${suffix}-binder.htm`;
+      suffix++;
+    }
+    usedBinderPaths.add(binderPath);
+
+    const binderHtml = generateSpeciesBarnBinderHtml(snapshot, spName, {
+      colorMode: 'color',
+      includeArchived: true,
+      includePhotos: true,
+      includeCoverAndSignature: true,
+      includeSpeciesOverview: true,
+      includeHealthAndLitters: true,
+      includeShowsAndKinship: true,
+    });
+    zipFiles[binderPath] = [strToU8(binderHtml), { level: 6 }];
+    binderCount++;
+  }
 
   const manifestPayload = {
     format: 'community-pedigree-photos-archive-v1',
@@ -398,9 +471,11 @@ export function buildCompleteBackupZipFiles(
         `Exported: ${nowIsoUtc()}`,
         `Animals: ${scopedSnapshot.animals.length}`,
         `Photos: ${manifest.length}`,
+        `Printable Barn Binders: ${binderCount}`,
         '',
         'Contents:',
         '- pedigree-backup.json: Complete herd, lineage, breeding, chore, care log, and species memo pad database.',
+        '- binder/*.htm: Complete human-readable Printable Barn Binder per species (pedigrees, health, litters, shows, kinship, photos, and signature page).',
         '- photos/: Standard viewable image files organized by species and animal.',
         '- photos/manifest.json: Index linking every image file to its animal UUID, tattoo, cover flag, and caption.',
         '',
@@ -415,21 +490,28 @@ export function buildCompleteBackupZipFiles(
     zipFiles,
     photoCount: manifest.length,
     animalCount: scopedSnapshot.animals.length,
+    binderCount,
     totalImageBinaryBytes,
   };
 }
 
 export function buildCompleteBackupZipArchive(
   snapshot: BarnDatabaseSnapshot,
-  filterSpecies?: string
+  filterSpecies?: string,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
 ): BackupArchiveBuildResult {
-  const { zipFiles, photoCount, animalCount, totalImageBinaryBytes } =
-    buildCompleteBackupZipFiles(snapshot, filterSpecies);
+  const { zipFiles, photoCount, animalCount, binderCount, totalImageBinaryBytes } =
+    buildCompleteBackupZipFiles(snapshot, filterSpecies, extraMeta);
 
   return {
     bytes: zipSync(zipFiles),
     photoCount,
     animalCount,
+    binderCount,
     totalImageBinaryBytes,
   };
 }
@@ -537,6 +619,7 @@ export function parseBackupArchiveInput(
       if (
         normalized.endsWith('.json') &&
         !normalized.endsWith('photos/manifest.json') &&
+        !normalized.startsWith('binder/') &&
         !normalized.includes('__macosx')
       ) {
         const txt = strFromU8(entryVal);

@@ -207,6 +207,7 @@ export function resolveThemeCssVariables(
       '--barn-slate': merged.darkMale,
       '--barn-slate-tint': mixHex(surface, merged.darkMale, 0.22),
       '--barn-danger': '#F28B82',
+      '--barn-on-danger': pickContrastInk('#F28B82'),
     };
   }
 
@@ -240,5 +241,6 @@ export function resolveThemeCssVariables(
     '--barn-slate': merged.lightMale,
     '--barn-slate-tint': mixHex(surface, merged.lightMale, 0.15),
     '--barn-danger': '#B5382B',
+    '--barn-on-danger': pickContrastInk('#B5382B'),
   };
 }

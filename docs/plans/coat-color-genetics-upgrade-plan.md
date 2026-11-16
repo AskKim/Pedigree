@@ -1,8 +1,8 @@
 # Coat Color Genetics Upgrade Plan (All Species)
 
 - **Project:** Community Pedigree (`AskKim/Pedigree`)
-- **Status:** Proposed / Pending Implementation & Expert Review
-- **Primary Target Modules:** `src/core/geneticsEngine.ts`, `src/core/models.ts`, `src/core/__tests__/geneticsEngine.test.ts`, `src/components/AnimalEditorModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/ColorGeneticsNotice.tsx`
+- **Status:** Implemented (Pending Expert Species Genetics Sign-Off)
+- **Primary Target Modules:** `src/core/geneticsEngine.ts`, `src/core/carrierGenetics.ts`, `src/core/models.ts`, `src/core/importers/herdBossImporter.ts`, `src/core/importers/conflictResolver.ts`, `src/core/__tests__/geneticsEngine.test.ts`, `src/core/__tests__/carrierGenetics.test.ts`, `src/components/AnimalEditorModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/ColorGeneticsNotice.tsx`
 
 > **Mandatory Guardrail:** `ColorGeneticsNotice` ("not working yet / needs expert verification") **must remain visible** anywhere coat color genotypes, allele inference, or Punnett predictions are shown—even after this upgrade is implemented—until a species coat-color genetics expert reviews and signs off on each species ruleset.
 
@@ -55,7 +55,7 @@ Currently, `src/core/geneticsEngine.ts` defines only `RABBIT_COLOR_LOCI` (`A`, `
 
 ## Phase 3 — Per-Species Loci, Variety Presets & Phenotype Classifiers (All 11 Predefined Species)
 
-1. **Rabbit (fix missing ARBA classifications):**
+1. **Rabbit (fix missing ARBA classifications & NZ Red Wide-Band safeguard):**
    - Keep `A, B, C, D, E, W, En, V, Du` and expand `classifyRabbitPhenotype` to classify:
      - `at` (Tan / Otter / Silver Marten)
      - `chl` (Sable / Siamese Sable / Seal / Sable Point)
@@ -64,6 +64,14 @@ Currently, `src/core/geneticsEngine.ts` defines only `RABBIT_COLOR_LOCI` (`A`, `
      - `dudu` (Dutch belted)
      - `ej` (Harlequin / Tricolor)
      - `Es` (Steel)
+     - Distinguish verified Wide-Band (`ee ww`) from non-wide-band (`ee W_`) and Wide-Band Unverified (`ee __`).
+   - **Conservative Preset & Interactive Verification Gate:**
+     - Variety presets for `Red`, `New Zealand Red`, and `Broken Red` start conservative (`A_ B_ C_ D_ ee __` / `A_ B_ C_ D_ ee __ Enen`) with optional unchecked confirmation prompts (`Confirm Wide-Band (ww)`) before writing `ww` into `genotypeRaw`.
+     - Newly created Rabbit forms start blank (`''`) rather than silently defaulting to `A_ B_ C_ D_ ee ww`.
+   - **Standalone Rufus Intensity Selector (`rufusLevel`):**
+     - Track polygenic red pigment richness (`Unspecified`, `High`, `Medium`, `Low`) independently of Mendelian `W/w` across UI, SQLite, JSON, CSV, and Barn Binders.
+   - **Importer Non-Assumption:**
+     - HerdBoss / CSV / JSON importers leave Wide-Band open unless explicitly present in a `Genotype` column; `"Red"` variety strings never trigger silent `ww` or `rufusLevel` assumptions.
 2. **Cat:**
    - `A` (`A, a`): Agouti/Tabby vs Solid
    - `B` (`B, b, b1`): Black / Chocolate / Cinnamon
@@ -146,17 +154,19 @@ Surface clear breeding alerts in `PunnettSimulationSummary` and the Breeding Lab
 
 ---
 
-## Phase 6 — UI Wiring, Tests & Expert Review Sign-Off
+## Phase 6 — UI Wiring, Carrier Integration, Tests & Expert Review Sign-Off
 
 1. **Animal Editor (`src/components/AnimalEditorModal.tsx`):**
-   - Switch locus builder rows, allele quick-picks, and variety auto-fill presets dynamically based on the active species (`null` fallback hides coat presets and shows plain genotype/DNA notes for custom species).
+   - Switch locus builder rows, allele quick-picks, and conservative variety presets dynamically based on the active species (`null` fallback hides coat presets and shows plain genotype/DNA notes for custom species).
+   - Never auto-populate `Red` or `ww` on blank Rabbits; prompt explicit verification checkboxes (e.g., Wide-Band `ww` on `New Zealand Red` / `Red`) before populating uncertain loci.
+   - Provide the separate **Rufus Intensity** selector (`High` / `Medium` / `Low`) and the **Suspected / Confirmed / Cleared** carrier comboboxes with test-mating proof metadata.
 2. **Herd Detail (`src/components/HerdScreen.tsx`):**
    - Pass active species into `inferHiddenAlleles` and label allele notes using that species' locus definitions.
+   - Expose **Carrier Finder** filters (All / Has Suspected or Confirmed / Confirmed / Cleared / Trait Search) and render per-branch `analyzeAnimalCarrierLineage` firewalls (showing `Cleared (Non-Carrier)` proofs, homozygous dominant coat clearances, `Lineage Potential Carriers`, and blocked branch notices).
 3. **Breeding Lab (`src/components/BreedingScreen.tsx`):**
    - Render autosomal vs. sex-split (Male/Female) Punnett outcomes when X-linked loci apply (e.g., Cat `O/o`).
-   - Display Phase 5 health/lethal pairing alerts prominently.
-4. **Tests (`src/core/__tests__/geneticsEngine.test.ts`):**
-   - Add per-species Punnett and inference tests across all 11 predefined species.
-   - Test X-linked Cat orange/tortie crosses, homozygous-dominant parent inference, intermediate recessive inference, unknown `_` carrier handling, lethal-warning triggers, and custom-species isolation (verifying zero Rabbit bleed-through).
+   - Display Phase 5 health/lethal pairing alerts (plus unverified Wide-Band `Red × Red` warning) and **Carrier Disclosure Pairing Risks** (`analyzePairingCarrierRisks`) across shared direct and lineage-potential traits.
+4. **Tests (`src/core/__tests__/geneticsEngine.test.ts`, `src/core/__tests__/carrierGenetics.test.ts`):**
+   - Add per-species Punnett and inference tests across all 11 predefined species, X-linked Cat orange/tortie crosses, homozygous-dominant parent inference, intermediate recessive inference (`atat`, `chdchd`), unknown `_` carrier handling, NZ Red `ww` confirmation gating, lethal-warning triggers, custom-species isolation, and hybrid per-branch carrier firewalls.
 5. **Expert Verification Gate:**
    - Keep `ColorGeneticsNotice` visible across Animal Editor, Herd Animal Detail, and Breeding Lab until each species genetics model has been reviewed and verified by a domain expert.

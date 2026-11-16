@@ -11,6 +11,7 @@
 import { Trash2, UserPlus } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatSystemTaskTitle } from '../core/calendarExport';
+import { analyzePairingCarrierRisks } from '../core/carrierGenetics';
 import { simulatePairingGenetics } from '../core/geneticsEngine';
 import {
   addDaysIso,
@@ -217,8 +218,13 @@ export function BreedingScreen({
 
   const geneticsPreview = useMemo(() => {
     if (!selectedSire || !selectedDam) return null;
-    return simulatePairingGenetics(selectedSire, selectedDam);
-  }, [selectedSire, selectedDam]);
+    return simulatePairingGenetics(selectedSire, selectedDam, speciesProfile.name);
+  }, [selectedSire, selectedDam, speciesProfile.name]);
+
+  const pairingCarrierRisks = useMemo(() => {
+    if (!selectedSire || !selectedDam) return [];
+    return analyzePairingCarrierRisks(selectedSire, selectedDam, herdById);
+  }, [selectedSire, selectedDam, herdById]);
 
   const previewTasks = useMemo(() => {
     if (!effectiveSire || !effectiveDam || !bredDateIso) return [];
@@ -614,34 +620,123 @@ export function BreedingScreen({
                 </div>
               )}
 
-              {geneticsPreview && geneticsPreview.locusBreakdowns.length > 0 && (
+              {pairingCarrierRisks.length > 0 && (
+                <div className="space-y-2 border-t border-[var(--barn-border)] pt-4">
+                  <h3 className="text-xs font-semibold text-[var(--barn-muted)]">
+                    Shared Carrier &amp; Lineage Risk Check ({pairingCarrierRisks.length})
+                  </h3>
+                  <div className="space-y-2 text-xs">
+                    {pairingCarrierRisks.map((risk) => (
+                      <div
+                        key={risk.trait}
+                        className={`p-3 rounded-xl border ${
+                          risk.severity === 'danger'
+                            ? 'bg-[var(--barn-danger)]/10 border-[var(--barn-danger)]/70'
+                            : risk.severity === 'warning'
+                            ? 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)]/80'
+                            : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
+                          <span>{risk.trait}</span>
+                          <span className="font-mono text-[11px] font-normal text-[var(--barn-muted)]">
+                            {risk.sireStatus} × {risk.damStatus}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[var(--barn-muted)] mt-1">{risk.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {geneticsPreview && geneticsPreview.isCustomSpeciesFallback && (
+                <div className="space-y-2 border-t border-[var(--barn-border)] pt-4 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold">Genotype &amp; DNA Notes</h3>
+                    <ColorGeneticsNotice compact />
+                  </div>
+                  <p className="text-[var(--barn-muted)]">
+                    {speciesProfile.name} uses custom species rules — Rabbit Punnett formulas are not applied.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono">
+                    <div className="p-2.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                      <div className="font-sans text-[11px] text-[var(--barn-muted)]">Sire</div>
+                      <div className="mt-0.5">{geneticsPreview.sireRaw || 'Not recorded'}</div>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+                      <div className="font-sans text-[11px] text-[var(--barn-muted)]">Dam</div>
+                      <div className="mt-0.5">{geneticsPreview.damRaw || 'Not recorded'}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {geneticsPreview &&
+                !geneticsPreview.isCustomSpeciesFallback &&
+                (geneticsPreview.locusBreakdowns.length > 0 ||
+                  geneticsPreview.lethalOrHealthAlerts.length > 0) && (
                 <div className="space-y-3 border-t border-[var(--barn-border)] pt-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-semibold">Coat Color Punnett Predictions</h3>
+                      <h3 className="text-sm font-semibold">
+                        {geneticsPreview.speciesName} Coat Color Punnett Predictions
+                      </h3>
                       <ColorGeneticsNotice compact />
                     </div>
                     {geneticsPreview.hasUnknownAlleles && (
-                      <span className="text-[11px] text-[var(--barn-muted)]">
-                        Includes unknown &lsquo;_&rsquo; carrier slots
+                      <span className="text-[11px] text-[var(--barn-terracotta)] font-medium">
+                        Contains unverified &lsquo;_&rsquo; allele slots
                       </span>
                     )}
                   </div>
 
+                  {geneticsPreview.lethalOrHealthAlerts.length > 0 && (
+                    <div className="space-y-2 text-xs">
+                      {geneticsPreview.lethalOrHealthAlerts.map((alert, idx) => (
+                        <div
+                          key={`${alert.title}-${idx}`}
+                          className={`p-3 rounded-xl border ${
+                            alert.severity === 'danger'
+                              ? 'bg-[var(--barn-danger)]/10 border-[var(--barn-danger)]'
+                              : alert.severity === 'warning'
+                              ? 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)]'
+                              : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+                          }`}
+                        >
+                          <div className="font-semibold text-[var(--barn-ink)]">{alert.title}</div>
+                          <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
+                            {alert.detail}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {geneticsPreview.predictedPhenotypes.length > 0 && (
                     <div className="space-y-1.5 text-xs">
-                      {geneticsPreview.predictedPhenotypes.map((ph) => (
+                      {geneticsPreview.predictedPhenotypes.map((ph, idx) => (
                         <div
-                          key={ph.label}
+                          key={`${ph.sexGroup || 'all'}-${ph.label}-${idx}`}
                           className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
                         >
-                          <div>
+                          <div className="min-w-0">
+                            {ph.sexGroup && (
+                              <span className="font-mono text-[11px] text-[var(--barn-slate)] mr-1.5">
+                                [{ph.sexGroup}]
+                              </span>
+                            )}
                             <span className="font-medium">{ph.label}</span>
                             <span className="font-mono text-[var(--barn-muted)] ml-2">
                               {ph.genotypeSummary}
                             </span>
+                            {ph.hasUnknownCarrier && (
+                              <span className="text-[11px] text-[var(--barn-terracotta)] ml-2">
+                                (provisional &lsquo;_&rsquo;)
+                              </span>
+                            )}
                           </div>
-                          <span className="font-mono font-semibold tabular-nums">
+                          <span className="font-mono font-semibold tabular-nums shrink-0">
                             {ph.probabilityPercent.toFixed(1)}%
                           </span>
                         </div>
@@ -649,11 +744,11 @@ export function BreedingScreen({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-xs">
                     {geneticsPreview.locusBreakdowns.map((lb) => (
                       <div
                         key={lb.locus}
-                        className="p-2.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                        className="p-2.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1.5"
                       >
                         <div className="font-semibold">
                           {lb.locusName}{' '}
@@ -661,14 +756,48 @@ export function BreedingScreen({
                             ({lb.sirePair}×{lb.damPair})
                           </span>
                         </div>
-                        <div className="font-mono text-[11px] text-[var(--barn-muted)] mt-1 space-y-0.5 tabular-nums">
-                          {lb.outcomes.map((o) => (
-                            <div key={o.genotype} className="flex justify-between">
-                              <span>{o.genotype}</span>
-                              <span>{o.probabilityPercent}%</span>
+                        {lb.sexSplitOutcomes ? (
+                          <div className="font-mono text-[11px] text-[var(--barn-muted)] space-y-1 tabular-nums">
+                            <div>
+                              <span className="font-sans font-medium text-[var(--barn-slate)]">
+                                Male (XY):
+                              </span>
+                              {lb.sexSplitOutcomes.male.map((o) => (
+                                <div key={`m-${o.genotype}`} className="flex justify-between gap-2">
+                                  <span className="truncate">{o.displayLabel || o.genotype}</span>
+                                  <span>{o.probabilityPercent}%</span>
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
+                            <div className="border-t border-[var(--barn-border)]/60 pt-1">
+                              <span className="font-sans font-medium text-[var(--barn-terracotta)]">
+                                Female (XX):
+                              </span>
+                              {lb.sexSplitOutcomes.female.map((o) => (
+                                <div key={`f-${o.genotype}`} className="flex justify-between gap-2">
+                                  <span className="truncate">{o.displayLabel || o.genotype}</span>
+                                  <span>{o.probabilityPercent}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="font-mono text-[11px] text-[var(--barn-muted)] space-y-0.5 tabular-nums">
+                            {lb.outcomes.map((o) => (
+                              <div key={o.genotype} className="flex justify-between gap-2">
+                                <span className="truncate" title={o.displayLabel || o.genotype}>
+                                  {o.displayLabel || o.genotype}
+                                </span>
+                                <span className="shrink-0">{o.probabilityPercent}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {lb.uncertaintyNote && (
+                          <div className="text-[10px] text-[var(--barn-muted)] leading-snug">
+                            {lb.uncertaintyNote}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

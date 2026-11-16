@@ -366,7 +366,7 @@ export function AnimalPhotoGallery({
                           void onDeletePhoto(activePhoto.id);
                           setConfirmDeleteId(null);
                         }}
-                        className="min-h-[28px] px-2 py-0.5 rounded-md bg-[var(--barn-danger)] text-white text-[11px] font-semibold"
+                        className="min-h-[28px] px-2 py-0.5 rounded-md bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold"
                       >
                         Remove
                       </button>
