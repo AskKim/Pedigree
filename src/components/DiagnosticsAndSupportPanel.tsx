@@ -101,6 +101,7 @@ export function DiagnosticsAndSupportPanel({
 
   const [includeDataInBundle, setIncludeDataInBundle] = useState(true);
   const [includePhotosInBundle, setIncludePhotosInBundle] = useState(true);
+  const [recipientEmail, setRecipientEmail] = useState('');
   const [busyAction, setBusyAction] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
@@ -186,8 +187,7 @@ export function DiagnosticsAndSupportPanel({
   };
 
   const handleSupportEmailChange = (email: string) => {
-    const next = updateDiagnosticConfig({ supportEmail: email });
-    setConfig(next);
+    setRecipientEmail(email);
   };
 
   const handleDownloadLogsTxt = async () => {
@@ -237,7 +237,7 @@ export function DiagnosticsAndSupportPanel({
         includePhotos: includePhotosInBundle,
       });
 
-      const recipient = (config.supportEmail || '').trim();
+      const recipient = recipientEmail.trim();
       setLastBuiltMailMeta({
         filename: built.filename,
         summary: sum,
@@ -318,7 +318,7 @@ export function DiagnosticsAndSupportPanel({
   const currentHeapLimit = summary?.currentMemory.heapLimitBytes;
   const mailtoHref = lastBuiltMailMeta
     ? buildSupportMailtoHref({
-        recipientEmail: config.supportEmail,
+        recipientEmail,
         ...lastBuiltMailMeta,
       })
     : null;
@@ -459,10 +459,12 @@ export function DiagnosticsAndSupportPanel({
           </label>
           <input
             id="support-recipient-email"
+            name="support-recipient-manual"
             type="email"
             inputMode="email"
-            autoComplete="email"
-            value={config.supportEmail}
+            autoComplete="off"
+            spellCheck={false}
+            value={recipientEmail}
             onChange={(e) => handleSupportEmailChange(e.target.value)}
             placeholder="Type recipient email address"
             className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
@@ -525,8 +527,8 @@ export function DiagnosticsAndSupportPanel({
                   className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Mail className="w-3.5 h-3.5" aria-hidden="true" />
-                  {config.supportEmail.trim()
-                    ? `Open Email Draft (${config.supportEmail.trim()})`
+                  {recipientEmail.trim()
+                    ? `Open Email Draft (${recipientEmail.trim()})`
                     : 'Open Email Draft'}
                 </a>
               )}

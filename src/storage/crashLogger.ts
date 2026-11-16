@@ -22,22 +22,6 @@ import { generateUuid, nowIsoUtc } from '../core/models';
 
 export const DEFAULT_SUPPORT_EMAIL = '';
 
-function isLegacyPrefillHash(val: string): boolean {
-  let h = 2166136261;
-  for (let i = 0; i < val.length; i++) {
-    h ^= val.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0) === 1951363555;
-}
-
-function sanitizeSupportEmail(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  const trimmed = raw.trim();
-  if (!trimmed || isLegacyPrefillHash(trimmed.toLowerCase())) return '';
-  return raw;
-}
-
 export type DiagnosticLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 export type DiagnosticCategory =
@@ -171,7 +155,7 @@ export function getDiagnosticConfig(): DiagnosticConfig {
     return {
       verboseEnabled: parsed.verboseEnabled !== false,
       retentionDays: days,
-      supportEmail: sanitizeSupportEmail(parsed.supportEmail).trim(),
+      supportEmail: '',
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -182,11 +166,11 @@ export function updateDiagnosticConfig(patch: Partial<DiagnosticConfig>): Diagno
   const next: DiagnosticConfig = {
     ...getDiagnosticConfig(),
     ...patch,
+    supportEmail: '',
   };
   if (next.retentionDays !== 3 && next.retentionDays !== 7 && next.retentionDays !== 14) {
     next.retentionDays = 7;
   }
-  next.supportEmail = sanitizeSupportEmail(next.supportEmail);
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));

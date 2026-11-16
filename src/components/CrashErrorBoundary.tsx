@@ -28,12 +28,10 @@ import {
 import { formatTimestampedBackupSlug } from '../core/syncAndExports';
 import {
   DiagnosticSummary,
-  getDiagnosticConfig,
   getDiagnosticSummary,
   isMemoryLikeError,
   listDiagnosticLogs,
   recordReactCrash,
-  updateDiagnosticConfig,
 } from '../storage/crashLogger';
 import {
   listRollingSnapshotBackups,
@@ -98,7 +96,7 @@ export class CrashErrorBoundary extends React.Component<
       busy: false,
       includeData: true,
       includePhotos: true,
-      recipientEmail: getDiagnosticConfig().supportEmail,
+      recipientEmail: '',
       feedback: null,
       lastBuiltMailMeta: null,
     };
@@ -159,7 +157,7 @@ export class CrashErrorBoundary extends React.Component<
         includePhotos: this.state.includePhotos,
       });
 
-      const recipient = (this.state.recipientEmail || getDiagnosticConfig().supportEmail || '').trim();
+      const recipient = this.state.recipientEmail.trim();
       const lastBuiltMailMeta = {
         filename: built.filename,
         summary,
@@ -320,14 +318,14 @@ export class CrashErrorBoundary extends React.Component<
               </label>
               <input
                 id="crash-recipient-email"
+                name="crash-recipient-manual"
                 type="email"
                 inputMode="email"
-                autoComplete="email"
+                autoComplete="off"
+                spellCheck={false}
                 value={recipientEmail}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  this.setState({ recipientEmail: val });
-                  updateDiagnosticConfig({ supportEmail: val });
+                  this.setState({ recipientEmail: e.target.value });
                 }}
                 placeholder="Type recipient email address"
                 className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas,#f2e9da)] border border-[var(--barn-border,#cfc0a8)] font-mono text-xs"
