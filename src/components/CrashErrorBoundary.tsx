@@ -27,12 +27,13 @@ import {
 } from '../core/supportBundle';
 import { formatTimestampedBackupSlug } from '../core/syncAndExports';
 import {
-  DEFAULT_SUPPORT_EMAIL,
+  DiagnosticSummary,
   getDiagnosticConfig,
   getDiagnosticSummary,
   isMemoryLikeError,
   listDiagnosticLogs,
   recordReactCrash,
+  updateDiagnosticConfig,
 } from '../storage/crashLogger';
 import {
   listRollingSnapshotBackups,
@@ -56,8 +57,14 @@ interface CrashErrorBoundaryState {
   busy: boolean;
   includeData: boolean;
   includePhotos: boolean;
+  recipientEmail: string;
   feedback: string | null;
-  mailtoHref: string | null;
+  lastBuiltMailMeta: {
+    filename: string;
+    summary: DiagnosticSummary;
+    includedData: boolean;
+    includedPhotos: boolean;
+  } | null;
 }
 
 async function loadBestAvailableSnapshotForSupport(): Promise<BarnDatabaseSnapshot | null> {
@@ -91,8 +98,9 @@ export class CrashErrorBoundary extends React.Component<
       busy: false,
       includeData: true,
       includePhotos: true,
+      recipientEmail: getDiagnosticConfig().supportEmail,
       feedback: null,
-      mailtoHref: null,
+      lastBuiltMailMeta: null,
     };
   }
 
@@ -103,7 +111,7 @@ export class CrashErrorBoundary extends React.Component<
       error,
       includePhotos: !memoryFault,
       feedback: null,
-      mailtoHref: null,
+      lastBuiltMailMeta: null,
     };
   }
 
@@ -135,7 +143,7 @@ export class CrashErrorBoundary extends React.Component<
   };
 
   private handleExportOrSendBundle = async (sendViaShare: boolean) => {
-    this.setState({ busy: true, feedback: null, mailtoHref: null });
+    this.setState({ busy: true, feedback: null, lastBuiltMailMeta: null });
     try {
       const entries = await listDiagnosticLogs();
       const summary = await getDiagnosticSummary(entries);
@@ -151,42 +159,42 @@ export class CrashErrorBoundary extends React.Component<
         includePhotos: this.state.includePhotos,
       });
 
-      const cfg = getDiagnosticConfig();
-      const recipient = cfg.supportEmail || DEFAULT_SUPPORT_EMAIL;
-      const mailtoHref = buildSupportMailtoHref({
-        recipientEmail: recipient,
+      const recipient = (this.state.recipientEmail || getDiagnosticConfig().supportEmail || '').trim();
+      const lastBuiltMailMeta = {
         filename: built.filename,
         summary,
         includedData: built.includedData,
         includedPhotos: built.includedPhotos,
-      });
+      };
 
       if (sendViaShare) {
         const mode = await shareBinaryFileOrDownload({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Crash & Support Bundle',
-          text: `Support logs & data bundle for ${recipient}`,
+          title: 'Community Pedigree Bug Report Bundle',
+          text: `${
+            recipient ? `Bug report logs & data bundle for ${recipient}` : 'Bug report logs & data bundle'
+          }`,
         });
         this.setState({
           busy: false,
-          mailtoHref,
+          lastBuiltMailMeta,
           feedback:
             mode === 'shared'
-              ? `Opened share sheet with ${built.filename}. You can send it directly to ${recipient}.`
-              : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP to send to ${recipient}.`,
+              ? `Opened share sheet with ${built.filename}.${recipient ? ` You can send the bug report directly to ${recipient}.` : ''}`
+              : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP${recipient ? ` to send to ${recipient}` : ''}.`,
         });
       } else {
         await shareBinaryFileOrDownload({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Crash & Support Bundle',
+          title: 'Community Pedigree Bug Report Bundle',
         });
         this.setState({
           busy: false,
-          mailtoHref,
+          lastBuiltMailMeta,
           feedback: `Exported ${built.filename} (${built.logCount} logs${
             built.includedData ? `, ${built.animalCount} animals` : ''
           }).`,
@@ -195,7 +203,7 @@ export class CrashErrorBoundary extends React.Component<
     } catch (err) {
       this.setState({
         busy: false,
-        feedback: err instanceof Error ? err.message : 'Could not package support bundle.',
+        feedback: err instanceof Error ? err.message : 'Could not package bug report bundle.',
       });
     }
   };
@@ -205,9 +213,14 @@ export class CrashErrorBoundary extends React.Component<
       return this.props.children;
     }
 
-    const { error, componentStack, showDetails, busy, includeData, includePhotos, feedback, mailtoHref } =
+    const { error, componentStack, showDetails, busy, includeData, includePhotos, recipientEmail, feedback, lastBuiltMailMeta } =
       this.state;
-    const cfg = getDiagnosticConfig();
+    const mailtoHref = lastBuiltMailMeta
+      ? buildSupportMailtoHref({
+          recipientEmail,
+          ...lastBuiltMailMeta,
+        })
+      : null;
     const memoryFault = error ? isMemoryLikeError(error) : false;
 
     return (
@@ -298,7 +311,27 @@ export class CrashErrorBoundary extends React.Component<
 
           <div className="border-t border-[var(--barn-border,#cfc0a8)] pt-4 space-y-3">
             <div className="text-xs font-semibold">
-              Export Crash Logs &amp; Send to Support ({cfg.supportEmail})
+              Export Crash Logs &amp; Send Bug Report
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
+              <label htmlFor="crash-recipient-email" className="text-[var(--barn-muted,#63584a)] shrink-0">
+                Recipient Email:
+              </label>
+              <input
+                id="crash-recipient-email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={recipientEmail}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  this.setState({ recipientEmail: val });
+                  updateDiagnosticConfig({ supportEmail: val });
+                }}
+                placeholder="Type recipient email address"
+                className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas,#f2e9da)] border border-[var(--barn-border,#cfc0a8)] font-mono text-xs"
+              />
             </div>
 
             <div className="space-y-1.5 text-xs">
@@ -330,7 +363,7 @@ export class CrashErrorBoundary extends React.Component<
                 className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage,#2d5e3f)] text-[var(--barn-on-sage,#fff8f0)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
               >
                 <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
-                {includeData ? 'Send Logs + Data Bundle' : 'Send Error Logs (.ZIP)'}
+                {includeData ? 'Send Bug Report + Data (.ZIP)' : 'Send Bug Report (.ZIP)'}
               </button>
 
               <button
@@ -363,7 +396,9 @@ export class CrashErrorBoundary extends React.Component<
                     className="inline-flex items-center gap-1.5 font-semibold underline text-[var(--barn-sage,#2d5e3f)]"
                   >
                     <Mail className="w-3.5 h-3.5" aria-hidden="true" />
-                    Open Email Draft to {cfg.supportEmail}
+                    {recipientEmail.trim()
+                      ? `Open Email Draft to ${recipientEmail.trim()}`
+                      : 'Open Email Draft'}
                   </a>
                 )}
               </div>

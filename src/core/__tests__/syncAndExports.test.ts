@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { applyAnimalNamePrefix } from '../models';
+import {
+  applyAnimalNamePrefix,
+  formatWeight,
+  getSpeciesIdentifierLabels,
+  parseWeightInputToGrams,
+  resolveSpeciesWeightUnit,
+} from '../models';
 import {
   countSpeciesNonTestingRecords,
   countSpeciesTestingRecords,
@@ -248,5 +254,86 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(applyAnimalNamePrefix('oak ridge Ruby Rose', 'Oak Ridge')).toBe('oak ridge Ruby Rose');
     expect(applyAnimalNamePrefix('Ruby', 'OR-')).toBe('OR-Ruby');
     expect(applyAnimalNamePrefix('Ruby', '')).toBe('Ruby');
+  });
+
+  it('supports kg units, per-species weight overrides across backups/CSV, and species-aware identifier labels', () => {
+    expect(formatWeight(18500, 'kg')).toBe('18.50 kg');
+    expect(parseWeightInputToGrams('18.5', 'kg')).toBe(18500);
+
+    const dogProfile = { ...makeSpeciesProfile('Dog'), preferredUnit: 'kg' as const };
+    const rabbitProfile = makeSpeciesProfile('Rabbit');
+    const settings = makeSettings({ preferredUnit: 'lbs_oz' });
+
+    expect(resolveSpeciesWeightUnit(dogProfile, settings)).toBe('kg');
+    expect(resolveSpeciesWeightUnit(rabbitProfile, settings)).toBe('lbs_oz');
+
+    const snap = makeEmptySnapshot({
+      settings,
+      speciesProfiles: [dogProfile, rabbitProfile],
+      animals: [
+        makeAnimal('d1', { species: 'Dog', name: 'Scout', weightGrams: 22500 }),
+        makeAnimal('r1', { species: 'Rabbit', name: 'Ruby', weightGrams: 4536 }),
+      ],
+    });
+
+    const csv = exportAnimalsCsv(snap.animals, snap.speciesProfiles, settings);
+    expect(csv).toContain('22.50 kg');
+    expect(csv).toContain('10 lb 0 oz');
+
+    const restored = parseBarnBackupJson(exportBarnBackupJson(snap), makeSettings());
+    expect(restored.speciesProfiles.find((s) => s.name === 'Dog')?.preferredUnit).toBe('kg');
+    expect(restored.speciesProfiles.find((s) => s.name === 'Rabbit')?.preferredUnit).toBeUndefined();
+
+    expect(getSpeciesIdentifierLabels('Dog').fieldLabel).toContain('Microchip');
+    expect(getSpeciesIdentifierLabels('Cattle').fieldLabel).toContain('Ear Tag');
+    expect(getSpeciesIdentifierLabels('Rabbit').fieldLabel).toContain('Ear Tattoo');
+  });
+
+  it('respects PedigreePrintOptions for hiding weights, hiding genotypes, and printing breeder contact footer', () => {
+    const subj = makeAnimal('p1', {
+      name: 'Customer Doe',
+      species: 'Rabbit',
+      sex: 'Female',
+      weightGrams: 4082,
+      genotypeRaw: 'A_ B_ C_ D_ E_',
+    });
+    const snap = makeEmptySnapshot({ animals: [subj] });
+
+    const customerHtml = generateEvansHtmPedigree(
+      subj,
+      snap.animals,
+      snap.speciesProfiles,
+      snap.settings,
+      3,
+      undefined,
+      {
+        showWeights: false,
+        showGenotypes: false,
+        showBreederFooter: true,
+        breederContactLine: 'https://oakridge-example.test · (555) 010-2000',
+      }
+    );
+
+    expect(customerHtml).not.toContain('<strong>Weight:</strong>');
+    expect(customerHtml).not.toContain('<strong>Genotype:</strong>');
+    expect(customerHtml).toContain('https://oakridge-example.test · (555) 010-2000');
+    expect(customerHtml).toContain('Breeder Signature:');
+
+    const noFooterHtml = generateEvansHtmPedigree(
+      subj,
+      snap.animals,
+      snap.speciesProfiles,
+      snap.settings,
+      3,
+      undefined,
+      {
+        showWeights: true,
+        showGenotypes: true,
+        showBreederFooter: false,
+      }
+    );
+    expect(noFooterHtml).toContain('<strong>Weight:</strong>');
+    expect(noFooterHtml).toContain('<strong>Genotype:</strong>');
+    expect(noFooterHtml).not.toContain('Breeder Signature:');
   });
 });

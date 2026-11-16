@@ -37,6 +37,7 @@ import {
   normalizeCalendarSyncSettings,
   normalizeSpeciesHubBlockOrder,
   nowIsoUtc,
+  PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
   ShowEvent,
   SpeciesHubBlockId,
@@ -157,6 +158,7 @@ export type WorkspaceRoute =
   | 'herd'
   | 'breeding'
   | 'pedigree'
+  | 'reports'
   | 'memo'
   | 'settings';
 
@@ -608,6 +610,17 @@ export function useBarnStore() {
       notify(`Cleared alert for current ${speciesName} overdue tasks.`);
     },
     [snapshot, updateSettings, notify]
+  );
+
+  const dismissSpeciesMemoAlert = useCallback(
+    async (speciesName: string, memoSignature: string) => {
+      if (!snapshot || !memoSignature) return;
+      const key = speciesName.trim().toLowerCase();
+      const prevMap = snapshot.settings.dismissedMemoAlertSignatures || {};
+      const nextMap: Record<string, string> = { ...prevMap, [key]: memoSignature };
+      await updateSettings({ dismissedMemoAlertSignatures: nextMap }, { silent: true });
+    },
+    [snapshot, updateSettings]
   );
 
   const recordBackupExport = useCallback(
@@ -2164,7 +2177,9 @@ export function useBarnStore() {
     });
     await adapterRef.current!.replaceSnapshot(full);
     await reloadFromAdapter();
-    notify('Loaded 6-generation testing herds across all 9 predefined livestock species.');
+    notify(
+      `Loaded 6-generation testing herds across all ${PREDEFINED_SPECIES_PRESETS.length} predefined species.`
+    );
   }, [snapshot, reloadFromAdapter, notify]);
 
   const deleteSpeciesTestingData = useCallback(
@@ -2730,6 +2745,7 @@ export function useBarnStore() {
     updateSettings,
     ignoreTaskAlertsPermanently,
     clearTaskAlertGroup,
+    dismissSpeciesMemoAlert,
     togglePinSpeciesLanding,
     saveSpeciesProfile,
     saveSpeciesMemo,

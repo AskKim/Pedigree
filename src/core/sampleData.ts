@@ -9,8 +9,8 @@
  *
  * Provides authentic 3- to 6-generation pedigree trees (with ~half of active animals having a
  * complete 6-generation pedigree backed by archived/inactive foundation ancestors), active breedings,
- * cascaded Master Task List chores, cage/pen locations, weight/leg logs, and show rosters for ALL 9
- * predefined livestock species—led by an ARBA-standard New Zealand Red rabbitry.
+ * cascaded Master Task List chores, cage/pen locations, weight/leg logs, and show rosters for ALL
+ * predefined species—led by an ARBA-standard New Zealand Red rabbitry.
  */
 
 import { parseGenotypeString } from './geneticsEngine';
@@ -299,6 +299,56 @@ const SPECIES_SEED_SPECS: SeedFamilySpec[] = [
     sanctionBody: 'Specialty Club',
     showTitle: 'Western Fleece & Halter Futurity',
     showLocation: 'Regional Equine & Fiber Pavilion',
+  },
+  {
+    species: 'Dog',
+    breed: 'Golden Retriever',
+    varietyA: 'Medium Golden',
+    varietyB: 'Dark Golden',
+    tagPrefix: 'DOG',
+    breederName: 'Timberline Goldens',
+    cagePrefix: 'Kennel D',
+    avgAdultGrams: 29500, // ~65 lbs
+    juniorGrams: 11500,
+    names: {
+      pgs: 'Timberline Cedar Ridge',
+      pgd: 'Timberline Honeybell',
+      mgs: 'Suncrest Maverick',
+      mgd: 'Suncrest Willow',
+      sire: 'Timberline Copperfield',
+      dam: 'Timberline Autumn Breeze',
+      juniorFemale: 'Timberline Meadow',
+      juniorMale: 'Timberline Tucker',
+    },
+    shareGrandsireForLinebreeding: false,
+    sanctionBody: 'AKC / UKC',
+    showTitle: 'Pacific Northwest All-Breed Kennel Classic',
+    showLocation: 'Metro Exhibition Pavilion',
+  },
+  {
+    species: 'Cat',
+    breed: 'Maine Coon',
+    varietyA: 'Brown Classic Tabby',
+    varietyB: 'Silver Torbie & White',
+    tagPrefix: 'CAT',
+    breederName: 'Whispering Pines Cattery',
+    cagePrefix: 'Suite C',
+    avgAdultGrams: 6400, // ~14 lbs
+    juniorGrams: 2800,
+    names: {
+      pgs: 'Whispering Pines Magnus',
+      pgd: 'Whispering Pines Freya',
+      mgs: 'Nordic Crown Thorin',
+      mgd: 'Nordic Crown Astrid',
+      sire: 'Whispering Pines Lynx',
+      dam: 'Whispering Pines Aurora',
+      juniorFemale: 'Whispering Pines Willow',
+      juniorMale: 'Whispering Pines Jasper',
+    },
+    shareGrandsireForLinebreeding: false,
+    sanctionBody: 'CFA / TICA',
+    showTitle: 'Cascade Feline Championship',
+    showLocation: 'Harborview Convention Hall',
   },
 ];
 
@@ -1268,7 +1318,7 @@ export function buildSampleDataForSpecies(
 }
 
 /**
- * Builds a complete initial `BarnDatabaseSnapshot` seeded with ALL 9 predefined livestock species
+ * Builds a complete initial `BarnDatabaseSnapshot` seeded with ALL predefined species
  * so every species tab has rich, strictly isolated 3-generation test data out of the box.
  */
 export function buildFullPredefinedSampleSnapshot(
@@ -1279,7 +1329,7 @@ export function buildFullPredefinedSampleSnapshot(
   const settings: BarnSettings = {
     id: 'barn_settings',
     barnName: existingSettings?.barnName || 'Copper Creek Barn',
-    breederName: existingSettings?.breederName || 'Kimberly',
+    breederName: existingSettings?.breederName || '',
     preferredUnit: existingSettings?.preferredUnit || 'lbs_oz',
     defaultSpecies: existingSettings?.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies: existingSettings?.pinnedLandingSpecies ?? '',
@@ -1291,6 +1341,7 @@ export function buildFullPredefinedSampleSnapshot(
     barnNameOnboarded: existingSettings?.barnNameOnboarded ?? false,
     ignoredTaskIds: existingSettings?.ignoredTaskIds ?? [],
     dismissedTaskGroupKeys: existingSettings?.dismissedTaskGroupKeys ?? {},
+    dismissedMemoAlertSignatures: existingSettings?.dismissedMemoAlertSignatures ?? {},
     includePhotoOnPedigree: existingSettings?.includePhotoOnPedigree ?? false,
     updatedAt: ts,
   };

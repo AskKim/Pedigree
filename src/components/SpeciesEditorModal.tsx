@@ -21,6 +21,8 @@ import {
   TASK_PRIORITIES,
   TaskCategory,
   TaskPriority,
+  WEIGHT_UNIT_OPTIONS,
+  WeightUnit,
 } from '../core/models';
 import { describeMilestoneOffset } from '../core/taskMaster';
 
@@ -77,6 +79,9 @@ export function SpeciesEditorModal({
   const [defaultAnimalPrefix, setDefaultAnimalPrefix] = useState(
     initialProfile?.defaultAnimalPrefix || ''
   );
+  const [preferredUnit, setPreferredUnit] = useState<WeightUnit | ''>(
+    initialProfile?.preferredUnit || ''
+  );
   const [confirmRemoveSpecies, setConfirmRemoveSpecies] = useState(false);
   const [gestationDays, setGestationDays] = useState(
     String(initialProfile?.gestationDays ?? 114)
@@ -117,6 +122,7 @@ export function SpeciesEditorModal({
     setErrorMsg('');
     setName('');
     setDefaultAnimalPrefix('');
+    setPreferredUnit('');
     setGestationDays('114');
     setWeanDays('56');
     setRebreedDays('45');
@@ -134,6 +140,7 @@ export function SpeciesEditorModal({
     setErrorMsg('');
     const alreadyExists = existingNames.some((n) => isSameSpecies(n, preset.name));
     setName(alreadyExists ? `${preset.name} (Custom)` : preset.name);
+    setPreferredUnit(preset.preferredUnit || '');
     setGestationDays(String(preset.gestationDays));
     setRebreedDays(String(preset.rebreedDaysAfterBirth));
     setWeanDays(String(preset.weanDaysAfterBirth));
@@ -191,6 +198,7 @@ export function SpeciesEditorModal({
       sortOrder: initialProfile?.sortOrder,
       name: cleanName,
       defaultAnimalPrefix: defaultAnimalPrefix.trim(),
+      preferredUnit: preferredUnit || undefined,
       memoText: initialProfile?.memoText ?? '',
       memoUpdatedAt: initialProfile?.memoUpdatedAt ?? '',
       gestationDays: Math.max(1, Number(gestationDays) || 31),
@@ -413,7 +421,7 @@ export function SpeciesEditorModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                 Common Breeds / Varieties (comma-separated, optional)
@@ -440,6 +448,27 @@ export function SpeciesEditorModal({
               />
               <p className="text-[11px] text-[var(--barn-muted)] mt-1">
                 Pre-fills new animal names if omitted; breeders can clear or override it anytime.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Species Weight Unit Override
+              </label>
+              <select
+                value={preferredUnit}
+                onChange={(e) => setPreferredUnit(e.target.value as WeightUnit | '')}
+                className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+              >
+                <option value="">Use Barn Default</option>
+                {WEIGHT_UNIT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-[var(--barn-muted)] mt-1">
+                e.g. Decimal lbs or kg for Cattle/Dogs, lbs &amp; oz or grams for Rabbits.
               </p>
             </div>
           </div>

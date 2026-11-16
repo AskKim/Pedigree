@@ -2,17 +2,20 @@
  * @license
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Compact inline notice displayed wherever Wright COI readouts appear.
+ * Compact inline notice displayed wherever color genetics / genotype readouts or inputs appear.
  */
 
 import { AlertTriangle } from 'lucide-react';
 
-interface WrightCoiNoticeProps {
+interface ColorGeneticsNoticeProps {
   compact?: boolean;
   className?: string;
 }
 
-export function WrightCoiNotice({ compact = false, className = '' }: WrightCoiNoticeProps) {
+export function ColorGeneticsNotice({
+  compact = false,
+  className = '',
+}: ColorGeneticsNoticeProps) {
   if (compact) {
     return (
       <div
@@ -23,7 +26,7 @@ export function WrightCoiNotice({ compact = false, className = '' }: WrightCoiNo
           className="w-3 h-3 text-[var(--barn-terracotta)] shrink-0"
           aria-hidden="true"
         />
-        <span>Wright COI is not yet working.</span>
+        <span>Color genetics is not yet working.</span>
       </div>
     );
   }
@@ -38,7 +41,7 @@ export function WrightCoiNotice({ compact = false, className = '' }: WrightCoiNo
         aria-hidden="true"
       />
       <span>
-        <strong>Notice:</strong> Wright COI calculation is not yet working.
+        <strong>Notice:</strong> Color genetics &amp; genotype calculation is not yet working.
       </span>
     </div>
   );

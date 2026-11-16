@@ -17,19 +17,27 @@ import {
   ArrowUp,
   ArrowUpToLine,
   Baby,
+  CalendarDays,
   Check,
+  ChevronDown,
+  ChevronUp,
+  Download,
   GripVertical,
   Plus,
+  StickyNote,
+  X,
 } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
+  evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
 } from '../core/barnAlerts';
-import { formatSystemTaskTitle } from '../core/calendarExport';
+import { buildMultiSpeciesAgenda, formatSystemTaskTitle } from '../core/calendarExport';
 import {
   BarnDatabaseSnapshot,
+  BarnTask,
   isAnimalArchived,
   todayDateIso,
 } from '../core/models';
@@ -44,6 +52,9 @@ interface HomeSpeciesScreenProps {
   onHideSummaryGrid: () => void;
   onIgnoreTaskAlerts: (taskIds: string[]) => void;
   onClearTaskAlertGroup: (speciesName: string, groupSignature: string | string[]) => void;
+  onDismissMemoAlert?: (speciesName: string, signature: string) => void;
+  onToggleTaskCompleted?: (task: BarnTask) => void;
+  onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => void;
   onNavigateToAddSpecies: () => void;
 }
 
@@ -56,10 +67,16 @@ export function HomeSpeciesScreen({
   onHideSummaryGrid,
   onIgnoreTaskAlerts,
   onClearTaskAlertGroup,
+  onDismissMemoAlert,
+  onToggleTaskCompleted,
+  onExportTasksToCalendar,
   onNavigateToAddSpecies,
 }: HomeSpeciesScreenProps) {
   const [draggedSpeciesId, setDraggedSpeciesId] = useState<string | null>(null);
   const [dragOverSpeciesId, setDragOverSpeciesId] = useState<string | null>(null);
+  const [agendaOpen, setAgendaOpen] = useState(false);
+  const [agendaHorizonDays, setAgendaHorizonDays] = useState<7 | 14>(7);
+  const [agendaSpeciesFilter, setAgendaSpeciesFilter] = useState<string>('');
   const [onboardingBarnName, setOnboardingBarnName] = useState<string>(
     snapshot.settings.barnName === 'My Barn' ? '' : snapshot.settings.barnName
   );
@@ -82,6 +99,30 @@ export function HomeSpeciesScreen({
     ['Planned', 'Bred', 'Palpated Positive'].includes(b.status)
   ).length;
   const openTasks = activeTasks.filter((t) => !t.completed).length;
+
+  const agenda = useMemo(
+    () =>
+      buildMultiSpeciesAgenda({
+        tasks: snapshot.tasks,
+        animals: snapshot.animals,
+        breedings: snapshot.breedings,
+        speciesProfiles: snapshot.speciesProfiles,
+        calendarSync: snapshot.settings.calendarSync,
+        todayIso: today,
+        horizonDays: agendaHorizonDays,
+        speciesFilter: agendaSpeciesFilter || undefined,
+      }),
+    [
+      snapshot.tasks,
+      snapshot.animals,
+      snapshot.breedings,
+      snapshot.speciesProfiles,
+      snapshot.settings.calendarSync,
+      today,
+      agendaHorizonDays,
+      agendaSpeciesFilter,
+    ]
+  );
 
   const handleDropOnCard = (targetId: string) => {
     if (!draggedSpeciesId || draggedSpeciesId === targetId) {
@@ -158,7 +199,7 @@ export function HomeSpeciesScreen({
         <div className="space-y-1.5 max-w-2xl">
           <div className="space-y-0.5">
             <p className="text-xs text-[var(--barn-muted)]">
-              Multi**Species Livestock Pedigree &amp; Management System
+              Multi**Species Pedigree &amp; Management System
             </p>
             <p className="text-xs text-[var(--barn-muted)]">
               100% local app ownership — offline-first with zero cloud lock-in.
@@ -226,6 +267,177 @@ export function HomeSpeciesScreen({
         )}
       </section>
 
+      {/* Multi-Species Week-Ahead Barn Agenda (All Added Species) */}
+      {snapshot.speciesProfiles.length > 0 && (
+        <section
+          aria-label="Multi-Species Barn Calendar Agenda"
+          className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-hidden"
+        >
+          <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setAgendaOpen((prev) => !prev)}
+              aria-expanded={agendaOpen}
+              className="flex items-center gap-2 text-left min-w-0"
+            >
+              <CalendarDays className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span className="text-xs sm:text-sm font-semibold text-[var(--barn-ink)]">
+                Barn Agenda &mdash; Next {agendaHorizonDays} Days
+              </span>
+              <span className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)]">
+                {agenda.items.length === 0
+                  ? 'Clear'
+                  : `${agenda.overdueCount > 0 ? `${agenda.overdueCount} overdue · ` : ''}${agenda.todayCount} today · ${agenda.upcomingCount} upcoming`}
+              </span>
+              {agendaOpen ? (
+                <ChevronUp className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
+              )}
+            </button>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {onExportTasksToCalendar && (
+                <button
+                  type="button"
+                  disabled={agenda.exportableTasks.length === 0}
+                  onClick={() =>
+                    onExportTasksToCalendar(
+                      agenda.exportableTasks,
+                      agendaSpeciesFilter
+                        ? `${agendaSpeciesFilter}-next-${agendaHorizonDays}d-agenda`
+                        : `barn-all-species-next-${agendaHorizonDays}d-agenda`
+                    )
+                  }
+                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-45 whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  Export Agenda .ICS ({agenda.exportableTasks.length})
+                </button>
+              )}
+            </div>
+          </div>
+
+          {agendaOpen && (
+            <div className="px-4 pb-4 pt-2 border-t border-[var(--barn-border)] space-y-3 bg-[var(--barn-canvas)]/45">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setAgendaHorizonDays(7)}
+                    aria-pressed={agendaHorizonDays === 7}
+                    className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-medium border ${
+                      agendaHorizonDays === 7
+                        ? 'bg-[var(--barn-forest)] text-white border-[var(--barn-forest)]'
+                        : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)]'
+                    }`}
+                  >
+                    Next 7 Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgendaHorizonDays(14)}
+                    aria-pressed={agendaHorizonDays === 14}
+                    className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-medium border ${
+                      agendaHorizonDays === 14
+                        ? 'bg-[var(--barn-forest)] text-white border-[var(--barn-forest)]'
+                        : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)]'
+                    }`}
+                  >
+                    Next 14 Days
+                  </button>
+                </div>
+
+                {snapshot.speciesProfiles.length > 1 && (
+                  <select
+                    aria-label="Filter agenda by added species"
+                    value={agendaSpeciesFilter}
+                    onChange={(e) => setAgendaSpeciesFilter(e.target.value)}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  >
+                    <option value="">All Added Species ({snapshot.speciesProfiles.length})</option>
+                    {snapshot.speciesProfiles.map((sp) => (
+                      <option key={sp.id} value={sp.name}>
+                        {sp.name} Only
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {agenda.items.length === 0 ? (
+                <div className="py-4 text-center text-xs text-[var(--barn-muted)]">
+                  No chores or expected births scheduled within the next {agendaHorizonDays} days.
+                </div>
+              ) : (
+                <ul className="divide-y divide-[var(--barn-border)]/70 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] overflow-hidden">
+                  {agenda.items.map((item) => (
+                    <li
+                      key={item.id}
+                      className="px-3 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        {item.kind === 'task' && item.task && onToggleTaskCompleted ? (
+                          <button
+                            type="button"
+                            onClick={() => onToggleTaskCompleted(item.task!)}
+                            aria-label={`Complete task ${item.title}`}
+                            title="Mark task completed"
+                            className="w-5 h-5 mt-0.5 rounded border border-[var(--barn-border)] hover:border-[var(--barn-sage)] flex items-center justify-center shrink-0"
+                          />
+                        ) : (
+                          <Baby
+                            className="w-4 h-4 mt-0.5 text-[var(--barn-sage)] shrink-0"
+                            aria-hidden="true"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[var(--barn-ink)] truncate">
+                            {item.title}
+                          </div>
+                          <div className="text-[11px] text-[var(--barn-muted)]">
+                            <span
+                              className={`font-mono font-medium mr-1.5 ${
+                                item.isOverdue
+                                  ? 'text-[var(--barn-danger)]'
+                                  : item.isDueToday
+                                    ? 'text-[var(--barn-terracotta)]'
+                                    : 'text-[var(--barn-ink)]'
+                              }`}
+                            >
+                              {item.dueDateIso}
+                              {item.isOverdue
+                                ? ' (Overdue)'
+                                : item.isDueToday
+                                  ? ' (Today)'
+                                  : ''}
+                            </span>
+                            &middot; {item.subtitle}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenSpecies(
+                            item.species,
+                            item.kind === 'birth' ? 'breeding' : 'dashboard'
+                          )
+                        }
+                        className="self-start sm:self-center min-h-[28px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap shrink-0"
+                      >
+                        Open {item.species}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Reorderable Species Hub Cards Grid */}
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -262,6 +474,9 @@ export function HomeSpeciesScreen({
               snapshot.animals,
               sp.name
             );
+            const memoAlert = evaluateSpeciesMemoReminderAlert(sp, {
+              dismissedSignature: snapshot.settings.dismissedMemoAlertSignatures?.[spKey],
+            });
 
             const isFirst = index === 0;
             const isLast = index === snapshot.speciesProfiles.length - 1;
@@ -497,6 +712,46 @@ export function HomeSpeciesScreen({
                         >
                           Ignore Permanently
                         </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Subtle Memo Pad Notes Reminder (closable; returns automatically when memo text is edited) */}
+                  {memoAlert.shouldShow && (
+                    <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)]/70 border border-[var(--barn-border)] text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <StickyNote
+                            className="w-3.5 h-3.5 text-[var(--barn-muted)] mt-0.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-medium text-[var(--barn-ink)]">
+                              Memo Pad Notes
+                            </div>
+                            <div className="text-[11px] text-[var(--barn-muted)] truncate">
+                              {memoAlert.previewText}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onOpenSpecies(sp.name, 'memo')}
+                            className="min-h-[28px] px-2 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                          >
+                            Open Pad
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDismissMemoAlert?.(sp.name, memoAlert.signature)}
+                            title="Close memo reminder (reappears if memo pad is edited)"
+                            aria-label={`Close ${sp.name} memo reminder`}
+                            className="min-h-[28px] min-w-[28px] rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
+                          >
+                            <X className="w-3.5 h-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

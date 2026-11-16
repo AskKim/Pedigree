@@ -12,6 +12,7 @@
 
 import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { downloadTextFile } from '../utils/webFileActions';
 
 const MIN_PREVIEW_ZOOM = 0.2;
@@ -28,6 +29,8 @@ interface PrintPreviewModalProps {
   headerNotice?: ReactNode;
   includePrimaryPhoto?: boolean;
   onToggleIncludePrimaryPhoto?: (include: boolean) => void;
+  pedigreePrintOptions?: PedigreePrintOptions;
+  onChangePedigreePrintOptions?: (next: PedigreePrintOptions) => void;
   onClose: () => void;
 }
 
@@ -38,6 +41,8 @@ export function PrintPreviewModal({
   headerNotice,
   includePrimaryPhoto,
   onToggleIncludePrimaryPhoto,
+  pedigreePrintOptions,
+  onChangePedigreePrintOptions,
   onClose,
 }: PrintPreviewModalProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -642,6 +647,71 @@ export function PrintPreviewModal({
             </button>
           </div>
         </div>
+
+        {pedigreePrintOptions && onChangePedigreePrintOptions && (
+          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75 flex flex-wrap items-center gap-3 text-xs">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={pedigreePrintOptions.showWeights ?? true}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    showWeights: e.target.checked,
+                  })
+                }
+                className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>Show Weights</span>
+            </label>
+
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={pedigreePrintOptions.showGenotypes ?? false}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    showGenotypes: e.target.checked,
+                  })
+                }
+                className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>Include Coat Genotypes (Unverified)</span>
+            </label>
+
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={pedigreePrintOptions.showBreederFooter ?? true}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    showBreederFooter: e.target.checked,
+                  })
+                }
+                className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>Breeder Signature Footer</span>
+            </label>
+
+            {(pedigreePrintOptions.showBreederFooter ?? true) && (
+              <input
+                type="text"
+                value={pedigreePrintOptions.breederContactLine ?? ''}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    breederContactLine: e.target.value,
+                  })
+                }
+                placeholder="Optional breeder website or contact footer line..."
+                aria-label="Optional breeder website or contact footer line"
+                className="flex-1 min-w-[200px] min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs text-[var(--barn-ink)] placeholder:text-[var(--barn-muted)]"
+              />
+            )}
+          </div>
+        )}
 
         {headerNotice && (
           <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60">

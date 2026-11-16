@@ -52,7 +52,6 @@ import {
 import { formatTimestampedBackupSlug } from '../core/syncAndExports';
 import {
   clearAllDiagnosticLogs,
-  DEFAULT_SUPPORT_EMAIL,
   DiagnosticLogEntry,
   DiagnosticSummary,
   getDiagnosticConfig,
@@ -106,7 +105,12 @@ export function DiagnosticsAndSupportPanel({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
   const [improvementsFeedback, setImprovementsFeedback] = useState<string | null>(null);
-  const [mailtoHref, setMailtoHref] = useState<string | null>(null);
+  const [lastBuiltMailMeta, setLastBuiltMailMeta] = useState<{
+    filename: string;
+    summary: DiagnosticSummary;
+    includedData: boolean;
+    includedPhotos: boolean;
+  } | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [confirmRebuildDb, setConfirmRebuildDb] = useState(false);
   const [recoveryFeedback, setRecoveryFeedback] = useState<string | null>(null);
@@ -193,7 +197,7 @@ export function DiagnosticsAndSupportPanel({
       const sum = await getDiagnosticSummary(list);
       const filename = `pedigree-error-logs-${formatTimestampedBackupSlug()}.txt`;
       downloadTextFile(filename, formatSupportReportText(list, sum, snapshot), 'text/plain');
-      setMailtoHref(null);
+      setLastBuiltMailMeta(null);
       setFeedback(`Downloaded ${filename} (${list.length} log entries + current app state).`);
     } finally {
       setBusyAction(false);
@@ -211,7 +215,7 @@ export function DiagnosticsAndSupportPanel({
         buildErrorLogsJson(list, sum, snapshot),
         'application/json'
       );
-      setMailtoHref(null);
+      setLastBuiltMailMeta(null);
       setFeedback(`Downloaded ${filename} (${list.length} log entries + current app state).`);
     } finally {
       setBusyAction(false);
@@ -221,7 +225,7 @@ export function DiagnosticsAndSupportPanel({
   const handleBuildBundle = async (attemptShare: boolean) => {
     setBusyAction(true);
     setFeedback(null);
-    setMailtoHref(null);
+    setLastBuiltMailMeta(null);
     try {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
@@ -233,23 +237,23 @@ export function DiagnosticsAndSupportPanel({
         includePhotos: includePhotosInBundle,
       });
 
-      const recipient = (config.supportEmail || DEFAULT_SUPPORT_EMAIL).trim();
-      const mailHref = buildSupportMailtoHref({
-        recipientEmail: recipient,
+      const recipient = (config.supportEmail || '').trim();
+      setLastBuiltMailMeta({
         filename: built.filename,
         summary: sum,
         includedData: built.includedData,
         includedPhotos: built.includedPhotos,
       });
-      setMailtoHref(mailHref);
 
       if (attemptShare) {
         const mode = await shareBinaryFileOrDownload({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Crash & Support Bundle',
-          text: `Please send to ${recipient}. Includes ${built.logCount} diagnostic logs${
+          title: 'Community Pedigree Bug Report Bundle',
+          text: `${
+            recipient ? `Bug report for ${recipient}. ` : ''
+          }Includes ${built.logCount} diagnostic logs${
             built.includedData
               ? ` and ${built.animalCount} animal records${
                   built.includedPhotos ? ` (${built.photoCount} photos)` : ' (photos omitted)'
@@ -262,10 +266,14 @@ export function DiagnosticsAndSupportPanel({
           mode === 'shared'
             ? `Opened Share Sheet with ${built.filename} (${formatByteSizePure(
                 built.bytes.byteLength
-              )}). Choose your email app to send to ${recipient}.`
+              )}). Choose your email app to send${recipient ? ` to ${recipient}` : ''}.`
             : `Downloaded ${built.filename} (${formatByteSizePure(
                 built.bytes.byteLength
-              )}). Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
+              )}).${
+                recipient
+                  ? ` Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
+                  : ' Type a recipient email above or tap "Open Email Draft" below and attach the downloaded .ZIP.'
+              }`
         );
       } else {
         downloadBinaryFile(built.filename, built.bytes, 'application/zip');
@@ -279,13 +287,13 @@ export function DiagnosticsAndSupportPanel({
       logDiagnosticEvent({
         level: 'error',
         category: 'storage',
-        message: 'Failed to create support bundle archive',
+        message: 'Failed to create bug report bundle archive',
         error: err,
       });
       setFeedback(
         err instanceof Error
           ? err.message
-          : 'Could not build support bundle. Try unchecking photos if memory is low.'
+          : 'Could not build bug report bundle. Try unchecking photos if memory is low.'
       );
     } finally {
       setBusyAction(false);
@@ -308,6 +316,12 @@ export function DiagnosticsAndSupportPanel({
   const currentHeapPct = summary?.currentMemory.heapPercent;
   const currentHeapUsed = summary?.currentMemory.usedHeapBytes;
   const currentHeapLimit = summary?.currentMemory.heapLimitBytes;
+  const mailtoHref = lastBuiltMailMeta
+    ? buildSupportMailtoHref({
+        recipientEmail: config.supportEmail,
+        ...lastBuiltMailMeta,
+      })
+    : null;
 
   return (
     <section
@@ -317,7 +331,7 @@ export function DiagnosticsAndSupportPanel({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="font-display text-xl font-semibold">
-            Diagnostic &amp; Crash Logs · Send to Support
+            Diagnostic &amp; Crash Logs · Send Bug Report
           </h2>
           <p className="text-xs text-[var(--barn-muted)] mt-0.5">
             Automatically captures runtime crashes, unhandled promises, and memory pressure for{' '}
@@ -410,7 +424,7 @@ export function DiagnosticsAndSupportPanel({
       {/* Support Export & Send Controls */}
       <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
         <div className="space-y-1.5 text-xs">
-          <div className="font-semibold">Bundle Options &amp; Support Recipient</div>
+          <div className="font-semibold">Bug Report Bundle Options &amp; Recipient</div>
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -441,14 +455,16 @@ export function DiagnosticsAndSupportPanel({
 
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
           <label htmlFor="support-recipient-email" className="text-[var(--barn-muted)] shrink-0">
-            Send To:
+            Recipient Email:
           </label>
           <input
             id="support-recipient-email"
             type="email"
+            inputMode="email"
+            autoComplete="email"
             value={config.supportEmail}
             onChange={(e) => handleSupportEmailChange(e.target.value)}
-            placeholder={DEFAULT_SUPPORT_EMAIL}
+            placeholder="Type recipient email address"
             className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
           />
         </div>
@@ -462,8 +478,8 @@ export function DiagnosticsAndSupportPanel({
           >
             <Share2 className="w-4 h-4 shrink-0" aria-hidden="true" />
             {includeDataInBundle
-              ? 'Send Logs + Data Bundle (.ZIP)'
-              : 'Send Error Logs (.ZIP)'}
+              ? 'Send Bug Report + Data (.ZIP)'
+              : 'Send Bug Report (.ZIP)'}
           </button>
 
           <button
@@ -474,8 +490,8 @@ export function DiagnosticsAndSupportPanel({
           >
             <Archive className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
             {includeDataInBundle
-              ? 'Download Logs + Data (.ZIP)'
-              : 'Download Logs Bundle (.ZIP)'}
+              ? 'Download Bug Report + Data (.ZIP)'
+              : 'Download Bug Report (.ZIP)'}
           </button>
 
           <button
@@ -509,7 +525,9 @@ export function DiagnosticsAndSupportPanel({
                   className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Mail className="w-3.5 h-3.5" aria-hidden="true" />
-                  Open Email Draft ({config.supportEmail || DEFAULT_SUPPORT_EMAIL})
+                  {config.supportEmail.trim()
+                    ? `Open Email Draft (${config.supportEmail.trim()})`
+                    : 'Open Email Draft'}
                 </a>
               )}
               <button

@@ -21,20 +21,22 @@ import {
   doesAnimalNeedAttention,
   formatSexForSpecies,
   formatWeight,
+  getSpeciesIdentifierLabels,
   isAnimalArchived,
+  resolveSpeciesWeightUnit,
   SpeciesProfile,
 } from '../core/models';
 import {
   buildPedigreeSlots,
+  getPedigreeCompletenessSummary,
   PedigreeSlot,
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
-import { generateEvansHtmPedigree } from '../core/syncAndExports';
+import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
-import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface PedigreeScreenProps {
   activeData: ActiveSpeciesData;
@@ -83,6 +85,12 @@ export function PedigreeScreen({
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
+    showWeights: true,
+    showGenotypes: false,
+    showBreederFooter: true,
+    breederContactLine: '',
+  });
 
   useEffect(() => {
     if (!linkingSlot) return;
@@ -545,14 +553,26 @@ export function PedigreeScreen({
             </div>
 
             <div className="space-y-1">
-              <div className="text-xs font-mono tabular-nums text-[var(--barn-muted)]">
-                Wright COI:{' '}
-                <strong className="text-[var(--barn-ink)]">
-                  {(coi?.coiPercent ?? 0).toFixed(2)}%
-                </strong>{' '}
-                ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
-              </div>
-              <WrightCoiNotice compact />
+              {(() => {
+                const comp = coi ? getPedigreeCompletenessSummary(coi) : null;
+                return (
+                  <>
+                    <div className="text-xs font-mono tabular-nums text-[var(--barn-muted)]">
+                      Wright COI:{' '}
+                      <strong className="text-[var(--barn-ink)]">
+                        {(coi?.coiPercent ?? 0).toFixed(2)}%
+                      </strong>{' '}
+                      ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
+                      {comp ? ` (${comp.percent3Gen}%)` : ''}
+                    </div>
+                    {comp?.isIncompleteZeroOutcross && (
+                      <div className="text-[11px] text-[var(--barn-muted)]">
+                        Incomplete pedigree ({comp.known3Gen}/{comp.max3Gen} 3-gen ancestors recorded) — 0.00% reflects missing ancestry.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
 
@@ -758,7 +778,7 @@ export function PedigreeScreen({
                           <div className="text-[11px] text-[var(--barn-muted)] font-mono truncate">
                             {a.tattoo || 'No ID'} · {a.variety || a.breed}
                             {a.weightGrams > 0
-                              ? ` · ${formatWeight(a.weightGrams, settings.preferredUnit)}`
+                              ? ` · ${formatWeight(a.weightGrams, resolveSpeciesWeightUnit(speciesProfile, settings))}`
                               : ''}
                           </div>
 
@@ -931,7 +951,7 @@ export function PedigreeScreen({
                 <input
                   type="search"
                   autoFocus
-                  placeholder={`Search ${speciesProfile.name} parents by name, tattoo, or breed...`}
+                  placeholder={`Search ${speciesProfile.name} parents by name, ${getSpeciesIdentifierLabels(speciesProfile.name).shortLabel.toLowerCase()}, or breed...`}
                   value={linkSearchQuery}
                   onChange={(e) => setLinkSearchQuery(e.target.value)}
                   className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--barn-sage)]"
@@ -1014,7 +1034,7 @@ export function PedigreeScreen({
           speciesProfile={speciesProfile}
           speciesAnimals={animals}
           speciesCages={cages}
-          preferredUnit={settings.preferredUnit}
+          preferredUnit={resolveSpeciesWeightUnit(speciesProfile, settings)}
           optimizationPresetId={settings.imageOptimizationPreset}
           defaultBreederName={settings.breederName}
           defaultOwnerName={settings.barnName}
@@ -1043,8 +1063,13 @@ export function PedigreeScreen({
             speciesProfiles,
             settings,
             generations,
-            settings.includePhotoOnPedigree ? subjectPrimaryPhoto?.dataUrl : undefined
+            settings.includePhotoOnPedigree ? subjectPrimaryPhoto?.dataUrl : undefined,
+            pedigreePrintOptions
           )}
+          includePrimaryPhoto={settings.includePhotoOnPedigree}
+          onToggleIncludePrimaryPhoto={onToggleIncludePhotoOnPedigree}
+          pedigreePrintOptions={pedigreePrintOptions}
+          onChangePedigreePrintOptions={setPedigreePrintOptions}
           headerNotice={<PedigreePrintNotice />}
           onClose={() => setShowPrintModal(false)}
         />

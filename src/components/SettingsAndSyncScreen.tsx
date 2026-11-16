@@ -603,6 +603,62 @@ export function SettingsAndSyncScreen({
                 </span>
               </div>
 
+              {/* Browser Storage Quota Meter */}
+              {storageStatus && storageStatus.supported && (
+                <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--barn-ink)]">
+                      <HardDrive className="w-3.5 h-3.5 text-[var(--barn-slate)]" aria-hidden="true" />
+                      On-Device Storage Quota
+                      {storageStatus.persisted ? (
+                        <span className="text-[10px] font-medium text-[var(--barn-sage)]">
+                          (Locked)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium text-[var(--barn-muted)]">
+                          (Standard)
+                        </span>
+                      )}
+                    </span>
+                    <span className="font-mono tabular-nums text-[var(--barn-muted)]">
+                      {storageStatus.quotaBytes > 0
+                        ? `${formatByteSizePure(storageStatus.usageBytes)} / ${formatByteSizePure(storageStatus.quotaBytes)} (${storageStatus.percentUsed}%)`
+                        : `${formatByteSizePure(storageStatus.usageBytes)} used`}
+                    </span>
+                  </div>
+
+                  {storageStatus.quotaBytes > 0 && (
+                    <div
+                      className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden"
+                      role="progressbar"
+                      aria-label="Browser storage quota usage"
+                      aria-valuenow={Math.round(storageStatus.percentUsed)}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    >
+                      <div
+                        style={{ width: `${Math.max(1, Math.min(100, storageStatus.percentUsed))}%` }}
+                        className={`h-full rounded-full transition-all ${
+                          storageStatus.percentUsed >= 90
+                            ? 'bg-[var(--barn-danger)]'
+                            : storageStatus.percentUsed >= 75
+                              ? 'bg-[var(--barn-terracotta)]'
+                              : 'bg-[var(--barn-sage)]'
+                        }`}
+                      />
+                    </div>
+                  )}
+
+                  {storageStatus.percentUsed >= 75 && (
+                    <p className="text-[11px] text-[var(--barn-terracotta)] font-medium">
+                      Storage is above {Math.round(storageStatus.percentUsed)}% of this browser&rsquo;s
+                      quota. Consider exporting a Complete .ZIP backup or choosing a smaller photo
+                      optimization preset.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {Object.values(IMAGE_OPTIMIZATION_PRESETS).map((preset) => {
                   const active = imageOptimizationPreset === preset.id;
@@ -653,13 +709,14 @@ export function SettingsAndSyncScreen({
             <div className="space-y-3">
               <div>
                 <span className="block text-xs font-medium text-[var(--barn-muted)] mb-1.5">
-                  Weight Display Unit
+                  Default Weight Display Unit
                 </span>
                 <div className="flex flex-wrap gap-2">
                   {(
                     [
                       ['lbs_oz', 'Pounds & Oz'],
                       ['lbs', 'Decimal Pounds'],
+                      ['kg', 'Kilograms (Metric)'],
                       ['grams', 'Grams (Metric)'],
                     ] as const
                   ).map(([val, label]) => (
@@ -677,6 +734,9 @@ export function SettingsAndSyncScreen({
                     </button>
                   ))}
                 </div>
+                <p className="text-[11px] text-[var(--barn-muted)] mt-1">
+                  Applies across the barn unless overridden per species in Edit Species Schedule.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
@@ -728,7 +788,7 @@ export function SettingsAndSyncScreen({
                     onChange={(e) => setShowHomeSummaryGrid(e.target.checked)}
                     className="w-4 h-4 accent-[var(--barn-sage)]"
                   />
-                  <span>Show condensed 4-square summary strip on the Home page</span>
+                  <span>Show condensed 4-square summary strip on Home and Species pages</span>
                 </label>
 
                 <label className="flex items-center gap-2.5 cursor-pointer">
@@ -1036,7 +1096,7 @@ export function SettingsAndSyncScreen({
                     Include animal name in task titles
                   </span>
                   <span className="text-[11px] text-[var(--barn-muted)] block">
-                    Uncheck to exclude animal names completely and show Ear Tattoo / Tag ID instead.
+                    Uncheck to exclude animal names completely and show Animal ID (Tattoo / Tag / Microchip) instead.
                   </span>
                 </span>
               </label>

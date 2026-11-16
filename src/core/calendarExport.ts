@@ -587,3 +587,153 @@ export function buildExternalCalendarWebUrls(
   return { googleWebUrl, outlookWebUrl };
 }
 
+export interface MultiSpeciesAgendaItem {
+  id: string;
+  kind: 'task' | 'birth';
+  species: string;
+  dueDateIso: string;
+  title: string;
+  subtitle: string;
+  isOverdue: boolean;
+  isDueToday: boolean;
+  task?: BarnTask;
+  breeding?: BreedingRecord;
+}
+
+export interface MultiSpeciesAgendaSummary {
+  horizonDays: 7 | 14;
+  cutoffIso: string;
+  items: MultiSpeciesAgendaItem[];
+  overdueCount: number;
+  todayCount: number;
+  upcomingCount: number;
+  exportableTasks: BarnTask[];
+}
+
+/**
+ * Builds a chronologically sorted multi-species agenda covering open dated tasks
+ * and active projected births across ONLY configured `speciesProfiles` within the
+ * next `horizonDays` (7 or 14 days), plus any overdue open chores.
+ */
+export function buildMultiSpeciesAgenda(params: {
+  tasks: BarnTask[];
+  animals: Animal[];
+  breedings: BreedingRecord[];
+  speciesProfiles: SpeciesProfile[];
+  calendarSync?: Partial<CalendarSyncSettings>;
+  todayIso: string;
+  horizonDays?: 7 | 14;
+  speciesFilter?: string;
+}): MultiSpeciesAgendaSummary {
+  const horizonDays: 7 | 14 = params.horizonDays === 14 ? 14 : 7;
+  const cutoffIso = addDaysIso(params.todayIso, horizonDays);
+  const filterClean = (params.speciesFilter || '').trim();
+
+  const addedProfiles = params.speciesProfiles.filter((sp) =>
+    filterClean ? isSameSpecies(sp.name, filterClean) : true
+  );
+  const addedSpeciesKeys = new Set(addedProfiles.map((sp) => sp.name.trim().toLowerCase()));
+  const profileByKey = new Map<string, SpeciesProfile>();
+  for (const sp of addedProfiles) {
+    profileByKey.set(sp.name.trim().toLowerCase(), sp);
+  }
+
+  const archivedIds = new Set(
+    params.animals
+      .filter((a) => a.archived || a.status === 'Archived' || a.status === 'Sold' || a.status === 'Deceased')
+      .map((a) => a.id)
+  );
+
+  const context: CalendarExportContext = {
+    animals: params.animals,
+    breedings: params.breedings,
+    speciesProfiles: params.speciesProfiles,
+  };
+
+  const items: MultiSpeciesAgendaItem[] = [];
+  const exportableTasks: BarnTask[] = [];
+  const linkedBirthBreedingIds = new Set<string>();
+
+  for (const task of params.tasks) {
+    if (task.completed) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(task.dueDateIso || '')) continue;
+    const spKey = (task.species || '').trim().toLowerCase();
+    if (!addedSpeciesKeys.has(spKey)) continue;
+    if (task.linkedAnimalId && archivedIds.has(task.linkedAnimalId)) continue;
+    if (task.dueDateIso > cutoffIso) continue;
+
+    exportableTasks.push(task);
+    if (task.linkedBreedingId && task.category === 'Birth Check') {
+      linkedBirthBreedingIds.add(task.linkedBreedingId);
+    }
+
+    const formattedTitle = formatSystemTaskTitle(task, params.calendarSync, context);
+    const spName = profileByKey.get(spKey)?.name || task.species;
+    items.push({
+      id: `agenda-task-${task.id}`,
+      kind: 'task',
+      species: spName,
+      dueDateIso: task.dueDateIso,
+      title: formattedTitle || task.title,
+      subtitle: `${spName} · ${task.category} · ${task.priority} priority`,
+      isOverdue: task.dueDateIso < params.todayIso,
+      isDueToday: task.dueDateIso === params.todayIso,
+      task,
+    });
+  }
+
+  for (const b of params.breedings) {
+    if (!['Planned', 'Bred', 'Palpated Positive'].includes(b.status)) continue;
+    if (linkedBirthBreedingIds.has(b.id)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.expectedDueDateIso || '')) continue;
+    const spKey = (b.species || '').trim().toLowerCase();
+    if (!addedSpeciesKeys.has(spKey)) continue;
+    if (b.damId && archivedIds.has(b.damId)) continue;
+    if (b.expectedDueDateIso > cutoffIso) continue;
+
+    const spProfile = profileByKey.get(spKey);
+    const spName = spProfile?.name || b.species;
+    const birthEvent = spProfile?.birthEventLabel || 'Due Date';
+    items.push({
+      id: `agenda-birth-${b.id}`,
+      kind: 'birth',
+      species: spName,
+      dueDateIso: b.expectedDueDateIso,
+      title: `Expected ${birthEvent}: ${b.damName || 'Unknown Dam'} (× ${b.sireName || 'Unknown Sire'})`,
+      subtitle: `${spName} · Breeding (${b.status})`,
+      isOverdue: b.expectedDueDateIso < params.todayIso,
+      isDueToday: b.expectedDueDateIso === params.todayIso,
+      breeding: b,
+    });
+  }
+
+  items.sort((a, b) => {
+    const dCmp = a.dueDateIso.localeCompare(b.dueDateIso);
+    if (dCmp !== 0) return dCmp;
+    if (a.kind !== b.kind) return a.kind === 'task' ? -1 : 1;
+    return a.species.localeCompare(b.species);
+  });
+
+  exportableTasks.sort((a, b) => a.dueDateIso.localeCompare(b.dueDateIso));
+
+  let overdueCount = 0;
+  let todayCount = 0;
+  let upcomingCount = 0;
+  for (const item of items) {
+    if (item.isOverdue) overdueCount++;
+    else if (item.isDueToday) todayCount++;
+    else upcomingCount++;
+  }
+
+  return {
+    horizonDays,
+    cutoffIso,
+    items,
+    overdueCount,
+    todayCount,
+    upcomingCount,
+    exportableTasks,
+  };
+}
+
+

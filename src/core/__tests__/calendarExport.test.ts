@@ -3,6 +3,7 @@ import {
   buildExternalCalendarWebUrls,
   buildGoogleCalendarEventPayload,
   buildIcsCalendarForTasks,
+  buildMultiSpeciesAgenda,
   buildTaskAppDeepLink,
   formatExternalCalendarTaskSummary,
   formatIcsAlarmTrigger,
@@ -380,5 +381,91 @@ describe('calendarExport (.ics + VALARM)', () => {
     expect(urls!.googleWebUrl).toContain('https://calendar.google.com/calendar/render');
     expect(urls!.googleWebUrl).toContain(encodeURIComponent('Palpation Check: NZR-102 (× NZR-051) [Rabbit]'));
     expect(urls!.outlookWebUrl).toContain('https://outlook.live.com/calendar/0/deeplink/compose');
+  });
+
+  it('builds a multi-species 7/14-day agenda scoped strictly to added species with combined ICS export', () => {
+    const dogSpecies: SpeciesProfile = {
+      ...rabbitSpecies,
+      id: 'sp-dog',
+      name: 'Dog',
+      birthEventLabel: 'Whelping',
+      maleLabel: 'Stud',
+      femaleLabel: 'Dam',
+      offspringLabel: 'Puppy',
+    };
+    const rabbitDueToday = makeTask({
+      id: 't-rabbit-today',
+      species: 'Rabbit',
+      title: 'Nestbox Check',
+      dueDateIso: '2026-11-16',
+    });
+    const dogOverdue = makeTask({
+      id: 't-dog-overdue',
+      species: 'Dog',
+      title: 'Deworm Litter',
+      linkedAnimalId: '',
+      linkedAnimalName: '',
+      linkedBreedingId: '',
+      dueDateIso: '2026-11-14',
+    });
+    const goatUnadded = makeTask({
+      id: 't-goat-unadded',
+      species: 'Goat',
+      title: 'Hoof Trim',
+      linkedAnimalId: '',
+      linkedAnimalName: '',
+      linkedBreedingId: '',
+      dueDateIso: '2026-11-16',
+    });
+    const farFutureTask = makeTask({
+      id: 't-rabbit-12d',
+      species: 'Rabbit',
+      title: 'Wean Litter',
+      dueDateIso: '2026-11-28',
+    });
+
+    const summary7 = buildMultiSpeciesAgenda({
+      tasks: [rabbitDueToday, dogOverdue, goatUnadded, farFutureTask],
+      animals: [damAnimal, sireAnimal],
+      breedings: [],
+      speciesProfiles: [rabbitSpecies, dogSpecies],
+      todayIso: '2026-11-16',
+      horizonDays: 7,
+    });
+
+    expect(summary7.overdueCount).toBe(1);
+    expect(summary7.todayCount).toBe(1);
+    expect(summary7.items.map((i) => i.species)).toEqual(['Dog', 'Rabbit']);
+    expect(summary7.exportableTasks.map((t) => t.id)).toEqual(['t-dog-overdue', 't-rabbit-today']);
+
+    // Combined multi-species ICS contains both Dog and Rabbit events
+    const combinedIcs = buildIcsCalendarForTasks(summary7.exportableTasks);
+    expect(combinedIcs).not.toBeNull();
+    expect(combinedIcs!.eventCount).toBe(2);
+    expect(combinedIcs!.icsContent).toContain('[Dog]');
+    expect(combinedIcs!.icsContent).toContain('[Rabbit]');
+
+    // 14-day horizon brings in the 12-day task and speciesFilter isolates Dog
+    const summary14 = buildMultiSpeciesAgenda({
+      tasks: [rabbitDueToday, dogOverdue, goatUnadded, farFutureTask],
+      animals: [damAnimal, sireAnimal],
+      breedings: [],
+      speciesProfiles: [rabbitSpecies, dogSpecies],
+      todayIso: '2026-11-16',
+      horizonDays: 14,
+    });
+    expect(summary14.items).toHaveLength(3);
+
+    const dogOnly = buildMultiSpeciesAgenda({
+      tasks: [rabbitDueToday, dogOverdue, goatUnadded, farFutureTask],
+      animals: [damAnimal, sireAnimal],
+      breedings: [],
+      speciesProfiles: [rabbitSpecies, dogSpecies],
+      todayIso: '2026-11-16',
+      horizonDays: 14,
+      speciesFilter: 'Dog',
+    });
+    expect(dogOnly.items).toHaveLength(1);
+    expect(dogOnly.items[0].species).toBe('Dog');
   });
 });

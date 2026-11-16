@@ -23,6 +23,7 @@ import {
   CareLog,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   normalizeCalendarSyncSettings,
+  normalizeWeightUnit,
   nowIsoUtc,
   ShowEvent,
   SpeciesProfile,
@@ -67,6 +68,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     name TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     default_animal_prefix TEXT NOT NULL DEFAULT '',
+    preferred_unit TEXT NOT NULL DEFAULT '',
     memo_text TEXT NOT NULL DEFAULT '',
     memo_updated_at TEXT NOT NULL DEFAULT '',
     gestation_days INTEGER NOT NULL,
@@ -332,6 +334,7 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE barn_settings ADD COLUMN extra_settings_json TEXT NOT NULL DEFAULT '{}';",
     'ALTER TABLE species_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE species_profiles ADD COLUMN default_animal_prefix TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE species_profiles ADD COLUMN preferred_unit TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN memo_text TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
@@ -494,7 +497,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           id: String(sRow.id),
           barnName: String(sRow.barn_name),
           breederName: String(sRow.breeder_name),
-          preferredUnit: (sRow.preferred_unit as any) || 'lbs_oz',
+          preferredUnit: normalizeWeightUnit(sRow.preferred_unit, 'lbs_oz'),
           defaultSpecies: String(sRow.default_species || 'Rabbit'),
           pinnedLandingSpecies: String(sRow.pinned_landing_species ?? ''),
           defaultGenerations: parsedGen,
@@ -524,6 +527,11 @@ export class WebSqliteAdapter implements StorageAdapter {
             typeof extraSettings.dismissedTaskGroupKeys === 'object'
               ? extraSettings.dismissedTaskGroupKeys
               : {},
+          dismissedMemoAlertSignatures:
+            extraSettings.dismissedMemoAlertSignatures &&
+            typeof extraSettings.dismissedMemoAlertSignatures === 'object'
+              ? extraSettings.dismissedMemoAlertSignatures
+              : {},
           speciesHubBlockOrder:
             extraSettings.speciesHubBlockOrder &&
             typeof extraSettings.speciesHubBlockOrder === 'object'
@@ -544,7 +552,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       : {
           id: 'barn_settings',
           barnName: 'Copper Creek Barn',
-          breederName: 'Kimberly',
+          breederName: '',
           preferredUnit: 'lbs_oz',
           defaultSpecies: 'Rabbit',
           pinnedLandingSpecies: '',
@@ -555,6 +563,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           barnNameOnboarded: false,
           ignoredTaskIds: [],
           dismissedTaskGroupKeys: {},
+          dismissedMemoAlertSignatures: {},
           speciesHubBlockOrder: {},
           includePhotoOnPedigree: false,
           calendarSync: { ...DEFAULT_CALENDAR_SYNC_SETTINGS },
@@ -568,6 +577,13 @@ export class WebSqliteAdapter implements StorageAdapter {
       name: String(r.name),
       sortOrder: typeof r.sort_order === 'number' ? Number(r.sort_order) : idx,
       defaultAnimalPrefix: String(r.default_animal_prefix || ''),
+      preferredUnit:
+        r.preferred_unit === 'lbs_oz' ||
+        r.preferred_unit === 'lbs' ||
+        r.preferred_unit === 'grams' ||
+        r.preferred_unit === 'kg'
+          ? r.preferred_unit
+          : undefined,
       memoText: sanitizeSpeciesMemo(r.memo_text ?? ''),
       memoUpdatedAt: String(r.memo_updated_at || ''),
       gestationDays: Number(r.gestation_days),
@@ -777,6 +793,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       barnNameOnboarded: s.barnNameOnboarded ?? false,
       ignoredTaskIds: s.ignoredTaskIds ?? [],
       dismissedTaskGroupKeys: s.dismissedTaskGroupKeys ?? {},
+      dismissedMemoAlertSignatures: s.dismissedMemoAlertSignatures ?? {},
       speciesHubBlockOrder: s.speciesHubBlockOrder ?? {},
       includePhotoOnPedigree: s.includePhotoOnPedigree ?? false,
       calendarSync: s.calendarSync ? normalizeCalendarSyncSettings(s.calendarSync) : undefined,
@@ -807,13 +824,14 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
         sp.sortOrder ?? 0,
         sp.defaultAnimalPrefix || '',
+        sp.preferredUnit || '',
         sanitizeSpeciesMemo(sp.memoText ?? ''),
         String(sp.memoUpdatedAt || ''),
         sp.gestationDays,

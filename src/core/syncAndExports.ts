@@ -32,9 +32,11 @@ import {
   normalizeAnimalStatus,
   normalizeBiologicalSex,
   normalizeCalendarSyncSettings,
+  normalizeWeightUnit,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
+  resolveSpeciesWeightUnit,
   ShowEvent,
   SpeciesProfile,
   TaskCategory,
@@ -357,7 +359,7 @@ export function parseBarnBackupJson(
       fallbackSettings.barnName ||
       'My Barn',
     breederName: rawSettings.breederName || fallbackSettings.breederName || '',
-    preferredUnit: rawSettings.preferredUnit || fallbackSettings.preferredUnit || 'lbs_oz',
+    preferredUnit: normalizeWeightUnit(rawSettings.preferredUnit, fallbackSettings.preferredUnit || 'lbs_oz'),
     defaultSpecies: rawSettings.defaultSpecies || fallbackSettings.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies:
       rawSettings.pinnedLandingSpecies ?? fallbackSettings.pinnedLandingSpecies ?? '',
@@ -397,6 +399,11 @@ export function parseBarnBackupJson(
       typeof rawSettings.dismissedTaskGroupKeys === 'object'
         ? rawSettings.dismissedTaskGroupKeys
         : fallbackSettings.dismissedTaskGroupKeys ?? {},
+    dismissedMemoAlertSignatures:
+      rawSettings.dismissedMemoAlertSignatures &&
+      typeof rawSettings.dismissedMemoAlertSignatures === 'object'
+        ? rawSettings.dismissedMemoAlertSignatures
+        : fallbackSettings.dismissedMemoAlertSignatures ?? {},
     speciesHubBlockOrder:
       rawSettings.speciesHubBlockOrder &&
       typeof rawSettings.speciesHubBlockOrder === 'object'
@@ -426,6 +433,13 @@ export function parseBarnBackupJson(
             name: item.name || 'Rabbit',
             sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
             defaultAnimalPrefix: String(item.defaultAnimalPrefix || ''),
+            preferredUnit:
+              item.preferredUnit === 'lbs_oz' ||
+              item.preferredUnit === 'lbs' ||
+              item.preferredUnit === 'grams' ||
+              item.preferredUnit === 'kg'
+                ? item.preferredUnit
+                : undefined,
             memoText: sanitizeSpeciesMemo(item.memoText),
             memoUpdatedAt: typeof item.memoUpdatedAt === 'string' ? item.memoUpdatedAt : '',
             gestationDays: Number(item.gestationDays) || 31,
@@ -714,7 +728,7 @@ export function exportAnimalsCsv(
       a.breed,
       a.variety,
       a.birthDateIso,
-      formatWeight(a.weightGrams, settings.preferredUnit),
+      formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, settings)),
       a.weightGrams,
       a.genotypeRaw || formatGenotypeArray(a.genotype),
       a.registrationNumber,
@@ -744,10 +758,22 @@ function escapeHtml(raw: string): string {
     .replace(/"/g, '&quot;');
 }
 
+export interface PedigreePrintOptions {
+  /** Include animal & ancestor weights (default: true). */
+  showWeights?: boolean;
+  /** Include coat color genotype strings (default: true when omitted for API compatibility). */
+  showGenotypes?: boolean;
+  /** Include bottom breeder certification & signature footer (default: true). */
+  showBreederFooter?: boolean;
+  /** Optional breeder phone, email, or website line shown in footer when enabled. */
+  breederContactLine?: string;
+}
+
 /**
  * Generates a standardized, self-contained `.HTM` multi-generation pedigree file compatible
  * with Evans Rabbit Register / ARBA breeder sharing conventions and direct PDF printing.
- * Supports 3, 4, 5, and 6 generations plus optional embedded primary portrait photo.
+ * Supports 3, 4, 5, and 6 generations plus optional embedded primary portrait photo
+ * and customer pedigree print customization options.
  */
 export function generateEvansHtmPedigree(
   subject: Animal,
@@ -755,12 +781,18 @@ export function generateEvansHtmPedigree(
   speciesProfiles: SpeciesProfile[],
   settings: BarnSettings,
   generations: 3 | 4 | 5 | 6 = 3,
-  primaryPhotoDataUrl?: string
+  primaryPhotoDataUrl?: string,
+  printOptions?: PedigreePrintOptions
 ): string {
   const sp = resolveSpeciesProfile(subject.species, speciesProfiles);
   const herdById = buildSpeciesHerdMap(allAnimals, subject.species);
   const slots = buildPedigreeSlots(subject, herdById, generations, sp);
   const coi = calculateAnimalCoi(subject, herdById);
+
+  const showWeights = printOptions?.showWeights ?? true;
+  const showGenotypes = printOptions?.showGenotypes ?? true;
+  const showBreederFooter = printOptions?.showBreederFooter ?? true;
+  const breederContactLine = (printOptions?.breederContactLine || '').trim();
 
   const slotMap = new Map<string, PedigreeSlot>();
   for (const sl of slots) {
@@ -778,11 +810,13 @@ export function generateEvansHtmPedigree(
         <div class="role">${escapeHtml(roleTag)} &mdash; Unknown</div>
       </td>`;
     }
-    const geno = a.genotypeRaw || formatGenotypeArray(a.genotype);
+    const geno = showGenotypes ? a.genotypeRaw || formatGenotypeArray(a.genotype) : '';
     const metaParts = [
       a.tattoo ? `ID: ${escapeHtml(a.tattoo)}` : '',
       !compactMode && a.variety ? escapeHtml(a.variety) : '',
-      !compactMode && a.weightGrams > 0 ? escapeHtml(formatWeight(a.weightGrams, settings.preferredUnit)) : '',
+      showWeights && !compactMode && a.weightGrams > 0
+        ? escapeHtml(formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, settings)))
+        : '',
     ].filter(Boolean);
 
     const regParts = [
@@ -796,7 +830,7 @@ export function generateEvansHtmPedigree(
       ${metaParts.length ? `<div class="meta">${metaParts.join(' &middot; ')}</div>` : ''}
       ${!compactMode && a.birthDateIso ? `<div class="meta">DOB: ${escapeHtml(formatReadableDate(a.birthDateIso))}</div>` : ''}
       ${!compactMode && regParts.length ? `<div class="meta">${regParts.join(' &middot; ')}</div>` : ''}
-      ${!compactMode && geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
+      ${showGenotypes && !compactMode && geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
     </td>`;
   };
 
@@ -815,7 +849,9 @@ export function generateEvansHtmPedigree(
     tableRowsHtml.push(`<tr>${cells.join('')}</tr>`);
   }
 
-  const subjectGeno = subject.genotypeRaw || formatGenotypeArray(subject.genotype);
+  const subjectGeno = showGenotypes
+    ? subject.genotypeRaw || formatGenotypeArray(subject.genotype)
+    : '';
   const safePhoto =
     primaryPhotoDataUrl && primaryPhotoDataUrl.startsWith('data:image/')
       ? primaryPhotoDataUrl
@@ -853,7 +889,8 @@ export function generateEvansHtmPedigree(
   .name { font-weight: bold; font-size: ${compactMode ? '9.5px' : '12.5px'}; color: #111; }
   .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
   .geno { color: #2d5a3d; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
-  .footer { margin-top: 12px; display: flex; justify-content: space-between; font-size: 11px; color: #444; border-top: 1px solid #ccc; padding-top: 8px; }
+  .footer { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #444; border-top: 1px solid #ccc; padding-top: 8px; }
+  .footer-contact { width: 100%; font-size: 10.5px; color: #2d5a3d; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -873,11 +910,11 @@ export function generateEvansHtmPedigree(
       <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
       <div><strong>Sex:</strong> ${escapeHtml(formatSexForSpecies(subject.sex, sp))}</div>
       <div><strong>DOB:</strong> ${escapeHtml(formatReadableDate(subject.birthDateIso))}</div>
-      <div><strong>Weight:</strong> ${escapeHtml(formatWeight(subject.weightGrams, settings.preferredUnit))}</div>
+      ${showWeights ? `<div><strong>Weight:</strong> ${escapeHtml(formatWeight(subject.weightGrams, resolveSpeciesWeightUnit(sp, settings)))}</div>` : ''}
       ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
       ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
       ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
-      ${subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
+      ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
     </div>
   </div>
 
@@ -892,10 +929,15 @@ export function generateEvansHtmPedigree(
     </tbody>
   </table>
 
-  <div class="footer">
+  ${
+    showBreederFooter
+      ? `<div class="footer">
+    ${breederContactLine ? `<div class="footer-contact">${escapeHtml(breederContactLine)}</div>` : ''}
     <div>I hereby certify that this pedigree is correct to the best of my knowledge and belief.</div>
     <div>Breeder Signature: ___________________________ &nbsp;&nbsp; Date: _______________</div>
-  </div>
+  </div>`
+      : ''
+  }
 </body>
 </html>`;
 }
@@ -1002,7 +1044,7 @@ export function generateThermalCageCardHtml(
       <span>Dam: ${escapeHtml(dam ? `${dam.name} (${dam.tattoo})` : 'Unknown')}</span>
     </div>
     <div class="mono">
-      Wt: ${escapeHtml(formatWeight(animal.weightGrams, settings.preferredUnit))}
+      Wt: ${escapeHtml(formatWeight(animal.weightGrams, resolveSpeciesWeightUnit(sp, settings)))}
       ${animal.registrationNumber ? ` | Reg: ${escapeHtml(animal.registrationNumber)}` : ''}
       ${geno ? ` | ${escapeHtml(geno)}` : ''}
     </div>
@@ -1078,7 +1120,7 @@ export function buildPdfReadyBarnSnapshot(
         sexLabel: formatSexForSpecies(a.sex, sp),
         breedAndVariety: `${a.breed} ${a.variety}`.trim(),
         birthDateFormatted: formatReadableDate(a.birthDateIso),
-        weightFormatted: formatWeight(a.weightGrams, snapshot.settings.preferredUnit),
+        weightFormatted: formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, snapshot.settings)),
         coiPercent: `${coi.coiPercent.toFixed(2)}%`,
         genotype: a.genotypeRaw || formatGenotypeArray(a.genotype),
         cageLocation: a.cageLocation,

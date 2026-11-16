@@ -26,6 +26,7 @@ import {
   isSameSpecies,
   nowIsoUtc,
   resolveSpeciesProfile,
+  resolveSpeciesWeightUnit,
   SpeciesProfile,
   WeightUnit,
 } from '../models';
@@ -320,6 +321,7 @@ export function buildAnimalContradictions(
   checkText('variety', 'Color / Variety', existing.variety, incoming.variety, true);
 
   // Weight: treat > 5g difference when both > 0 as a contradiction
+  const effectiveUnit = resolveSpeciesWeightUnit(sp, { preferredUnit: options.preferredUnit });
   if (
     existing.weightGrams > 0 &&
     incoming.weightGrams > 0 &&
@@ -328,8 +330,8 @@ export function buildAnimalContradictions(
     contradictions.push({
       field: 'weightGrams',
       label: 'Current Weight',
-      existingDisplay: formatWeight(existing.weightGrams, options.preferredUnit),
-      incomingDisplay: formatWeight(incoming.weightGrams, options.preferredUnit),
+      existingDisplay: formatWeight(existing.weightGrams, effectiveUnit),
+      incomingDisplay: formatWeight(incoming.weightGrams, effectiveUnit),
       supportsCombine: false,
       defaultChoice: 'incoming',
     });

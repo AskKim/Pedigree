@@ -41,23 +41,28 @@ import {
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
+  getSpeciesIdentifierLabels,
+  getWeightInputMeta,
   isAnimalArchived,
   parseWeightInputToGrams,
+  resolveSpeciesWeightUnit,
   SpeciesProfile,
   todayDateIso,
 } from '../core/models';
+import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
+  PedigreePrintOptions,
 } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
-import { WrightCoiNotice } from './WrightCoiNotice';
 
 export const HERD_PAGE_SIZE = 50;
 
@@ -136,6 +141,10 @@ export function HerdScreen({
     careLogs,
   } = activeData;
 
+  const effectiveWeightUnit = resolveSpeciesWeightUnit(speciesProfile, settings);
+  const weightMeta = getWeightInputMeta(effectiveWeightUnit);
+  const idLabels = getSpeciesIdentifierLabels(speciesProfile.name);
+
   const [query, setQuery] = useState('');
   const [filterKey, setFilterKey] = useState<HerdFilterTab>('all');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
@@ -161,11 +170,18 @@ export function HerdScreen({
   const [showAnimalModal, setShowAnimalModal] = useState(false);
 
   // Print preview state
+  const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
+    showWeights: true,
+    showGenotypes: false,
+    showBreederFooter: true,
+    breederContactLine: '',
+  });
   const [previewDoc, setPreviewDoc] = useState<{
     title: string;
     filename: string;
     html: string;
     isPedigree?: boolean;
+    pedigreeSubject?: Animal;
   } | null>(null);
 
   // Quick Cage-Side Care/Weight Log state
@@ -285,7 +301,7 @@ export function HerdScreen({
       dateIso: logDateIso || todayDateIso(),
       type: logType,
       title: logTitle.trim() || logType,
-      weightGrams: parseWeightInputToGrams(logWeightInput, settings.preferredUnit),
+      weightGrams: parseWeightInputToGrams(logWeightInput, effectiveWeightUnit),
       showLegEarned: logShowLeg,
       notes: logNotes.trim(),
     });
@@ -304,13 +320,15 @@ export function HerdScreen({
       title: `Formal Pedigree (.HTM / PDF) — ${subject.name}`,
       filename: `pedigree-${subject.tattoo || subject.id}.htm`,
       isPedigree: true,
+      pedigreeSubject: subject,
       html: generateEvansHtmPedigree(
         subject,
         allAnimals,
         speciesProfiles,
         settings,
         settings.defaultGenerations,
-        primaryPhoto
+        primaryPhoto,
+        pedigreePrintOptions
       ),
     });
   };
@@ -378,7 +396,7 @@ export function HerdScreen({
                     This {speciesProfile.name.toLowerCase()} record is marked Needs Attention
                   </div>
                   <p className="text-[var(--barn-muted)]">
-                    Complete any missing details (tattoo, breed, pedigree, or owner), then resolve
+                    Complete any missing details ({idLabels.shortLabel.toLowerCase()}, breed, pedigree, or owner), then resolve
                     to clear the Home &amp; Hub reminders.
                   </p>
                 </div>
@@ -497,16 +515,29 @@ export function HerdScreen({
               <div>
                 <div className="text-[var(--barn-muted)]">Weight</div>
                 <div className="font-mono text-sm font-semibold tabular-nums mt-0.5">
-                  {formatWeight(activeAnimal.weightGrams, settings.preferredUnit)}
+                  {formatWeight(activeAnimal.weightGrams, effectiveWeightUnit)}
                 </div>
               </div>
               <div>
                 <div className="text-[var(--barn-muted)]">Wright COI</div>
-                <div className="font-mono text-sm font-semibold tabular-nums mt-0.5">
-                  {(coiByAnimalId.get(activeAnimal.id)?.coiPercent ?? 0).toFixed(2)}% (
-                  {coiByAnimalId.get(activeAnimal.id)?.risk.label || 'Outcross'})
-                </div>
-                <WrightCoiNotice compact className="mt-1" />
+                {(() => {
+                  const activeCoi = coiByAnimalId.get(activeAnimal.id);
+                  const comp = activeCoi ? getPedigreeCompletenessSummary(activeCoi) : null;
+                  return (
+                    <div className="mt-0.5">
+                      <div className="font-mono text-sm font-semibold tabular-nums">
+                        {(activeCoi?.coiPercent ?? 0).toFixed(2)}% (
+                        {activeCoi?.risk.label || 'Outcross'})
+                      </div>
+                      {comp && (
+                        <div className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)]">
+                          {comp.known3Gen}/{comp.max3Gen} 3-gen ({comp.percent3Gen}%)
+                          {comp.isIncompleteZeroOutcross ? ' · incomplete pedigree' : ''}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <div className="text-[var(--barn-muted)]">Registration / GC</div>
@@ -602,10 +633,13 @@ export function HerdScreen({
               activeAnimal.genotype.length > 0 ||
               activeAnimal.species === 'Rabbit') && (
               <div className="space-y-2.5 border-b border-[var(--barn-border)] pb-5">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold">
-                    Coat Color Genotype &amp; Allele Inference
-                  </h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold">
+                      Coat Color Genotype &amp; Allele Inference
+                    </h3>
+                    <ColorGeneticsNotice compact />
+                  </div>
                   {alleleInference && alleleInference.notes.length > 0 && (
                     <button
                       type="button"
@@ -674,7 +708,7 @@ export function HerdScreen({
               </div>
 
               {weightPoints.length >= 2 && (
-                <WeightTrendSvg points={weightPoints} unit={settings.preferredUnit} />
+                <WeightTrendSvg points={weightPoints} unit={effectiveWeightUnit} />
               )}
 
               {showLogForm && (
@@ -704,7 +738,7 @@ export function HerdScreen({
                       type="number"
                       step="0.01"
                       min="0"
-                      placeholder={`Weight (${settings.preferredUnit === 'grams' ? 'g' : 'lbs'})`}
+                      placeholder={`Weight (${weightMeta.shortUnit})`}
                       value={logWeightInput}
                       onChange={(e) => setLogWeightInput(e.target.value)}
                       className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
@@ -766,7 +800,7 @@ export function HerdScreen({
                           {log.title || log.type}
                           {log.weightGrams > 0 && (
                             <span className="font-mono tabular-nums text-[var(--barn-sage)] ml-2">
-                              {formatWeight(log.weightGrams, settings.preferredUnit)}
+                              {formatWeight(log.weightGrams, effectiveWeightUnit)}
                             </span>
                           )}
                           {log.showLegEarned && (
@@ -813,7 +847,7 @@ export function HerdScreen({
                 />
                 <input
                   type="search"
-                  placeholder={`Search ${speciesProfile.name} name, tattoo, cage, variety...`}
+                  placeholder={`Search ${speciesProfile.name} name, ${idLabels.shortLabel.toLowerCase()}, cage/pen, variety...`}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   className="w-full min-h-[42px] pl-10 pr-3 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
@@ -990,7 +1024,6 @@ export function HerdScreen({
                     <span>Select All Shown ({filteredAnimals.length})</span>
                   </label>
                   <div className="flex flex-wrap items-center gap-2">
-                    <WrightCoiNotice compact />
                     <span>Tap any animal row to open its full page</span>
                   </div>
                 </div>
@@ -1087,10 +1120,11 @@ export function HerdScreen({
 
                           <div className="text-right shrink-0 font-mono tabular-nums">
                             <div className="text-xs font-medium">
-                              {formatWeight(a.weightGrams, settings.preferredUnit)}
+                              {formatWeight(a.weightGrams, effectiveWeightUnit)}
                             </div>
                             <div className="text-[11px] text-[var(--barn-muted)]">
-                              COI {(coi?.coiPercent ?? 0).toFixed(1)}%
+                              COI {(coi?.coiPercent ?? 0).toFixed(1)}% ·{' '}
+                              {coi?.knownAncestorsIn3Gen ?? 0}/14
                             </div>
                           </div>
                         </button>
@@ -1125,7 +1159,7 @@ export function HerdScreen({
           speciesProfile={speciesProfile}
           speciesAnimals={animals}
           speciesCages={cages}
-          preferredUnit={settings.preferredUnit}
+          preferredUnit={effectiveWeightUnit}
           optimizationPresetId={settings.imageOptimizationPreset}
           defaultBreederName={settings.breederName}
           defaultOwnerName={settings.barnName}
@@ -1153,7 +1187,31 @@ export function HerdScreen({
         <PrintPreviewModal
           title={previewDoc.title}
           filename={previewDoc.filename}
-          htmlContent={previewDoc.html}
+          htmlContent={
+            previewDoc.pedigreeSubject
+              ? generateEvansHtmPedigree(
+                  previewDoc.pedigreeSubject,
+                  allAnimals,
+                  speciesProfiles,
+                  settings,
+                  settings.defaultGenerations,
+                  settings.includePhotoOnPedigree
+                    ? primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id)?.dataUrl
+                    : undefined,
+                  pedigreePrintOptions
+                )
+              : previewDoc.html
+          }
+          includePrimaryPhoto={
+            previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
+          }
+          onToggleIncludePrimaryPhoto={
+            previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
+          }
+          pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
+          onChangePedigreePrintOptions={
+            previewDoc.isPedigree ? setPedigreePrintOptions : undefined
+          }
           headerNotice={previewDoc.isPedigree ? <PedigreePrintNotice /> : undefined}
           onClose={() => setPreviewDoc(null)}
         />

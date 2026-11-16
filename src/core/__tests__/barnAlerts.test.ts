@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildSpeciesMemoSignature,
   buildTaskAlertGroupSignature,
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
+  evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
   formatArrivalTimingLabel,
   getGestationSoonWindowDays,
@@ -172,5 +174,53 @@ describe('barnAlerts — per-species due/overdue task alerts and babies arriving
     );
     expect(clearedRes.shouldShow).toBe(false);
     expect(clearedRes.animals).toHaveLength(0);
+  });
+
+  it('shows subtle memo pad reminder when memo has non-whitespace text, allows closing, and returns when edited', () => {
+    const emptyEval = evaluateSpeciesMemoReminderAlert({ memoText: '   \n\t  ', memoUpdatedAt: '' });
+    expect(emptyEval.hasMemo).toBe(false);
+    expect(emptyEval.shouldShow).toBe(false);
+    expect(emptyEval.signature).toBe('');
+
+    const initialProfile = {
+      ...makeSpeciesProfile('Rabbit'),
+      memoText: '# Spring Notes\n- [ ] Weigh kits on Sunday',
+      memoUpdatedAt: '2026-11-15T10:00:00.000Z',
+    };
+    const firstEval = evaluateSpeciesMemoReminderAlert(initialProfile);
+    expect(firstEval.hasMemo).toBe(true);
+    expect(firstEval.shouldShow).toBe(true);
+    expect(firstEval.previewText).toBe('Spring Notes');
+    expect(firstEval.signature).toBe(
+      buildSpeciesMemoSignature(initialProfile.memoText, initialProfile.memoUpdatedAt)
+    );
+
+    // Dismissing with the matching signature hides the reminder
+    const dismissedEval = evaluateSpeciesMemoReminderAlert(initialProfile, {
+      dismissedSignature: firstEval.signature,
+    });
+    expect(dismissedEval.hasMemo).toBe(true);
+    expect(dismissedEval.shouldShow).toBe(false);
+
+    // Editing the memo pad text (or timestamp) changes the signature so the notice returns
+    const editedByTextEval = evaluateSpeciesMemoReminderAlert(
+      {
+        memoText: '# Spring Notes\n- [ ] Weigh kits on Sunday\n- Check nestbox',
+        memoUpdatedAt: '2026-11-15T10:00:00.000Z',
+      },
+      { dismissedSignature: firstEval.signature }
+    );
+    expect(editedByTextEval.shouldShow).toBe(true);
+    expect(editedByTextEval.signature).not.toBe(firstEval.signature);
+
+    const editedTimestampOnlyEval = evaluateSpeciesMemoReminderAlert(
+      {
+        memoText: initialProfile.memoText,
+        memoUpdatedAt: '2026-11-16T08:30:00.000Z',
+      },
+      { dismissedSignature: firstEval.signature }
+    );
+    expect(editedTimestampOnlyEval.shouldShow).toBe(true);
+    expect(editedTimestampOnlyEval.signature).not.toBe(firstEval.signature);
   });
 });

@@ -15,7 +15,7 @@ import {
 } from '../sampleData';
 
 describe('sampleData 6-generation pedigree seeding', () => {
-  it('gives about half of active animals a full 6-gen pedigree across all 9 species using inactive ancestors', () => {
+  it('gives about half of active animals a full 6-gen pedigree across all predefined species using inactive ancestors', () => {
     const snapshot = buildFullPredefinedSampleSnapshot();
 
     for (const preset of PREDEFINED_SPECIES_PRESETS) {

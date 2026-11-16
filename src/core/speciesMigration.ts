@@ -213,6 +213,12 @@ export function resolveOrCreateTargetSpeciesProfile(
     chinchillas: 'Chinchilla',
     ferrets: 'Ferret',
     alpacas: 'Alpaca',
+    dog: 'Dog',
+    dogs: 'Dog',
+    canine: 'Dog',
+    cat: 'Cat',
+    cats: 'Cat',
+    feline: 'Cat',
   };
 
   const existingDirect = existingProfiles.find((p) => isSameSpecies(p.name, trimmed));

@@ -69,7 +69,7 @@ export function SearchableParentPicker({
           role="combobox"
           aria-expanded={isOpen}
           aria-label={`Search ${label}`}
-          placeholder={placeholder || `Search ${label} by name, tattoo, or breed...`}
+          placeholder={placeholder || `Search ${label} by name, ID, or breed...`}
           value={query}
           onFocus={() => setIsOpen(true)}
           onBlur={() => setIsOpen(false)}

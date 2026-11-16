@@ -5,6 +5,7 @@ import {
   calculateAnimalCoi,
   calculatePairingCoi,
   describeCoiRisk,
+  getPedigreeCompletenessSummary,
   wouldCreateCycle,
 } from '../pedigreeCalculator';
 import { makeAnimal, makeSpeciesProfile } from './testFixtures';
@@ -179,5 +180,25 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
 
     expect(Number.isFinite(resA.coiPercent)).toBe(true);
     expect(Number.isFinite(resPair.coiPercent)).toBe(true);
+  });
+
+  it('flags 0% outcross results with fewer than 14 recorded 3-gen ancestors as incomplete pedigrees', () => {
+    const summarySparse = getPedigreeCompletenessSummary({
+      coiPercent: 0,
+      knownAncestorsIn3Gen: 2,
+      knownAncestorsIn4Gen: 2,
+    });
+    expect(summarySparse.percent3Gen).toBe(14);
+    expect(summarySparse.isSparsePedigree).toBe(true);
+    expect(summarySparse.isIncompleteZeroOutcross).toBe(true);
+
+    const summaryComplete = getPedigreeCompletenessSummary({
+      coiPercent: 0,
+      knownAncestorsIn3Gen: 14,
+      knownAncestorsIn4Gen: 26,
+    });
+    expect(summaryComplete.percent3Gen).toBe(100);
+    expect(summaryComplete.isSparsePedigree).toBe(false);
+    expect(summaryComplete.isIncompleteZeroOutcross).toBe(false);
   });
 });

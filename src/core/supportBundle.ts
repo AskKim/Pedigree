@@ -239,16 +239,16 @@ export function buildSupportMailtoHref(params: {
   includedPhotos: boolean;
 }): string {
   const { recipientEmail, filename, summary, includedData, includedPhotos } = params;
-  const email = (recipientEmail || 'askkimsocial@gmail.com').trim();
-  const subject = `[Community Pedigree] Crash / Diagnostic Support Bundle (${
+  const email = (recipientEmail || '').trim();
+  const subject = `[Community Pedigree] Bug Report & Diagnostic Bundle (${
     summary.errorCount
   } errors, ${summary.memoryWarningCount} memory warnings)`;
 
   const mem = summary.currentMemory;
   const bodyLines = [
-    'Hi Kimberly,',
+    'Hello,',
     '',
-    'I am sending a diagnostic support export from Community Pedigree.',
+    'I am sending a bug report & diagnostic export from Community Pedigree.',
     `Attached / Downloaded File: ${filename}`,
     '',
     '--- Device & Diagnostic Summary ---',
@@ -268,7 +268,7 @@ export function buildSupportMailtoHref(params: {
     '(Please describe what you tapped before the crash/error, and make sure the downloaded .ZIP file above is attached to this email.)',
   ];
 
-  return `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(
+  return `mailto:${email ? encodeURIComponent(email) : ''}?subject=${encodeURIComponent(
     subject
   )}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
 }

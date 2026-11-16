@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   ArrowRight,
   CalendarCheck,
+  FileBarChart2,
   GitFork,
   Home,
   ListFilter,
@@ -38,6 +39,7 @@ import { CalendarSyncConfirmModal } from './components/CalendarIntegrationModals
 import { HerdScreen } from './components/HerdScreen';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { PedigreeScreen } from './components/PedigreeScreen';
+import { ReportsScreen } from './components/ReportsScreen';
 import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
 import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
 import { SpeciesMemoScreen } from './components/SpeciesMemoScreen';
@@ -97,6 +99,7 @@ export default function App() {
     { id: 'herd', label: 'Herd' },
     { id: 'breeding', label: 'Breeding' },
     { id: 'pedigree', label: 'Pedigree' },
+    { id: 'reports', label: 'Reports' },
   ];
 
   const showInstallReminder =
@@ -410,6 +413,15 @@ export default function App() {
             onClearTaskAlertGroup={(speciesName, taskIds) => {
               void store.clearTaskAlertGroup(speciesName, taskIds);
             }}
+            onDismissMemoAlert={(speciesName, signature) => {
+              void store.dismissSpeciesMemoAlert(speciesName, signature);
+            }}
+            onToggleTaskCompleted={(task) => {
+              void store.toggleTaskCompleted(task);
+            }}
+            onExportTasksToCalendar={(tasks, hint) => {
+              store.exportTasksToCalendar(tasks, hint);
+            }}
             onNavigateToAddSpecies={() => {
               store.setOpenAddSpeciesInSettings(true);
               setRoute('settings');
@@ -476,6 +488,12 @@ export default function App() {
             }}
             highlightedTaskId={store.highlightedTaskId}
             onClearHighlightedTask={() => store.setHighlightedTaskId(null)}
+            onHideSummaryGrid={() => {
+              void store.updateSettings(
+                { showHomeSummaryGrid: false },
+                { silent: true }
+              );
+            }}
             onOpenSettings={() => setRoute('settings')}
           />
         )}
@@ -560,6 +578,13 @@ export default function App() {
             onSaveAnimal={(draft, linkTarget, pendingPhotos) => {
               void store.saveAnimal(draft, linkTarget, pendingPhotos);
             }}
+          />
+        )}
+
+        {route === 'reports' && (
+          <ReportsScreen
+            activeSpeciesName={activeSpeciesName}
+            speciesProfiles={snapshot.speciesProfiles}
           />
         )}
 
@@ -708,7 +733,7 @@ export default function App() {
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}
       <nav
         aria-label="Mobile Bottom Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-[var(--barn-surface)]/95 backdrop-blur-md border-t border-[var(--barn-border)] grid grid-cols-5 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-[var(--barn-surface)]/95 backdrop-blur-md border-t border-[var(--barn-border)] grid grid-cols-6 items-center"
       >
         {(
           [
@@ -717,6 +742,7 @@ export default function App() {
             ['herd', 'Herd', ListFilter],
             ['breeding', 'Breeding', Sparkles],
             ['pedigree', 'Pedigree', GitFork],
+            ['reports', 'Reports', FileBarChart2],
           ] as const
         ).map(([id, label, Icon]) => {
           const active = route === id;
@@ -725,12 +751,12 @@ export default function App() {
               key={id}
               type="button"
               onClick={() => handlePrimaryNavClick(id)}
-              className={`h-full flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+              className={`h-full min-w-0 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
                 active ? 'text-[var(--barn-ink)] font-semibold' : 'text-[var(--barn-muted)]'
               }`}
             >
               <span
-                className={`px-3 py-0.5 rounded-full transition-colors ${
+                className={`px-2 py-0.5 rounded-full transition-colors ${
                   active
                     ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
                     : ''
@@ -738,7 +764,7 @@ export default function App() {
               >
                 <Icon className="w-4 h-4" aria-hidden="true" />
               </span>
-              <span>{label}</span>
+              <span className="truncate max-w-full px-0.5">{label}</span>
             </button>
           );
         })}

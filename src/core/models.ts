@@ -42,7 +42,21 @@ export type TaskPriority = 'High' | 'Normal' | 'Low';
 
 export type MilestoneRelativeTo = 'AFTER_BRED' | 'BEFORE_BIRTH' | 'AFTER_BIRTH';
 
-export type WeightUnit = 'lbs_oz' | 'lbs' | 'grams';
+export type WeightUnit = 'lbs_oz' | 'lbs' | 'grams' | 'kg';
+
+export const WEIGHT_UNIT_OPTIONS: ReadonlyArray<{ value: WeightUnit; label: string; shortLabel: string }> = [
+  { value: 'lbs_oz', label: 'Pounds & Oz', shortLabel: 'lbs / oz' },
+  { value: 'lbs', label: 'Decimal Pounds', shortLabel: 'lbs' },
+  { value: 'kg', label: 'Kilograms (Metric)', shortLabel: 'kg' },
+  { value: 'grams', label: 'Grams (Metric)', shortLabel: 'g' },
+];
+
+export function normalizeWeightUnit(raw: unknown, fallback: WeightUnit = 'lbs_oz'): WeightUnit {
+  if (raw === 'lbs_oz' || raw === 'lbs' || raw === 'grams' || raw === 'kg') {
+    return raw;
+  }
+  return fallback;
+}
 
 export type CareLogType =
   | 'Weight Check'
@@ -208,6 +222,7 @@ export interface BarnSettings {
   barnNameOnboarded?: boolean;
   ignoredTaskIds?: string[];
   dismissedTaskGroupKeys?: Record<string, string | string[]>;
+  dismissedMemoAlertSignatures?: Record<string, string>;
   speciesHubBlockOrder?: Record<string, SpeciesHubBlockId[]>;
   includePhotoOnPedigree?: boolean;
   calendarSync?: CalendarSyncSettings;
@@ -240,6 +255,7 @@ export interface SpeciesProfile {
   name: string;
   sortOrder?: number;
   defaultAnimalPrefix?: string;
+  preferredUnit?: WeightUnit;
   memoText?: string;
   memoUpdatedAt?: string;
   gestationDays: number;
@@ -535,12 +551,38 @@ export function millisToDateIso(millis: number): string {
 export function normalizeBiologicalSex(rawSex: string): BiologicalSex {
   const s = (rawSex || '').trim().toLowerCase();
   if (
-    ['male', 'm', 'buck', 'ram', 'boar', 'bull', 'hob', 'macho', 'sire', 'stallion'].includes(s)
+    [
+      'male',
+      'm',
+      'buck',
+      'ram',
+      'boar',
+      'bull',
+      'hob',
+      'macho',
+      'sire',
+      'stallion',
+      'tom',
+      'stud',
+    ].includes(s)
   ) {
     return 'Male';
   }
   if (
-    ['female', 'f', 'doe', 'ewe', 'sow', 'cow', 'jill', 'hembra', 'dam', 'mare'].includes(s)
+    [
+      'female',
+      'f',
+      'doe',
+      'ewe',
+      'sow',
+      'cow',
+      'jill',
+      'hembra',
+      'dam',
+      'mare',
+      'queen',
+      'bitch',
+    ].includes(s)
   ) {
     return 'Female';
   }
@@ -571,6 +613,8 @@ export function formatBreedingStatusForSpecies(
   if (event === 'farrowing') return 'Farrowed';
   if (event === 'calving') return 'Calved';
   if (event === 'unpacking') return 'Unpacked';
+  if (event === 'whelping') return 'Whelped';
+  if (event === 'queening') return 'Queened';
   return 'Born';
 }
 
@@ -703,12 +747,107 @@ export function stripAnimalNamePrefix(name: string, prefix?: string): string {
 export const applySpeciesNamePrefix = applyAnimalNamePrefix;
 
 /**
- * Formats weight in `lbs_oz`, decimal `lbs`, or `grams`.
+ * Resolves the effective display/input weight unit for a given species, honoring any
+ * per-species override before falling back to the barn-wide default `settings.preferredUnit`.
+ */
+export function resolveSpeciesWeightUnit(
+  speciesOrProfile: Pick<SpeciesProfile, 'preferredUnit'> | string | undefined,
+  settings: Pick<BarnSettings, 'preferredUnit'>,
+  configuredProfiles?: SpeciesProfile[]
+): WeightUnit {
+  const barnFallback = normalizeWeightUnit(settings.preferredUnit, 'lbs_oz');
+  if (!speciesOrProfile) return barnFallback;
+  if (typeof speciesOrProfile === 'string') {
+    const match = configuredProfiles?.find((sp) => isSameSpecies(sp.name, speciesOrProfile));
+    return match?.preferredUnit ? normalizeWeightUnit(match.preferredUnit, barnFallback) : barnFallback;
+  }
+  return speciesOrProfile.preferredUnit
+    ? normalizeWeightUnit(speciesOrProfile.preferredUnit, barnFallback)
+    : barnFallback;
+}
+
+/**
+ * Formats integer grams for numeric text input in the active weight unit.
+ */
+export function formatWeightInputValue(weightGrams: number, unit: WeightUnit): string {
+  if (!weightGrams || weightGrams <= 0) return '';
+  if (unit === 'grams') return String(Math.round(weightGrams));
+  if (unit === 'kg') return (weightGrams / 1000).toFixed(2);
+  return (weightGrams / 453.59237).toFixed(2);
+}
+
+/**
+ * Returns input labels and example placeholders for a given weight unit.
+ */
+export function getWeightInputMeta(unit: WeightUnit): {
+  unitLabel: string;
+  shortUnit: string;
+  placeholder: string;
+} {
+  switch (unit) {
+    case 'grams':
+      return { unitLabel: 'grams', shortUnit: 'g', placeholder: 'e.g. 4650' };
+    case 'kg':
+      return { unitLabel: 'kg', shortUnit: 'kg', placeholder: 'e.g. 18.50' };
+    default:
+      return { unitLabel: 'decimal lbs', shortUnit: 'lbs', placeholder: 'e.g. 10.25' };
+  }
+}
+
+/**
+ * Returns species-appropriate UI labels and placeholders for the `tattoo` identifier field
+ * without altering the underlying `animal.tattoo` schema key.
+ */
+export function getSpeciesIdentifierLabels(speciesName?: string): {
+  fieldLabel: string;
+  shortLabel: string;
+  placeholder: string;
+} {
+  const key = (speciesName || '').trim().toLowerCase();
+  if (key === 'dog' || key === 'cat') {
+    return {
+      fieldLabel: 'Microchip / Tattoo / ID',
+      shortLabel: 'ID / Microchip',
+      placeholder: 'e.g. 985112004512 or Collar-01',
+    };
+  }
+  if (
+    key === 'cattle' ||
+    key === 'goat' ||
+    key === 'sheep' ||
+    key === 'swine / pig' ||
+    key === 'alpaca'
+  ) {
+    return {
+      fieldLabel: 'Ear Tag / Tattoo / Notch ID',
+      shortLabel: 'Ear Tag / ID',
+      placeholder: 'e.g. TAG-204',
+    };
+  }
+  if (key === 'rabbit') {
+    return {
+      fieldLabel: 'Ear Tattoo / Tag ID',
+      shortLabel: 'Ear Tattoo / ID',
+      placeholder: 'e.g. NZR-301',
+    };
+  }
+  return {
+    fieldLabel: 'ID / Tag / Tattoo / Microchip',
+    shortLabel: 'ID / Tag',
+    placeholder: 'e.g. ID-104',
+  };
+}
+
+/**
+ * Formats weight in `lbs_oz`, decimal `lbs`, `kg`, or `grams`.
  */
 export function formatWeight(weightGrams: number, unit: WeightUnit): string {
   if (!weightGrams || weightGrams <= 0) return 'Unweighed';
   if (unit === 'grams') {
     return `${Math.round(weightGrams).toLocaleString()} g`;
+  }
+  if (unit === 'kg') {
+    return `${(weightGrams / 1000).toFixed(2)} kg`;
   }
   const totalOunces = weightGrams / 28.349523125;
   if (unit === 'lbs') {
@@ -731,6 +870,7 @@ export function parseWeightInputToGrams(input: string, unit: WeightUnit): number
   const numeric = Number(clean);
   if (Number.isNaN(numeric) || numeric <= 0) return 0;
   if (unit === 'grams') return Math.round(numeric);
+  if (unit === 'kg') return Math.round(numeric * 1000);
   return Math.round(numeric * 453.59237);
 }
 
@@ -1053,6 +1193,104 @@ export const PREDEFINED_SPECIES_PRESETS: Omit<SpeciesProfile, 'createdAt' | 'upd
         daysOffset: 14,
         category: 'Nestbox',
         priority: 'High',
+      },
+    ],
+  },
+  {
+    id: 'species-dog',
+    name: 'Dog',
+    gestationDays: 63,
+    rebreedDaysAfterBirth: 180,
+    weanDaysAfterBirth: 56,
+    birthEventLabel: 'Whelping',
+    maleLabel: 'Male',
+    femaleLabel: 'Female',
+    offspringLabel: 'Puppy',
+    exampleBreeds: [
+      'Golden Retriever',
+      'Labrador Retriever',
+      'German Shepherd',
+      'Australian Shepherd',
+      'Poodle',
+      'Border Collie',
+    ],
+    milestones: [
+      {
+        label: 'Ultrasound / Pregnancy Confirmation',
+        relativeTo: 'AFTER_BRED',
+        daysOffset: 28,
+        category: 'Palpation',
+        priority: 'Normal',
+      },
+      {
+        label: 'X-Ray Puppy Count Check',
+        relativeTo: 'BEFORE_BIRTH',
+        daysOffset: 7,
+        category: 'Health',
+        priority: 'Normal',
+      },
+      {
+        label: 'Prep Whelping Box & Supplies',
+        relativeTo: 'BEFORE_BIRTH',
+        daysOffset: 5,
+        category: 'Nestbox',
+        priority: 'High',
+      },
+      {
+        label: 'Early Weight & Deworming Check',
+        relativeTo: 'AFTER_BIRTH',
+        daysOffset: 14,
+        category: 'Health',
+        priority: 'Normal',
+      },
+    ],
+  },
+  {
+    id: 'species-cat',
+    name: 'Cat',
+    gestationDays: 65,
+    rebreedDaysAfterBirth: 120,
+    weanDaysAfterBirth: 56,
+    birthEventLabel: 'Queening',
+    maleLabel: 'Tom',
+    femaleLabel: 'Queen',
+    offspringLabel: 'Kitten',
+    exampleBreeds: [
+      'Maine Coon',
+      'Ragdoll',
+      'British Shorthair',
+      'Siamese',
+      'Bengal',
+      'Sphynx',
+    ],
+    milestones: [
+      {
+        label: 'Pinking Up & Palpation Check',
+        relativeTo: 'AFTER_BRED',
+        daysOffset: 21,
+        category: 'Palpation',
+        priority: 'Normal',
+      },
+      {
+        label: 'Prep Queening Box & Heating Pad',
+        relativeTo: 'BEFORE_BIRTH',
+        daysOffset: 5,
+        category: 'Nestbox',
+        priority: 'High',
+      },
+      {
+        label: 'Kitten Birth Weight & Latch Check',
+        relativeTo: 'AFTER_BIRTH',
+        daysOffset: 1,
+        category: 'Birth Check',
+        priority: 'High',
+      },
+      {
+        label: 'First FVRCP Vaccine & Deworming Window',
+        relativeTo: 'AFTER_BIRTH',
+        daysOffset: 42,
+        category: 'Health',
+        priority: 'Normal',
       },
     ],
   },

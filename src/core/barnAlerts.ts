@@ -199,3 +199,85 @@ export function evaluateSpeciesNeedsAttentionAlert(
     shouldShow: flagged.length > 0,
   };
 }
+
+export interface SpeciesMemoAlertEvaluation {
+  hasMemo: boolean;
+  signature: string;
+  previewText: string;
+  shouldShow: boolean;
+}
+
+function fnv1aHex(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function extractMemoPreviewLine(memoText: string): string {
+  const lines = memoText.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    const cleaned = trimmed
+      .replace(/^#{1,3}\s+/, '')
+      .replace(/^[-*]\s+\[[ xX]\]\s+/, '')
+      .replace(/^[-*]\s+/, '')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  return 'You have saved notes in this memo pad.';
+}
+
+/**
+ * Builds a deterministic signature for a species memo pad's contents and update timestamp.
+ * Any edit to the memo text or its updated timestamp alters this signature so a closed
+ * reminder automatically reappears when the user edits the memo pad.
+ */
+export function buildSpeciesMemoSignature(
+  memoText?: string,
+  memoUpdatedAt?: string
+): string {
+  const raw = typeof memoText === 'string' ? memoText : '';
+  if (raw.trim().length === 0) return '';
+  const stamp = typeof memoUpdatedAt === 'string' ? memoUpdatedAt.trim() : '';
+  const contentSig = `${raw.length}:${fnv1aHex(raw)}`;
+  return stamp ? `${stamp}|${contentSig}` : contentSig;
+}
+
+/**
+ * Evaluates whether a subtle memo pad reminder notice should appear on a species home card.
+ */
+export function evaluateSpeciesMemoReminderAlert(
+  speciesProfile: Pick<SpeciesProfile, 'memoText' | 'memoUpdatedAt'>,
+  options?: {
+    dismissedSignature?: string;
+  }
+): SpeciesMemoAlertEvaluation {
+  const raw = typeof speciesProfile.memoText === 'string' ? speciesProfile.memoText : '';
+  const hasMemo = raw.trim().length > 0;
+  if (!hasMemo) {
+    return {
+      hasMemo: false,
+      signature: '',
+      previewText: '',
+      shouldShow: false,
+    };
+  }
+
+  const signature = buildSpeciesMemoSignature(raw, speciesProfile.memoUpdatedAt);
+  const isDismissed =
+    Boolean(options?.dismissedSignature) && options?.dismissedSignature === signature;
+
+  return {
+    hasMemo: true,
+    signature,
+    previewText: extractMemoPreviewLine(raw),
+    shouldShow: !isDismissed,
+  };
+}
+

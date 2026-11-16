@@ -56,7 +56,6 @@ import { SpeciesBackupReason } from '../core/syncAndExports';
 import { ActiveSpeciesData, WorkspaceRoute } from '../hooks/useBarnStore';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
-import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface SpeciesDashboardScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -95,6 +94,7 @@ interface SpeciesDashboardScreenProps {
   onCopyTaskAppLink?: (task: BarnTask) => void;
   highlightedTaskId?: string | null;
   onClearHighlightedTask?: () => void;
+  onHideSummaryGrid?: () => void;
   onOpenSettings: () => void;
 }
 
@@ -128,6 +128,7 @@ export function SpeciesDashboardScreen({
   onCopyTaskAppLink,
   highlightedTaskId,
   onClearHighlightedTask,
+  onHideSummaryGrid,
   onOpenSettings,
 }: SpeciesDashboardScreenProps) {
   const {
@@ -142,6 +143,7 @@ export function SpeciesDashboardScreen({
     totalRecordCount,
   } = activeData;
   const today = todayDateIso();
+  const showSummaryGrid = settings.showHomeSummaryGrid !== false;
 
   const [taskFilter, setTaskFilter] = useState<'open' | 'completed'>('open');
   const [showNewTaskForm, setShowNewTaskForm] = useState(false);
@@ -327,7 +329,7 @@ export function SpeciesDashboardScreen({
           className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
         >
           <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
-          Edit {speciesProfile.name} Schedule, Prefix &amp; Milestones
+          Edit {speciesProfile.name} Schedule, Weight Unit &amp; Milestones
         </button>
 
         {testingRecordCount > 0 ? (
@@ -563,70 +565,107 @@ export function SpeciesDashboardScreen({
   return (
     <div className="space-y-6">
       {/* Compact 4-Metric Species Pulse Strip + Memo Pad Link */}
-      <div className="flex flex-col lg:flex-row lg:items-stretch gap-2">
-        <section className="flex-1 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl p-1.5 grid grid-cols-2 sm:grid-cols-4 gap-1">
-          <button
-            type="button"
-            onClick={() => onNavigate('herd')}
-            className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
-          >
-            <span className="text-xs text-[var(--barn-muted)] truncate">
-              {speciesProfile.name} Herd
-            </span>
-            <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-              {animals.length} ({activeBreedingStock} active)
-            </span>
-          </button>
+      {showSummaryGrid ? (
+        <div className="flex flex-col lg:flex-row lg:items-stretch gap-2">
+          <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <section className="flex-1 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl p-1.5 grid grid-cols-2 sm:grid-cols-4 gap-1">
+              <button
+                type="button"
+                onClick={() => onNavigate('herd')}
+                className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
+              >
+                <span className="text-xs text-[var(--barn-muted)] truncate">
+                  {speciesProfile.name} Herd
+                </span>
+                <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
+                  {animals.length} ({activeBreedingStock} active)
+                </span>
+              </button>
 
-          <button
-            type="button"
-            onClick={() => onNavigate('breeding')}
-            className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
-          >
-            <span className="text-xs text-[var(--barn-muted)] truncate">
-              {speciesProfile.birthEventLabel}s
-            </span>
-            <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-              {activeGestations.length} active
-            </span>
-          </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('breeding')}
+                className="text-left px-3 py-1.5 rounded-lg hover:bg-[var(--barn-subtle)] transition-colors flex items-center justify-between gap-2"
+              >
+                <span className="text-xs text-[var(--barn-muted)] truncate">
+                  {speciesProfile.birthEventLabel}s
+                </span>
+                <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
+                  {activeGestations.length} active
+                </span>
+              </button>
 
-          <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
-            <span className="text-xs text-[var(--barn-muted)] truncate">Open Chores</span>
-            <span className="font-mono text-xs font-semibold tabular-nums">
-              {openTasksCount}
-            </span>
+              <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
+                <span className="text-xs text-[var(--barn-muted)] truncate">Open Chores</span>
+                <span className="font-mono text-xs font-semibold tabular-nums">
+                  {openTasksCount}
+                </span>
+              </div>
+
+              <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
+                <span className="text-xs text-[var(--barn-muted)] truncate">Cages / Shows</span>
+                <span className="font-mono text-xs font-semibold tabular-nums">
+                  {cages.length} / {upcomingShows.length}
+                </span>
+              </div>
+            </section>
+
+            {onHideSummaryGrid && (
+              <button
+                type="button"
+                onClick={onHideSummaryGrid}
+                className="self-end sm:self-center text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] underline whitespace-nowrap shrink-0"
+              >
+                Hide strip
+              </button>
+            )}
           </div>
 
-          <div className="px-3 py-1.5 rounded-lg flex items-center justify-between gap-2">
-            <span className="text-xs text-[var(--barn-muted)] truncate">Cages / Shows</span>
-            <span className="font-mono text-xs font-semibold tabular-nums">
-              {cages.length} / {upcomingShows.length}
-            </span>
-          </div>
-        </section>
-
-        <button
-          type="button"
-          onClick={() => onNavigate('memo')}
-          className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
-        >
-          <span className="inline-flex items-center gap-2.5">
-            <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
-              <StickyNote className="w-4 h-4" aria-hidden="true" />
-            </span>
-            <span>
-              <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
-                {speciesProfile.name} Note Pad
+          <button
+            type="button"
+            onClick={() => onNavigate('memo')}
+            className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
+          >
+            <span className="inline-flex items-center gap-2.5">
+              <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
+                <StickyNote className="w-4 h-4" aria-hidden="true" />
               </span>
-              <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
-                Open permanent scratch pad
+              <span>
+                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                  {speciesProfile.name} Note Pad
+                </span>
+                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
+                  Open permanent scratch pad
+                </span>
               </span>
             </span>
-          </span>
-          <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-        </button>
-      </div>
+            <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => onNavigate('memo')}
+            className="w-full sm:w-auto bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
+          >
+            <span className="inline-flex items-center gap-2.5">
+              <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
+                <StickyNote className="w-4 h-4" aria-hidden="true" />
+              </span>
+              <span>
+                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                  {speciesProfile.name} Note Pad
+                </span>
+                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
+                  Open permanent scratch pad
+                </span>
+              </span>
+            </span>
+            <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       {/* Needs Attention Animals Notice */}
       {attentionAlert.shouldShow && (
@@ -646,7 +685,7 @@ export function SpeciesDashboardScreen({
                   {attentionAlert.animals.length === 1 ? 'Record Needs' : 'Records Need'} Attention
                 </h2>
                 <p className="text-xs text-[var(--barn-muted)]">
-                  Review and complete details (such as tattoo, breed, or pedigree) or clear the
+                  Review and complete details (such as ID/tag, breed, or pedigree) or clear the
                   flag once finished.
                 </p>
               </div>
@@ -1120,7 +1159,6 @@ export function SpeciesDashboardScreen({
                     </p>
                   ) : (
                     <>
-                      <WrightCoiNotice compact />
                       <div className="divide-y divide-[var(--barn-border)]">
                       {activeGestations.map((b) => (
                         <div key={b.id} className="py-3.5 first:pt-1 last:pb-1 space-y-1">

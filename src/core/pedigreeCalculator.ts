@@ -92,6 +92,41 @@ export function describeCoiRisk(percent: number): CoiRiskDescriptor {
   };
 }
 
+export interface PedigreeCompletenessSummary {
+  known3Gen: number;
+  max3Gen: number;
+  known4Gen: number;
+  max4Gen: number;
+  percent3Gen: number;
+  isSparsePedigree: boolean;
+  isIncompleteZeroOutcross: boolean;
+}
+
+/**
+ * Summarizes recorded pedigree depth alongside a `CoiAnalysis` so breeders can distinguish
+ * a true outcross (complete 3-generation pedigree with 0% overlap) from an incomplete pedigree
+ * that simply lacks ancestor records.
+ */
+export function getPedigreeCompletenessSummary(
+  coi: Pick<CoiAnalysis, 'coiPercent' | 'knownAncestorsIn3Gen' | 'knownAncestorsIn4Gen'>
+): PedigreeCompletenessSummary {
+  const max3Gen = 14;
+  const max4Gen = 30;
+  const known3Gen = Math.max(0, Math.min(max3Gen, coi.knownAncestorsIn3Gen || 0));
+  const known4Gen = Math.max(0, Math.min(max4Gen, coi.knownAncestorsIn4Gen || 0));
+  const percent3Gen = Math.round((known3Gen / max3Gen) * 100);
+  const isIncompleteZeroOutcross = (coi.coiPercent || 0) <= 0.0001 && known3Gen < max3Gen;
+  return {
+    known3Gen,
+    max3Gen,
+    known4Gen,
+    max4Gen,
+    percent3Gen,
+    isSparsePedigree: known3Gen < 6,
+    isIncompleteZeroOutcross,
+  };
+}
+
 /**
  * Builds an ID lookup map strictly scoped to a single livestock species.
  */

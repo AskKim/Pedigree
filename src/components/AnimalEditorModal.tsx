@@ -29,6 +29,9 @@ import {
   BiologicalSex,
   CageLocation,
   doesAnimalNeedAttention,
+  formatWeightInputValue,
+  getSpeciesIdentifierLabels,
+  getWeightInputMeta,
   isAnimalArchived,
   isSameSpecies,
   parseWeightInputToGrams,
@@ -38,11 +41,12 @@ import {
 import {
   buildSpeciesHerdMap,
   calculatePairingCoi,
+  getPedigreeCompletenessSummary,
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
-import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface AnimalEditorModalProps {
   initialAnimal: Animal | null;
@@ -112,12 +116,11 @@ export function AnimalEditorModal({
     return sireArch || damArch;
   });
   const [birthDateIso, setBirthDateIso] = useState(initialAnimal?.birthDateIso || '');
-  const [weightInput, setWeightInput] = useState(() => {
-    const g = initialAnimal?.weightGrams || 0;
-    if (g <= 0) return '';
-    if (preferredUnit === 'grams') return String(g);
-    return (g / 453.59237).toFixed(2);
-  });
+  const [weightInput, setWeightInput] = useState(() =>
+    formatWeightInputValue(initialAnimal?.weightGrams || 0, preferredUnit)
+  );
+  const weightMeta = getWeightInputMeta(preferredUnit);
+  const idLabels = getSpeciesIdentifierLabels(speciesProfile.name);
   const [genotypeRaw, setGenotypeRaw] = useState(
     initialAnimal?.genotypeRaw ||
       (isSameSpecies(speciesProfile.name, 'Rabbit') && !isEditing ? 'A_ B_ C_ D_ ee ww' : '')
@@ -311,11 +314,11 @@ export function AnimalEditorModal({
 
             <div>
               <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-                Ear Tattoo / Tag ID
+                {idLabels.fieldLabel}
               </label>
               <input
                 type="text"
-                placeholder="e.g. NZR-301"
+                placeholder={idLabels.placeholder}
                 value={tattoo}
                 onChange={(e) => setTattoo(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
@@ -412,7 +415,7 @@ export function AnimalEditorModal({
                   Needs Attention (Review / Complete Record)
                 </strong>
                 <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
-                  Shows a reminder on Home &amp; Species Hub until details (tattoo, pedigree, breed)
+                  Shows a reminder on Home &amp; Species Hub until details ({idLabels.shortLabel.toLowerCase()}, pedigree, breed)
                   are finished. Uncheck once resolved.
                 </span>
               </span>
@@ -486,13 +489,13 @@ export function AnimalEditorModal({
 
             <div>
               <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
-                Weight ({preferredUnit === 'grams' ? 'grams' : 'decimal lbs'})
+                Weight ({weightMeta.unitLabel})
               </label>
               <input
                 type="number"
                 step="0.01"
                 min="0"
-                placeholder={preferredUnit === 'grams' ? 'e.g. 4650' : 'e.g. 10.25'}
+                placeholder={weightMeta.placeholder}
                 value={weightInput}
                 onChange={(e) => setWeightInput(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
@@ -516,9 +519,14 @@ export function AnimalEditorModal({
 
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-medium text-[var(--barn-muted)]">
-                Coat Color Genotype Loci (A, B, C, D, E, W, En, V, Du)
-              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs font-medium text-[var(--barn-muted)]">
+                  {isSameSpecies(speciesProfile.name, 'Rabbit')
+                    ? 'Coat Color Genotype Loci (A, B, C, D, E, W, En, V, Du)'
+                    : `${speciesProfile.name} Color / DNA Genotype Notes`}
+                </label>
+                <ColorGeneticsNotice compact />
+              </div>
               {isSameSpecies(speciesProfile.name, 'Rabbit') && (
                 <select
                   defaultValue=""
@@ -538,7 +546,11 @@ export function AnimalEditorModal({
             </div>
             <input
               type="text"
-              placeholder="e.g. A_ B_ C_ D_ ee ww"
+              placeholder={
+                isSameSpecies(speciesProfile.name, 'Rabbit')
+                  ? 'e.g. A_ B_ C_ D_ ee ww'
+                  : 'Optional genotype or DNA marker notes'
+              }
               value={genotypeRaw}
               onChange={(e) => setGenotypeRaw(e.target.value)}
               className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
@@ -563,14 +575,16 @@ export function AnimalEditorModal({
                   </label>
                 )}
               </div>
-              {projectedCoi && (
-                <div className="flex flex-wrap items-center gap-2">
+              {projectedCoi && (() => {
+                const comp = getPedigreeCompletenessSummary(projectedCoi);
+                return (
                   <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)]">
-                    Projected COI: {projectedCoi.coiPercent.toFixed(2)}% ({projectedCoi.risk.label})
+                    Projected COI: {projectedCoi.coiPercent.toFixed(2)}% ({projectedCoi.risk.label}) ·{' '}
+                    {comp.known3Gen}/{comp.max3Gen} 3-gen
+                    {comp.isIncompleteZeroOutcross ? ' (incomplete pedigree)' : ''}
                   </span>
-                  <WrightCoiNotice compact />
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

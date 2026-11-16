@@ -24,11 +24,11 @@ import {
   isAnimalArchived,
   todayDateIso,
 } from '../core/models';
-import { calculatePairingCoi } from '../core/pedigreeCalculator';
+import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
-import { WrightCoiNotice } from './WrightCoiNotice';
 
 interface BreedingScreenProps {
   activeData: ActiveSpeciesData;
@@ -538,7 +538,7 @@ export function BreedingScreen({
             <h2 className="font-display text-xl font-semibold">
               Projected Kinship (Wright COI) &amp; Punnett Analysis
             </h2>
-            <WrightCoiNotice />
+            <ColorGeneticsNotice />
           </div>
 
           {!coiAnalysis ? (
@@ -547,31 +547,49 @@ export function BreedingScreen({
                 ? 'Quick-added parent records start with unknown lineage and genotype. Task scheduling still runs immediately — update the flagged record in Herd later to unlock COI and Punnett analysis.'
                 : `Pick a ${speciesProfile.maleLabel} and ${speciesProfile.femaleLabel} on the left to view genetic projections.`}
             </p>
-          ) : (
+          ) : (() => {
+            const completeness = getPedigreeCompletenessSummary(coiAnalysis);
+            return (
             <div className="space-y-5">
-              <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs text-[var(--barn-muted)]">
-                    Projected Offspring Inbreeding Coefficient
+              <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs text-[var(--barn-muted)]">
+                      Projected Offspring Inbreeding Coefficient
+                    </div>
+                    <div className="font-mono text-3xl font-semibold tabular-nums mt-0.5">
+                      {coiAnalysis.coiPercent.toFixed(2)}%
+                    </div>
+                    <div className="text-xs text-[var(--barn-muted)] mt-1">
+                      {coiAnalysis.risk.label} — {coiAnalysis.risk.guidance}
+                    </div>
                   </div>
-                  <div className="font-mono text-3xl font-semibold tabular-nums mt-0.5">
-                    {coiAnalysis.coiPercent.toFixed(2)}%
-                  </div>
-                  <div className="text-xs text-[var(--barn-muted)] mt-1">
-                    {coiAnalysis.risk.label} — {coiAnalysis.risk.guidance}
+                  <div className="text-right text-xs font-mono tabular-nums text-[var(--barn-muted)]">
+                    <div>
+                      3-Gen Known: {completeness.known3Gen} / {completeness.max3Gen} ({completeness.percent3Gen}%)
+                    </div>
+                    <div>
+                      4-Gen Known: {completeness.known4Gen} / {completeness.max4Gen}
+                    </div>
                   </div>
                 </div>
-                <div className="text-right text-xs font-mono tabular-nums text-[var(--barn-muted)]">
-                  <div>3-Gen Known: {coiAnalysis.knownAncestorsIn3Gen} / 14</div>
-                  <div>4-Gen Known: {coiAnalysis.knownAncestorsIn4Gen} / 30</div>
-                </div>
+                {completeness.isIncompleteZeroOutcross && (
+                  <p className="text-[11px] text-[var(--barn-muted)] border-t border-[var(--barn-border)]/70 pt-2">
+                    Incomplete pedigree ({completeness.known3Gen}/{completeness.max3Gen} 3-gen ancestors recorded) — 0.00% reflects missing lineage records, not necessarily a full outcross.
+                  </p>
+                )}
               </div>
 
               {coiAnalysis.sharedAncestors.length > 0 && (
                 <div className="space-y-2">
-                  <h3 className="text-xs font-semibold text-[var(--barn-muted)]">
-                    Shared Ancestor Path Contributions
-                  </h3>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <h3 className="text-xs font-semibold text-[var(--barn-muted)]">
+                      Shared Ancestor Path Contributions
+                    </h3>
+                    <span className="text-[11px] text-[var(--barn-muted)]">
+                      Evaluated to depth of 8 generations
+                    </span>
+                  </div>
                   <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl text-xs">
                     {coiAnalysis.sharedAncestors.map((sa) => (
                       <div
@@ -598,8 +616,11 @@ export function BreedingScreen({
 
               {geneticsPreview && geneticsPreview.locusBreakdowns.length > 0 && (
                 <div className="space-y-3 border-t border-[var(--barn-border)] pt-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">Coat Color Punnett Predictions</h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold">Coat Color Punnett Predictions</h3>
+                      <ColorGeneticsNotice compact />
+                    </div>
                     {geneticsPreview.hasUnknownAlleles && (
                       <span className="text-[11px] text-[var(--barn-muted)]">
                         Includes unknown &lsquo;_&rsquo; carrier slots
@@ -654,7 +675,8 @@ export function BreedingScreen({
                 </div>
               )}
             </div>
-          )}
+            );
+          })()}
         </section>
       </div>
 
@@ -665,7 +687,6 @@ export function BreedingScreen({
             {speciesProfile.name} Breeding &amp; {speciesProfile.birthEventLabel} Ledger (
             {breedings.length})
           </h2>
-          {breedings.length > 0 && <WrightCoiNotice compact />}
         </div>
 
         {breedings.length === 0 ? (
