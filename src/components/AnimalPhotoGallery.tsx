@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Per-Animal Multi-Photo Gallery, Live Optimizer & Lightbox (`src/components/AnimalPhotoGallery.tsx`).
  *

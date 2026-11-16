@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Interactive 3-, 4-, 5-, & 6-Generation Pedigree Tree Explorer (`Pedigree`).
  *

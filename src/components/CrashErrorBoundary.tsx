@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * React Top-Level Crash Error Boundary & Emergency Recovery / Support Export UI.
  *

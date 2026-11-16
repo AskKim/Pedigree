@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Official "Sign in with Google" button + Explicit Confirmation & Offline Fallback
  * Modal for syncing barn tasks to Google Calendar or handing off to desktop/offline

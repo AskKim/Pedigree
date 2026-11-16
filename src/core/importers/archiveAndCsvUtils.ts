@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Pure TypeScript Multi-ZIP Unpacker, RFC-4180 CSV/TSV Parser & Unit Normalizers.
  *

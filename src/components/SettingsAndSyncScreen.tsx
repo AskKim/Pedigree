@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Barn Preferences, Appearance Studio, PWA Storage Protection, Multi-Worker Local Sync,
  * Custom Livestock, External Platform Importers & Global Reset Screen (`Settings`).

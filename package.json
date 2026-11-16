@@ -1,7 +1,7 @@
 {
   "name": "pedigree",
   "description": "Community Pedigree Project — App Name: Community Pedigree | Repo: AskKim/Pedigree | Package Name: pedigree",
-  "license": "AGPLV3",
+  "license": "AGPL-3.0-or-later",
   "version": "0.1.0-prealpha.1",
   "type": "module",
   "scripts": {

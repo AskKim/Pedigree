@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Zero-Cloud Local & Peer-to-Peer Sync Channels (`src/storage/localSyncChannels.ts`).
  *

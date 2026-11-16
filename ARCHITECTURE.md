@@ -4,7 +4,7 @@
 - **App Name:** Community Pedigree
 - **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree)
 - **Package Name:** `pedigree`
-- **License:** Apache-2.0
+- **License:** GNU AGPLv3 (`AGPL-3.0-or-later`) — see [LICENSE](./LICENSE)
 
 ## Cross-Platform & Expo Migration Guardrails
 

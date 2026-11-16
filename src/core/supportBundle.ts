@@ -1,6 +1,6 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Support Bundle Exporter (.ZIP with Logs + Optional Copy of User Barn Data) & Email/Share Helper.
  *
