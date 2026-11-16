@@ -4,7 +4,7 @@
 - **App Name:** Community Pedigree
 - **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree) (GitHub paths stay `AskKim/Pedigree`)
 - **Package Name:** `pedigree` (lowercase package identifier for `package.json` and the eventual `.apk` / bundle ID segment, e.g., `<reverse-domain>.pedigree`)
-- **License:** [Apache License 2.0](./LICENSE)
+- **License:** Agplv3 
 
 **Community Pedigree** is an open-source, offline-first livestock registry, cage-side breeding & chore manager, coat color genetics lab, and recursive Wright Coefficient of Inbreeding (COI) pedigree engine—initially tailored for ARBA **New Zealand Red** rabbitry workflows and built out across multi-species livestock.
 
