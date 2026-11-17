@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assessBrowserCompatibility,
+  BrowserFeatureSignals,
   buildLowMemorySettingsPatch,
   classifyDeviceCapability,
   DEVICE_CAPABILITY_TIER_LIST,
   DEVICE_CAPABILITY_TIERS,
   DeviceHardwareSignals,
   evaluateBarnWorkloadForTier,
+  getHeavyZipExportGate,
+  getTierStoragePolicy,
+  TIER_STORAGE_POLICIES,
 } from '../deviceCapability';
 
 const MB = 1024 * 1024;
@@ -23,6 +28,28 @@ function makeSignals(overrides: Partial<DeviceHardwareSignals> = {}): DeviceHard
     screenWidthPx: 412,
     screenHeightPx: 915,
     devicePixelRatio: 2.6,
+    ...overrides,
+  };
+}
+
+function makeBrowserSignals(
+  overrides: Partial<BrowserFeatureSignals> = {}
+): BrowserFeatureSignals {
+  return {
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    promiseSupported: true,
+    indexedDbSupported: true,
+    wasmSupported: true,
+    moduleWorkerSupported: true,
+    opfsSupported: true,
+    directoryPickerSupported: true,
+    persistStorageSupported: true,
+    clipboardWriteSupported: true,
+    webShareFilesSupported: false,
+    webpEncodeSupported: true,
+    createImageBitmapSupported: true,
+    workerRuntimeDisabled: false,
     ...overrides,
   };
 }
@@ -230,5 +257,77 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
         tier4
       )
     ).toBeNull();
+  });
+
+  it('enforces tightened local storage caps & thumbnail-light mirror dehydration on Tiers 1 and 2', () => {
+    const t1 = getTierStoragePolicy(1);
+    const t2 = getTierStoragePolicy(2);
+    const t3 = getTierStoragePolicy(3);
+    const t5 = getTierStoragePolicy(5);
+
+    expect(t1.monthlyCap).toBe(2);
+    expect(t1.preUpgradeCap).toBe(1);
+    expect(t1.manualCap).toBe(3);
+    expect(t1.rollingIdbCap).toBe(1);
+    expect(t1.dehydrateMirrorPhotos).toBe(true);
+    expect(t1.skipHeavyCanaryZip).toBe(true);
+    expect(t1.compressVaultBackups).toBe(true);
+
+    expect(t2.monthlyCap).toBe(3);
+    expect(t2.manualCap).toBe(5);
+    expect(t2.rollingIdbCap).toBe(2);
+    expect(t2.dehydrateMirrorPhotos).toBe(true);
+    expect(t2.maxSafeImportBytesHint).toBeGreaterThan(t1.maxSafeImportBytesHint);
+
+    expect(t3.dehydrateMirrorPhotos).toBe(false);
+    expect(t5.monthlyCap).toBe(6);
+    expect(t5.preUpgradeCap).toBe(3);
+    expect(t5.preResetCap).toBe(8);
+    expect(t5.manualCap).toBe(12);
+    expect(Object.keys(TIER_STORAGE_POLICIES)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('assesses browser compatibility gaps, WASM fallback state, and Tier 1 / outdated .ZIP confirmation gates', () => {
+    const modernDesktop = classifyDeviceCapability(
+      makeSignals({
+        deviceMemoryGb: 16,
+        hardwareConcurrency: 12,
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
+        maxTouchPoints: 0,
+        coarsePointer: false,
+      })
+    );
+    const modernBrowser = assessBrowserCompatibility(makeBrowserSignals(), modernDesktop.tier);
+    expect(modernBrowser.isOutdatedBrowser).toBe(false);
+    expect(modernBrowser.wasmFallbackActive).toBe(false);
+    expect(modernBrowser.shouldConfirmHeavyZipExport).toBe(false);
+    expect(getHeavyZipExportGate(modernDesktop, modernBrowser).requiresConfirmation).toBe(false);
+
+    const tier1Device = classifyDeviceCapability(makeSignals({ deviceMemoryGb: 1, hardwareConcurrency: 2 }));
+    const tier1Gate = getHeavyZipExportGate(tier1Device, assessBrowserCompatibility(makeBrowserSignals(), tier1Device.tier));
+    expect(tier1Gate.requiresConfirmation).toBe(true);
+    expect(tier1Gate.advice).toContain('.JSON');
+
+    const olderSafari = assessBrowserCompatibility(
+      makeBrowserSignals({
+        userAgent:
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 14_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+        wasmSupported: false,
+        opfsSupported: false,
+        directoryPickerSupported: false,
+        persistStorageSupported: false,
+        webpEncodeSupported: false,
+      }),
+      3
+    );
+    expect(olderSafari.isOutdatedBrowser).toBe(true);
+    expect(olderSafari.wasmFallbackActive).toBe(true);
+    expect(olderSafari.shouldConfirmHeavyZipExport).toBe(true);
+    expect(olderSafari.unavailableFeatures.some((f) => f.key === 'wasm')).toBe(true);
+    expect(olderSafari.unavailableFeatures.some((f) => f.key === 'opfs')).toBe(true);
+    expect(olderSafari.unavailableFeatures.some((f) => f.key === 'directoryPicker')).toBe(true);
+    expect(olderSafari.unavailableFeatures.some((f) => f.key === 'persistStorage')).toBe(true);
+    expect(olderSafari.unavailableFeatures.some((f) => f.key === 'webp')).toBe(true);
   });
 });

@@ -139,6 +139,7 @@ export interface SafeUnzipOptions {
   maxEntries?: number;
   maxEntryBytes?: number;
   maxTotalUncompressedBytes?: number;
+  entryFilter?: (entryPath: string) => boolean;
 }
 
 /**
@@ -155,6 +156,7 @@ export function safeUnzipArchive(
   const maxEntryBytes = options.maxEntryBytes ?? MAX_ZIP_ENTRY_BYTES;
   const maxTotalUncompressedBytes =
     options.maxTotalUncompressedBytes ?? MAX_ZIP_UNCOMPRESSED_TOTAL_BYTES;
+  const entryFilter = options.entryFilter;
 
   const sizeCheck = validateUploadFileSize(
     archiveName,
@@ -191,7 +193,7 @@ export function safeUnzipArchive(
             `ZIP archive "${archiveName}" expands beyond the ${formatReadableByteLimit(maxTotalUncompressedBytes)} safety limit.`
           );
         }
-        return true;
+        return entryFilter ? Boolean(entryFilter(file.name)) : true;
       },
     });
   } catch (err) {

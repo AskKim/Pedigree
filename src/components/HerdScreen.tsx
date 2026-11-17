@@ -260,6 +260,9 @@ export function HerdScreen({
 
   useEffect(() => {
     if (!previewDoc?.isPedigree || !previewDoc.pedigreeSubject || !settings.includePhotoOnPedigree) {
+      if (hydratedPedigreePhoto !== null) {
+        setHydratedPedigreePhoto(null);
+      }
       return;
     }
     const primary = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
@@ -2189,7 +2192,10 @@ export function HerdScreen({
               <ColorGeneticsNotice compact />
             ) : undefined
           }
-          onClose={() => setPreviewDoc(null)}
+          onClose={() => {
+            setPreviewDoc(null);
+            setHydratedPedigreePhoto(null);
+          }}
         />
       )}
     </div>

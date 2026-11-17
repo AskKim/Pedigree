@@ -369,26 +369,28 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
   },
   {
     id: 'IMP-008',
-    title: 'Hardcoded Root Base Path PWA Config & GitHub Actions CI Pipeline',
+    title: 'Hardcoded Root Base Path & Disabled Dev HMR Config + GitHub Actions CI',
     category: 'ci-tooling',
     source: 'session',
     summary:
-      "Hardcodes `basePath = '/'` in Vite/PWA config so AI Studio never prompts for `VITE_BASE_PATH`, and runs unit tests, improvement verification, lint, and production builds in `.github/workflows/ci.yml`.",
+      "Hardcodes `basePath = '/'`, `hmr: false`, and `watch: null` in Vite config so AI Studio never prompts for `VITE_BASE_PATH` or `DISABLE_HMR`, and runs unit tests, improvement verification, lint, and production builds in `.github/workflows/ci.yml`.",
     userIntent:
-      'Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` hardcoded so AI Studio never prompts for `VITE_BASE_PATH`.',
+      'Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` and disabled dev HMR hardcoded so AI Studio never prompts for env vars.',
     files: ['vite.config.ts', '.env.example', '.github/workflows/ci.yml', 'package.json'],
     invariants: [
       {
         filePath: 'vite.config.ts',
-        requiredSubstrings: ["const basePath = '/'"],
-        forbiddenSubstrings: ['process.env.VITE_BASE_PATH'],
-        rationale: "Hardcoding `basePath = '/'` prevents AI Studio from prompting the user for `VITE_BASE_PATH`.",
+        requiredSubstrings: ["const basePath = '/'", 'hmr: false', 'watch: null'],
+        forbiddenSubstrings: ['process.env.VITE_BASE_PATH', 'process.env.DISABLE_HMR'],
+        rationale:
+          "Hardcoding `basePath = '/'`, `hmr: false`, and `watch: null` prevents AI Studio from prompting for `VITE_BASE_PATH` or `DISABLE_HMR`.",
       },
       {
         filePath: '.env.example',
-        requiredSubstrings: ['DISABLE_HMR'],
-        forbiddenSubstrings: ['VITE_BASE_PATH'],
-        rationale: 'Omitting `VITE_BASE_PATH` from `.env.example` prevents AI Studio from prompting for an unconfigured env var.',
+        requiredSubstrings: ['# No required environment variables.'],
+        forbiddenSubstrings: ['VITE_BASE_PATH', 'DISABLE_HMR'],
+        rationale:
+          'Omitting `VITE_BASE_PATH` and `DISABLE_HMR` from `.env.example` prevents AI Studio from prompting for unconfigured env vars.',
       },
       {
         filePath: '.github/workflows/ci.yml',
@@ -402,8 +404,8 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
     ],
     restorePlaybook: [
-      "Keep `const basePath = '/'` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH`.",
-      'Do not add `VITE_BASE_PATH` to `.env.example`.',
+      "Keep `const basePath = '/'`, `hmr: false`, and `watch: null` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH` or `process.env.DISABLE_HMR`.",
+      'Do not add `VITE_BASE_PATH` or `DISABLE_HMR` to `.env.example`.',
       'Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.',
     ],
   },
@@ -974,6 +976,59 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `src/core/backupVault.ts` pure TypeScript with schema v6 migration, SHA-256 verification, and `computePedigreeReferencedIds` stub preservation.',
       'Keep `src/storage/opfsStorage.ts` managing `/tmp`, `/backups`, `/archives`, `try/finally` `.close()`, boot sweeps, canary checks, and IDB failure dumps.',
       'Keep `UnifiedBackupVaultPanel.tsx`, `ArchivedHerdsModal.tsx`, `WipedStorageRecoveryModal.tsx`, `useBarnStore.ts`, and `App.tsx` connected.',
+    ],
+  },
+  {
+    id: 'IMP-019',
+    title: 'ES2020 Compatibility Build, Pre-Flight Guard, Tier 1 .ZIP Gate & Graceful Fallbacks',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Downlevels TS/Vite build to ES2020 without legacy polyfill bloat, runs an ES5 pre-flight guard in index.html (blocking missing Promise/fetch/IDB cleanly while allowing IndexedDB JSON boot without WASM), prompts Tier 1/outdated browsers with .JSON backup advice before heavy .ZIP exports, and keeps unsupported optional controls visible in disabled state with clear reason text.',
+    userIntent:
+      'Support older browser versions gracefully without code bloat, fail politely on blocked features, and keep unavailable controls visible with clear explanation text.',
+    files: [
+      'tsconfig.json',
+      'vite.config.ts',
+      'index.html',
+      'src/main.tsx',
+      'src/core/deviceCapability.ts',
+      'src/storage/deviceCapabilityDetector.ts',
+      'src/utils/webFileActions.ts',
+      'src/components/UnifiedBackupVaultPanel.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'vite.config.ts',
+        requiredSubstrings: ['es2020', 'safari14', 'cssTarget'],
+        rationale: 'Vite build must target ES2020 / Safari 14+ without heavy polyfill bloat.',
+      },
+      {
+        filePath: 'index.html',
+        requiredSubstrings: ['__PEDIGREE_PREFLIGHT__', 'pedigree-preflight-guard', '__PEDIGREE_BOOT_OK__'],
+        rationale: 'ES5 pre-flight guard and module boot watchdog must prevent blank screens on unsupported browsers.',
+      },
+      {
+        filePath: 'src/core/deviceCapability.ts',
+        requiredSubstrings: ['assessBrowserCompatibility', 'getHeavyZipExportGate'],
+        rationale: 'Pure TypeScript browser compatibility classifier and Tier 1/outdated ZIP caution gate must remain intact.',
+      },
+      {
+        filePath: 'src/utils/webFileActions.ts',
+        requiredSubstrings: ['copyTextWithFallback'],
+        rationale: 'Clipboard fallback for restricted/older browser contexts must remain available.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['pendingHeavyZipExport', 'heavyZipGate'],
+        rationale: 'Heavy .ZIP exports must warn Tier 1/outdated browsers and recommend .JSON fallback.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep ES2020 target in `tsconfig.json` and `vite.config.ts` plus ES5 inline guard in `index.html`.',
+      'Keep `assessBrowserCompatibility` and `getHeavyZipExportGate` in `src/core/deviceCapability.ts` and hook probes in `src/storage/deviceCapabilityDetector.ts`.',
+      'Keep disabled-with-reason UI controls and `.ZIP` caution prompts in `UnifiedBackupVaultPanel.tsx`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `App.tsx`.',
     ],
   },
 ];

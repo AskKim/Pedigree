@@ -23,13 +23,15 @@ import {
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
 } from '../core/inputSanitization';
-import { VAULT_KIND_LABELS } from '../core/backupVault';
+import { ArchivedHerdIndexEntry, VAULT_KIND_LABELS } from '../core/backupVault';
 import { WipedStorageRecoveryContext } from '../storage/opfsStorage';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface WipedStorageRecoveryModalProps {
   context: WipedStorageRecoveryContext | null;
+  archivedHerdBundles?: ArchivedHerdIndexEntry[];
   onRestoreLatestOpfs: () => Promise<void>;
+  onRestoreArchivedBundle?: (archiveKey: string) => Promise<void>;
   onImportJsonReplace: (jsonText: string) => Promise<void>;
   onImportArchiveReplace: (bytes: Uint8Array, fileName: string) => Promise<void>;
   onImportSqlite: (bytes: Uint8Array) => Promise<void>;
@@ -38,7 +40,9 @@ interface WipedStorageRecoveryModalProps {
 
 export function WipedStorageRecoveryModal({
   context,
+  archivedHerdBundles = [],
   onRestoreLatestOpfs,
+  onRestoreArchivedBundle,
   onImportJsonReplace,
   onImportArchiveReplace,
   onImportSqlite,
@@ -71,6 +75,19 @@ export function WipedStorageRecoveryModal({
       await onRestoreLatestOpfs();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not restore OPFS backup.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRestoreArchive = async (archiveKey: string) => {
+    if (!onRestoreArchivedBundle) return;
+    setErrorMsg(null);
+    setBusyAction('opfs');
+    try {
+      await onRestoreArchivedBundle(archiveKey);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not restore archived herd bundle.');
     } finally {
       setBusyAction(null);
     }
@@ -201,6 +218,24 @@ export function WipedStorageRecoveryModal({
                 : `Restore Latest OPFS Backup (${latest.animalCount} animals)`}
             </button>
           )}
+
+          {!latest &&
+            archivedHerdBundles.length > 0 &&
+            onRestoreArchivedBundle &&
+            archivedHerdBundles.slice(0, 3).map((bundle) => (
+              <button
+                key={bundle.archiveKey}
+                type="button"
+                disabled={busyAction !== null}
+                onClick={() => void handleRestoreArchive(bundle.archiveKey)}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              >
+                <RotateCcw className="w-4 h-4" aria-hidden="true" />
+                {busyAction === 'opfs'
+                  ? 'Restoring Archive Cohort...'
+                  : `Restore Archive (${bundle.speciesSummary.join(', ') || 'Herd'} · ${bundle.animalCount} animals)`}
+              </button>
+            ))}
 
           <input
             ref={fileInputRef}

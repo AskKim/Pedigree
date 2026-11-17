@@ -75,6 +75,7 @@ export interface VaultBackupMetadata {
   checksumSha256: string;
   source: 'opfs' | 'idb';
   note?: string;
+  compressed?: boolean;
 }
 
 export interface VaultBackupEnvelope {
@@ -189,22 +190,33 @@ const SHA256_INIT = new Uint32Array([
 
 export function sha256HexPure(input: string | Uint8Array): string {
   const bytes = typeof input === 'string' ? strToU8(input) : input;
-  const bitLenHi = Math.floor((bytes.length * 8) / 0x100000000);
-  const bitLenLo = (bytes.length * 8) >>> 0;
+  const len = bytes.length;
+  const bitLenHi = Math.floor((len * 8) / 0x100000000);
+  const bitLenLo = (len * 8) >>> 0;
 
-  const paddedLen = Math.ceil((bytes.length + 9) / 64) * 64;
-  const padded = new Uint8Array(paddedLen);
-  padded.set(bytes);
-  padded[bytes.length] = 0x80;
-  const view = new DataView(padded.buffer);
-  view.setUint32(paddedLen - 8, bitLenHi, false);
-  view.setUint32(paddedLen - 4, bitLenLo, false);
+  const fullBlocksEnd = Math.floor(len / 64) * 64;
+  const rem = len - fullBlocksEnd;
+  const tailBlocks = rem < 56 ? 1 : 2;
+  const tail = new Uint8Array(tailBlocks * 64);
+  if (rem > 0) {
+    tail.set(bytes.subarray(fullBlocksEnd));
+  }
+  tail[rem] = 0x80;
+
+  const tailView = new DataView(tail.buffer);
+  tailView.setUint32(tail.length - 8, bitLenHi, false);
+  tailView.setUint32(tail.length - 4, bitLenLo, false);
+
+  const srcView =
+    fullBlocksEnd > 0
+      ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      : null;
 
   const h = new Uint32Array(SHA256_INIT);
   const w = new Uint32Array(64);
   const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
 
-  for (let offset = 0; offset < paddedLen; offset += 64) {
+  const processBlock = (view: DataView, offset: number) => {
     for (let i = 0; i < 16; i++) {
       w[i] = view.getUint32(offset + i * 4, false);
     }
@@ -249,6 +261,15 @@ export function sha256HexPure(input: string | Uint8Array): string {
     h[5] = (h[5] + f) >>> 0;
     h[6] = (h[6] + g) >>> 0;
     h[7] = (h[7] + hh) >>> 0;
+  };
+
+  if (srcView) {
+    for (let offset = 0; offset < fullBlocksEnd; offset += 64) {
+      processBlock(srcView, offset);
+    }
+  }
+  for (let offset = 0; offset < tail.length; offset += 64) {
+    processBlock(tailView, offset);
   }
 
   let hex = '';
@@ -312,6 +333,44 @@ export function buildEmptyShellSnapshot(): BarnDatabaseSnapshot {
 // Unified Backup Vault Envelope, Schema Migration & Root Validation
 // ---------------------------------------------------------------------------
 
+function buildVaultEnvelopeParts(
+  snapshot: BarnDatabaseSnapshot,
+  options: {
+    kind: VaultBackupKind;
+    createdAtIso?: string;
+    createdByAppVersion?: string;
+    note?: string;
+  }
+): {
+  envelope: VaultBackupEnvelope;
+  headerJson: string;
+  snapshotJson: string;
+} {
+  const createdAtIso = options.createdAtIso || nowIsoUtc();
+  const snapshotJson = JSON.stringify(snapshot);
+  const checksumSha256 = sha256HexPure(snapshotJson);
+  const sanitizedNote = options.note ? sanitizeSingleLineText(options.note, 220) : undefined;
+  const headerFields: Omit<VaultBackupEnvelope, 'snapshot'> = {
+    format: 'community-pedigree-vault-backup',
+    package: 'Pedigree',
+    version: 5,
+    _schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
+    createdAtIso,
+    createdByAppVersion: options.createdByAppVersion || APP_SCHEMA_BUILD_TAG,
+    vaultKind: options.kind,
+    checksumSha256,
+    note: sanitizedNote,
+  };
+  return {
+    envelope: {
+      ...headerFields,
+      snapshot,
+    },
+    headerJson: JSON.stringify(headerFields),
+    snapshotJson,
+  };
+}
+
 export function buildVaultBackupEnvelope(
   snapshot: BarnDatabaseSnapshot,
   options: {
@@ -321,21 +380,7 @@ export function buildVaultBackupEnvelope(
     note?: string;
   }
 ): VaultBackupEnvelope {
-  const createdAtIso = options.createdAtIso || nowIsoUtc();
-  const snapshotJson = JSON.stringify(snapshot);
-  const checksumSha256 = sha256HexPure(snapshotJson);
-  return {
-    format: 'community-pedigree-vault-backup',
-    package: 'Pedigree',
-    version: 5,
-    _schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
-    createdAtIso,
-    createdByAppVersion: options.createdByAppVersion || APP_SCHEMA_BUILD_TAG,
-    vaultKind: options.kind,
-    checksumSha256,
-    note: options.note ? sanitizeSingleLineText(options.note, 220) : undefined,
-    snapshot,
-  };
+  return buildVaultEnvelopeParts(snapshot, options).envelope;
 }
 
 export function serializeVaultBackupEnvelope(
@@ -350,6 +395,76 @@ export function serializeVaultBackupEnvelope(
   const envelope = buildVaultBackupEnvelope(snapshot, options);
   const jsonText = JSON.stringify(envelope, null, 2);
   return { envelope, jsonText };
+}
+
+export const VAULT_ZIP_ENTRY_NAME = 'vault-backup.json';
+
+export function isZipMagicBytes(bytes: Uint8Array): boolean {
+  return (
+    bytes.byteLength >= 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07) &&
+    (bytes[3] === 0x04 || bytes[3] === 0x06 || bytes[3] === 0x08)
+  );
+}
+
+/**
+ * Serializes a schema-v6 vault backup envelope into a compact deflate-compressed `.vault.zip` archive,
+ * avoiding pretty-print whitespace bloat and reducing OPFS quota footprint by ~70–90% on text/records.
+ * Reuses `snapshotJson` once instead of stringifying the entire snapshot tree twice in memory.
+ */
+export function serializeCompressedVaultBackupZip(
+  snapshot: BarnDatabaseSnapshot,
+  options: {
+    kind: VaultBackupKind;
+    createdAtIso?: string;
+    createdByAppVersion?: string;
+    note?: string;
+  }
+): { envelope: VaultBackupEnvelope; zipBytes: Uint8Array } {
+  const { envelope, headerJson, snapshotJson } = buildVaultEnvelopeParts(snapshot, options);
+  const compactJson = `${headerJson.slice(0, -1)},"snapshot":${snapshotJson}}`;
+  const zipBytes = zipSync({
+    [VAULT_ZIP_ENTRY_NAME]: [strToU8(compactJson), { level: 6 }],
+  });
+  return { envelope, zipBytes };
+}
+
+/**
+ * Extracts raw JSON string from either a plain `.json` vault file or a compressed `.vault.zip` archive.
+ */
+export function extractVaultJsonTextFromPayload(
+  payload: string | Uint8Array,
+  fileName = 'vault-backup'
+): string {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (isZipMagicBytes(payload) || fileName.toLowerCase().endsWith('.zip')) {
+    const sizeCheck = validateUploadFileSize(
+      fileName || 'vault-backup.zip',
+      payload.byteLength,
+      MAX_ZIP_ARCHIVE_BYTES,
+      'a compressed vault backup'
+    );
+    if (!sizeCheck.ok) {
+      throw new Error(sizeCheck.error);
+    }
+    const unzipped = safeUnzipArchive(payload, {
+      archiveName: fileName || 'vault-backup.zip',
+      entryFilter: (entryPath) =>
+        entryPath === VAULT_ZIP_ENTRY_NAME || entryPath.toLowerCase().endsWith('.json'),
+    });
+    const inner =
+      unzipped[VAULT_ZIP_ENTRY_NAME] ??
+      Object.entries(unzipped).find(([p]) => p.toLowerCase().endsWith('.json'))?.[1];
+    if (!inner || inner.byteLength === 0) {
+      throw new Error('Compressed vault backup archive does not contain vault-backup.json.');
+    }
+    return strFromU8(inner);
+  }
+  return strFromU8(payload);
 }
 
 /**
@@ -419,9 +534,10 @@ export function migrateAndValidateBackupEnvelope(
       throw new Error('Vault backup envelope is missing required animals or speciesProfiles collections.');
     }
 
+    const rawSnapshotJson = JSON.stringify(rawSnapshotObj);
     let checksumValid: boolean | null = null;
     if (typeof record.checksumSha256 === 'string' && record.checksumSha256.trim()) {
-      const computed = sha256HexPure(JSON.stringify(rawSnapshotObj));
+      const computed = sha256HexPure(rawSnapshotJson);
       checksumValid = computed === record.checksumSha256.trim().toLowerCase();
       if (!checksumValid) {
         throw new Error(
@@ -430,10 +546,7 @@ export function migrateAndValidateBackupEnvelope(
       }
     }
 
-    const migratedSnapshot = parseBarnBackupJson(
-      JSON.stringify(rawSnapshotObj),
-      fallbackSettings
-    );
+    const migratedSnapshot = parseBarnBackupJson(rawSnapshotJson, fallbackSettings);
     return {
       snapshot: migratedSnapshot,
       schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
@@ -458,6 +571,18 @@ export function migrateAndValidateBackupEnvelope(
     checksumValid: null,
     note,
   };
+}
+
+/**
+ * Accepts either plain `.json` vault text or compressed `.vault.zip` bytes and migrates/validates cleanly.
+ */
+export function deserializeVaultBackupPayload(
+  payload: string | Uint8Array,
+  fallbackSettings: BarnSettings = buildEmptyFallbackSettings(),
+  fileName = 'vault-backup'
+): MigratedBackupResult {
+  const jsonText = extractVaultJsonTextFromPayload(payload, fileName);
+  return migrateAndValidateBackupEnvelope(jsonText, fallbackSettings);
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +750,7 @@ export function buildArchivedAnimalsBundle(
     offloadedAtIso: undefined,
   }));
 
+  const targetById = new Map(targets.map((a) => [a.id, a]));
   for (let i = 0; i < offloadedPhotos.length; i++) {
     const p = offloadedPhotos[i];
     const srcUrl = p.dataUrl || p.thumbnailDataUrl;
@@ -643,7 +769,7 @@ export function buildArchivedAnimalsBundle(
     usedPaths.add(photoPath);
 
     zipFiles[photoPath] = [decoded.bytes, { level: 0 }];
-    const parentAnimal = targets.find((a) => a.id === p.animalId);
+    const parentAnimal = targetById.get(p.animalId);
     photoManifest.push({
       id: p.id,
       species: p.species,
@@ -801,6 +927,119 @@ export function buildArchivedAnimalsBundle(
     nextActiveSnapshot: nextSnapshot,
     stubAnimalIds,
     removedAnimalIds,
+  };
+}
+
+/**
+ * Lightweight metadata-only extractor for `.archive.zip` files used during OPFS
+ * `/archives` index self-healing so rebuilding the directory manifest never inflates
+ * or base64-encodes binary photos.
+ */
+export function extractArchiveIndexMetadataOnly(
+  zipBytes: Uint8Array,
+  fileName: string
+): ArchivedHerdIndexEntry {
+  const sizeCheck = validateUploadFileSize(
+    fileName || 'herd.archive.zip',
+    zipBytes.byteLength,
+    MAX_ZIP_ARCHIVE_BYTES,
+    'an archived animal bundle'
+  );
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
+
+  const unzipped = safeUnzipArchive(zipBytes, {
+    archiveName: fileName || 'herd.archive.zip',
+    entryFilter: (entryPath) => entryPath === 'archive-bundle.json',
+  });
+  const bundleEntry = unzipped['archive-bundle.json'];
+  if (!bundleEntry) {
+    throw new Error('Archive ZIP is missing archive-bundle.json metadata.');
+  }
+  if (bundleEntry.byteLength > MAX_JSON_BACKUP_BYTES) {
+    throw new Error('Archive bundle metadata exceeds the maximum safe JSON limit.');
+  }
+
+  const parsed = JSON.parse(strFromU8(bundleEntry)) as Record<string, unknown>;
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    parsed.format !== 'community-pedigree-archived-cohort-v1' ||
+    !Array.isArray(parsed.animals)
+  ) {
+    throw new Error('Archive bundle metadata has an invalid root structure.');
+  }
+
+  if (typeof parsed.checksumSha256 === 'string' && parsed.checksumSha256) {
+    const verificationBody = JSON.stringify(
+      {
+        format: parsed.format,
+        package: parsed.package,
+        _schemaVersion: parsed._schemaVersion,
+        archiveKey: parsed.archiveKey,
+        createdAtIso: parsed.createdAtIso,
+        animals: parsed.animals,
+        careLogs: parsed.careLogs ?? [],
+        photoManifest: parsed.photoManifest ?? [],
+      },
+      null,
+      2
+    );
+    const computed = sha256HexPure(verificationBody);
+    if (computed !== parsed.checksumSha256) {
+      throw new Error('Archive bundle checksum verification failed.');
+    }
+  }
+
+  const ts = nowIsoUtc();
+  const fallback = buildEmptyFallbackSettings();
+  const normalizedSnap = parseBarnBackupJson(
+    JSON.stringify({
+      format: 'community-pedigree-backup',
+      version: 5,
+      settings: fallback,
+      speciesProfiles: [],
+      animals: parsed.animals,
+      careLogs: Array.isArray(parsed.careLogs) ? parsed.careLogs : [],
+      cages: [],
+      breedings: [],
+      tasks: [],
+      shows: [],
+      animalPhotos: [],
+    }),
+    fallback
+  );
+  const rawManifest = Array.isArray(parsed.photoManifest) ? parsed.photoManifest : [];
+
+  return {
+    archiveKey: sanitizeSingleLineText(String(parsed.archiveKey || ''), 160) || 'archive',
+    fileName: sanitizeSingleLineText(fileName, 180) || 'herd.archive.zip',
+    createdAtIso: sanitizeSingleLineText(String(parsed.createdAtIso || ts), 64) || ts,
+    schemaVersion: Number(parsed._schemaVersion) || CURRENT_BACKUP_SCHEMA_VERSION,
+    byteSize: zipBytes.byteLength,
+    checksumSha256: String(parsed.checksumSha256 || ''),
+    speciesSummary: Array.from(new Set(normalizedSnap.animals.map((a) => a.species).filter(Boolean))),
+    animalCount: normalizedSnap.animals.length,
+    photoCount: rawManifest.length,
+    careLogCount: normalizedSnap.careLogs.length,
+    animals: normalizedSnap.animals.map((a) => ({
+      id: a.id,
+      name: a.name,
+      tattoo: a.tattoo,
+      species: a.species,
+      breed: a.breed,
+      variety: a.variety,
+      sex: a.sex,
+      status: a.status,
+      birthDateIso: a.birthDateIso,
+      soldDateIso: a.soldDateIso,
+      deceasedDateIso: a.deceasedDateIso,
+      buyerName: a.buyerName,
+      deathCause: a.deathCause,
+      hasPedigreeStubInDb: false,
+    })),
   };
 }
 

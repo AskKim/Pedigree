@@ -13,10 +13,28 @@ import { AnimalPhoto, BarnDatabaseSnapshot, isSameSpecies } from '../core/models
 
 export class BoundedPhotoDataCache {
   private maxEntries: number;
+  private maxBytes: number;
+  private totalBytes = 0;
   private entries = new Map<string, string>();
 
-  constructor(maxEntries = 16) {
+  constructor(maxEntries = 16, maxBytes = Number.POSITIVE_INFINITY) {
     this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    this.maxBytes =
+      Number.isFinite(maxBytes) && maxBytes > 0
+        ? Math.floor(maxBytes)
+        : Number.POSITIVE_INFINITY;
+  }
+
+  private evictToLimits(): void {
+    while (
+      this.entries.size > this.maxEntries ||
+      (this.entries.size > 0 && this.totalBytes > this.maxBytes)
+    ) {
+      const oldest = this.entries.entries().next().value;
+      if (!oldest) break;
+      this.entries.delete(oldest[0]);
+      this.totalBytes = Math.max(0, this.totalBytes - oldest[1].length);
+    }
   }
 
   get(photoId: string): string | undefined {
@@ -30,36 +48,58 @@ export class BoundedPhotoDataCache {
 
   set(photoId: string, dataUrl: string): void {
     if (!photoId || !dataUrl) return;
-    if (this.entries.has(photoId)) {
+    const prev = this.entries.get(photoId);
+    if (prev !== undefined) {
+      this.totalBytes = Math.max(0, this.totalBytes - prev.length);
       this.entries.delete(photoId);
     }
     this.entries.set(photoId, dataUrl);
-    while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value;
-      if (oldestKey === undefined) break;
-      this.entries.delete(oldestKey);
-    }
+    this.totalBytes += dataUrl.length;
+    this.evictToLimits();
   }
 
   delete(photoId: string): void {
-    this.entries.delete(photoId);
+    const prev = this.entries.get(photoId);
+    if (prev !== undefined) {
+      this.totalBytes = Math.max(0, this.totalBytes - prev.length);
+      this.entries.delete(photoId);
+    }
   }
 
   clear(): void {
     this.entries.clear();
+    this.totalBytes = 0;
   }
 
-  resize(nextMaxEntries: number): void {
+  resize(nextMaxEntries: number, nextMaxBytes?: number): void {
     this.maxEntries = Math.max(1, Math.floor(nextMaxEntries));
-    while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value;
-      if (oldestKey === undefined) break;
-      this.entries.delete(oldestKey);
+    if (nextMaxBytes !== undefined) {
+      this.maxBytes =
+        Number.isFinite(nextMaxBytes) && nextMaxBytes > 0
+          ? Math.floor(nextMaxBytes)
+          : Number.POSITIVE_INFINITY;
     }
+    this.evictToLimits();
+  }
+
+  trimTo(maxEntries: number, maxBytes?: number): void {
+    const prevEntries = this.maxEntries;
+    const prevBytes = this.maxBytes;
+    this.maxEntries = Math.max(0, Math.floor(maxEntries));
+    if (maxBytes !== undefined) {
+      this.maxBytes = Number.isFinite(maxBytes) && maxBytes >= 0 ? Math.floor(maxBytes) : prevBytes;
+    }
+    this.evictToLimits();
+    this.maxEntries = prevEntries;
+    this.maxBytes = prevBytes;
   }
 
   size(): number {
     return this.entries.size;
+  }
+
+  byteSize(): number {
+    return this.totalBytes;
   }
 }
 

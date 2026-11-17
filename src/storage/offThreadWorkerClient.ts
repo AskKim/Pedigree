@@ -34,6 +34,8 @@ import type { ArchiveWorkerRequest, ArchiveWorkerResponse } from './archiveAndIm
 import { logDiagnosticEvent } from './crashLogger';
 
 const WORKER_TIMEOUT_MS = 90_000;
+const WORKER_IDLE_TERMINATE_MS = 60_000;
+const MAX_TRANSIENT_WORKER_FAILURES = 3;
 
 interface PendingWorkerJob {
   resolve: (value: any) => void;
@@ -43,10 +45,36 @@ interface PendingWorkerJob {
 
 let activeWorker: Worker | null = null;
 let workerDisabled = false;
+let consecutiveWorkerFailures = 0;
+let idleTerminateTimer: ReturnType<typeof setTimeout> | null = null;
 let jobCounter = 0;
 const pendingJobs = new Map<string, PendingWorkerJob>();
 
+function clearIdleTerminateTimer(): void {
+  if (idleTerminateTimer !== null) {
+    clearTimeout(idleTerminateTimer);
+    idleTerminateTimer = null;
+  }
+}
+
+function scheduleIdleTerminateIfEmpty(): void {
+  clearIdleTerminateTimer();
+  if (!activeWorker || pendingJobs.size > 0) return;
+  idleTerminateTimer = setTimeout(() => {
+    idleTerminateTimer = null;
+    if (activeWorker && pendingJobs.size === 0) {
+      try {
+        activeWorker.terminate();
+      } catch {
+        // Ignore
+      }
+      activeWorker = null;
+    }
+  }, WORKER_IDLE_TERMINATE_MS);
+}
+
 function rejectAndResetWorker(reason: string): void {
+  clearIdleTerminateTimer();
   if (activeWorker) {
     try {
       activeWorker.terminate();
@@ -67,6 +95,7 @@ function getOrCreateWorker(): Worker | null {
   if (workerDisabled || typeof Worker === 'undefined') {
     return null;
   }
+  clearIdleTerminateTimer();
   if (activeWorker) {
     return activeWorker;
   }
@@ -81,20 +110,27 @@ function getOrCreateWorker(): Worker | null {
       if (!pending) return;
       pendingJobs.delete(msg.id);
       clearTimeout(pending.timer);
+      consecutiveWorkerFailures = 0;
       if (msg.ok) {
         pending.resolve(msg.result);
       } else {
         pending.reject(new Error(msg.error || 'Archive worker failed.'));
       }
+      scheduleIdleTerminateIfEmpty();
     };
     worker.onerror = (ev) => {
       const message = ev?.message || 'Web Worker runtime failure';
+      consecutiveWorkerFailures++;
+      if (consecutiveWorkerFailures >= MAX_TRANSIENT_WORKER_FAILURES) {
+        workerDisabled = true;
+      }
       logDiagnosticEvent({
         level: 'warn',
         category: 'runtime',
-        message: `Corrective action: Archive worker errored (${message}) — resetting worker pool`,
+        message: `Corrective action: Archive worker errored (${message}) — resetting worker pool${
+          workerDisabled ? ' (switched to main-thread async fallback)' : ''
+        }`,
       });
-      workerDisabled = true;
       rejectAndResetWorker(message);
     };
     activeWorker = worker;
@@ -141,6 +177,7 @@ function runInWorker<TResult>(
     } catch (postErr) {
       pendingJobs.delete(id);
       clearTimeout(timer);
+      scheduleIdleTerminateIfEmpty();
       reject(postErr instanceof Error ? postErr : new Error(String(postErr)));
     }
   });
@@ -260,6 +297,10 @@ export async function buildSupportBundleZipOffThread(
   }
   await yieldToUiFrame();
   return buildSupportBundleZipArchive(params);
+}
+
+export function isArchiveWorkerDisabled(): boolean {
+  return workerDisabled || typeof Worker === 'undefined';
 }
 
 export function resetArchiveWorkerForTests(): void {

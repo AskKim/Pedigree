@@ -4,32 +4,46 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildArchivedAnimalsBundle, migrateAndValidateBackupEnvelope } from '../../core/backupVault';
-import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
 import {
+  buildArchivedAnimalsBundle,
+  deserializeVaultBackupPayload,
+} from '../../core/backupVault';
+import { getTierStoragePolicy } from '../../core/deviceCapability';
+import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
+import { setBackupSinkHandleForTest } from '../localSyncChannels';
+import {
+  clearOpfsPruneSinkWarning,
   clearPriorUseSentinel,
   deleteOpfsHerdArchive,
   deleteOpfsVaultBackup,
   detectReturningUserWipedStorage,
   dumpRawRecordsToOpfsRecoveryBackup,
+  flushOpfsBackupsToSinkFolder,
   isOpfsSupported,
   listOpfsHerdArchives,
   listOpfsVaultBackups,
   loadOpfsHerdArchive,
   loadOpfsVaultBackup,
   markPriorUseSentinelFromSnapshot,
+  markTempOpfsFileActive,
   MAX_MONTHLY_OPFS_BACKUPS,
   MAX_PRE_UPGRADE_OPFS_BACKUPS,
+  MAX_RECOVERY_DUMP_OPFS_BACKUPS,
   MONTHLY_BACKUP_INTERVAL_MS,
   OpfsDirectoryHandle,
   OpfsFileHandle,
   OpfsWritableStream,
+  readOpfsHerdArchiveBlob,
+  readOpfsPruneSinkWarning,
+  readOpfsVaultBackupBlob,
   runOpfsExportCanary,
   saveOpfsHerdArchive,
   saveOpfsVaultBackup,
   setOpfsRootResolverForTest,
   shouldCreateMonthlyOpfsBackup,
+  shouldRunExportCanary,
   sweepOrphanedOpfsTmpOnBoot,
+  unmarkTempOpfsFileActive,
   writeTempOpfsFile,
 } from '../opfsStorage';
 
@@ -187,6 +201,8 @@ function installLocalStorageShim() {
 
 afterEach(() => {
   setOpfsRootResolverForTest(null);
+  setBackupSinkHandleForTest(null);
+  clearOpfsPruneSinkWarning();
   clearPriorUseSentinel();
   vi.restoreAllMocks();
 });
@@ -379,14 +395,233 @@ describe('opfsStorage Archived Herds, Wiped-Storage Detection & Export Canary', 
     expect(canaryRes.ok).toBe(true);
     expect(mock.rootNode.dirs.get('tmp')?.files.has('canary-probe.json')).toBe(false);
 
-    // Sanity check legacy migration parser accepts persisted vault file cleanly
-    const rawVaultText = await (
+    // Sanity check compressed .vault.zip payload decrypts/validates cleanly
+    const rawVaultBuf = await (
       await mock.rootHandle
         .getDirectoryHandle('backups')
         .then((d) => d.getFileHandle(vaultCheck.latestOpfsBackup!.fileName))
         .then((f) => f.getFile())
-    ).text();
-    const parsed = migrateAndValidateBackupEnvelope(rawVaultText);
+    ).arrayBuffer();
+    const parsed = deserializeVaultBackupPayload(
+      new Uint8Array(rawVaultBuf),
+      snap.settings,
+      vaultCheck.latestOpfsBackup!.fileName
+    );
     expect(parsed.snapshot.animals.some((a) => a.id === 'user-custom-animal-1')).toBe(true);
   });
 });
+
+describe('opfsStorage concurrency locks, active /tmp protection, binary dump compaction & Blob readers', () => {
+  it('serializes concurrent saveOpfsVaultBackup & saveOpfsHerdArchive calls so zero index entries are dropped', async () => {
+    const mock = createInMemoryOpfsMock();
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+    const snap = buildFullPredefinedSampleSnapshot();
+
+    const savedVaults = await Promise.all([
+      saveOpfsVaultBackup(snap, { kind: 'manual', note: 'Concurrent 1' }),
+      saveOpfsVaultBackup(snap, { kind: 'manual', note: 'Concurrent 2' }),
+      saveOpfsVaultBackup(snap, { kind: 'manual', note: 'Concurrent 3' }),
+    ]);
+    expect(savedVaults.every((v) => v !== null)).toBe(true);
+    const vaultList = await listOpfsVaultBackups();
+    expect(vaultList).toHaveLength(3);
+
+    const vaultBlob = await readOpfsVaultBackupBlob(vaultList[0].key);
+    expect(vaultBlob).not.toBeNull();
+    expect(vaultBlob!.blob.size).toBe(vaultList[0].byteSize);
+
+    const rabbits = snap.animals.filter((a) => a.species === 'Rabbit');
+    const b1 = buildArchivedAnimalsBundle(snap, [rabbits[0].id]);
+    const b2 = buildArchivedAnimalsBundle(snap, [rabbits[1].id]);
+    await Promise.all([
+      saveOpfsHerdArchive(b1.indexEntry, b1.zipBytes),
+      saveOpfsHerdArchive(b2.indexEntry, b2.zipBytes),
+    ]);
+    const archivesList = await listOpfsHerdArchives();
+    expect(archivesList).toHaveLength(2);
+
+    const archiveBlob = await readOpfsHerdArchiveBlob(b1.archiveKey);
+    expect(archiveBlob).not.toBeNull();
+    expect(archiveBlob!.blob.size).toBe(b1.zipBytes.byteLength);
+  });
+
+  it('preserves active /tmp exports during QuotaExceededError purge while clearing orphans', async () => {
+    const mock = createInMemoryOpfsMock({
+      onCreateWritable: (fileName, callIndex) => {
+        if (fileName.startsWith('manual-vault-') && callIndex === 3) {
+          return { failOnceWithQuotaExceeded: true, spyClose: vi.fn<() => void>() };
+        }
+        return { spyClose: vi.fn<() => void>() };
+      },
+    });
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+
+    const orphan = await writeTempOpfsFile('export', 'stale', 'json');
+    const activeExport = await writeTempOpfsFile('export', 'active-in-flight', 'json', {
+      keepActiveAfterWrite: true,
+    });
+
+    const snap = buildFullPredefinedSampleSnapshot();
+    await saveOpfsVaultBackup(snap, { kind: 'manual', note: 'Keep active tmp alive' });
+
+    const tmpFiles = mock.rootNode.dirs.get('tmp')?.files;
+    expect(tmpFiles?.has(orphan!.fileName)).toBe(false);
+    expect(tmpFiles?.has(activeExport!.fileName)).toBe(true);
+    unmarkTempOpfsFileActive(activeExport!.fileName);
+  });
+
+  it('compacts raw Uint8Array SQLite blobs in recovery_dump JSON instead of key-by-key array expansion', async () => {
+    const mock = createInMemoryOpfsMock();
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+
+    const sqliteStub = new Uint8Array([83, 81, 76, 105, 116, 101, 32, 102]);
+    const meta = await dumpRawRecordsToOpfsRecoveryBackup({
+      sourceDbName: 'pedigree-sqlite-db',
+      reason: 'Simulated VersionError binary dump',
+      stores: { sqlite_blob: [{ key: 'pedigree_master.sqlite', bytes: sqliteStub }] },
+    });
+    expect(meta).not.toBeNull();
+    const blobRes = await readOpfsVaultBackupBlob(meta!.key);
+    const dumpText = await blobRes!.blob.text();
+    const parsed = JSON.parse(dumpText);
+    const dumpedRow = parsed.stores.sqlite_blob[0];
+    expect(dumpedRow.bytes.__binaryType).toBe('Uint8Array');
+    expect(dumpedRow.bytes.byteLength).toBe(sqliteStub.byteLength);
+    expect(typeof dumpedRow.bytes.base64).toBe('string');
+  });
+});
+
+describe('opfsStorage Phase B: Tier 1/2 caps, pre-prune sink offload, mixed .vault.zip/.json self-heal & canary cooldown', () => {
+  it('enforces Tier 1 retention caps and offloads expiring backups to connected Backup Sink before pruning', async () => {
+    installLocalStorageShim();
+    const opfsMock = createInMemoryOpfsMock();
+    setOpfsRootResolverForTest(async () => opfsMock.rootHandle);
+
+    const sinkMock = createInMemoryOpfsMock();
+    setBackupSinkHandleForTest({
+      kind: 'directory',
+      name: 'CloudSyncFolder',
+      queryPermission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
+        sinkMock.rootHandle.getDirectoryHandle(name, opts),
+    });
+
+    const tier1Policy = getTierStoragePolicy(1);
+    const snap = buildFullPredefinedSampleSnapshot();
+    const offloadedNames: string[] = [];
+
+    for (let i = 0; i < tier1Policy.manualCap + 2; i++) {
+      const meta = await saveOpfsVaultBackup(snap, {
+        kind: 'manual',
+        note: `Tier 1 Manual #${i + 1}`,
+        policyOverride: tier1Policy,
+      });
+      if (meta && i < 2) {
+        offloadedNames.push(meta.fileName);
+      }
+    }
+
+    const listed = await listOpfsVaultBackups();
+    expect(listed.filter((b) => b.kind === 'manual')).toHaveLength(tier1Policy.manualCap);
+
+    // Expiring files must have been pushed into `<SyncFolder>/pedigree-vault-archive/` before deletion
+    const archiveDirNode = sinkMock.rootNode.dirs.get('pedigree-vault-archive');
+    expect(archiveDirNode).toBeDefined();
+    expect(archiveDirNode!.files.size).toBe(2);
+    expect(readOpfsPruneSinkWarning()).toBeNull();
+
+    // Disconnect sink & push past cap -> records actionable prune warning; flushing after reconnect clears it
+    setBackupSinkHandleForTest(null);
+    await saveOpfsVaultBackup(snap, {
+      kind: 'manual',
+      note: 'Unbacked overflow',
+      policyOverride: tier1Policy,
+    });
+    const warn = readOpfsPruneSinkWarning();
+    expect(warn).not.toBeNull();
+    expect(warn!.count).toBeGreaterThanOrEqual(1);
+
+    setBackupSinkHandleForTest({
+      kind: 'directory',
+      name: 'CloudSyncFolder',
+      queryPermission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
+        sinkMock.rootHandle.getDirectoryHandle(name, opts),
+    });
+    const flushRes = await flushOpfsBackupsToSinkFolder();
+    expect(flushRes.pushed).toBe(tier1Policy.manualCap);
+    expect(readOpfsPruneSinkWarning()).toBeNull();
+  });
+
+  it('self-heals vault-index.json across mixed .vault.zip and legacy .json files and caps recovery_dump entries', async () => {
+    installLocalStorageShim();
+    const mock = createInMemoryOpfsMock();
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+    const snap = buildFullPredefinedSampleSnapshot();
+
+    const zipMeta = await saveOpfsVaultBackup(snap, {
+      kind: 'manual',
+      note: 'Compressed',
+      policyOverride: { compressVaultBackups: true },
+    });
+    const jsonMeta = await saveOpfsVaultBackup(snap, {
+      kind: 'manual',
+      note: 'Legacy uncompressed',
+      policyOverride: { compressVaultBackups: false },
+    });
+
+    // Delete vault-index.json to trigger self-healing index rebuild
+    const backupsDir = await mock.rootHandle.getDirectoryHandle('backups');
+    await backupsDir.removeEntry('vault-index.json');
+
+    const rebuilt = await listOpfsVaultBackups();
+    expect(rebuilt.map((r) => r.key).sort()).toEqual([jsonMeta!.key, zipMeta!.key].sort());
+
+    const loadedZip = await loadOpfsVaultBackup(zipMeta!.key, snap.settings);
+    const loadedJson = await loadOpfsVaultBackup(jsonMeta!.key, snap.settings);
+    expect(loadedZip?.migrated.snapshot.animals).toHaveLength(snap.animals.length);
+    expect(loadedJson?.migrated.snapshot.animals).toHaveLength(snap.animals.length);
+
+    // Verify recovery_dump cap enforcement
+    for (let i = 0; i < MAX_RECOVERY_DUMP_OPFS_BACKUPS + 2; i++) {
+      await dumpRawRecordsToOpfsRecoveryBackup({
+        sourceDbName: 'pedigree-db',
+        reason: `Crash #${i + 1}`,
+        stores: { test_store: [{ id: i }] },
+      });
+    }
+    const afterDumps = await listOpfsVaultBackups();
+    expect(afterDumps.filter((b) => b.kind === 'recovery_dump')).toHaveLength(
+      MAX_RECOVERY_DUMP_OPFS_BACKUPS
+    );
+  });
+
+  it('applies 1-hour failure cooldown on Export Canary so failing OPFS does not retry immediately', async () => {
+    installLocalStorageShim();
+    const mock = createInMemoryOpfsMock({
+      onCreateWritable: (fileName) => {
+        if (fileName === 'canary-probe.json') {
+          return {
+            throwOnWrite: new Error('Simulated OPFS write error'),
+            spyClose: vi.fn<() => void>(),
+          };
+        }
+        return { spyClose: vi.fn<() => void>() };
+      },
+    });
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+    const snap = buildFullPredefinedSampleSnapshot();
+
+    const t0 = Date.now();
+    expect(shouldRunExportCanary(t0)).toBe(true);
+    const failed = await runOpfsExportCanary(snap);
+    expect(failed.ok).toBe(false);
+
+    // Immediate retry should be cooled down; retry after >1 hour should be allowed
+    expect(shouldRunExportCanary(Date.now() + 10_000)).toBe(false);
+    expect(shouldRunExportCanary(Date.now() + 65 * 60 * 1000)).toBe(true);
+  });
+});
+

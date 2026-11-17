@@ -39,9 +39,11 @@ import {
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
+import { getTierStoragePolicy } from '../core/deviceCapability';
 import { buildEmptyShellSnapshot } from '../core/backupVault';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
+import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import {
   detectReturningUserWipedStorage,
   dumpIndexedDbDatabaseToOpfs,
@@ -802,9 +804,17 @@ export class WebSqliteAdapter implements StorageAdapter {
     if (nowMs - this.lastRollingSaveMs > 15_000) {
       this.lastRollingSaveMs = nowMs;
       try {
-        const snap = preloadedSnapshot ?? (await this.loadSnapshot());
+        const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
+        const snap = preloadedSnapshot
+          ? policy.dehydrateMirrorPhotos
+            ? stripPhotoDataUrlsFromSnapshot(preloadedSnapshot)
+            : preloadedSnapshot
+          : await this.loadSnapshot({ lightweightPhotos: policy.dehydrateMirrorPhotos });
         markPriorUseSentinelFromSnapshot(snap);
-        void saveRollingSnapshotBackup(snap).catch(() => {});
+        void saveRollingSnapshotBackup(snap, {
+          maxRollingBackups: policy.rollingIdbCap,
+          dehydratePhotos: policy.dehydrateMirrorPhotos,
+        }).catch(() => {});
         if (this.db) {
           void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
         }

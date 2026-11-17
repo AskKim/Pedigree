@@ -154,6 +154,19 @@ describe('BoundedPhotoDataCache & snapshot hydration', () => {
     expect(cache.get('p3')).toBe('data:p3');
     cache.delete('p3');
     expect(cache.size()).toBe(0);
+
+    // Byte-budget enforcement & trimTo
+    const byteCache = new BoundedPhotoDataCache(10, 15);
+    byteCache.set('a', '12345678'); // 8 bytes
+    byteCache.set('b', '1234567'); // total 15
+    expect(byteCache.size()).toBe(2);
+    expect(byteCache.byteSize()).toBe(15);
+    byteCache.set('c', '12345678'); // exceeds 15 -> evicts 'a' (remaining 15)
+    expect(byteCache.get('a')).toBeUndefined();
+    expect(byteCache.size()).toBe(2);
+    byteCache.trimTo(1, 10);
+    expect(byteCache.size()).toBe(1);
+    expect(byteCache.byteSize()).toBe(8);
   });
 
   it('strips full-res dataUrls cleanly while retaining thumbnails, and hydrates selectively by species & cache', async () => {

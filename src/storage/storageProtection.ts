@@ -6,8 +6,11 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { getTierStoragePolicy } from '../core/deviceCapability';
 import { BarnDatabaseSnapshot, nowIsoUtc } from '../core/models';
 import { logDiagnosticEvent } from './crashLogger';
+import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
+import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 
 const ROLLING_IDB_NAME = 'community_pedigree_rolling_backups';
 const ROLLING_STORE_NAME = 'snapshots';
@@ -234,17 +237,33 @@ function openRollingIdb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveRollingSnapshotBackup(snapshot: BarnDatabaseSnapshot): Promise<void> {
+export async function saveRollingSnapshotBackup(
+  snapshot: BarnDatabaseSnapshot,
+  options?: {
+    maxRollingBackups?: number;
+    dehydratePhotos?: boolean;
+  }
+): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   try {
+    const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
+    const maxRollingCap = Math.max(
+      1,
+      options?.maxRollingBackups ?? policy.rollingIdbCap ?? MAX_ROLLING_BACKUPS
+    );
+    const shouldDehydrate = options?.dehydratePhotos ?? policy.dehydrateMirrorPhotos;
+    const targetSnapshot = shouldDehydrate
+      ? stripPhotoDataUrlsFromSnapshot(snapshot)
+      : snapshot;
+
     const entry: StoredRollingBackup = {
       key: `rolling-${Date.now()}`,
       savedAtIso: nowIsoUtc(),
-      animalCount: snapshot.animals.length,
-      photoCount: (snapshot.animalPhotos ?? []).length,
-      speciesCount: snapshot.speciesProfiles.length,
-      byteSize: estimateSnapshotByteSize(snapshot),
-      snapshot,
+      animalCount: targetSnapshot.animals.length,
+      photoCount: (targetSnapshot.animalPhotos ?? []).length,
+      speciesCount: targetSnapshot.speciesProfiles.length,
+      byteSize: estimateSnapshotByteSize(targetSnapshot),
+      snapshot: targetSnapshot,
     };
     const db = await openRollingIdb();
     await new Promise<void>((resolve, reject) => {
@@ -267,7 +286,7 @@ export async function saveRollingSnapshotBackup(snapshot: BarnDatabaseSnapshot):
           cursor.continue();
         } else {
           metas.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
-          for (let i = MAX_ROLLING_BACKUPS; i < metas.length; i++) {
+          for (let i = maxRollingCap; i < metas.length; i++) {
             store.delete(metas[i].key);
           }
         }

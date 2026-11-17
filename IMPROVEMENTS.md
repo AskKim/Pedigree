@@ -114,17 +114,17 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 2. Guard `registerSW` behind `if (import.meta.env.PROD)` and unregister dev SWs in `src/main.tsx`.
 3. Forward `activeCalls` inside `PedigreeIndex.inbreeding` in `src/core/pedigreeCalculator.ts` and skip unnecessary COI precompute on `home`/`settings` in `src/hooks/useBarnStore.ts`.
 
-### IMP-008: Hardcoded Root Base Path PWA Config & GitHub Actions CI Pipeline
+### IMP-008: Hardcoded Root Base Path & Disabled Dev HMR Config + GitHub Actions CI
 
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
-- **User Goal:** Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` hardcoded so AI Studio never prompts for `VITE_BASE_PATH`.
-- **Summary:** Hardcodes `basePath = '/'` in Vite/PWA config (removing `process.env.VITE_BASE_PATH` and omitting it from `.env.example`), and runs unit tests, improvement verification, lint, and builds in `.github/workflows/ci.yml`.
+- **User Goal:** Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` and disabled dev HMR hardcoded so AI Studio never prompts for env vars.
+- **Summary:** Hardcodes `basePath = '/'`, `hmr: false`, and `watch: null` in Vite config (removing `process.env.VITE_BASE_PATH` / `process.env.DISABLE_HMR` and omitting them from `.env.example`), and runs unit tests, improvement verification, lint, and builds in `.github/workflows/ci.yml`.
 - **Tracked Files:** `vite.config.ts`, `.env.example`, `.github/workflows/ci.yml`, `package.json`
 
 **Restoration Playbook if Overwritten:**
-1. Keep `const basePath = '/'` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH`.
-2. Do not add `VITE_BASE_PATH` to `.env.example`.
+1. Keep `const basePath = '/'`, `hmr: false`, and `watch: null` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH` or `process.env.DISABLE_HMR`.
+2. Do not add `VITE_BASE_PATH` or `DISABLE_HMR` to `.env.example`.
 3. Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.
 
 ### IMP-009: Crash Error Boundary, Persistent Crash Log & DB Health Self-Repair

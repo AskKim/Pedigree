@@ -23,8 +23,12 @@ import {
   buildEmptyFallbackSettings,
   buildExportCanaryProbe,
   CURRENT_BACKUP_SCHEMA_VERSION,
-  migrateAndValidateBackupEnvelope,
+  deserializeVaultBackupPayload,
+  extractArchiveIndexMetadataOnly,
+  extractVaultJsonTextFromPayload,
+  isZipMagicBytes,
   MigratedBackupResult,
+  serializeCompressedVaultBackupZip,
   serializeVaultBackupEnvelope,
   sha256HexPure,
   unpackArchivedAnimalBundle,
@@ -33,9 +37,12 @@ import {
   VaultBackupMetadata,
   verifyExportCanaryRoundTrip,
 } from '../core/backupVault';
+import { getTierStoragePolicy, TierStoragePolicy } from '../core/deviceCapability';
 import { BarnDatabaseSnapshot, BarnSettings, generateUuid, nowIsoUtc } from '../core/models';
 import { isSampleTestingId } from '../core/sampleData';
 import { logDiagnosticEvent } from './crashLogger';
+import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
+import { pushBackupPayloadToSinkFolder } from './localSyncChannels';
 import { isQuotaExceededError } from './storageProtection';
 
 export type OpfsNamespace = 'tmp' | 'backups' | 'archives';
@@ -81,14 +88,141 @@ export interface WipedStorageRecoveryContext {
 export const MAX_MONTHLY_OPFS_BACKUPS = 6;
 export const MAX_PRE_UPGRADE_OPFS_BACKUPS = 3;
 export const MAX_PRE_RESET_OPFS_BACKUPS = 8;
+export const MAX_MANUAL_OPFS_BACKUPS = 12;
+export const MAX_RECOVERY_DUMP_OPFS_BACKUPS = 4;
 export const MONTHLY_BACKUP_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
 export const EXPORT_CANARY_INTERVAL_MS = 12 * 60 * 60 * 1000;
+export const CANARY_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
 
 const PRIOR_USE_SENTINEL_KEY = 'pedigree.priorUseSentinel.v1';
 const CANARY_LAST_RUN_KEY = 'pedigree.opfsCanaryLastRunMs.v1';
+const CANARY_LAST_FAIL_KEY = 'pedigree.opfsCanaryLastFailMs.v1';
+const OPFS_PRUNE_WARNING_KEY = 'pedigree.opfsPruneWarning.v1';
 const VAULT_INDEX_FILE = 'vault-index.json';
 const ARCHIVES_INDEX_FILE = 'archives-index.json';
 const CANARY_PROBE_FILE = 'canary-probe.json';
+
+export interface OpfsPruneSinkWarning {
+  count: number;
+  lastFileName: string;
+  kind: VaultBackupKind;
+  reason: 'not_configured' | 'permission_required' | 'write_failed' | 'unsupported';
+  timestampIso: string;
+  message: string;
+}
+
+export function readOpfsPruneSinkWarning(): OpfsPruneSinkWarning | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(OPFS_PRUNE_WARNING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OpfsPruneSinkWarning>;
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.lastFileName !== 'string') {
+      return null;
+    }
+    return {
+      count: Number(parsed.count) || 1,
+      lastFileName: parsed.lastFileName,
+      kind: (parsed.kind as VaultBackupKind) || 'manual',
+      reason:
+        parsed.reason === 'permission_required' ||
+        parsed.reason === 'write_failed' ||
+        parsed.reason === 'unsupported'
+          ? parsed.reason
+          : 'not_configured',
+      timestampIso: String(parsed.timestampIso || ''),
+      message: String(parsed.message || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearOpfsPruneSinkWarning(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(OPFS_PRUNE_WARNING_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+function recordOpfsPruneSinkWarning(
+  newCount: number,
+  lastItem: VaultBackupMetadata,
+  reason: OpfsPruneSinkWarning['reason']
+): void {
+  if (newCount <= 0) return;
+  const existing = readOpfsPruneSinkWarning();
+  const totalCount = (existing?.count || 0) + newCount;
+  const reasonNote =
+    reason === 'permission_required'
+      ? 'Connected Backup Sink folder needs re-authorization'
+      : reason === 'write_failed'
+      ? 'Backup Sink folder write failed'
+      : reason === 'unsupported'
+      ? 'This browser cannot persist folder sync handles automatically'
+      : 'No Backup Sink folder is connected';
+  const next: OpfsPruneSinkWarning = {
+    count: totalCount,
+    lastFileName: lastItem.fileName,
+    kind: lastItem.kind,
+    reason,
+    timestampIso: nowIsoUtc(),
+    message: `${totalCount} aging local backup(s) rolled off storage without an off-device sync copy (${reasonNote}). Connect a sync folder or download a manual backup.`,
+  };
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(OPFS_PRUNE_WARNING_KEY, JSON.stringify(next));
+    } catch {
+      // Non-fatal
+    }
+  }
+  logDiagnosticEvent({
+    level: 'warn',
+    category: 'storage',
+    message: `Pruned ${newCount} expiring OPFS backup(s) without sink offload (${reason}): ${lastItem.fileName}`,
+  });
+}
+
+const opfsNamespaceQueues = new Map<OpfsNamespace, Promise<void>>();
+const activeTempFiles = new Set<string>();
+
+function withOpfsNamespaceLock<T>(
+  namespace: OpfsNamespace,
+  task: () => Promise<T>
+): Promise<T> {
+  const prev = opfsNamespaceQueues.get(namespace) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  );
+  opfsNamespaceQueues.set(namespace, settled);
+  return run.finally(() => {
+    if (opfsNamespaceQueues.get(namespace) === settled) {
+      opfsNamespaceQueues.delete(namespace);
+    }
+  });
+}
+
+export function markTempOpfsFileActive(fileName: string): void {
+  if (fileName) activeTempFiles.add(fileName);
+}
+
+export function unmarkTempOpfsFileActive(fileName: string): void {
+  if (fileName) activeTempFiles.delete(fileName);
+}
+
+function measureUtf8ByteLength(text: string): number {
+  if (typeof Blob !== 'undefined') {
+    return new Blob([text]).size;
+  }
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).byteLength;
+  }
+  return text.length;
+}
 
 let testRootResolver: (() => Promise<OpfsDirectoryHandle | null>) | null = null;
 
@@ -100,6 +234,9 @@ export function setOpfsRootResolverForTest(
   resolver: (() => Promise<OpfsDirectoryHandle | null>) | null
 ): void {
   testRootResolver = resolver;
+  if (!resolver) {
+    activeTempFiles.clear();
+  }
 }
 
 export function isOpfsSupported(): boolean {
@@ -247,7 +384,11 @@ function compactStamp(iso: string): string {
 // 1. Ephemeral Export Scratchpad (`/tmp`) & Boot Orphan Sweep
 // ---------------------------------------------------------------------------
 
-export async function purgeOpfsTmp(): Promise<{ filesRemoved: number; bytesFreed: number }> {
+export async function purgeOpfsTmp(options: { includeActive?: boolean } = {}): Promise<{
+  filesRemoved: number;
+  bytesFreed: number;
+}> {
+  const includeActive = Boolean(options.includeActive);
   const tmpDir = await getOpfsSubdir('tmp', false);
   if (!tmpDir) return { filesRemoved: 0, bytesFreed: 0 };
 
@@ -257,6 +398,7 @@ export async function purgeOpfsTmp(): Promise<{ filesRemoved: number; bytesFreed
     const entries = await listDirEntries(tmpDir);
     for (const item of entries) {
       if (item.handle.kind === 'directory') continue;
+      if (!includeActive && activeTempFiles.has(item.name)) continue;
       try {
         const file = await (item.handle as OpfsFileHandle).getFile();
         bytesFreed += Number(file.size) || 0;
@@ -277,7 +419,7 @@ export async function sweepOrphanedOpfsTmpOnBoot(): Promise<{
   filesRemoved: number;
   bytesFreed: number;
 }> {
-  const res = await purgeOpfsTmp();
+  const res = await purgeOpfsTmp({ includeActive: false });
   if (res.filesRemoved > 0) {
     logDiagnosticEvent({
       level: 'info',
@@ -291,7 +433,8 @@ export async function sweepOrphanedOpfsTmpOnBoot(): Promise<{
 export async function writeTempOpfsFile(
   prefix: string,
   data: string | Uint8Array | Blob,
-  extension = 'tmp'
+  extension = 'tmp',
+  options?: { keepActiveAfterWrite?: boolean }
 ): Promise<{ fileName: string } | null> {
   const tmpDir = await getOpfsSubdir('tmp', true);
   if (!tmpDir) return null;
@@ -301,8 +444,17 @@ export async function writeTempOpfsFile(
     .slice(0, 32);
   const cleanExt = (extension || 'tmp').replace(/[^a-z0-9]/gi, '') || 'tmp';
   const fileName = `${cleanPrefix}-${Date.now().toString(36)}-${generateUuid().slice(0, 8)}.${cleanExt}`;
-  await writeFileToOpfsDir(tmpDir, fileName, data);
-  return { fileName };
+  markTempOpfsFileActive(fileName);
+  let writeSucceeded = false;
+  try {
+    await writeFileToOpfsDir(tmpDir, fileName, data);
+    writeSucceeded = true;
+    return { fileName };
+  } finally {
+    if (!writeSucceeded || !options?.keepActiveAfterWrite) {
+      unmarkTempOpfsFileActive(fileName);
+    }
+  }
 }
 
 export async function readTempOpfsFileAsBlob(fileName: string): Promise<Blob | null> {
@@ -317,6 +469,7 @@ export async function readTempOpfsFileAsBlob(fileName: string): Promise<Blob | n
 }
 
 export async function removeTempOpfsFile(fileName: string): Promise<void> {
+  unmarkTempOpfsFileActive(fileName);
   const tmpDir = await getOpfsSubdir('tmp', false);
   if (!tmpDir) return;
   await removeOpfsEntrySafe(tmpDir, fileName);
@@ -326,23 +479,35 @@ export async function removeTempOpfsFile(fileName: string): Promise<void> {
 // 2. OPFS Backup Vault (`/backups`) + Retention Pruning
 // ---------------------------------------------------------------------------
 
-function buildVaultFileName(kind: VaultBackupKind, createdAtIso: string): string {
+function buildVaultFileName(
+  kind: VaultBackupKind,
+  createdAtIso: string,
+  compressed = false
+): string {
   const stamp = compactStamp(createdAtIso);
   const shortId = generateUuid().slice(0, 6);
+  const ext = compressed ? '.vault.zip' : '.json';
   if (kind === 'monthly') {
     const ym = createdAtIso.slice(0, 7);
-    return `monthly-${ym}-${stamp}-${shortId}.json`;
+    return `monthly-${ym}-${stamp}-${shortId}${ext}`;
   }
   if (kind === 'pre_upgrade') {
-    return `pre-upgrade-${stamp}-${shortId}.json`;
+    return `pre-upgrade-${stamp}-${shortId}${ext}`;
   }
   if (kind === 'pre_reset') {
-    return `pre-reset-${stamp}-${shortId}.json`;
+    return `pre-reset-${stamp}-${shortId}${ext}`;
   }
   if (kind === 'recovery_dump') {
-    return `recovery-pre-reset-${stamp}-${shortId}.json`;
+    return `recovery-pre-reset-${stamp}-${shortId}${ext}`;
   }
-  return `manual-vault-${stamp}-${shortId}.json`;
+  return `manual-vault-${stamp}-${shortId}${ext}`;
+}
+
+function resolveEffectiveStoragePolicy(
+  override?: Partial<TierStoragePolicy>
+): TierStoragePolicy {
+  const base = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
+  return override ? { ...base, ...override } : base;
 }
 
 async function readVaultIndex(backupsDir: OpfsDirectoryHandle): Promise<VaultBackupMetadata[]> {
@@ -361,20 +526,22 @@ async function readVaultIndex(backupsDir: OpfsDirectoryHandle): Promise<VaultBac
     }
   }
 
-  // Self-heal vault index by scanning `/backups/*.json` files safely
+  // Self-heal vault index by scanning `/backups/*.json` and `/backups/*.vault.zip` files safely
   const rebuilt: VaultBackupMetadata[] = [];
   const entries = await listDirEntries(backupsDir);
   for (const entry of entries) {
     if (
       entry.handle.kind === 'directory' ||
       entry.name === VAULT_INDEX_FILE ||
-      !entry.name.endsWith('.json')
+      (!entry.name.endsWith('.json') && !entry.name.endsWith('.zip'))
     ) {
       continue;
     }
     try {
-      const text = await readOpfsFileText(backupsDir, entry.name);
-      if (!text) continue;
+      const bytes = await readOpfsFileBytes(backupsDir, entry.name);
+      if (!bytes || bytes.byteLength === 0) continue;
+      const isCompressed = entry.name.endsWith('.zip') || isZipMagicBytes(bytes);
+      const text = extractVaultJsonTextFromPayload(bytes, entry.name);
       const parsed = JSON.parse(text) as Record<string, any>;
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
       const snap = parsed.snapshot && typeof parsed.snapshot === 'object' ? parsed.snapshot : parsed;
@@ -409,10 +576,11 @@ async function readVaultIndex(backupsDir: OpfsDirectoryHandle): Promise<VaultBac
         animalCount,
         photoCount,
         speciesCount,
-        byteSize: text.length,
+        byteSize: bytes.byteLength,
         checksumSha256: String(parsed.checksumSha256 || sha256HexPure(text)),
         source: 'opfs',
         note: typeof parsed.note === 'string' ? parsed.note : undefined,
+        compressed: isCompressed,
       });
     } catch {
       // Skip malformed entry safely
@@ -437,20 +605,31 @@ async function writeVaultIndex(
   await writeFileToOpfsDir(backupsDir, VAULT_INDEX_FILE, JSON.stringify(sorted, null, 2));
 }
 
+export type PrePruneOffloadHandler = (
+  item: VaultBackupMetadata,
+  bytes: Uint8Array | null
+) => Promise<{
+  ok: boolean;
+  skippedReason?: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed';
+}>;
+
 async function enforceVaultRetention(
   backupsDir: OpfsDirectoryHandle,
-  items: VaultBackupMetadata[]
+  items: VaultBackupMetadata[],
+  policy: TierStoragePolicy = resolveEffectiveStoragePolicy(),
+  beforePrune?: PrePruneOffloadHandler
 ): Promise<VaultBackupMetadata[]> {
-  const byKindCap: Partial<Record<VaultBackupKind, number>> = {
-    monthly: MAX_MONTHLY_OPFS_BACKUPS,
-    pre_upgrade: MAX_PRE_UPGRADE_OPFS_BACKUPS,
-    pre_reset: MAX_PRE_RESET_OPFS_BACKUPS,
+  const byKindCap: Record<VaultBackupKind, number> = {
+    monthly: policy.monthlyCap,
+    pre_upgrade: policy.preUpgradeCap,
+    pre_reset: policy.preResetCap,
+    manual: policy.manualCap,
+    recovery_dump: policy.recoveryDumpCap,
   };
 
   const keepSet = new Set<string>();
-  const deleteFiles: string[] = [];
+  const deleteItems: VaultBackupMetadata[] = [];
 
-  // Keep unlimited manual/recovery entries (up to reasonable cap on pre_reset/pre_upgrade/monthly)
   const grouped = new Map<VaultBackupKind, VaultBackupMetadata[]>();
   for (const item of items) {
     const arr = grouped.get(item.kind) || [];
@@ -462,21 +641,88 @@ async function enforceVaultRetention(
     list.sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
     const cap = byKindCap[kind];
     list.forEach((item, idx) => {
-      if (cap === undefined || idx < cap) {
+      if (idx < cap) {
         keepSet.add(item.key);
       } else {
-        deleteFiles.push(item.fileName);
+        deleteItems.push(item);
       }
     });
   }
 
-  for (const fileName of deleteFiles) {
-    await removeOpfsEntrySafe(backupsDir, fileName);
+  if (deleteItems.length > 0) {
+    let unbackedCount = 0;
+    let lastUnbackedItem: VaultBackupMetadata | null = null;
+    let lastReason: OpfsPruneSinkWarning['reason'] = 'not_configured';
+
+    for (const item of deleteItems) {
+      const payloadBytes = await readOpfsFileBytes(backupsDir, item.fileName);
+      const offloadResult = beforePrune
+        ? await beforePrune(item, payloadBytes)
+        : payloadBytes
+        ? await pushBackupPayloadToSinkFolder(item.fileName, payloadBytes)
+        : { ok: false, skippedReason: 'write_failed' as const };
+
+      if (!offloadResult.ok) {
+        unbackedCount++;
+        lastUnbackedItem = item;
+        lastReason = offloadResult.skippedReason || 'not_configured';
+      } else {
+        logDiagnosticEvent({
+          level: 'info',
+          category: 'storage',
+          message: `Synced expiring OPFS backup "${item.fileName}" to Backup Sink Folder before local prune`,
+        });
+      }
+
+      await removeOpfsEntrySafe(backupsDir, item.fileName);
+    }
+
+    if (unbackedCount > 0 && lastUnbackedItem) {
+      recordOpfsPruneSinkWarning(unbackedCount, lastUnbackedItem, lastReason);
+    }
   }
 
   return items
     .filter((i) => keepSet.has(i.key))
     .sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
+}
+
+export async function flushOpfsBackupsToSinkFolder(): Promise<{
+  pushed: number;
+  failed: number;
+  skippedReason?: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed';
+}> {
+  return withOpfsNamespaceLock('backups', async () => {
+    const backupsDir = await getOpfsSubdir('backups', false);
+    if (!backupsDir) return { pushed: 0, failed: 0 };
+    const items = await readVaultIndex(backupsDir);
+    let pushed = 0;
+    let failed = 0;
+    let lastReason: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed' | undefined;
+
+    for (const item of items) {
+      const bytes = await readOpfsFileBytes(backupsDir, item.fileName);
+      if (!bytes) continue;
+      const res = await pushBackupPayloadToSinkFolder(item.fileName, bytes);
+      if (res.ok) {
+        pushed++;
+      } else {
+        failed++;
+        lastReason = res.skippedReason;
+        if (
+          res.skippedReason === 'unsupported' ||
+          res.skippedReason === 'not_configured' ||
+          res.skippedReason === 'permission_required'
+        ) {
+          break;
+        }
+      }
+    }
+    if (pushed > 0 && failed === 0) {
+      clearOpfsPruneSinkWarning();
+    }
+    return { pushed, failed, skippedReason: lastReason };
+  });
 }
 
 export async function saveOpfsVaultBackup(
@@ -485,46 +731,81 @@ export async function saveOpfsVaultBackup(
     kind: VaultBackupKind;
     note?: string;
     appVersion?: string;
+    policyOverride?: Partial<TierStoragePolicy>;
+    beforePrune?: PrePruneOffloadHandler;
   }
 ): Promise<VaultBackupMetadata | null> {
-  const backupsDir = await getOpfsSubdir('backups', true);
-  if (!backupsDir) return null;
+  return withOpfsNamespaceLock('backups', async () => {
+    const backupsDir = await getOpfsSubdir('backups', true);
+    if (!backupsDir) return null;
 
-  const createdAtIso = nowIsoUtc();
-  const { envelope, jsonText } = serializeVaultBackupEnvelope(snapshot, {
-    kind: options.kind,
-    createdAtIso,
-    createdByAppVersion: options.appVersion || APP_SCHEMA_BUILD_TAG,
-    note: options.note,
+    const policy = resolveEffectiveStoragePolicy(options.policyOverride);
+    const createdAtIso = nowIsoUtc();
+    const compressed = policy.compressVaultBackups;
+    const fileName = buildVaultFileName(options.kind, createdAtIso, compressed);
+
+    let envelopeCreatedBy = options.appVersion || APP_SCHEMA_BUILD_TAG;
+    let schemaVersion = CURRENT_BACKUP_SCHEMA_VERSION;
+    let checksumSha256 = '';
+    let envelopeNote: string | undefined;
+    let byteSize = 0;
+
+    if (compressed) {
+      const { envelope, zipBytes } = serializeCompressedVaultBackupZip(snapshot, {
+        kind: options.kind,
+        createdAtIso,
+        createdByAppVersion: envelopeCreatedBy,
+        note: options.note,
+      });
+      await writeFileToOpfsDir(backupsDir, fileName, zipBytes);
+      envelopeCreatedBy = envelope.createdByAppVersion;
+      schemaVersion = envelope._schemaVersion;
+      checksumSha256 = envelope.checksumSha256;
+      envelopeNote = envelope.note;
+      byteSize = zipBytes.byteLength;
+    } else {
+      const { envelope, jsonText } = serializeVaultBackupEnvelope(snapshot, {
+        kind: options.kind,
+        createdAtIso,
+        createdByAppVersion: envelopeCreatedBy,
+        note: options.note,
+      });
+      await writeFileToOpfsDir(backupsDir, fileName, jsonText);
+      envelopeCreatedBy = envelope.createdByAppVersion;
+      schemaVersion = envelope._schemaVersion;
+      checksumSha256 = envelope.checksumSha256;
+      envelopeNote = envelope.note;
+      byteSize = measureUtf8ByteLength(jsonText);
+    }
+
+    const meta: VaultBackupMetadata = {
+      key: fileName,
+      fileName,
+      kind: options.kind,
+      schemaVersion,
+      createdAtIso,
+      createdByAppVersion: envelopeCreatedBy,
+      barnName: snapshot.settings.barnName || 'My Barn',
+      animalCount: snapshot.animals.length,
+      photoCount: (snapshot.animalPhotos ?? []).length,
+      speciesCount: snapshot.speciesProfiles.length,
+      byteSize,
+      checksumSha256,
+      source: 'opfs',
+      note: envelopeNote,
+      compressed,
+    };
+
+    const existing = await readVaultIndex(backupsDir);
+    const nextList = await enforceVaultRetention(
+      backupsDir,
+      [meta, ...existing.filter((i) => i.key !== meta.key)],
+      policy,
+      options.beforePrune
+    );
+    await writeVaultIndex(backupsDir, nextList);
+    return meta;
   });
-
-  const fileName = buildVaultFileName(options.kind, createdAtIso);
-  await writeFileToOpfsDir(backupsDir, fileName, jsonText);
-
-  const meta: VaultBackupMetadata = {
-    key: fileName,
-    fileName,
-    kind: options.kind,
-    schemaVersion: envelope._schemaVersion,
-    createdAtIso,
-    createdByAppVersion: envelope.createdByAppVersion,
-    barnName: snapshot.settings.barnName || 'My Barn',
-    animalCount: snapshot.animals.length,
-    photoCount: (snapshot.animalPhotos ?? []).length,
-    speciesCount: snapshot.speciesProfiles.length,
-    byteSize: jsonText.length,
-    checksumSha256: envelope.checksumSha256,
-    source: 'opfs',
-    note: envelope.note,
-  };
-
-  const existing = await readVaultIndex(backupsDir);
-  const nextList = await enforceVaultRetention(backupsDir, [
-    meta,
-    ...existing.filter((i) => i.key !== meta.key),
-  ]);
-  await writeVaultIndex(backupsDir, nextList);
-  return meta;
 }
 
 export async function listOpfsVaultBackups(): Promise<VaultBackupMetadata[]> {
@@ -555,11 +836,11 @@ export async function loadOpfsVaultBackup(
   const meta = items.find((i) => i.key === key || i.fileName === key) || null;
   const targetFile = meta?.fileName || key;
 
-  const text = await readOpfsFileText(backupsDir, targetFile);
-  if (!text) return null;
+  const bytes = await readOpfsFileBytes(backupsDir, targetFile);
+  if (!bytes || bytes.byteLength === 0) return null;
 
   try {
-    const migrated = migrateAndValidateBackupEnvelope(text, fallbackSettings);
+    const migrated = deserializeVaultBackupPayload(bytes, fallbackSettings, targetFile);
     return { meta, migrated };
   } catch (err) {
     logDiagnosticEvent({
@@ -577,18 +858,40 @@ export async function readOpfsVaultBackupRawJson(key: string): Promise<string | 
   if (!backupsDir) return null;
   const items = await readVaultIndex(backupsDir);
   const meta = items.find((i) => i.key === key || i.fileName === key);
-  return readOpfsFileText(backupsDir, meta?.fileName || key);
+  const fileName = meta?.fileName || key;
+  const bytes = await readOpfsFileBytes(backupsDir, fileName);
+  if (!bytes || bytes.byteLength === 0) return null;
+  return extractVaultJsonTextFromPayload(bytes, fileName);
+}
+
+export async function readOpfsVaultBackupBlob(
+  key: string
+): Promise<{ fileName: string; blob: Blob } | null> {
+  const backupsDir = await getOpfsSubdir('backups', false);
+  if (!backupsDir) return null;
+  const items = await readVaultIndex(backupsDir);
+  const meta = items.find((i) => i.key === key || i.fileName === key);
+  const fileName = meta?.fileName || key;
+  try {
+    const fh = await backupsDir.getFileHandle(fileName, { create: false });
+    const file = await fh.getFile();
+    return { fileName, blob: file };
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteOpfsVaultBackup(key: string): Promise<boolean> {
-  const backupsDir = await getOpfsSubdir('backups', false);
-  if (!backupsDir) return false;
-  const items = await readVaultIndex(backupsDir);
-  const target = items.find((i) => i.key === key || i.fileName === key);
-  const removed = await removeOpfsEntrySafe(backupsDir, target?.fileName || key);
-  const remaining = items.filter((i) => i.key !== key && i.fileName !== key);
-  await writeVaultIndex(backupsDir, remaining);
-  return removed;
+  return withOpfsNamespaceLock('backups', async () => {
+    const backupsDir = await getOpfsSubdir('backups', false);
+    if (!backupsDir) return false;
+    const items = await readVaultIndex(backupsDir);
+    const target = items.find((i) => i.key === key || i.fileName === key);
+    const removed = await removeOpfsEntrySafe(backupsDir, target?.fileName || key);
+    const remaining = items.filter((i) => i.key !== key && i.fileName !== key);
+    await writeVaultIndex(backupsDir, remaining);
+    return removed;
+  });
 }
 
 export async function shouldCreateMonthlyOpfsBackup(nowMs: number = Date.now()): Promise<boolean> {
@@ -637,35 +940,8 @@ async function readArchivesIndex(
     try {
       const bytes = await readOpfsFileBytes(archivesDir, entry.name);
       if (!bytes) continue;
-      const unpacked = unpackArchivedAnimalBundle(bytes);
-      rebuilt.push({
-        archiveKey: unpacked.archiveKey,
-        fileName: entry.name,
-        createdAtIso: unpacked.createdAtIso,
-        schemaVersion: unpacked.schemaVersion,
-        byteSize: bytes.byteLength,
-        checksumSha256: unpacked.checksumSha256,
-        speciesSummary: Array.from(new Set(unpacked.animals.map((a) => a.species).filter(Boolean))),
-        animalCount: unpacked.animals.length,
-        photoCount: unpacked.animalPhotos.length,
-        careLogCount: unpacked.careLogs.length,
-        animals: unpacked.animals.map((a) => ({
-          id: a.id,
-          name: a.name,
-          tattoo: a.tattoo,
-          species: a.species,
-          breed: a.breed,
-          variety: a.variety,
-          sex: a.sex,
-          status: a.status,
-          birthDateIso: a.birthDateIso,
-          soldDateIso: a.soldDateIso,
-          deceasedDateIso: a.deceasedDateIso,
-          buyerName: a.buyerName,
-          deathCause: a.deathCause,
-          hasPedigreeStubInDb: false,
-        })),
-      });
+      const meta = extractArchiveIndexMetadataOnly(bytes, entry.name);
+      rebuilt.push(meta);
     } catch {
       // Skip malformed entry safely
     }
@@ -693,14 +969,16 @@ export async function saveOpfsHerdArchive(
   indexEntry: ArchivedHerdIndexEntry,
   zipBytes: Uint8Array
 ): Promise<ArchivedHerdIndexEntry | null> {
-  const archivesDir = await getOpfsSubdir('archives', true);
-  if (!archivesDir) return null;
+  return withOpfsNamespaceLock('archives', async () => {
+    const archivesDir = await getOpfsSubdir('archives', true);
+    if (!archivesDir) return null;
 
-  await writeFileToOpfsDir(archivesDir, indexEntry.fileName, zipBytes);
-  const existing = await readArchivesIndex(archivesDir);
-  const next = [indexEntry, ...existing.filter((e) => e.archiveKey !== indexEntry.archiveKey)];
-  await writeArchivesIndex(archivesDir, next);
-  return indexEntry;
+    await writeFileToOpfsDir(archivesDir, indexEntry.fileName, zipBytes);
+    const existing = await readArchivesIndex(archivesDir);
+    const next = [indexEntry, ...existing.filter((e) => e.archiveKey !== indexEntry.archiveKey)];
+    await writeArchivesIndex(archivesDir, next);
+    return indexEntry;
+  });
 }
 
 export async function listOpfsHerdArchives(): Promise<ArchivedHerdIndexEntry[]> {
@@ -756,18 +1034,38 @@ export async function readOpfsHerdArchiveRawBytes(archiveKey: string): Promise<{
   return { fileName, bytes };
 }
 
-export async function deleteOpfsHerdArchive(archiveKey: string): Promise<boolean> {
+export async function readOpfsHerdArchiveBlob(archiveKey: string): Promise<{
+  fileName: string;
+  blob: Blob;
+} | null> {
   const archivesDir = await getOpfsSubdir('archives', false);
-  if (!archivesDir) return false;
+  if (!archivesDir) return null;
   const items = await readArchivesIndex(archivesDir);
-  const target = items.find((i) => i.archiveKey === archiveKey || i.fileName === archiveKey);
-  const removed = await removeOpfsEntrySafe(
-    archivesDir,
-    target?.fileName || `${archiveKey}.archive.zip`
-  );
-  const next = items.filter((i) => i.archiveKey !== archiveKey && i.fileName !== archiveKey);
-  await writeArchivesIndex(archivesDir, next);
-  return removed;
+  const entry = items.find((i) => i.archiveKey === archiveKey || i.fileName === archiveKey);
+  const fileName = entry?.fileName || `${archiveKey}.archive.zip`;
+  try {
+    const fh = await archivesDir.getFileHandle(fileName, { create: false });
+    const file = await fh.getFile();
+    return { fileName, blob: file };
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteOpfsHerdArchive(archiveKey: string): Promise<boolean> {
+  return withOpfsNamespaceLock('archives', async () => {
+    const archivesDir = await getOpfsSubdir('archives', false);
+    if (!archivesDir) return false;
+    const items = await readArchivesIndex(archivesDir);
+    const target = items.find((i) => i.archiveKey === archiveKey || i.fileName === archiveKey);
+    const removed = await removeOpfsEntrySafe(
+      archivesDir,
+      target?.fileName || `${archiveKey}.archive.zip`
+    );
+    const next = items.filter((i) => i.archiveKey !== archiveKey && i.fileName !== archiveKey);
+    await writeArchivesIndex(archivesDir, next);
+    return removed;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +1176,13 @@ export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
   if (typeof localStorage === 'undefined') return true;
   try {
+    const failRaw = localStorage.getItem(CANARY_LAST_FAIL_KEY);
+    if (failRaw) {
+      const failMs = Number(failRaw);
+      if (Number.isFinite(failMs) && failMs > 0 && nowMs - failMs < CANARY_FAILURE_COOLDOWN_MS) {
+        return false;
+      }
+    }
     const raw = localStorage.getItem(CANARY_LAST_RUN_KEY);
     if (!raw) return true;
     const prevMs = Number(raw);
@@ -888,9 +1193,18 @@ export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
   }
 }
 
+function recordCanaryFailureTimestamp(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(CANARY_LAST_FAIL_KEY, String(Date.now()));
+  } catch {
+    // Non-fatal
+  }
+}
+
 export async function runOpfsExportCanary(
   snapshot: BarnDatabaseSnapshot
-): Promise<{ ok: boolean; skipped?: boolean; reason?: string }> {
+): Promise<{ ok: boolean; skipped?: boolean; skippedHeavyZip?: boolean; reason?: string }> {
   if (!isOpfsSupported()) {
     return { ok: true, skipped: true };
   }
@@ -898,41 +1212,50 @@ export async function runOpfsExportCanary(
     return { ok: true, skipped: true };
   }
 
+  const policy = resolveEffectiveStoragePolicy();
   const tmpDir = await getOpfsSubdir('tmp', true);
   if (!tmpDir) {
     return { ok: true, skipped: true };
   }
 
+  // Keep canary strictly to a lightweight metadata JSON probe (never compress heavy ZIP payloads
+  // during background canary checks when policy.skipHeavyCanaryZip is active on Tier 1).
   const probe = buildExportCanaryProbe(snapshot);
   const serialized = JSON.stringify(probe);
+  markTempOpfsFileActive(CANARY_PROBE_FILE);
   try {
     await writeFileToOpfsDir(tmpDir, CANARY_PROBE_FILE, serialized);
     const readBack = await readOpfsFileText(tmpDir, CANARY_PROBE_FILE);
     if (!readBack) {
+      recordCanaryFailureTimestamp();
       return {
         ok: false,
+        skippedHeavyZip: policy.skipHeavyCanaryZip,
         reason: 'OPFS canary probe could not be read back after writing.',
       };
     }
     const verified = verifyExportCanaryRoundTrip(probe, readBack);
     if (!verified.ok) {
+      recordCanaryFailureTimestamp();
       logDiagnosticEvent({
         level: 'warn',
         category: 'storage',
         message: `Export canary verification failed: ${verified.reason || 'unknown mismatch'}`,
       });
-      return { ok: false, reason: verified.reason };
+      return { ok: false, skippedHeavyZip: policy.skipHeavyCanaryZip, reason: verified.reason };
     }
 
     if (typeof localStorage !== 'undefined') {
       try {
         localStorage.setItem(CANARY_LAST_RUN_KEY, String(Date.now()));
+        localStorage.removeItem(CANARY_LAST_FAIL_KEY);
       } catch {
         // Non-fatal
       }
     }
-    return { ok: true };
+    return { ok: true, skippedHeavyZip: policy.skipHeavyCanaryZip };
   } catch (err) {
+    recordCanaryFailureTimestamp();
     const reason = err instanceof Error ? err.message : 'OPFS canary probe write error';
     logDiagnosticEvent({
       level: 'warn',
@@ -942,6 +1265,7 @@ export async function runOpfsExportCanary(
     });
     return { ok: false, reason };
   } finally {
+    unmarkTempOpfsFileActive(CANARY_PROBE_FILE);
     await removeOpfsEntrySafe(tmpDir, CANARY_PROBE_FILE);
   }
 }
@@ -949,6 +1273,62 @@ export async function runOpfsExportCanary(
 // ---------------------------------------------------------------------------
 // 6. IndexedDB `VersionError` / Migration Failure Rescue Dump
 // ---------------------------------------------------------------------------
+
+const MAX_RAW_DUMP_BINARY_BYTES = 16 * 1024 * 1024;
+
+function uint8ToBase64Compact(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, i + CHUNK);
+    binary += String.fromCharCode(...slice);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : '';
+}
+
+function sanitizeDumpBinaryField(val: unknown): unknown {
+  if (val instanceof ArrayBuffer) {
+    const view = new Uint8Array(val);
+    return view.byteLength > MAX_RAW_DUMP_BINARY_BYTES
+      ? { __binaryType: 'ArrayBuffer', byteLength: view.byteLength, omitted: true }
+      : { __binaryType: 'ArrayBuffer', byteLength: view.byteLength, base64: uint8ToBase64Compact(view) };
+  }
+  if (ArrayBuffer.isView(val)) {
+    const view = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
+    const ctorName = val.constructor?.name || 'TypedArray';
+    return view.byteLength > MAX_RAW_DUMP_BINARY_BYTES
+      ? { __binaryType: ctorName, byteLength: view.byteLength, omitted: true }
+      : { __binaryType: ctorName, byteLength: view.byteLength, base64: uint8ToBase64Compact(view) };
+  }
+  return val;
+}
+
+function sanitizeRawStoresForDump(
+  stores: Record<string, unknown[]> | undefined
+): Record<string, unknown[]> {
+  if (!stores) return {};
+  const cleaned: Record<string, unknown[]> = {};
+  for (const [storeName, rows] of Object.entries(stores)) {
+    if (!Array.isArray(rows)) continue;
+    cleaned[storeName] = rows.map((row) => {
+      if (row instanceof ArrayBuffer || ArrayBuffer.isView(row)) {
+        return sanitizeDumpBinaryField(row);
+      }
+      if (row && typeof row === 'object' && !Array.isArray(row)) {
+        const nextRow: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+          nextRow[k] = sanitizeDumpBinaryField(v);
+        }
+        return nextRow;
+      }
+      return row;
+    });
+  }
+  return cleaned;
+}
 
 /**
  * Dumps salvaged snapshot or raw IndexedDB object stores to OPFS `/backups/recovery-pre-reset-*.json`
@@ -971,59 +1351,66 @@ export async function dumpRawRecordsToOpfsRecoveryBackup(params: {
     }
   }
 
-  const backupsDir = await getOpfsSubdir('backups', true);
-  if (!backupsDir) return null;
+  return withOpfsNamespaceLock('backups', async () => {
+    const backupsDir = await getOpfsSubdir('backups', true);
+    if (!backupsDir) return null;
 
-  const createdAtIso = nowIsoUtc();
-  const stamp = compactStamp(createdAtIso);
-  const fileName = `recovery-pre-reset-${stamp}-${generateUuid().slice(0, 6)}.json`;
-  const payload = {
-    format: 'community-pedigree-raw-recovery-dump',
-    _schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
-    vaultKind: 'recovery_dump' as VaultBackupKind,
-    sourceDbName: params.sourceDbName,
-    reason: params.reason,
-    createdAtIso,
-    createdByAppVersion: APP_SCHEMA_BUILD_TAG,
-    stores: params.stores ?? {},
-  };
-  const jsonText = JSON.stringify(payload, null, 2);
-
-  try {
-    await writeFileToOpfsDir(backupsDir, fileName, jsonText);
-    const meta: VaultBackupMetadata = {
-      key: fileName,
-      fileName,
-      kind: 'recovery_dump',
-      schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
+    const createdAtIso = nowIsoUtc();
+    const stamp = compactStamp(createdAtIso);
+    const fileName = `recovery-pre-reset-${stamp}-${generateUuid().slice(0, 6)}.json`;
+    const payload = {
+      format: 'community-pedigree-raw-recovery-dump',
+      _schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
+      vaultKind: 'recovery_dump' as VaultBackupKind,
+      sourceDbName: params.sourceDbName,
+      reason: params.reason,
       createdAtIso,
       createdByAppVersion: APP_SCHEMA_BUILD_TAG,
-      barnName: 'Raw Store Dump',
-      animalCount: 0,
-      photoCount: 0,
-      speciesCount: 0,
-      byteSize: jsonText.length,
-      checksumSha256: sha256HexPure(jsonText),
-      source: 'opfs',
-      note: `Raw IndexedDB dump (${params.sourceDbName}): ${params.reason}`,
+      stores: sanitizeRawStoresForDump(params.stores),
     };
-    const existing = await readVaultIndex(backupsDir);
-    await writeVaultIndex(backupsDir, [meta, ...existing]);
-    logDiagnosticEvent({
-      level: 'warn',
-      category: 'storage',
-      message: `Corrective action: Saved raw IndexedDB recovery dump "${fileName}" to OPFS /backups before reset (${params.reason})`,
-    });
-    return meta;
-  } catch (err) {
-    logDiagnosticEvent({
-      level: 'error',
-      category: 'storage',
-      message: `Failed writing OPFS recovery dump for "${params.sourceDbName}"`,
-      error: err,
-    });
-    return null;
-  }
+    const jsonText = JSON.stringify(payload);
+
+    try {
+      await writeFileToOpfsDir(backupsDir, fileName, jsonText);
+      const meta: VaultBackupMetadata = {
+        key: fileName,
+        fileName,
+        kind: 'recovery_dump',
+        schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
+        createdAtIso,
+        createdByAppVersion: APP_SCHEMA_BUILD_TAG,
+        barnName: 'Raw Store Dump',
+        animalCount: 0,
+        photoCount: 0,
+        speciesCount: 0,
+        byteSize: measureUtf8ByteLength(jsonText),
+        checksumSha256: sha256HexPure(jsonText),
+        source: 'opfs',
+        note: `Raw IndexedDB dump (${params.sourceDbName}): ${params.reason}`,
+        compressed: false,
+      };
+      const existing = await readVaultIndex(backupsDir);
+      const nextList = await enforceVaultRetention(backupsDir, [
+        meta,
+        ...existing.filter((i) => i.key !== meta.key),
+      ]);
+      await writeVaultIndex(backupsDir, nextList);
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: `Corrective action: Saved raw IndexedDB recovery dump "${fileName}" to OPFS /backups before reset (${params.reason})`,
+      });
+      return meta;
+    } catch (err) {
+      logDiagnosticEvent({
+        level: 'error',
+        category: 'storage',
+        message: `Failed writing OPFS recovery dump for "${params.sourceDbName}"`,
+        error: err,
+      });
+      return null;
+    }
+  });
 }
 
 /**

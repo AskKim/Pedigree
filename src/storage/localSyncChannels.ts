@@ -30,11 +30,47 @@ import { downloadTextFile } from '../utils/webFileActions';
 import { logDiagnosticEvent } from './crashLogger';
 
 const SYNC_IDB_NAME = 'community_pedigree_sync_v1';
+const SYNC_IDB_VERSION = 2;
 const STORE_OUTBOX = 'sync_outbox';
 const STORE_CONFLICTS = 'sync_conflicts';
+const STORE_HANDLES = 'sync_handles';
+const BACKUP_SINK_HANDLE_KEY = 'backup_sink_folder';
+const BACKUP_SINK_ARCHIVE_SUBDIR = 'pedigree-vault-archive';
+const BACKUP_SINK_META_LS_KEY = 'pedigree.backupSinkMeta.v1';
 const DEVICE_ID_LS_KEY = 'pedigree_device_id_v1';
 const LOGICAL_COUNTER_LS_KEY = 'pedigree_logical_counter_v1';
 const SYNC_IDB_TIMEOUT_MS = 7000;
+
+export interface BackupSinkStatus {
+  supported: boolean;
+  configured: boolean;
+  folderName: string | null;
+  configuredAtIso: string | null;
+  permissionState: 'granted' | 'prompt' | 'denied' | 'unsupported';
+  lastPushAtIso: string | null;
+  lastPushFileName: string | null;
+  lastPushError: string | null;
+}
+
+interface StoredSinkMeta {
+  folderName: string;
+  configuredAtIso: string;
+  lastPushAtIso?: string | null;
+  lastPushFileName?: string | null;
+  lastPushError?: string | null;
+}
+
+interface StoredHandleRecord {
+  key: string;
+  handle: any;
+  folderName: string;
+  configuredAtIso: string;
+}
+
+let testSinkHandleOverride: any | null = null;
+export function setBackupSinkHandleForTest(handle: any | null): void {
+  testSinkHandleOverride = handle;
+}
 
 export function getOrCreateLocalDeviceId(): string {
   try {
@@ -81,7 +117,7 @@ function openSyncIdb(): Promise<IDBDatabase> {
     };
 
     try {
-      const req = indexedDB.open(SYNC_IDB_NAME, 1);
+      const req = indexedDB.open(SYNC_IDB_NAME, SYNC_IDB_VERSION);
       req.onupgradeneeded = () => {
         try {
           const db = req.result;
@@ -90,6 +126,9 @@ function openSyncIdb(): Promise<IDBDatabase> {
           }
           if (!db.objectStoreNames.contains(STORE_CONFLICTS)) {
             db.createObjectStore(STORE_CONFLICTS, { keyPath: 'conflict_id' });
+          }
+          if (!db.objectStoreNames.contains(STORE_HANDLES)) {
+            db.createObjectStore(STORE_HANDLES, { keyPath: 'key' });
           }
         } catch (upgradeErr) {
           void import('./opfsStorage')
@@ -323,9 +362,288 @@ export function supportsDirectoryPicker(): boolean {
   );
 }
 
+function readLocalSinkMeta(): StoredSinkMeta | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(BACKUP_SINK_META_LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSinkMeta>;
+    if (!parsed || typeof parsed.folderName !== 'string') return null;
+    return {
+      folderName: parsed.folderName,
+      configuredAtIso: String(parsed.configuredAtIso || nowIsoUtc()),
+      lastPushAtIso: typeof parsed.lastPushAtIso === 'string' ? parsed.lastPushAtIso : null,
+      lastPushFileName: typeof parsed.lastPushFileName === 'string' ? parsed.lastPushFileName : null,
+      lastPushError: typeof parsed.lastPushError === 'string' ? parsed.lastPushError : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSinkMeta(meta: StoredSinkMeta | null): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (!meta) {
+      localStorage.removeItem(BACKUP_SINK_META_LS_KEY);
+    } else {
+      localStorage.setItem(BACKUP_SINK_META_LS_KEY, JSON.stringify(meta));
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function saveBackupSinkHandleToIdb(handle: any, folderName: string): Promise<void> {
+  const configuredAtIso = nowIsoUtc();
+  writeLocalSinkMeta({
+    ...(readLocalSinkMeta() || {}),
+    folderName,
+    configuredAtIso,
+    lastPushError: null,
+  });
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    const db = await openSyncIdb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_HANDLES, 'readwrite');
+      const rec: StoredHandleRecord = {
+        key: BACKUP_SINK_HANDLE_KEY,
+        handle,
+        folderName,
+        configuredAtIso,
+      };
+      tx.objectStore(STORE_HANDLES).put(rec);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function loadBackupSinkHandleRecord(): Promise<StoredHandleRecord | null> {
+  if (testSinkHandleOverride) {
+    return {
+      key: BACKUP_SINK_HANDLE_KEY,
+      handle: testSinkHandleOverride,
+      folderName: String(testSinkHandleOverride.name || 'Test Sync Folder'),
+      configuredAtIso: nowIsoUtc(),
+    };
+  }
+  if (typeof indexedDB === 'undefined') return null;
+  try {
+    const db = await openSyncIdb();
+    return await new Promise<StoredHandleRecord | null>((resolve) => {
+      const tx = db.transaction(STORE_HANDLES, 'readonly');
+      const req = tx.objectStore(STORE_HANDLES).get(BACKUP_SINK_HANDLE_KEY);
+      req.onsuccess = () => {
+        db.close();
+        const res = req.result as StoredHandleRecord | undefined;
+        resolve(res?.handle ? res : null);
+      };
+      req.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function queryHandleReadWritePermission(
+  handle: any
+): Promise<'granted' | 'prompt' | 'denied'> {
+  if (!handle) return 'denied';
+  if (typeof handle.queryPermission === 'function') {
+    try {
+      const res = await handle.queryPermission({ mode: 'readwrite' });
+      if (res === 'granted' || res === 'prompt' || res === 'denied') return res;
+    } catch {
+      return 'prompt';
+    }
+  }
+  return 'granted';
+}
+
+export async function getPersistedBackupSinkStatus(): Promise<BackupSinkStatus> {
+  const meta = readLocalSinkMeta();
+  const supported = supportsDirectoryPicker() || Boolean(testSinkHandleOverride);
+  if (!supported) {
+    return {
+      supported: false,
+      configured: Boolean(meta),
+      folderName: meta?.folderName ?? null,
+      configuredAtIso: meta?.configuredAtIso ?? null,
+      permissionState: 'unsupported',
+      lastPushAtIso: meta?.lastPushAtIso ?? null,
+      lastPushFileName: meta?.lastPushFileName ?? null,
+      lastPushError: meta?.lastPushError ?? null,
+    };
+  }
+
+  const record = await loadBackupSinkHandleRecord();
+  if (!record?.handle) {
+    return {
+      supported: true,
+      configured: false,
+      folderName: null,
+      configuredAtIso: null,
+      permissionState: 'prompt',
+      lastPushAtIso: meta?.lastPushAtIso ?? null,
+      lastPushFileName: meta?.lastPushFileName ?? null,
+      lastPushError: meta?.lastPushError ?? null,
+    };
+  }
+
+  const permissionState = await queryHandleReadWritePermission(record.handle);
+  return {
+    supported: true,
+    configured: true,
+    folderName: meta?.folderName || record.folderName || String(record.handle.name || 'Sync Folder'),
+    configuredAtIso: meta?.configuredAtIso || record.configuredAtIso,
+    permissionState,
+    lastPushAtIso: meta?.lastPushAtIso ?? null,
+    lastPushFileName: meta?.lastPushFileName ?? null,
+    lastPushError: meta?.lastPushError ?? null,
+  };
+}
+
+export async function configureBackupSinkFolder(): Promise<BackupSinkStatus> {
+  const picker = (
+    window as unknown as {
+      showDirectoryPicker?: (opts?: { id?: string; mode?: 'read' | 'readwrite' }) => Promise<any>;
+    }
+  ).showDirectoryPicker;
+  if (!picker) {
+    throw new Error(
+      'Persisted folder sync is not supported in this browser. Use Chrome/Edge/Android Chromium or export manual backups regularly.'
+    );
+  }
+  const handle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
+  if (typeof handle.requestPermission === 'function') {
+    const state = await handle.requestPermission({ mode: 'readwrite' });
+    if (state !== 'granted') {
+      throw new Error('Read/write folder permission was not granted.');
+    }
+  }
+  await saveBackupSinkHandleToIdb(handle, String(handle.name || 'Backup Sink Folder'));
+  return getPersistedBackupSinkStatus();
+}
+
+export async function reauthorizeBackupSinkFolder(): Promise<BackupSinkStatus> {
+  const record = await loadBackupSinkHandleRecord();
+  if (!record?.handle) {
+    return configureBackupSinkFolder();
+  }
+  if (typeof record.handle.requestPermission === 'function') {
+    await record.handle.requestPermission({ mode: 'readwrite' });
+  }
+  return getPersistedBackupSinkStatus();
+}
+
+export async function disconnectBackupSinkFolder(): Promise<BackupSinkStatus> {
+  writeLocalSinkMeta(null);
+  if (typeof indexedDB !== 'undefined') {
+    try {
+      const db = await openSyncIdb();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(STORE_HANDLES, 'readwrite');
+        tx.objectStore(STORE_HANDLES).delete(BACKUP_SINK_HANDLE_KEY);
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      });
+    } catch {
+      // Ignore
+    }
+  }
+  return getPersistedBackupSinkStatus();
+}
+
+/**
+ * Silently pushes an expiring or archival backup file to the user's connected local/synced folder sink
+ * (`<SyncFolder>/pedigree-vault-archive/<fileName>`) BEFORE local OPFS retention deletes it.
+ * Never triggers interactive permission prompts in the background.
+ */
+export async function pushBackupPayloadToSinkFolder(
+  fileName: string,
+  data: Uint8Array | Blob | string
+): Promise<{
+  ok: boolean;
+  skippedReason?: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed';
+  error?: string;
+}> {
+  const supported = supportsDirectoryPicker() || Boolean(testSinkHandleOverride);
+  if (!supported) {
+    return { ok: false, skippedReason: 'unsupported' };
+  }
+  const record = await loadBackupSinkHandleRecord();
+  if (!record?.handle) {
+    return { ok: false, skippedReason: 'not_configured' };
+  }
+  const perm = await queryHandleReadWritePermission(record.handle);
+  if (perm !== 'granted') {
+    const prev = readLocalSinkMeta();
+    if (prev) {
+      writeLocalSinkMeta({
+        ...prev,
+        lastPushError: 'Folder permission needs re-authorization before background offload.',
+      });
+    }
+    return { ok: false, skippedReason: 'permission_required' };
+  }
+
+  try {
+    const archiveDir =
+      typeof record.handle.getDirectoryHandle === 'function'
+        ? await record.handle.getDirectoryHandle(BACKUP_SINK_ARCHIVE_SUBDIR, { create: true })
+        : record.handle;
+    const fh = await archiveDir.getFileHandle(fileName, { create: true });
+    const writable = await fh.createWritable();
+    try {
+      await writable.write(data);
+    } finally {
+      await writable.close();
+    }
+    const prev = readLocalSinkMeta();
+    writeLocalSinkMeta({
+      folderName: prev?.folderName || record.folderName || 'Backup Sink Folder',
+      configuredAtIso: prev?.configuredAtIso || record.configuredAtIso,
+      lastPushAtIso: nowIsoUtc(),
+      lastPushFileName: fileName,
+      lastPushError: null,
+    });
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Folder write failed';
+    const prev = readLocalSinkMeta();
+    if (prev) {
+      writeLocalSinkMeta({
+        ...prev,
+        lastPushError: msg,
+      });
+    }
+    return { ok: false, skippedReason: 'write_failed', error: msg };
+  }
+}
+
 /**
  * Option B: Syncs local `delta_<device_id>.json` and master backup directly with a user-chosen
  * local folder (e.g., SyncThing folder on Android or Desktop Chrome/Edge) while reading all peer `delta_*.json`.
+ * Also persists the folder handle as the pre-prune Backup Sink Folder.
  */
 export async function syncWithPickedDirectory(params: {
   deviceId: string;
@@ -338,14 +656,15 @@ export async function syncWithPickedDirectory(params: {
 }> {
   const picker = (
     window as unknown as {
-      showDirectoryPicker?: (opts?: { mode?: 'read' | 'readwrite' }) => Promise<any>;
+      showDirectoryPicker?: (opts?: { id?: string; mode?: 'read' | 'readwrite' }) => Promise<any>;
     }
   ).showDirectoryPicker;
   if (!picker) {
     throw new Error('Folder Sync API is not supported in this browser. Use Web Share or manual delta export instead.');
   }
 
-  const dirHandle = await picker({ mode: 'readwrite' });
+  const dirHandle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
+  await saveBackupSinkHandleToIdb(dirHandle, String(dirHandle.name || 'Sync Folder'));
   const incomingOps: SyncOperation[] = [];
   let peerFilesRead = 0;
 
@@ -379,16 +698,22 @@ export async function syncWithPickedDirectory(params: {
   );
   const deltaHandle = await dirHandle.getFileHandle(deltaFilename, { create: true });
   const deltaWritable = await deltaHandle.createWritable();
-  await deltaWritable.write(deltaPayload);
-  await deltaWritable.close();
+  try {
+    await deltaWritable.write(deltaPayload);
+  } finally {
+    await deltaWritable.close();
+  }
 
   // Also refresh local master JSON in the sync folder for full snapshot redundancy
   const masterHandle = await dirHandle.getFileHandle('pedigree_master_backup.json', {
     create: true,
   });
   const masterWritable = await masterHandle.createWritable();
-  await masterWritable.write(params.masterBackupJson);
-  await masterWritable.close();
+  try {
+    await masterWritable.write(params.masterBackupJson);
+  } finally {
+    await masterWritable.close();
+  }
 
   return {
     folderName: String(dirHandle.name || 'Sync Folder'),

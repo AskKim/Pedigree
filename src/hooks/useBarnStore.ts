@@ -126,10 +126,15 @@ import {
   allocateNextLogicalCounter,
   appendSyncConflictsToIdb,
   appendSyncOperationsToIdb,
+  BackupSinkStatus,
   buildDeltaFilePayload,
+  configureBackupSinkFolder,
+  disconnectBackupSinkFolder,
   getOrCreateLocalDeviceId,
+  getPersistedBackupSinkStatus,
   loadAllSyncConflictsFromIdb,
   loadAllSyncOperationsFromIdb,
+  reauthorizeBackupSinkFolder,
   replaceSyncOperationsInIdb,
   saveSyncConflictInIdb,
 } from '../storage/localSyncChannels';
@@ -165,18 +170,23 @@ import {
   saveRollingSnapshotBackup,
   StorageProtectionStatus,
 } from '../storage/storageProtection';
+import { detectCurrentDeviceCapability } from '../storage/deviceCapabilityDetector';
 import {
+  clearOpfsPruneSinkWarning,
   clearPriorUseSentinel,
   deleteOpfsHerdArchive,
   deleteOpfsVaultBackup,
+  flushOpfsBackupsToSinkFolder,
   isOpfsSupported,
   listOpfsHerdArchives,
   listOpfsVaultBackups,
   loadOpfsHerdArchive,
   loadOpfsVaultBackup,
   markPriorUseSentinelFromSnapshot,
-  readOpfsHerdArchiveRawBytes,
-  readOpfsVaultBackupRawJson,
+  OpfsPruneSinkWarning,
+  readOpfsHerdArchiveBlob,
+  readOpfsPruneSinkWarning,
+  readOpfsVaultBackupBlob,
   runOpfsExportCanary,
   saveOpfsHerdArchive,
   saveOpfsVaultBackup,
@@ -197,10 +207,18 @@ import {
 } from '../utils/googleCalendarClient';
 import {
   downloadBinaryFile,
+  downloadBlobDirect,
   downloadTextFile,
   shareTextFileOrDownload,
 } from '../utils/webFileActions';
 import type { PendingGoogleCalendarSync } from '../components/CalendarIntegrationModals';
+
+function getPhotoCacheBudgetForTier(tier: number): { maxEntries: number; maxBytes: number } {
+  if (tier <= 1) return { maxEntries: 6, maxBytes: 2 * 1024 * 1024 };
+  if (tier === 2) return { maxEntries: 10, maxBytes: 4 * 1024 * 1024 };
+  if (tier === 3) return { maxEntries: 16, maxBytes: 8 * 1024 * 1024 };
+  return { maxEntries: 24, maxBytes: 16 * 1024 * 1024 };
+}
 
 export type WorkspaceRoute =
   | 'home'
@@ -240,11 +258,27 @@ export function useBarnStore() {
   if (!adapterRef.current) {
     adapterRef.current = new WebSqliteAdapter();
   }
-  const photoCacheRef = useRef<BoundedPhotoDataCache>(new BoundedPhotoDataCache(18));
+  const [initialPhotoCache] = useState<BoundedPhotoDataCache>(() => {
+    const cap = detectCurrentDeviceCapability();
+    const budget = getPhotoCacheBudgetForTier(cap.tier);
+    return new BoundedPhotoDataCache(budget.maxEntries, budget.maxBytes);
+  });
+  const photoCacheRef = useRef<BoundedPhotoDataCache>(initialPhotoCache);
+  const snapshotRef = useRef<BarnDatabaseSnapshot | null>(null);
+  const backgroundMaintenanceInFlightRef = useRef<boolean>(false);
+  const offloadAnimalsRef = useRef<
+    ((animalIds: string[]) => Promise<{
+      archivedCount: number;
+      stubCount: number;
+      removedCount: number;
+      fileName: string;
+    } | null>) | null
+  >(null);
 
   const [deviceId] = useState<string>(() => getOrCreateLocalDeviceId());
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [snapshot, setSnapshot] = useState<BarnDatabaseSnapshot | null>(null);
+  snapshotRef.current = snapshot;
   const [route, setRoute] = useState<WorkspaceRoute>('home');
   const [activeSpeciesName, setActiveSpeciesName] = useState<string>('Rabbit');
   const [selectedAnimalId, setSelectedAnimalId] = useState<string | null>(null);
@@ -292,6 +326,10 @@ export function useBarnStore() {
   const [wipedRecoveryContext, setWipedRecoveryContext] =
     useState<WipedStorageRecoveryContext | null>(null);
   const [exportCanaryWarning, setExportCanaryWarning] = useState<string | null>(null);
+  const [backupSinkStatus, setBackupSinkStatus] = useState<BackupSinkStatus | null>(null);
+  const [pruneSinkWarning, setPruneSinkWarning] = useState<OpfsPruneSinkWarning | null>(() =>
+    readOpfsPruneSinkWarning()
+  );
 
   const notify = useCallback((msg: string) => {
     setErrorMessage(null);
@@ -334,14 +372,17 @@ export function useBarnStore() {
   }, []);
 
   const refreshVaultAndArchives = useCallback(async () => {
-    const [opfsRes, rollingRes, archivesRes] = await Promise.allSettled([
+    const [opfsRes, rollingRes, archivesRes, sinkRes] = await Promise.allSettled([
       listOpfsVaultBackups(),
       listRollingSnapshotBackups(),
       listOpfsHerdArchives(),
+      getPersistedBackupSinkStatus(),
     ]);
     if (opfsRes.status === 'fulfilled') setOpfsVaultBackups(opfsRes.value);
     if (rollingRes.status === 'fulfilled') setRollingBackups(rollingRes.value);
     if (archivesRes.status === 'fulfilled') setArchivedHerdBundles(archivesRes.value);
+    if (sinkRes.status === 'fulfilled') setBackupSinkStatus(sinkRes.value);
+    setPruneSinkWarning(readOpfsPruneSinkWarning());
   }, []);
 
   const triggerPersistentStorageRequest = useCallback(async () => {
@@ -799,16 +840,17 @@ export function useBarnStore() {
   const loadAnimalPhotoDataUrl = useCallback(
     async (photoId: string): Promise<string | null> => {
       if (!photoId) return null;
-      const cached = photoCacheRef.current.get(photoId);
+      const cache = photoCacheRef.current!;
+      const cached = cache.get(photoId);
       if (cached) return cached;
       const inState = (snapshot?.animalPhotos ?? []).find((p) => p.id === photoId);
       if (inState?.dataUrl) {
-        photoCacheRef.current.set(photoId, inState.dataUrl);
+        cache.set(photoId, inState.dataUrl);
         return inState.dataUrl;
       }
       const fetched = await adapterRef.current?.loadAnimalPhotoDataUrl?.(photoId);
       if (fetched) {
-        photoCacheRef.current.set(photoId, fetched);
+        cache.set(photoId, fetched);
         return fetched;
       }
       return inState?.thumbnailDataUrl || null;
@@ -821,7 +863,7 @@ export function useBarnStore() {
       targetSnapshot?: BarnDatabaseSnapshot,
       filterSpecies?: string
     ): Promise<BarnDatabaseSnapshot> => {
-      const base = targetSnapshot ?? snapshot;
+      const base = targetSnapshot ?? snapshotRef.current;
       if (!base) {
         throw new Error('Local database is not loaded yet.');
       }
@@ -830,10 +872,10 @@ export function useBarnStore() {
         async (ids) =>
           (await adapterRef.current?.loadAnimalPhotoDataUrlsBatch?.(ids)) ?? {},
         filterSpecies,
-        photoCacheRef.current
+        photoCacheRef.current ?? undefined
       );
     },
-    [snapshot]
+    []
   );
 
   const saveSafetyRollingBackup = useCallback(
@@ -866,9 +908,24 @@ export function useBarnStore() {
     markPriorUseSentinelFromSnapshot(snapshot);
   }, [snapshot, isLoading, wipedRecoveryContext]);
 
+  // Trim cached full-res photos whenever the browser tab moves to the background
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibilityTrim = () => {
+      if (document.visibilityState === 'hidden') {
+        photoCacheRef.current?.clear();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityTrim);
+    return () => document.removeEventListener('visibilitychange', onVisibilityTrim);
+  }, []);
+
+  const hasSnapshotReady = Boolean(snapshot);
+  const wipedRecoveryDetected = Boolean(wipedRecoveryContext?.detected);
+
   // Idle Monthly OPFS Auto-Backup & Export Canary (visibilityState-guarded, zero foreground contention)
   useEffect(() => {
-    if (isLoading || !snapshot || wipedRecoveryContext?.detected || !isOpfsSupported()) {
+    if (isLoading || !hasSnapshotReady || wipedRecoveryDetected || !isOpfsSupported()) {
       return;
     }
 
@@ -877,40 +934,48 @@ export function useBarnStore() {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
     const runBackgroundMaintenance = async () => {
-      if (cancelled) return;
+      if (cancelled || backgroundMaintenanceInFlightRef.current) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const currentSnapshot = snapshotRef.current;
+      if (!currentSnapshot) return;
 
+      backgroundMaintenanceInFlightRef.current = true;
       try {
-        if (snapshot.animals.length > 0 && hasNonTestingBarnData(snapshot)) {
-          if (await shouldCreateMonthlyOpfsBackup()) {
-            const hydrated = await hydrateSnapshotForExport(snapshot);
-            const saved = await saveOpfsVaultBackup(hydrated, {
-              kind: 'monthly',
-              note: 'Scheduled 30-day automatic backup',
-            });
-            if (saved && !cancelled) {
-              void refreshVaultAndArchives();
+        try {
+          if (currentSnapshot.animals.length > 0 && hasNonTestingBarnData(currentSnapshot)) {
+            if (await shouldCreateMonthlyOpfsBackup()) {
+              const hydrated = await hydrateSnapshotForExport(currentSnapshot);
+              const saved = await saveOpfsVaultBackup(hydrated, {
+                kind: 'monthly',
+                note: 'Scheduled 30-day automatic backup',
+              });
+              if (saved && !cancelled) {
+                void refreshVaultAndArchives();
+              }
             }
           }
+        } catch {
+          // Non-fatal background monthly backup check
         }
-      } catch {
-        // Non-fatal background monthly backup check
-      }
 
-      if (cancelled) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        if (cancelled) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
 
-      try {
-        if (shouldRunExportCanary()) {
-          const res = await runOpfsExportCanary(snapshot);
-          if (!res.ok && !cancelled) {
-            setExportCanaryWarning(
-              res.reason || 'Background export canary verification could not read back probe.'
-            );
+        try {
+          if (shouldRunExportCanary()) {
+            const latestSnap = snapshotRef.current ?? currentSnapshot;
+            const res = await runOpfsExportCanary(latestSnap);
+            if (!res.ok && !cancelled) {
+              setExportCanaryWarning(
+                res.reason || 'Background export canary verification could not read back probe.'
+              );
+            }
           }
+        } catch {
+          // Non-fatal canary probe check
         }
-      } catch {
-        // Non-fatal canary probe check
+      } finally {
+        backgroundMaintenanceInFlightRef.current = false;
       }
     };
 
@@ -966,8 +1031,8 @@ export function useBarnStore() {
     };
   }, [
     isLoading,
-    snapshot,
-    wipedRecoveryContext,
+    hasSnapshotReady,
+    wipedRecoveryDetected,
     hydrateSnapshotForExport,
     refreshVaultAndArchives,
   ]);
@@ -993,7 +1058,7 @@ export function useBarnStore() {
         if (patch.defaultGenerations) {
           setPedigreeGenerations(patch.defaultGenerations);
         }
-        await reloadFromAdapter();
+        setSnapshot((prev) => (prev ? { ...prev, settings: updated } : prev));
         if (!options?.silent) {
           notify('Barn preferences saved locally.');
         }
@@ -1001,7 +1066,7 @@ export function useBarnStore() {
         reportPersistenceFailure('save barn preferences', err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [snapshot, deviceId, recordOutboxOps, notify, reportPersistenceFailure]
   );
 
   const ignoreTaskAlertsPermanently = useCallback(
@@ -1706,6 +1771,16 @@ export function useBarnStore() {
           await adapterRef.current!.saveAnimalsBatch(updatedBatch);
         }
         await recordOutboxOps(ops);
+        const autoOffloadIds =
+          archived && snapshot.settings.autoOffloadRetiredToOpfs && isOpfsSupported()
+            ? updatedBatch
+                .filter((a) => a.status === 'Sold' || a.status === 'Deceased')
+                .map((a) => a.id)
+            : [];
+        if (autoOffloadIds.length > 0 && offloadAnimalsRef.current) {
+          const offloaded = await offloadAnimalsRef.current(autoOffloadIds);
+          if (offloaded) return;
+        }
         await reloadFromAdapter();
         notify(
           archived
@@ -3394,7 +3469,7 @@ export function useBarnStore() {
         if (snapshot && !wipedRecoveryContext?.detected && snapshot.animals.length > 0) {
           await saveSafetyRollingBackup(snapshot, 'Pre-vault-restore safety snapshot');
         }
-        photoCacheRef.current.clear();
+        photoCacheRef.current?.clear();
         await adapterRef.current!.replaceSnapshot(migrated.snapshot);
         setWipedRecoveryContext(null);
         setActiveSpeciesName(migrated.snapshot.settings.defaultSpecies || 'Rabbit');
@@ -3416,14 +3491,14 @@ export function useBarnStore() {
 
   const downloadOpfsVaultBackupByKey = useCallback(
     async (key: string) => {
-      const jsonText = await readOpfsVaultBackupRawJson(key);
-      if (!jsonText) {
+      const res = await readOpfsVaultBackupBlob(key);
+      if (!res) {
         notify('Could not read OPFS vault backup file for download.');
         return;
       }
       const matched = opfsVaultBackups.find((b) => b.key === key || b.fileName === key);
-      const fileName = matched?.fileName || (key.endsWith('.json') ? key : `${key}.json`);
-      await downloadTextFile(fileName, jsonText, 'application/json');
+      const fileName = matched?.fileName || res.fileName;
+      await downloadBlobDirect(fileName, res.blob);
       notify(`Downloaded ${fileName}.`);
     },
     [opfsVaultBackups, notify]
@@ -3456,7 +3531,7 @@ export function useBarnStore() {
       removedCount: number;
       fileName: string;
     } | null> => {
-      if (!snapshot || animalIds.length === 0) return null;
+      if (animalIds.length === 0) return null;
       if (!isOpfsSupported()) {
         notify(
           'OPFS /archives storage is not available in this browser. Animals remain in the local Archived tab.'
@@ -3464,7 +3539,13 @@ export function useBarnStore() {
         return null;
       }
       try {
-        const hydrated = await hydrateSnapshotForExport(snapshot);
+        // Always load the authoritative fresh snapshot from the adapter so immediate
+        // post-save offloads (before React re-renders) never read stale state.
+        const freshBase = adapterRef.current
+          ? await adapterRef.current.loadSnapshot({ lightweightPhotos: true })
+          : snapshotRef.current;
+        if (!freshBase) return null;
+        const hydrated = await hydrateSnapshotForExport(freshBase);
         const built = buildArchivedAnimalsBundle(hydrated, animalIds);
         if (built.indexEntry.animalCount === 0) {
           notify('No eligible active/archived animals selected to offload.');
@@ -3472,7 +3553,7 @@ export function useBarnStore() {
         }
         await saveOpfsHerdArchive(built.indexEntry, built.zipBytes);
         await adapterRef.current!.replaceSnapshot(built.nextActiveSnapshot);
-        photoCacheRef.current.clear();
+        photoCacheRef.current?.clear();
 
         const removedSet = new Set(built.removedAnimalIds);
         if (selectedAnimalId && removedSet.has(selectedAnimalId)) setSelectedAnimalId(null);
@@ -3493,27 +3574,108 @@ export function useBarnStore() {
         return null;
       }
     },
-    [snapshot, hydrateSnapshotForExport, selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify, reportPersistenceFailure]
+    [hydrateSnapshotForExport, selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify, reportPersistenceFailure]
   );
+  offloadAnimalsRef.current = offloadAnimalsToOpfsArchive;
+
+  const connectBackupSinkFolder = useCallback(async () => {
+    try {
+      const nextStatus = await configureBackupSinkFolder();
+      const flushRes = await flushOpfsBackupsToSinkFolder();
+      await refreshVaultAndArchives();
+      const syncNote =
+        flushRes.pushed > 0
+          ? ` Synced ${flushRes.pushed} current vault backup(s) into "${nextStatus.folderName}/pedigree-vault-archive".`
+          : '';
+      notify(
+        `Connected Backup Sink folder "${nextStatus.folderName}". Expiring local backups will copy there automatically before pruning.${syncNote}`
+      );
+      return nextStatus;
+    } catch (err) {
+      reportPersistenceFailure('connect Backup Sink folder', err);
+      return null;
+    }
+  }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
+
+  const reauthorizeBackupSinkFolderAction = useCallback(async () => {
+    try {
+      const nextStatus = await reauthorizeBackupSinkFolder();
+      if (nextStatus.permissionState === 'granted') {
+        const flushRes = await flushOpfsBackupsToSinkFolder();
+        await refreshVaultAndArchives();
+        notify(
+          flushRes.pushed > 0
+            ? `Re-authorized "${nextStatus.folderName}" and synced ${flushRes.pushed} vault backup(s).`
+            : `Re-authorized "${nextStatus.folderName}" for pre-prune vault offload.`
+        );
+      } else {
+        await refreshVaultAndArchives();
+        notify('Folder permission was not granted.');
+      }
+      return nextStatus;
+    } catch (err) {
+      reportPersistenceFailure('re-authorize Backup Sink folder', err);
+      return null;
+    }
+  }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
+
+  const disconnectBackupSinkFolderAction = useCallback(async () => {
+    try {
+      const nextStatus = await disconnectBackupSinkFolder();
+      setBackupSinkStatus(nextStatus);
+      notify('Disconnected Backup Sink folder.');
+    } catch (err) {
+      reportPersistenceFailure('disconnect Backup Sink folder', err);
+    }
+  }, [notify, reportPersistenceFailure]);
+
+  const syncVaultBackupsToSinkNow = useCallback(async () => {
+    try {
+      const res = await flushOpfsBackupsToSinkFolder();
+      await refreshVaultAndArchives();
+      if (res.pushed > 0) {
+        notify(`Synced ${res.pushed} vault backup(s) to connected Backup Sink folder.`);
+      } else if (res.skippedReason === 'permission_required') {
+        notify('Backup Sink folder needs re-authorization before syncing.');
+      } else if (res.skippedReason === 'not_configured') {
+        notify('Connect a Backup Sink folder first.');
+      } else {
+        notify('Vault backups are already empty or up to date.');
+      }
+      return res;
+    } catch (err) {
+      reportPersistenceFailure('sync vault backups to folder', err);
+      return { pushed: 0, failed: 0 };
+    }
+  }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
+
+  const dismissPruneSinkWarning = useCallback(() => {
+    clearOpfsPruneSinkWarning();
+    setPruneSinkWarning(null);
+  }, []);
 
   const restoreArchivedHerdBundle = useCallback(
     async (
       archiveKey: string,
       options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
     ) => {
-      if (!snapshot) return;
+      const freshBase = adapterRef.current
+        ? await adapterRef.current.loadSnapshot({ lightweightPhotos: true })
+        : snapshotRef.current;
+      if (!freshBase) return;
       try {
-        const loaded = await loadOpfsHerdArchive(archiveKey, snapshot.settings);
+        const loaded = await loadOpfsHerdArchive(archiveKey, freshBase.settings);
         if (!loaded) {
           notify('Archived herd bundle could not be loaded or verified.');
           return;
         }
-        const merged = mergeRestoredArchiveIntoSnapshot(snapshot, loaded.unpacked, options);
+        const merged = mergeRestoredArchiveIntoSnapshot(freshBase, loaded.unpacked, options);
         await adapterRef.current!.replaceSnapshot(merged.nextSnapshot);
         if (options?.deleteArchiveAfterRestore !== false) {
           await deleteOpfsHerdArchive(archiveKey);
         }
-        photoCacheRef.current.clear();
+        photoCacheRef.current?.clear();
+        setWipedRecoveryContext(null);
         await reloadFromAdapter();
         notify(
           `Restored ${merged.restoredAnimalCount} animal(s), ${merged.restoredPhotoCount} photo(s), and ${merged.restoredCareLogCount} care log(s) from OPFS /archives.`
@@ -3523,17 +3685,17 @@ export function useBarnStore() {
         throw err;
       }
     },
-    [snapshot, reloadFromAdapter, notify, reportPersistenceFailure]
+    [reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const downloadArchivedHerdBundle = useCallback(
     async (archiveKey: string) => {
-      const res = await readOpfsHerdArchiveRawBytes(archiveKey);
+      const res = await readOpfsHerdArchiveBlob(archiveKey);
       if (!res) {
         notify('Archived bundle file not found in OPFS /archives.');
         return;
       }
-      await downloadBinaryFile(res.fileName, res.bytes, 'application/zip');
+      await downloadBlobDirect(res.fileName, res.blob);
       notify(`Downloaded ${res.fileName}.`);
     },
     [notify]
@@ -3542,8 +3704,9 @@ export function useBarnStore() {
   const deleteArchivedHerdBundle = useCallback(
     async (archiveKey: string) => {
       await deleteOpfsHerdArchive(archiveKey);
-      if (snapshot) {
-        const staleStubs = snapshot.animals
+      const currentSnap = snapshotRef.current;
+      if (currentSnap) {
+        const staleStubs = currentSnap.animals
           .filter((a) => a.offloadedArchiveKey === archiveKey)
           .map((a) => ({
             ...a,
@@ -3558,7 +3721,7 @@ export function useBarnStore() {
       await reloadFromAdapter();
       notify('Deleted archive bundle from OPFS /archives.');
     },
-    [snapshot, reloadFromAdapter, notify]
+    [reloadFromAdapter, notify]
   );
 
   const restoreLatestOpfsOnWipedRecovery = useCallback(async () => {
@@ -3576,7 +3739,7 @@ export function useBarnStore() {
 
   const startFreshAfterWipedRecovery = useCallback(async () => {
     clearPriorUseSentinel();
-    photoCacheRef.current.clear();
+    photoCacheRef.current?.clear();
     const adapter = adapterRef.current!;
     const fresh = adapter.rebuildCleanDatabase
       ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true, allowSeedFresh: true })
@@ -3890,6 +4053,13 @@ export function useBarnStore() {
     startFreshAfterWipedRecovery,
     exportCanaryWarning,
     dismissExportCanaryWarning: () => setExportCanaryWarning(null),
+    backupSinkStatus,
+    pruneSinkWarning,
+    connectBackupSinkFolder,
+    reauthorizeBackupSinkFolder: reauthorizeBackupSinkFolderAction,
+    disconnectBackupSinkFolder: disconnectBackupSinkFolderAction,
+    syncVaultBackupsToSinkNow,
+    dismissPruneSinkWarning,
     syncOperations,
     syncConflicts,
     buildLocalDeltaJsonPayload,

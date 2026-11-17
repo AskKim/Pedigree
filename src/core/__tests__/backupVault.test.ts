@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   buildArchivedAnimalsBundle,
@@ -10,8 +11,12 @@ import {
   buildVaultBackupEnvelope,
   computePedigreeReferencedIds,
   CURRENT_BACKUP_SCHEMA_VERSION,
+  deserializeVaultBackupPayload,
+  extractArchiveIndexMetadataOnly,
+  isZipMagicBytes,
   mergeRestoredArchiveIntoSnapshot,
   migrateAndValidateBackupEnvelope,
+  serializeCompressedVaultBackupZip,
   serializeVaultBackupEnvelope,
   sha256HexPure,
   unpackArchivedAnimalBundle,
@@ -187,6 +192,16 @@ describe('backupVault envelopes, schema migration & root validation', () => {
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
     );
 
+    for (const len of [0, 1, 55, 56, 63, 64, 65, 119, 120, 128, 250]) {
+      const payload = 'a'.repeat(len);
+      const expectedHex = createHash('sha256').update(payload, 'utf8').digest('hex');
+      expect(sha256HexPure(payload)).toBe(expectedHex);
+    }
+    const unicodeSample = '🐇 Barn #1 — Pedigree UTF-8 Block Boundary Check '.repeat(5);
+    expect(sha256HexPure(unicodeSample)).toBe(
+      createHash('sha256').update(unicodeSample, 'utf8').digest('hex')
+    );
+
     const restored = migrateAndValidateBackupEnvelope(jsonText, snap.settings);
     expect(restored.schemaVersion).toBe(CURRENT_BACKUP_SCHEMA_VERSION);
     expect(restored.migratedFromVersion).toBe(CURRENT_BACKUP_SCHEMA_VERSION);
@@ -254,6 +269,43 @@ describe('backupVault envelopes, schema migration & root validation', () => {
     expect(migrated.checksumValid).toBeNull();
     expect(migrated.snapshot.settings.barnName).toBe('Legacy Barn');
     expect(migrated.snapshot.animals[0].offloadedArchiveKey).toBe('arch-legacy-1');
+  });
+
+  it('compresses vault envelopes into .vault.zip and deserializes both .vault.zip and legacy .json', () => {
+    const snap = makeRichSnapshot();
+    const { envelope, zipBytes } = serializeCompressedVaultBackupZip(snap, {
+      kind: 'manual',
+      note: 'Compressed vault check',
+    });
+    const { jsonText: prettyJson } = serializeVaultBackupEnvelope(snap, {
+      kind: 'manual',
+      note: 'Compressed vault check',
+    });
+
+    expect(isZipMagicBytes(zipBytes)).toBe(true);
+    expect(zipBytes.byteLength).toBeLessThan(prettyJson.length);
+    expect(envelope.checksumSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const fromZip = deserializeVaultBackupPayload(zipBytes, snap.settings, 'manual-vault.vault.zip');
+    expect(fromZip.checksumValid).toBe(true);
+    expect(fromZip.snapshot.animals).toHaveLength(3);
+    expect(fromZip.snapshot.settings.barnName).toBe('Cedar Ridge Barn');
+
+    const fromLegacyJson = deserializeVaultBackupPayload(
+      prettyJson,
+      snap.settings,
+      'manual-vault.json'
+    );
+    expect(fromLegacyJson.checksumValid).toBe(true);
+    expect(fromLegacyJson.snapshot.animals).toHaveLength(3);
+
+    expect(() =>
+      deserializeVaultBackupPayload(
+        new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00]),
+        snap.settings,
+        'corrupt.vault.zip'
+      )
+    ).toThrow();
   });
 });
 
@@ -324,5 +376,12 @@ describe('Archived Herds bundle offload, Pedigree Stub preservation & restore', 
     expect(restoredSire.archived).toBe(false);
     expect(merged.nextSnapshot.animalPhotos).toHaveLength(2);
     expect(merged.nextSnapshot.careLogs).toHaveLength(2);
+
+    const rebuiltMeta = extractArchiveIndexMetadataOnly(built.zipBytes, built.fileName);
+    expect(rebuiltMeta.archiveKey).toBe(built.indexEntry.archiveKey);
+    expect(rebuiltMeta.animalCount).toBe(2);
+    expect(rebuiltMeta.photoCount).toBe(2);
+    expect(rebuiltMeta.careLogCount).toBe(1);
+    expect(rebuiltMeta.checksumSha256).toBe(built.indexEntry.checksumSha256);
   });
 });

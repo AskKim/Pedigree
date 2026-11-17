@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Browser Hardware Signal Collector, Per-Device Dismissal State & React Hook
+ * Browser Hardware & Feature Signal Collector, Per-Device Dismissal State & React Hook
  * (`src/storage/deviceCapabilityDetector.ts`).
  *
  * Dismissal state is stored strictly in per-device `localStorage` (not inside the
@@ -12,11 +12,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  assessBrowserCompatibility,
+  BrowserCompatibilityAssessment,
+  BrowserFeatureSignals,
   classifyDeviceCapability,
   DeviceCapabilityAssessment,
   DeviceHardwareSignals,
 } from '../core/deviceCapability';
 import { logDiagnosticEvent } from './crashLogger';
+import { isArchiveWorkerDisabled } from './offThreadWorkerClient';
 
 const HOME_DISMISSED_KEY = 'pedigree.deviceCapability.homeDismissed.v1';
 const SETTINGS_DISMISSED_KEY = 'pedigree.deviceCapability.settingsDismissed.v1';
@@ -31,6 +35,29 @@ interface PerformanceWithMemory extends Performance {
 
 interface NavigatorWithDeviceMemory extends Navigator {
   deviceMemory?: number;
+}
+
+let cachedWebpEncodeSupported: boolean | null = null;
+
+function probeWebpEncodeSupport(): boolean {
+  if (cachedWebpEncodeSupported !== null) return cachedWebpEncodeSupported;
+  if (typeof document === 'undefined') {
+    return true;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    if (typeof canvas.toDataURL !== 'function') {
+      cachedWebpEncodeSupported = false;
+      return false;
+    }
+    const url = canvas.toDataURL('image/webp');
+    cachedWebpEncodeSupported = typeof url === 'string' && url.indexOf('data:image/webp') === 0;
+  } catch {
+    cachedWebpEncodeSupported = false;
+  }
+  return cachedWebpEncodeSupported;
 }
 
 export function readBrowserHardwareSignals(): DeviceHardwareSignals {
@@ -127,8 +154,100 @@ export function readBrowserHardwareSignals(): DeviceHardwareSignals {
   };
 }
 
+export function readBrowserFeatureSignals(): BrowserFeatureSignals {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      userAgent: '',
+      promiseSupported: true,
+      indexedDbSupported: true,
+      wasmSupported: true,
+      moduleWorkerSupported: true,
+      opfsSupported: true,
+      directoryPickerSupported: true,
+      persistStorageSupported: true,
+      clipboardWriteSupported: true,
+      webShareFilesSupported: true,
+      webpEncodeSupported: true,
+      createImageBitmapSupported: true,
+      workerRuntimeDisabled: false,
+    };
+  }
+
+  let indexedDbSupported = false;
+  try {
+    indexedDbSupported = 'indexedDB' in window && Boolean(window.indexedDB);
+  } catch {
+    indexedDbSupported = false;
+  }
+
+  let wasmSupported = false;
+  try {
+    wasmSupported =
+      typeof WebAssembly === 'object' &&
+      WebAssembly !== null &&
+      typeof WebAssembly.instantiate === 'function';
+  } catch {
+    wasmSupported = false;
+  }
+
+  const storageObj = (navigator as Navigator & { storage?: StorageManager }).storage;
+
+  const opfsSupported =
+    typeof storageObj !== 'undefined' &&
+    storageObj !== null &&
+    typeof storageObj.getDirectory === 'function';
+
+  const persistStorageSupported =
+    typeof storageObj !== 'undefined' &&
+    storageObj !== null &&
+    typeof storageObj.persist === 'function';
+
+  let directoryPickerSupported = false;
+  try {
+    directoryPickerSupported =
+      'showDirectoryPicker' in window &&
+      typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker ===
+        'function';
+  } catch {
+    directoryPickerSupported = false;
+  }
+
+  const clipboardWriteSupported =
+    typeof navigator.clipboard !== 'undefined' &&
+    navigator.clipboard !== null &&
+    typeof navigator.clipboard.writeText === 'function';
+
+  const webShareFilesSupported =
+    typeof navigator.share === 'function' && typeof navigator.canShare === 'function';
+
+  const workerDisabled = isArchiveWorkerDisabled();
+
+  return {
+    userAgent: navigator.userAgent || '',
+    promiseSupported: typeof Promise === 'function',
+    indexedDbSupported,
+    wasmSupported,
+    moduleWorkerSupported: typeof Worker === 'function',
+    opfsSupported,
+    directoryPickerSupported,
+    persistStorageSupported,
+    clipboardWriteSupported,
+    webShareFilesSupported,
+    webpEncodeSupported: probeWebpEncodeSupport(),
+    createImageBitmapSupported: typeof createImageBitmap === 'function',
+    workerRuntimeDisabled: workerDisabled,
+  };
+}
+
 export function detectCurrentDeviceCapability(): DeviceCapabilityAssessment {
   return classifyDeviceCapability(readBrowserHardwareSignals());
+}
+
+export function detectCurrentBrowserCompatibility(
+  assessment?: DeviceCapabilityAssessment
+): BrowserCompatibilityAssessment {
+  const resolved = assessment ?? detectCurrentDeviceCapability();
+  return assessBrowserCompatibility(readBrowserFeatureSignals(), resolved.tier);
 }
 
 function readLocalFlag(key: string): boolean {
@@ -155,6 +274,7 @@ function writeLocalFlag(key: string, value: boolean): void {
 
 export interface DeviceCapabilityController {
   assessment: DeviceCapabilityAssessment;
+  browserCompatibility: BrowserCompatibilityAssessment;
   homeDismissed: boolean;
   settingsDismissed: boolean;
   homeVisible: boolean;
@@ -172,6 +292,9 @@ export function useDeviceCapability(): DeviceCapabilityController {
   const [assessment, setAssessment] = useState<DeviceCapabilityAssessment>(() =>
     detectCurrentDeviceCapability()
   );
+  const [browserCompatibility, setBrowserCompatibility] = useState<BrowserCompatibilityAssessment>(
+    () => detectCurrentBrowserCompatibility(assessment)
+  );
   const [homeDismissedRaw, setHomeDismissedRaw] = useState<boolean>(() =>
     readLocalFlag(HOME_DISMISSED_KEY)
   );
@@ -185,9 +308,11 @@ export function useDeviceCapability(): DeviceCapabilityController {
     if (loggedInitialRef.current) return;
     loggedInitialRef.current = true;
     logDiagnosticEvent({
-      level: assessment.tier === 1 ? 'warn' : 'info',
+      level: assessment.tier === 1 || browserCompatibility.isOutdatedBrowser ? 'warn' : 'info',
       category: assessment.shouldApplyLowMemoryHandling ? 'memory' : 'lifecycle',
-      message: `Device capability detected: ${assessment.definition.shortLabel} (${assessment.signalSummary})`,
+      message: `Device capability detected: ${assessment.definition.shortLabel} (${assessment.signalSummary})${
+        browserCompatibility.wasmFallbackActive ? ' · WebAssembly unavailable (JSON fallback)' : ''
+      }${browserCompatibility.isOutdatedBrowser ? ' · Older browser engine detected' : ''}`,
       details: {
         tier: assessment.tier,
         formFactor: assessment.formFactor,
@@ -195,9 +320,13 @@ export function useDeviceCapability(): DeviceCapabilityController {
         deviceMemoryGb: assessment.signals.deviceMemoryGb,
         hardwareConcurrency: assessment.signals.hardwareConcurrency,
         jsHeapLimitBytes: assessment.signals.jsHeapLimitBytes,
+        wasmSupported: browserCompatibility.signals.wasmSupported,
+        opfsSupported: browserCompatibility.signals.opfsSupported,
+        directoryPickerSupported: browserCompatibility.signals.directoryPickerSupported,
+        isOutdatedBrowser: browserCompatibility.isOutdatedBrowser,
       },
     });
-  }, [assessment]);
+  }, [assessment, browserCompatibility]);
 
   const canCloseOnHome = assessment.definition.homeClosable;
   const canCloseInSettings = assessment.definition.settingsClosable;
@@ -232,11 +361,14 @@ export function useDeviceCapability(): DeviceCapabilityController {
   }, []);
 
   const refreshDetection = useCallback(() => {
-    setAssessment(detectCurrentDeviceCapability());
+    const nextAssessment = detectCurrentDeviceCapability();
+    setAssessment(nextAssessment);
+    setBrowserCompatibility(detectCurrentBrowserCompatibility(nextAssessment));
   }, []);
 
   return {
     assessment,
+    browserCompatibility,
     homeDismissed,
     settingsDismissed,
     homeVisible: !homeDismissed,

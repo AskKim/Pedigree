@@ -101,6 +101,7 @@ export default function App() {
   const [showHerdSpeciesPicker, setShowHerdSpeciesPicker] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
+  const [dismissedCompatBanner, setDismissedCompatBanner] = useState(false);
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
 
   const shortcutToastTimerRef = useRef<number | null>(null);
@@ -532,6 +533,56 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Polite WebAssembly-Unavailable / Older Browser Compatibility Notice */}
+        {!dismissedCompatBanner &&
+          (deviceCapability.browserCompatibility.wasmFallbackActive ||
+            /json fallback/i.test(store.engineName) ||
+            deviceCapability.browserCompatibility.isOutdatedBrowser) && (
+            <div
+              role="status"
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                <AlertTriangle
+                  className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                  aria-hidden="true"
+                />
+                <div className="space-y-0.5 min-w-0">
+                  <div className="font-semibold">
+                    {deviceCapability.browserCompatibility.wasmFallbackActive ||
+                    /json fallback/i.test(store.engineName)
+                      ? 'Compatibility Storage Mode Active (IndexedDB JSON)'
+                      : 'Older Browser Compatibility Mode Active'}
+                  </div>
+                  <div className="text-[11px] text-[var(--barn-muted)]">
+                    {deviceCapability.browserCompatibility.wasmFallbackActive ||
+                    /json fallback/i.test(store.engineName)
+                      ? 'WebAssembly is unavailable or blocked in this browser, so your barn data saves safely in IndexedDB JSON mode instead of SQLite. Use Timestamped Backup (.JSON) for full exports.'
+                      : 'You are on an older browser version. Core herd and pedigree tracking remain ready; if large .ZIP exports struggle, use Timestamped Backup (.JSON) instead.'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {route !== 'settings' && (
+                  <button
+                    type="button"
+                    onClick={() => setRoute('settings')}
+                    className="min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                  >
+                    Open Backups &amp; Compatibility
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setDismissedCompatBanner(true)}
+                  className="min-h-[32px] px-2 text-[11px] underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
         {/* Actionable Error / Quota / Persistence Failure Recovery Banner */}
         {store.errorMessage && (
@@ -996,6 +1047,13 @@ export default function App() {
             onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
             onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
             onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
+            backupSinkStatus={store.backupSinkStatus}
+            pruneSinkWarning={store.pruneSinkWarning}
+            onConnectBackupSink={store.connectBackupSinkFolder}
+            onReauthorizeBackupSink={store.reauthorizeBackupSinkFolder}
+            onDisconnectBackupSink={store.disconnectBackupSinkFolder}
+            onSyncVaultToSinkNow={store.syncVaultBackupsToSinkNow}
+            onDismissPruneWarning={store.dismissPruneSinkWarning}
           />
               )}
             </Suspense>
@@ -1055,7 +1113,9 @@ export default function App() {
       {/* Blocking Wiped-Browser-Storage Recovery Gate (IMP-018) */}
       <WipedStorageRecoveryModal
         context={store.wipedRecoveryContext}
+        archivedHerdBundles={store.archivedHerdBundles}
         onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+        onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
         onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
         onImportArchiveReplace={(bytes, fileName) =>
           store.importBackupArchiveBytes(bytes, fileName, 'replace')

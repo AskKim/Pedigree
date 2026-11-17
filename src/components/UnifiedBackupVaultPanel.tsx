@@ -10,16 +10,26 @@
  */
 
 import {
+  AlertTriangle,
   Archive,
   Download,
+  FolderSync,
   HardDrive,
   Plus,
+  RefreshCw,
   RotateCcw,
   Trash2,
+  X,
 } from 'lucide-react';
 import React, { useState } from 'react';
 import { VAULT_KIND_LABELS, VaultBackupMetadata } from '../core/backupVault';
+import {
+  DeviceCapabilityTierNumber,
+  getTierStoragePolicy,
+} from '../core/deviceCapability';
 import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import { BackupSinkStatus } from '../storage/localSyncChannels';
+import { OpfsPruneSinkWarning } from '../storage/opfsStorage';
 import { RollingBackupMeta } from '../storage/storageProtection';
 
 interface UnifiedBackupVaultPanelProps {
@@ -28,6 +38,9 @@ interface UnifiedBackupVaultPanelProps {
   rollingBackups: RollingBackupMeta[];
   archivedBundlesCount: number;
   archivedAnimalsCount: number;
+  deviceTier?: DeviceCapabilityTierNumber;
+  backupSinkStatus?: BackupSinkStatus | null;
+  pruneSinkWarning?: OpfsPruneSinkWarning | null;
   onSaveManualVaultBackup: (note?: string) => Promise<unknown> | void;
   onRestoreOpfsBackup: (key: string) => Promise<void>;
   onDownloadOpfsBackup: (key: string) => Promise<void>;
@@ -35,6 +48,11 @@ interface UnifiedBackupVaultPanelProps {
   onRestoreRollingBackup: (key: string) => Promise<void>;
   onDeleteRollingBackup: (key: string) => Promise<void>;
   onOpenArchivedHerdsModal: () => void;
+  onConnectBackupSink?: () => Promise<unknown>;
+  onReauthorizeBackupSink?: () => Promise<unknown>;
+  onDisconnectBackupSink?: () => Promise<unknown>;
+  onSyncVaultToSinkNow?: () => Promise<unknown>;
+  onDismissPruneWarning?: () => void;
 }
 
 export function UnifiedBackupVaultPanel({
@@ -43,6 +61,9 @@ export function UnifiedBackupVaultPanel({
   rollingBackups,
   archivedBundlesCount,
   archivedAnimalsCount,
+  deviceTier = 5,
+  backupSinkStatus = null,
+  pruneSinkWarning = null,
   onSaveManualVaultBackup,
   onRestoreOpfsBackup,
   onDownloadOpfsBackup,
@@ -50,13 +71,20 @@ export function UnifiedBackupVaultPanel({
   onRestoreRollingBackup,
   onDeleteRollingBackup,
   onOpenArchivedHerdsModal,
+  onConnectBackupSink,
+  onReauthorizeBackupSink,
+  onDisconnectBackupSink,
+  onSyncVaultToSinkNow,
+  onDismissPruneWarning,
 }: UnifiedBackupVaultPanelProps) {
   const [noteInput, setNoteInput] = useState('');
   const [savingVault, setSavingVault] = useState(false);
+  const [sinkBusy, setSinkBusy] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [confirmRestoreKey, setConfirmRestoreKey] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [vaultError, setVaultError] = useState<string | null>(null);
+  const tierPolicy = getTierStoragePolicy(deviceTier);
 
   const handleSaveSnapshot = async () => {
     setVaultError(null);
@@ -109,8 +137,8 @@ export function UnifiedBackupVaultPanel({
           </h3>
           <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
             {opfsSupported
-              ? 'Combines OPFS /backups (6 monthly auto · 3 pre-upgrade · pre-reset · manual) and IndexedDB rolling fallback snapshots.'
-              : 'OPFS directory storage is unavailable in this browser; showing IndexedDB rolling fallback snapshots.'}
+              ? `Tier ${deviceTier} caps: ${tierPolicy.monthlyCap} monthly · ${tierPolicy.preUpgradeCap} pre-upgrade · ${tierPolicy.manualCap} manual (compressed .vault.zip) + ${tierPolicy.rollingIdbCap} rolling IndexedDB fallback${tierPolicy.dehydrateMirrorPhotos ? ' (thumbnail-light mirror)' : ''}.`
+              : `OPFS directory storage is unavailable in this browser; retaining up to ${tierPolicy.rollingIdbCap} IndexedDB rolling fallback snapshot(s).`}
           </p>
         </div>
 
@@ -125,6 +153,164 @@ export function UnifiedBackupVaultPanel({
             {archivedAnimalsCount > 0 ? ` · ${archivedAnimalsCount} animals` : ''})
           </span>
         </button>
+      </div>
+
+      {/* Unbacked Prune Warning Alert */}
+      {pruneSinkWarning && (
+        <div
+          role="alert"
+          className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs flex items-start justify-between gap-2.5"
+        >
+          <div className="flex items-start gap-2 min-w-0">
+            <AlertTriangle
+              className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+              aria-hidden="true"
+            />
+            <div className="space-y-1">
+              <div className="font-semibold text-[var(--barn-ink)]">
+                Aging Local Backups Pruned Without Sync Copy
+              </div>
+              <p className="text-[11px] text-[var(--barn-muted)]">{pruneSinkWarning.message}</p>
+            </div>
+          </div>
+          {onDismissPruneWarning && (
+            <button
+              type="button"
+              onClick={onDismissPruneWarning}
+              aria-label="Dismiss prune warning"
+              className="min-h-[30px] min-w-[30px] rounded-lg hover:bg-[var(--barn-surface)]/70 flex items-center justify-center shrink-0"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Pre-Prune External Backup Sink Folder */}
+      <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-0.5 min-w-0 flex-1">
+            <div className="font-semibold text-[var(--barn-ink)] flex items-center gap-1.5">
+              <FolderSync className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span>Pre-Prune Off-App Backup Sink Folder</span>
+            </div>
+            <p id="vault-sink-availability-reason" className="text-[11px] text-[var(--barn-muted)]">
+              {!opfsSupported
+                ? 'Disabled: OPFS local vault directory storage is unavailable in this browser version. Rolling backups remain saved in IndexedDB; download Timestamped Backup (.JSON) copies manually.'
+                : backupSinkStatus?.supported
+                  ? backupSinkStatus.configured
+                    ? `Connected: "${backupSinkStatus.folderName}/pedigree-vault-archive" · Expiring vault backups copy here automatically before local cleanup.`
+                    : 'Choose a local Drive / OneDrive / SyncThing / iCloud-Desktop folder so expiring vault copies offload before local pruning.'
+                  : 'Disabled: Persistent folder access (showDirectoryPicker) is unsupported in this browser (e.g., iOS Safari or older Firefox). Export manual .JSON backups off-device regularly.'}
+            </p>
+            {opfsSupported && backupSinkStatus?.configured && (
+              <div className="text-[11px] font-mono text-[var(--barn-muted)] pt-0.5">
+                Permission:{' '}
+                <span className="text-[var(--barn-ink)] font-semibold">
+                  {backupSinkStatus.permissionState === 'granted'
+                    ? 'Ready (auto-offload active)'
+                    : backupSinkStatus.permissionState === 'prompt'
+                      ? 'Needs re-authorization'
+                      : backupSinkStatus.permissionState}
+                </span>
+                {backupSinkStatus.lastPushFileName && backupSinkStatus.lastPushAtIso
+                  ? ` · Last synced ${backupSinkStatus.lastPushFileName} (${new Date(backupSinkStatus.lastPushAtIso).toLocaleDateString()})`
+                  : ''}
+                {backupSinkStatus.lastPushError ? ` · ${backupSinkStatus.lastPushError}` : ''}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            {opfsSupported && backupSinkStatus?.supported ? (
+              backupSinkStatus.configured ? (
+                <>
+                  {backupSinkStatus.permissionState !== 'granted' && onReauthorizeBackupSink && (
+                    <button
+                      type="button"
+                      disabled={sinkBusy}
+                      onClick={async () => {
+                        setSinkBusy(true);
+                        try {
+                          await onReauthorizeBackupSink();
+                        } finally {
+                          setSinkBusy(false);
+                        }
+                      }}
+                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
+                    >
+                      Re-authorize Folder
+                    </button>
+                  )}
+                  {onSyncVaultToSinkNow && (
+                    <button
+                      type="button"
+                      disabled={sinkBusy || opfsBackups.length === 0}
+                      onClick={async () => {
+                        setSinkBusy(true);
+                        try {
+                          await onSyncVaultToSinkNow();
+                        } finally {
+                          setSinkBusy(false);
+                        }
+                      }}
+                      className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                      Sync Vault Now
+                    </button>
+                  )}
+                  {onDisconnectBackupSink && (
+                    <button
+                      type="button"
+                      disabled={sinkBusy}
+                      onClick={async () => {
+                        setSinkBusy(true);
+                        try {
+                          await onDisconnectBackupSink();
+                        } finally {
+                          setSinkBusy(false);
+                        }
+                      }}
+                      className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] whitespace-nowrap disabled:opacity-50"
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </>
+              ) : (
+                onConnectBackupSink && (
+                  <button
+                    type="button"
+                    disabled={sinkBusy}
+                    onClick={async () => {
+                      setSinkBusy(true);
+                      try {
+                        await onConnectBackupSink();
+                      } finally {
+                        setSinkBusy(false);
+                      }
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                  >
+                    <FolderSync className="w-3.5 h-3.5" aria-hidden="true" />
+                    Connect Backup Sink Folder
+                  </button>
+                )
+              )
+            ) : (
+              <button
+                type="button"
+                disabled
+                aria-describedby="vault-sink-availability-reason"
+                className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap opacity-55 cursor-not-allowed"
+              >
+                <FolderSync className="w-3.5 h-3.5" aria-hidden="true" />
+                Connect Backup Sink Folder
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Manual Snapshot Creation Row */}

@@ -43,6 +43,13 @@ import {
   BarnHealthReport,
 } from '../core/dataHealthCheck';
 import {
+  getHeavyZipExportGate,
+  getTierStoragePolicy,
+} from '../core/deviceCapability';
+import { detectCurrentBrowserCompatibility } from '../storage/deviceCapabilityDetector';
+import { BackupSinkStatus } from '../storage/localSyncChannels';
+import { OpfsPruneSinkWarning } from '../storage/opfsStorage';
+import {
   calculateSavingsPercent,
   formatByteSizePure,
   IMAGE_OPTIMIZATION_PRESETS,
@@ -192,6 +199,13 @@ interface SettingsAndSyncScreenProps {
   ) => Promise<void>;
   onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
   onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
+  backupSinkStatus?: BackupSinkStatus | null;
+  pruneSinkWarning?: OpfsPruneSinkWarning | null;
+  onConnectBackupSink?: () => Promise<unknown>;
+  onReauthorizeBackupSink?: () => Promise<unknown>;
+  onDisconnectBackupSink?: () => Promise<unknown>;
+  onSyncVaultToSinkNow?: () => Promise<unknown>;
+  onDismissPruneWarning?: () => void;
 }
 
 export function SettingsAndSyncScreen({
@@ -251,6 +265,13 @@ export function SettingsAndSyncScreen({
   onRestoreArchivedHerdBundle,
   onDownloadArchivedHerdBundle,
   onDeleteArchivedHerdBundle,
+  backupSinkStatus = null,
+  pruneSinkWarning = null,
+  onConnectBackupSink,
+  onReauthorizeBackupSink,
+  onDisconnectBackupSink,
+  onSyncVaultToSinkNow,
+  onDismissPruneWarning,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -296,6 +317,14 @@ export function SettingsAndSyncScreen({
   const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
   const [folderSyncBusy, setFolderSyncBusy] = useState(false);
   const [zipExportBusy, setZipExportBusy] = useState<'complete' | 'photos' | 'json' | null>(null);
+  const [pendingHeavyZipExport, setPendingHeavyZipExport] = useState<'complete' | 'photos' | null>(
+    null
+  );
+  const [pendingLargeRestore, setPendingLargeRestore] = useState<{
+    file: File;
+    kind: 'archive' | 'sqlite';
+    mode?: 'merge' | 'replace';
+  } | null>(null);
 
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
 
@@ -394,7 +423,7 @@ export function SettingsAndSyncScreen({
         : snapshot;
       const stampSlug = formatTimestampedBackupSlug();
       const filename = `community-pedigree-full-backup-${stampSlug}.json`;
-      downloadTextFile(filename, exportBarnBackupJson(exportSnapshot), 'application/json');
+      await downloadTextFile(filename, exportBarnBackupJson(exportSnapshot), 'application/json');
       void recordBackupExport('json', filename);
       setPortabilityFeedback(
         `Downloaded JSON backup (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
@@ -406,7 +435,7 @@ export function SettingsAndSyncScreen({
     }
   };
 
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     setImportError(null);
     const filename = buildCleanCsvExportFileName(settings.barnName);
     const csvContent = exportAnimalsCsv(
@@ -416,14 +445,36 @@ export function SettingsAndSyncScreen({
       undefined,
       allPhotos
     );
-    downloadTextFile(filename, csvContent, 'text/csv');
+    await downloadTextFile(filename, csvContent, 'text/csv');
     setPortabilityFeedback(
       `Exported ${snapshot.animals.length} animal record(s) to ${filename} (UTF-8 CSV with resolved parent names & tattoos).`
     );
   };
 
-  const handleDownloadCompleteZip = async () => {
+  const activeDeviceTier = deviceCapability?.assessment.tier ?? 5;
+  const activeTierPolicy = getTierStoragePolicy(activeDeviceTier);
+  const activeBrowserCompat =
+    deviceCapability?.browserCompatibility ??
+    detectCurrentBrowserCompatibility(deviceCapability?.assessment);
+  const heavyZipGate = deviceCapability
+    ? getHeavyZipExportGate(deviceCapability.assessment, activeBrowserCompat)
+    : {
+        requiresConfirmation: activeDeviceTier === 1 || activeBrowserCompat.shouldConfirmHeavyZipExport,
+        title: 'Memory Caution for Older or Lower-Memory Device',
+        body:
+          activeBrowserCompat.heavyZipCautionReason ||
+          'Your device or browser may have limited memory for compressed .ZIP archives.',
+        advice:
+          'You can still try creating the .ZIP archive below. If it fails or reloads the page, please use Timestamped Backup (.JSON) instead — it safely backs up your herd using much less memory because of your older device or browser.',
+      };
+
+  const handleDownloadCompleteZip = async (skipCaution = false) => {
     setImportError(null);
+    if (!skipCaution && heavyZipGate.requiresConfirmation) {
+      setPendingHeavyZipExport('complete');
+      return;
+    }
+    setPendingHeavyZipExport(null);
     setZipExportBusy('complete');
     try {
       const exportSnapshot = onHydrateSnapshotForExport
@@ -432,24 +483,34 @@ export function SettingsAndSyncScreen({
       const stampSlug = formatTimestampedBackupSlug();
       const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
       const filename = `community-pedigree-archive-${stampSlug}.zip`;
-      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      await downloadBinaryFile(filename, archive.bytes, 'application/zip');
       void recordBackupExport('zip', filename);
       setPortabilityFeedback(
         `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(archive.bytes.byteLength)}).`
       );
     } catch (err: any) {
-      setImportError(err?.message || 'Could not build Complete Archive (.ZIP).');
+      const baseMsg = err?.message || 'Could not build Complete Archive (.ZIP).';
+      setImportError(
+        heavyZipGate.requiresConfirmation
+          ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
+          : baseMsg
+      );
     } finally {
       setZipExportBusy(null);
     }
   };
 
-  const handleDownloadPhotosOnlyZip = async () => {
+  const handleDownloadPhotosOnlyZip = async (skipCaution = false) => {
     setImportError(null);
     if (allPhotos.length === 0) {
       setImportError('No animal photos stored yet to archive.');
       return;
     }
+    if (!skipCaution && heavyZipGate.requiresConfirmation) {
+      setPendingHeavyZipExport('photos');
+      return;
+    }
+    setPendingHeavyZipExport(null);
     setZipExportBusy('photos');
     try {
       const exportSnapshot = onHydrateSnapshotForExport
@@ -458,20 +519,32 @@ export function SettingsAndSyncScreen({
       const stampSlug = formatTimestampedBackupSlug();
       const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
       const filename = `community-pedigree-photos-${stampSlug}.zip`;
-      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      await downloadBinaryFile(filename, archive.bytes, 'application/zip');
       setPortabilityFeedback(
         `Saved ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(archive.bytes.byteLength)}).`
       );
     } catch (err: any) {
-      setImportError(err?.message || 'Could not build Photos-Only (.ZIP) archive.');
+      const baseMsg = err?.message || 'Could not build Photos-Only (.ZIP) archive.';
+      setImportError(
+        heavyZipGate.requiresConfirmation
+          ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
+          : baseMsg
+      );
     } finally {
       setZipExportBusy(null);
     }
   };
 
+  const isSqliteUnavailable =
+    !activeBrowserCompat.signals.wasmSupported || /json fallback/i.test(engineName);
+  const dirPickerSupported = supportsDirectoryPicker();
+  const persistStorageSupported = activeBrowserCompat.signals.persistStorageSupported;
+  const webShareSupported = activeBrowserCompat.signals.webShareFilesSupported;
+
   const handleBackupArchiveUpload = async (
     file: File | undefined,
-    mode: 'merge' | 'replace'
+    mode: 'merge' | 'replace',
+    skipTierCheck = false
   ) => {
     if (!file) return;
     setImportError(null);
@@ -489,6 +562,15 @@ export function SettingsAndSyncScreen({
         setImportError(sizeCheck.error);
         return;
       }
+      if (
+        !skipTierCheck &&
+        activeDeviceTier <= 2 &&
+        file.size > activeTierPolicy.maxSafeImportBytesHint
+      ) {
+        setPendingLargeRestore({ file, kind: 'archive', mode });
+        return;
+      }
+      setPendingLargeRestore(null);
       if (isJson) {
         const text = await file.text();
         await onImportJson(text, mode);
@@ -507,7 +589,7 @@ export function SettingsAndSyncScreen({
     }
   };
 
-  const handleSqliteUpload = async (file: File | undefined) => {
+  const handleSqliteUpload = async (file: File | undefined, skipTierCheck = false) => {
     if (!file) return;
     setImportError(null);
     try {
@@ -521,6 +603,15 @@ export function SettingsAndSyncScreen({
         setImportError(sizeCheck.error);
         return;
       }
+      if (
+        !skipTierCheck &&
+        activeDeviceTier <= 2 &&
+        file.size > activeTierPolicy.maxSafeImportBytesHint
+      ) {
+        setPendingLargeRestore({ file, kind: 'sqlite' });
+        return;
+      }
+      setPendingLargeRestore(null);
       const buf = await file.arrayBuffer();
       await onImportSqliteBytes(new Uint8Array(buf));
     } catch (err: any) {
@@ -610,7 +701,7 @@ export function SettingsAndSyncScreen({
     }
     const stamp = formatTimestampedBackupSlug();
     const filename = `community-pedigree-${stamp}.sqlite`;
-    downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
+    await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
     void recordBackupExport('sqlite', filename);
   };
 
@@ -1447,13 +1538,27 @@ export function SettingsAndSyncScreen({
                 {!storageStatus?.persisted && (
                   <button
                     type="button"
+                    disabled={!persistStorageSupported}
+                    aria-describedby={!persistStorageSupported ? `${baseId}-persist-reason` : undefined}
                     onClick={() => void onRequestPersistentStorage()}
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                    className={`min-h-[34px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
+                      persistStorageSupported
+                        ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+                        : 'border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
+                    }`}
                   >
                     Lock Persistent Storage
                   </button>
                 )}
               </div>
+
+              {!storageStatus?.persisted && !persistStorageSupported && (
+                <p id={`${baseId}-persist-reason`} className="text-[11px] text-[var(--barn-muted)]">
+                  Disabled: This browser doesn&apos;t support manual Persistent Storage locking. Storage
+                  retention is managed automatically; keep Timestamped Backup (.JSON) copies saved
+                  off-device.
+                </p>
+              )}
 
               {storageStatus && storageStatus.quotaBytes > 0 && (
                 <div className="space-y-1">
@@ -1527,6 +1632,9 @@ export function SettingsAndSyncScreen({
                 (acc, b) => acc + b.animalCount,
                 0
               )}
+              deviceTier={activeDeviceTier}
+              backupSinkStatus={backupSinkStatus}
+              pruneSinkWarning={pruneSinkWarning}
               onSaveManualVaultBackup={(note) => onSaveManualOpfsVaultBackup?.(note)}
               onRestoreOpfsBackup={async (key) => {
                 if (onRestoreOpfsVaultBackup) await onRestoreOpfsVaultBackup(key);
@@ -1542,6 +1650,11 @@ export function SettingsAndSyncScreen({
                 if (onDeleteRollingBackup) await onDeleteRollingBackup(key);
               }}
               onOpenArchivedHerdsModal={() => setShowArchivedHerdsModal(true)}
+              onConnectBackupSink={onConnectBackupSink}
+              onReauthorizeBackupSink={onReauthorizeBackupSink}
+              onDisconnectBackupSink={onDisconnectBackupSink}
+              onSyncVaultToSinkNow={onSyncVaultToSinkNow}
+              onDismissPruneWarning={onDismissPruneWarning}
             />
           </section>
 
@@ -1761,20 +1874,37 @@ export function SettingsAndSyncScreen({
                 Merge Peer Delta Files (.JSON)
               </button>
 
-              {supportsDirectoryPicker() && (
-                <button
-                  type="button"
-                  disabled={folderSyncBusy}
-                  onClick={() => void handleDirectorySync()}
-                  className="sm:col-span-2 min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50"
-                >
-                  <FolderSync className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
-                  {folderSyncBusy
-                    ? 'Syncing Local Folder...'
-                    : 'Sync Directly With Local SyncThing / Shared Folder'}
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={folderSyncBusy || !dirPickerSupported}
+                aria-describedby={!dirPickerSupported ? `${baseId}-dirpicker-reason` : undefined}
+                onClick={() => void handleDirectorySync()}
+                className={`sm:col-span-2 min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  dirPickerSupported
+                    ? 'hover:bg-[var(--barn-subtle)] disabled:opacity-50'
+                    : 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-60 cursor-not-allowed'
+                }`}
+              >
+                <FolderSync className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                {folderSyncBusy
+                  ? 'Syncing Local Folder...'
+                  : 'Sync Directly With Local SyncThing / Shared Folder'}
+              </button>
             </div>
+
+            {!dirPickerSupported && (
+              <p id={`${baseId}-dirpicker-reason`} className="text-[11px] text-[var(--barn-muted)]">
+                Disabled: Direct local folder picking isn&apos;t supported in this browser (e.g., Safari,
+                Firefox, or mobile browsers). Use <strong>Share / Export Worker Delta</strong> and{' '}
+                <strong>Merge Peer Delta Files (.JSON)</strong> above instead.
+              </p>
+            )}
+            {!webShareSupported && (
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                Note: Native file Share Sheet is unavailable here — <strong>Share / Export Worker Delta</strong>{' '}
+                will download a ready-to-share <span className="font-mono">.JSON</span> file directly.
+              </p>
+            )}
 
             {syncConflicts.length > 0 && (
               <div className="border-t border-[var(--barn-border)] pt-3 space-y-2.5">
@@ -1934,8 +2064,14 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
+                  disabled={isSqliteUnavailable}
+                  aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
                   onClick={handleDownloadSqlite}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className={`min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    isSqliteUnavailable
+                      ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
+                      : 'hover:bg-[var(--barn-subtle)]'
+                  }`}
                 >
                   <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
                   Download Raw .SQLITE DB
@@ -1977,12 +2113,128 @@ export function SettingsAndSyncScreen({
                   Export {activeSpeciesName} Report (.JSON)
                 </button>
               </div>
+
+              {pendingHeavyZipExport && (
+                <div
+                  role="alert"
+                  className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs space-y-2"
+                >
+                  <div className="font-semibold text-[var(--barn-ink)]">{heavyZipGate.title}</div>
+                  <p className="text-[11px] text-[var(--barn-ink)] leading-relaxed">
+                    {heavyZipGate.body}
+                  </p>
+                  <p className="text-[11px] text-[var(--barn-muted)] leading-relaxed">
+                    {heavyZipGate.advice}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const kind = pendingHeavyZipExport;
+                        setPendingHeavyZipExport(null);
+                        if (kind === 'complete') {
+                          void handleDownloadCompleteZip(true);
+                        } else {
+                          void handleDownloadPhotosOnlyZip(true);
+                        }
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+                    >
+                      Try .ZIP Export Anyway
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingHeavyZipExport(null);
+                        void handleDownloadTimestampedFullBackup();
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+                    >
+                      Download .JSON Backup Instead
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingHeavyZipExport(null)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {isSqliteUnavailable && (
+                <p id={`${baseId}-sqlite-reason`} className="text-[11px] text-[var(--barn-muted)]">
+                  Raw <span className="font-mono">.SQLITE</span> export/load is disabled because
+                  WebAssembly SQLite isn&apos;t available in this browser (your records are safely stored
+                  in IndexedDB JSON mode). Use <strong>Timestamped Backup (.JSON)</strong> instead.
+                </p>
+              )}
             </div>
 
             <div className="border-t border-[var(--barn-border)] pt-4 space-y-2.5">
               <div className="text-xs font-semibold text-[var(--barn-muted)]">
                 Restore &amp; Archive Merge (.ZIP, .JSON, or .SQLITE)
               </div>
+              {activeDeviceTier <= 2 && (
+                <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[11px] text-[var(--barn-ink)] space-y-1">
+                  <div className="font-semibold">
+                    Tier {activeDeviceTier} Low-Memory Restore Caution (Recommended ≤{' '}
+                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)})
+                  </div>
+                  <p className="text-[var(--barn-muted)]">
+                    Large raw .ZIP, .JSON, or .SQLITE restores decode photos and database buffers
+                    simultaneously in browser RAM. Close other tabs before restoring files above{' '}
+                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)}.
+                  </p>
+                </div>
+              )}
+
+              {pendingLargeRestore && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)] text-xs space-y-2"
+                >
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Large Restore Warning ({formatByteSizePure(pendingLargeRestore.file.size)})
+                  </div>
+                  <p className="text-[11px] text-[var(--barn-muted)]">
+                    &ldquo;{pendingLargeRestore.file.name}&rdquo; exceeds this Tier{' '}
+                    {activeDeviceTier} device&rsquo;s{' '}
+                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)} comfort ceiling.
+                    Close other browser tabs first, or proceed anyway?
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pending = pendingLargeRestore;
+                        setPendingLargeRestore(null);
+                        if (pending.kind === 'sqlite') {
+                          void handleSqliteUpload(pending.file, true);
+                        } else {
+                          void handleBackupArchiveUpload(
+                            pending.file,
+                            pending.mode || 'replace',
+                            true
+                          );
+                        }
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+                    >
+                      Proceed with Restore
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingLargeRestore(null)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <input
                   ref={mergeFileRef}
@@ -2034,8 +2286,14 @@ export function SettingsAndSyncScreen({
                 />
                 <button
                   type="button"
+                  disabled={isSqliteUnavailable}
+                  aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
                   onClick={() => sqliteFileRef.current?.click()}
-                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className={`min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    isSqliteUnavailable
+                      ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
+                      : 'hover:bg-[var(--barn-subtle)]'
+                  }`}
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   Load .SQLITE File
@@ -2051,6 +2309,7 @@ export function SettingsAndSyncScreen({
 
           <DiagnosticsAndSupportPanel
             snapshot={snapshot}
+            deviceCapability={deviceCapability}
             onScanDatabaseHealth={onScanDatabaseHealth}
             onRepairDatabaseHealth={onRepairDatabaseHealth}
             onResetDatabaseConnection={onResetDatabaseConnection}

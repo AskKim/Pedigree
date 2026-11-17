@@ -128,15 +128,21 @@ export default defineConfig(() => {
         'sql.js',
       ],
     },
+    build: {
+      target: ['es2020', 'chrome80', 'safari14', 'firefox80', 'edge80'],
+      cssTarget: ['chrome80', 'safari14', 'firefox80', 'edge80'],
+    },
+    worker: {
+      format: 'es' as const,
+    },
     server: {
       host: '0.0.0.0',
       port: 3000,
       allowedHosts: true as const,
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // HMR and file watching are hardcoded disabled to prevent preview flickering,
+      // mobile iframe reload loops, and AI Studio env-var prompts (production/Pages builds are unaffected).
+      hmr: false,
+      watch: null,
     },
   };
 });

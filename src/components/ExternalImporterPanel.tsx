@@ -75,6 +75,7 @@ import {
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
 } from '../core/inputSanitization';
+import { copyTextWithFallback } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 
@@ -434,14 +435,28 @@ export function ExternalImporterPanel({
     });
   };
 
+  const copiedReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedReportTimerRef.current !== null) {
+        clearTimeout(copiedReportTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopyDiagnostic = async () => {
     if (!preview) return;
-    try {
-      await navigator.clipboard.writeText(preview.schemaDiagnosticReport);
+    const mode = await copyTextWithFallback(preview.schemaDiagnosticReport);
+    if (mode !== 'unsupported') {
       setCopiedReport(true);
-      setTimeout(() => setCopiedReport(false), 2500);
-    } catch {
-      // Clipboard blocked in restricted context
+      if (copiedReportTimerRef.current !== null) {
+        clearTimeout(copiedReportTimerRef.current);
+      }
+      copiedReportTimerRef.current = setTimeout(() => {
+        copiedReportTimerRef.current = null;
+        setCopiedReport(false);
+      }, 2500);
     }
   };
 

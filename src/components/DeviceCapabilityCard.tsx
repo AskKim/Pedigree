@@ -28,6 +28,7 @@ import {
   buildLowMemorySettingsPatch,
   DEVICE_CAPABILITY_TIER_LIST,
   evaluateBarnWorkloadForTier,
+  getTierStoragePolicy,
 } from '../core/deviceCapability';
 import { BarnSettings } from '../core/models';
 import { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
@@ -53,7 +54,7 @@ export function DeviceCapabilityCard({
 }: DeviceCapabilityCardProps) {
   const [showTierMatrix, setShowTierMatrix] = useState(false);
 
-  const { assessment } = controller;
+  const { assessment, browserCompatibility } = controller;
   const { definition, tier, formFactor, signalSummary, confidence } = assessment;
 
   const isVisible = location === 'home' ? controller.homeVisible : controller.settingsVisible;
@@ -96,6 +97,7 @@ export function DeviceCapabilityCard({
 
   const workload = evaluateBarnWorkloadForTier(totalBarnRecords, assessment);
   const lowMemPatch = buildLowMemorySettingsPatch(settings, assessment);
+  const tierPolicy = getTierStoragePolicy(tier);
 
   const cardSurfaceClass =
     definition.severity === 'danger'
@@ -193,6 +195,11 @@ export function DeviceCapabilityCard({
           <p className="text-[11px] text-[var(--barn-muted)] leading-relaxed">
             {definition.workloadProfile}
           </p>
+          <p className="text-[10px] font-mono text-[var(--barn-muted)]">
+            Vault caps: {tierPolicy.monthlyCap} monthly · {tierPolicy.manualCap} manual ·{' '}
+            {tierPolicy.rollingIdbCap} rolling IDB
+            {tierPolicy.dehydrateMirrorPhotos ? ' · thumbnail-light mirror' : ''}
+          </p>
         </div>
 
         <div className="p-3 rounded-xl bg-[var(--barn-surface)]/85 border border-[var(--barn-border)] space-y-1">
@@ -210,6 +217,42 @@ export function DeviceCapabilityCard({
           </p>
         </div>
       </div>
+
+      {/* Older Browser / Fallback Compatibility Summary */}
+      {(browserCompatibility.isOutdatedBrowser ||
+        browserCompatibility.wasmFallbackActive ||
+        (location === 'settings' && browserCompatibility.unavailableFeatures.length > 0)) && (
+        <div className="p-3 rounded-xl bg-[var(--barn-surface)]/90 border border-[var(--barn-border)] space-y-1.5 text-[11px]">
+          <div className="font-semibold text-[var(--barn-ink)] flex flex-wrap items-center gap-2">
+            <span>
+              {browserCompatibility.isOutdatedBrowser
+                ? 'Older Browser Compatibility Mode Active'
+                : 'Browser Feature Fallbacks Active'}
+            </span>
+            {browserCompatibility.wasmFallbackActive && (
+              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)]">
+                IndexedDB JSON Mode (No WASM)
+              </span>
+            )}
+          </div>
+          {browserCompatibility.outdatedReasons.length > 0 && (
+            <p className="text-[var(--barn-muted)] leading-snug">
+              {browserCompatibility.outdatedReasons.join(' · ')}. Heavy .ZIP exports show a memory
+              caution prompt and recommend Timestamped Backup (.JSON) if they fail.
+            </p>
+          )}
+          {location === 'settings' && browserCompatibility.unavailableFeatures.length > 0 && (
+            <ul className="space-y-1 pt-0.5 text-[var(--barn-muted)]">
+              {browserCompatibility.unavailableFeatures.slice(0, 5).map((feat) => (
+                <li key={feat.key} className="leading-snug">
+                  <strong className="text-[var(--barn-ink)]">{feat.label}:</strong> {feat.reason}{' '}
+                  <span>{feat.fallback}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Adaptive Memory Handling Controls + Tier Comparison Toggle */}
       <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
@@ -310,6 +353,12 @@ export function DeviceCapabilityCard({
                   <p className="text-[var(--barn-muted)] leading-snug">
                     <strong className="text-[var(--barn-ink)]">Capacity:</strong>{' '}
                     {item.workloadProfile}
+                  </p>
+                  <p className="text-[10px] font-mono text-[var(--barn-muted)] leading-snug">
+                    {(() => {
+                      const p = getTierStoragePolicy(item.tier);
+                      return `Vault caps: ${p.monthlyCap} monthly · ${p.manualCap} manual · ${p.rollingIdbCap} rolling IDB${p.dehydrateMirrorPhotos ? ' · thumbnail-light mirror' : ''}`;
+                    })()}
                   </p>
                 </div>
               );

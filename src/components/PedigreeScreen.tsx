@@ -163,6 +163,9 @@ export function PedigreeScreen({
       subjectPrimaryPhoto.dataUrl ||
       !onLoadFullPhoto
     ) {
+      if (!showPrintModal || (hydratedSubjectPhoto && hydratedSubjectPhoto.photoId !== subjectPrimaryPhoto?.id)) {
+        setHydratedSubjectPhoto(null);
+      }
       return;
     }
     if (hydratedSubjectPhoto?.photoId === subjectPrimaryPhoto.id) return;
@@ -1355,7 +1358,10 @@ export function PedigreeScreen({
           pedigreePrintOptions={pedigreePrintOptions}
           onChangePedigreePrintOptions={setPedigreePrintOptions}
           headerNotice={<PedigreePrintNotice />}
-          onClose={() => setShowPrintModal(false)}
+          onClose={() => {
+            setShowPrintModal(false);
+            setHydratedSubjectPhoto(null);
+          }}
         />
       )}
     </div>

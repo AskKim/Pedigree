@@ -30,7 +30,7 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
@@ -62,14 +62,18 @@ import {
   subscribeDiagnosticLogs,
   updateDiagnosticConfig,
 } from '../storage/crashLogger';
+import { getHeavyZipExportGate } from '../core/deviceCapability';
 import {
+  copyTextWithFallback,
   downloadBinaryFile,
   downloadTextFile,
   shareBinaryFileOrDownload,
 } from '../utils/webFileActions';
+import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
 
 interface DiagnosticsAndSupportPanelProps {
   snapshot: BarnDatabaseSnapshot;
+  deviceCapability?: DeviceCapabilityController;
   onScanDatabaseHealth: () => BarnHealthReport | null;
   onRepairDatabaseHealth: () => Promise<BarnHealthRepairResult | null>;
   onResetDatabaseConnection: () => Promise<void>;
@@ -92,6 +96,7 @@ type LogFilterTab = 'all' | 'errors' | 'memory';
 
 export function DiagnosticsAndSupportPanel({
   snapshot,
+  deviceCapability,
   onScanDatabaseHealth,
   onRepairDatabaseHealth,
   onResetDatabaseConnection,
@@ -121,9 +126,16 @@ export function DiagnosticsAndSupportPanel({
   } | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [confirmRebuildDb, setConfirmRebuildDb] = useState(false);
+  const [pendingHeavyBundleAttemptShare, setPendingHeavyBundleAttemptShare] = useState<
+    boolean | null
+  >(null);
   const [recoveryFeedback, setRecoveryFeedback] = useState<string | null>(null);
   const [healthReport, setHealthReport] = useState<BarnHealthReport | null>(null);
   const [healthRepairsList, setHealthRepairsList] = useState<string[] | null>(null);
+
+  const heavyBundleGate = deviceCapability
+    ? getHeavyZipExportGate(deviceCapability.assessment, deviceCapability.browserCompatibility)
+    : { requiresConfirmation: false, title: '', body: '', advice: '' };
 
   const refreshDiagnostics = useCallback(async () => {
     const list = await listDiagnosticLogs();
@@ -197,13 +209,23 @@ export function DiagnosticsAndSupportPanel({
     setRecipientEmail(email);
   };
 
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleDownloadLogsTxt = async () => {
     setBusyAction(true);
     try {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
       const filename = `pedigree-error-logs-${formatTimestampedBackupSlug()}.txt`;
-      downloadTextFile(filename, formatSupportReportText(list, sum, snapshot), 'text/plain');
+      await downloadTextFile(filename, formatSupportReportText(list, sum, snapshot), 'text/plain');
       setLastBuiltMailMeta(null);
       setFeedback(`Downloaded ${filename} (${list.length} log entries + current app state).`);
     } finally {
@@ -217,7 +239,7 @@ export function DiagnosticsAndSupportPanel({
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
       const filename = `pedigree-error-logs-${formatTimestampedBackupSlug()}.json`;
-      downloadTextFile(
+      await downloadTextFile(
         filename,
         buildErrorLogsJson(list, sum, snapshot),
         'application/json'
@@ -229,7 +251,14 @@ export function DiagnosticsAndSupportPanel({
     }
   };
 
-  const handleBuildBundle = async (attemptShare: boolean) => {
+  const handleBuildBundle = async (attemptShare: boolean, skipCaution = false) => {
+    const hasEmbeddedPhotos =
+      includeDataInBundle && includePhotosInBundle && (snapshot.animalPhotos ?? []).length > 0;
+    if (!skipCaution && hasEmbeddedPhotos && heavyBundleGate.requiresConfirmation) {
+      setPendingHeavyBundleAttemptShare(attemptShare);
+      return;
+    }
+    setPendingHeavyBundleAttemptShare(null);
     setBusyAction(true);
     setFeedback(null);
     setLastBuiltMailMeta(null);
@@ -287,7 +316,7 @@ export function DiagnosticsAndSupportPanel({
               }`
         );
       } else {
-        downloadBinaryFile(built.filename, built.bytes, 'application/zip');
+        await downloadBinaryFile(built.filename, built.bytes, 'application/zip');
         setFeedback(
           `Downloaded ${built.filename} (${formatByteSizePure(built.bytes.byteLength)} — ${
             built.logCount
@@ -315,12 +344,18 @@ export function DiagnosticsAndSupportPanel({
     const list = await listDiagnosticLogs();
     const sum = await getDiagnosticSummary(list);
     const report = formatSupportReportText(list.slice(0, 60), sum);
-    try {
-      await navigator.clipboard.writeText(report);
+    const copyMode = await copyTextWithFallback(report);
+    if (copyMode !== 'unsupported') {
       setCopiedSummary(true);
-      setTimeout(() => setCopiedSummary(false), 2500);
-    } catch {
-      setFeedback('Clipboard unavailable — use Download Logs (.TXT) instead.');
+      if (copiedTimerRef.current !== null) {
+        clearTimeout(copiedTimerRef.current);
+      }
+      copiedTimerRef.current = setTimeout(() => {
+        copiedTimerRef.current = null;
+        setCopiedSummary(false);
+      }, 2500);
+    } else {
+      setFeedback('Clipboard access is blocked here — use Download Error Logs (.TXT) instead.');
     }
   };
 
@@ -528,6 +563,49 @@ export function DiagnosticsAndSupportPanel({
             Download Error Logs (.JSON)
           </button>
         </div>
+
+        {pendingHeavyBundleAttemptShare !== null && (
+          <div
+            role="alert"
+            className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs space-y-2"
+          >
+            <div className="font-semibold text-[var(--barn-ink)]">{heavyBundleGate.title}</div>
+            <p className="text-[11px] text-[var(--barn-ink)] leading-relaxed">
+              {heavyBundleGate.body} Unchecking photos or using Timestamped Backup (.JSON) +
+              Download Error Logs (.TXT) avoids .ZIP memory spikes on older or Tier 1 devices.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const share = pendingHeavyBundleAttemptShare;
+                  setPendingHeavyBundleAttemptShare(null);
+                  void handleBuildBundle(share, true);
+                }}
+                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+              >
+                Try .ZIP Bundle Anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIncludePhotosInBundle(false);
+                  setPendingHeavyBundleAttemptShare(null);
+                }}
+                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+              >
+                Uncheck Photos (Safer .ZIP)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingHeavyBundleAttemptShare(null)}
+                className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {feedback && (
           <div
@@ -1043,12 +1121,12 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(formatImprovementsMarkdown());
-                setImprovementsFeedback('Copied Markdown recovery log to clipboard.');
-              } catch {
-                setImprovementsFeedback('Clipboard unavailable — use Download IMPROVEMENTS.md.');
-              }
+              const mode = await copyTextWithFallback(formatImprovementsMarkdown());
+              setImprovementsFeedback(
+                mode !== 'unsupported'
+                  ? 'Copied Markdown recovery log to clipboard.'
+                  : 'Clipboard unavailable in this browser — use Download Recovery .JSON instead.'
+              );
             }}
             className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
           >

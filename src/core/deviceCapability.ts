@@ -81,6 +81,102 @@ export interface BarnWorkloadEvaluation {
   guidance: string | null;
 }
 
+export interface TierStoragePolicy {
+  tier: DeviceCapabilityTierNumber;
+  /** Cap for automated monthly snapshots in OPFS `/backups`. */
+  monthlyCap: number;
+  /** Cap for pre-upgrade safety snapshots in OPFS `/backups`. */
+  preUpgradeCap: number;
+  /** Cap for pre-reset / pre-destructive safety snapshots in OPFS `/backups`. */
+  preResetCap: number;
+  /** Cap for manual snapshots in OPFS `/backups`. */
+  manualCap: number;
+  /** Cap for migration failure recovery dumps in OPFS `/backups`. */
+  recoveryDumpCap: number;
+  /** Cap for IndexedDB rolling fallback snapshots. */
+  rollingIdbCap: number;
+  /** When true (Tiers 1–2), strip full-res `dataUrl` from 15s IDB fallback mirror & rolling snapshots to cut RAM 3–4x while preserving thumbnails & primary SQLite full-res. */
+  dehydrateMirrorPhotos: boolean;
+  /** Compress OPFS vault `/backups` payloads as `.vault.zip` to reduce browser disk quota pressure. */
+  compressVaultBackups: boolean;
+  /** Comfort ceiling (in bytes) above which raw `.JSON` / `.ZIP` / `.SQLITE` restore/import triggers a pre-flight caution on this tier. */
+  maxSafeImportBytesHint: number;
+  /** Keep heavy ZIP canary round-trips disabled on sub-minimum devices. */
+  skipHeavyCanaryZip: boolean;
+}
+
+export const TIER_STORAGE_POLICIES: Record<DeviceCapabilityTierNumber, TierStoragePolicy> = {
+  1: {
+    tier: 1,
+    monthlyCap: 2,
+    preUpgradeCap: 1,
+    preResetCap: 2,
+    manualCap: 3,
+    recoveryDumpCap: 2,
+    rollingIdbCap: 1,
+    dehydrateMirrorPhotos: true,
+    compressVaultBackups: true,
+    maxSafeImportBytesHint: 8 * 1024 * 1024,
+    skipHeavyCanaryZip: true,
+  },
+  2: {
+    tier: 2,
+    monthlyCap: 3,
+    preUpgradeCap: 2,
+    preResetCap: 3,
+    manualCap: 5,
+    recoveryDumpCap: 2,
+    rollingIdbCap: 2,
+    dehydrateMirrorPhotos: true,
+    compressVaultBackups: true,
+    maxSafeImportBytesHint: 18 * 1024 * 1024,
+    skipHeavyCanaryZip: false,
+  },
+  3: {
+    tier: 3,
+    monthlyCap: 6,
+    preUpgradeCap: 3,
+    preResetCap: 8,
+    manualCap: 12,
+    recoveryDumpCap: 4,
+    rollingIdbCap: 3,
+    dehydrateMirrorPhotos: false,
+    compressVaultBackups: true,
+    maxSafeImportBytesHint: 32 * 1024 * 1024,
+    skipHeavyCanaryZip: false,
+  },
+  4: {
+    tier: 4,
+    monthlyCap: 6,
+    preUpgradeCap: 3,
+    preResetCap: 8,
+    manualCap: 12,
+    recoveryDumpCap: 4,
+    rollingIdbCap: 3,
+    dehydrateMirrorPhotos: false,
+    compressVaultBackups: true,
+    maxSafeImportBytesHint: 64 * 1024 * 1024,
+    skipHeavyCanaryZip: false,
+  },
+  5: {
+    tier: 5,
+    monthlyCap: 6,
+    preUpgradeCap: 3,
+    preResetCap: 8,
+    manualCap: 12,
+    recoveryDumpCap: 4,
+    rollingIdbCap: 3,
+    dehydrateMirrorPhotos: false,
+    compressVaultBackups: true,
+    maxSafeImportBytesHint: 64 * 1024 * 1024,
+    skipHeavyCanaryZip: false,
+  },
+};
+
+export function getTierStoragePolicy(tier: DeviceCapabilityTierNumber): TierStoragePolicy {
+  return TIER_STORAGE_POLICIES[tier] || TIER_STORAGE_POLICIES[3];
+}
+
 export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceTierDefinition> = {
   1: {
     tier: 1,
@@ -92,11 +188,11 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     targetHardware:
       '≤1 GB RAM · Legacy or kids phones & tablets (e.g., Fire 7, older 1 GB Android/iPad).',
     browserReality:
-      '~50–100 MB JS heap; very little room for SQLite or photo decoding.',
+      '~50–100 MB JS heap; capped to 1 rolling IDB snapshot, 2 monthly vault copies, and thumbnail-only mirror redundancy.',
     workloadProfile:
-      'Up to ~1,000 records. Heavy .ZIP imports or photos will likely freeze or crash the tab.',
+      'Up to ~1,000 records. Heavy .ZIP imports, large raw DB restores, or high-res photos will likely freeze or crash the tab.',
     cautionNotice:
-      'Below minimum hardware requirements. Large imports or photos may crash this tab—use Compact photos and run big .ZIP imports on a newer device.',
+      'Below minimum hardware requirements. Tight vault retention (2 monthly · 3 manual · 1 rolling IDB) and thumbnail-light mirrors are enforced; connect a Backup Sink Folder or export backups off-device before heavy imports.',
     maxRecommendedRecords: 1000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,
@@ -114,11 +210,11 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     targetHardware:
       '2–3 GB RAM · Budget/older phones & tablets (e.g., Galaxy S7/J-series, iPhone 6, Fire HD 8/10, Galaxy Tab A7 Lite, iPad 6th Gen).',
     browserReality:
-      '~150–250 MB JS heap; large JSON merges or deep trees can feel sluggish.',
+      '~150–250 MB JS heap; uses compressed vault snapshots, thumbnail-light mirrors, and 2 rolling IDB copies.',
     workloadProfile:
       'Up to ~3,000 records (~4–5 base animals, 8-gen trees, ~25% compact photos).',
     cautionNotice:
-      'Low-memory device detected. Keep local records under ~3,000, use Compact photos, and export regular backups.',
+      'Low-memory device detected. Keep local records under ~3,000, use Compact photos, and keep a Backup Sink Folder or off-device export synced (vault trims locally to 3 monthly · 5 manual copies).',
     maxRecommendedRecords: 3000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,
@@ -520,3 +616,254 @@ export function buildLowMemorySettingsPatch(
   }
   return Object.keys(patch).length > 0 ? patch : null;
 }
+
+export type OptionalBrowserFeatureKey =
+  | 'wasm'
+  | 'worker'
+  | 'opfs'
+  | 'directoryPicker'
+  | 'persistStorage'
+  | 'clipboard'
+  | 'webShare'
+  | 'webp';
+
+export interface BrowserFeatureSignals {
+  userAgent: string;
+  promiseSupported: boolean;
+  indexedDbSupported: boolean;
+  wasmSupported: boolean;
+  moduleWorkerSupported: boolean;
+  opfsSupported: boolean;
+  directoryPickerSupported: boolean;
+  persistStorageSupported: boolean;
+  clipboardWriteSupported: boolean;
+  webShareFilesSupported: boolean;
+  webpEncodeSupported: boolean;
+  createImageBitmapSupported: boolean;
+  workerRuntimeDisabled?: boolean;
+}
+
+export interface UnavailableBrowserFeature {
+  key: OptionalBrowserFeatureKey;
+  label: string;
+  reason: string;
+  fallback: string;
+}
+
+export interface BrowserCompatibilityAssessment {
+  isOutdatedBrowser: boolean;
+  outdatedReasons: string[];
+  wasmFallbackActive: boolean;
+  shouldConfirmHeavyZipExport: boolean;
+  heavyZipCautionReason: string | null;
+  signals: BrowserFeatureSignals;
+  unavailableFeatures: UnavailableBrowserFeature[];
+}
+
+export interface HeavyZipExportGate {
+  requiresConfirmation: boolean;
+  title: string;
+  body: string;
+  advice: string;
+}
+
+function parseBrowserEngineMajors(ua: string): {
+  chromeMajor: number | null;
+  firefoxMajor: number | null;
+  safariMajor: number | null;
+  iosMajor: number | null;
+  androidMajor: number | null;
+} {
+  const iosMajor = parseIosMajorVersion(ua);
+  const androidMajor = parseAndroidMajorVersion(ua);
+
+  const fxMatch = ua.match(/firefox\/(\d+)/i);
+  const firefoxMajor = fxMatch ? Number(fxMatch[1]) : null;
+
+  const crMatch = ua.match(/(?:chrome|crios|edg|edga|edgios)\/(\d+)/i);
+  const chromeMajor = crMatch ? Number(crMatch[1]) : null;
+
+  const isSafariLike =
+    /safari/i.test(ua) && !/chrome|crios|chromium|edg|edga|edgios|fxios|firefox|opr\//i.test(ua);
+  const sfMatch = isSafariLike ? ua.match(/version\/(\d+)/i) : null;
+  const safariMajor = sfMatch ? Number(sfMatch[1]) : null;
+
+  return {
+    chromeMajor: chromeMajor !== null && Number.isFinite(chromeMajor) ? chromeMajor : null,
+    firefoxMajor: firefoxMajor !== null && Number.isFinite(firefoxMajor) ? firefoxMajor : null,
+    safariMajor: safariMajor !== null && Number.isFinite(safariMajor) ? safariMajor : null,
+    iosMajor,
+    androidMajor,
+  };
+}
+
+/**
+ * Pure TypeScript classifier evaluating browser engine age, optional API gaps,
+ * WebAssembly SQLite fallback state, and memory-risk confirmation gates.
+ */
+export function assessBrowserCompatibility(
+  signals: BrowserFeatureSignals,
+  deviceTier: DeviceCapabilityTierNumber
+): BrowserCompatibilityAssessment {
+  const ua = signals.userAgent || '';
+  const { chromeMajor, firefoxMajor, safariMajor, iosMajor, androidMajor } =
+    parseBrowserEngineMajors(ua);
+
+  const outdatedReasons: string[] = [];
+
+  if (iosMajor !== null && iosMajor < 15) {
+    outdatedReasons.push(`Older iOS version (iOS ${iosMajor}) with tighter WebKit limits`);
+  }
+  if (safariMajor !== null && safariMajor < 15) {
+    outdatedReasons.push(`Older Safari engine (Safari ${safariMajor})`);
+  }
+  if (chromeMajor !== null && chromeMajor < 95) {
+    outdatedReasons.push(`Older Chromium-based browser (v${chromeMajor})`);
+  }
+  if (firefoxMajor !== null && firefoxMajor < 102) {
+    outdatedReasons.push(`Older Firefox version (v${firefoxMajor})`);
+  }
+  if (androidMajor !== null && androidMajor < 10) {
+    outdatedReasons.push(`Older Android WebView/OS (Android ${androidMajor})`);
+  }
+  if (!signals.webpEncodeSupported) {
+    outdatedReasons.push('Browser canvas lacks WebP encoding (falling back to JPEG compression)');
+  }
+  if (!signals.createImageBitmapSupported) {
+    outdatedReasons.push('Browser lacks hardware createImageBitmap (using classic image decoder)');
+  }
+
+  const isOutdatedBrowser = outdatedReasons.length > 0;
+  const wasmFallbackActive = !signals.wasmSupported;
+  const workerFallbackActive =
+    !signals.moduleWorkerSupported || Boolean(signals.workerRuntimeDisabled);
+
+  const unavailableFeatures: UnavailableBrowserFeature[] = [];
+
+  if (!signals.wasmSupported) {
+    unavailableFeatures.push({
+      key: 'wasm',
+      label: 'WebAssembly SQLite Engine',
+      reason: 'WebAssembly is disabled or unsupported in this browser environment.',
+      fallback: 'Running safely in IndexedDB JSON mode; use Timestamped Backup (.JSON).',
+    });
+  }
+  if (workerFallbackActive) {
+    unavailableFeatures.push({
+      key: 'worker',
+      label: 'Background Archive Worker',
+      reason: 'Background module Web Workers are unavailable or blocked here.',
+      fallback: 'Processing archives asynchronously on the main browser tab thread.',
+    });
+  }
+  if (!signals.opfsSupported) {
+    unavailableFeatures.push({
+      key: 'opfs',
+      label: 'OPFS On-Device Vault',
+      reason: 'Origin Private File System storage is unsupported in this browser version.',
+      fallback: 'Retaining rolling fallback snapshots inside IndexedDB instead.',
+    });
+  }
+  if (!signals.directoryPickerSupported) {
+    unavailableFeatures.push({
+      key: 'directoryPicker',
+      label: 'Direct Local Folder Picker',
+      reason: 'Direct folder access (showDirectoryPicker) is unsupported in this browser.',
+      fallback: 'Use Share / Export Worker Delta and Timestamped Backup (.JSON) files instead.',
+    });
+  }
+  if (!signals.persistStorageSupported) {
+    unavailableFeatures.push({
+      key: 'persistStorage',
+      label: 'Persistent Storage Lock',
+      reason: 'Manual persistent storage locking is not exposed by this browser.',
+      fallback: 'Storage eviction protection is managed automatically by your browser/OS.',
+    });
+  }
+  if (!signals.clipboardWriteSupported) {
+    unavailableFeatures.push({
+      key: 'clipboard',
+      label: 'One-Tap Clipboard Access',
+      reason: 'Programmatic clipboard access is blocked or unsupported in this context.',
+      fallback: 'Download the text/Markdown report file or copy from the inline text box.',
+    });
+  }
+  if (!signals.webShareFilesSupported) {
+    unavailableFeatures.push({
+      key: 'webShare',
+      label: 'Native Share Sheet (Files)',
+      reason: 'Native file sharing is unavailable on this browser.',
+      fallback: 'Buttons automatically trigger a standard file download instead.',
+    });
+  }
+  if (!signals.webpEncodeSupported) {
+    unavailableFeatures.push({
+      key: 'webp',
+      label: 'WebP Photo Compression',
+      reason: 'Canvas WebP encoding is unavailable on this browser version.',
+      fallback: 'Automatically compressing photos to compatible JPEG format.',
+    });
+  }
+
+  const shouldConfirmHeavyZipExport =
+    deviceTier === 1 || isOutdatedBrowser || workerFallbackActive;
+
+  let heavyZipCautionReason: string | null = null;
+  if (shouldConfirmHeavyZipExport) {
+    if (deviceTier === 1 && isOutdatedBrowser) {
+      heavyZipCautionReason =
+        'You appear to be on a lower-memory (Tier 1) device with an older browser version, so building a compressed .ZIP photo archive may run out of memory and close the tab.';
+    } else if (deviceTier === 1) {
+      heavyZipCautionReason =
+        'This Tier 1 device has very limited memory (≤1 GB RAM), so building a compressed .ZIP archive with photos may exhaust tab memory.';
+    } else if (isOutdatedBrowser) {
+      heavyZipCautionReason =
+        'You appear to be using an older browser version, where building large compressed .ZIP photo archives is more likely to run out of memory.';
+    } else {
+      heavyZipCautionReason =
+        'Background archive Workers are unavailable in this browser, so .ZIP compression runs inside the main page tab and may struggle on large photo sets.';
+    }
+  }
+
+  return {
+    isOutdatedBrowser,
+    outdatedReasons,
+    wasmFallbackActive,
+    shouldConfirmHeavyZipExport,
+    heavyZipCautionReason,
+    signals,
+    unavailableFeatures,
+  };
+}
+
+/**
+ * Computes the polite confirmation prompt shown before heavy `.ZIP` exports on Tier 1
+ * devices, outdated browsers, or restricted no-Worker contexts.
+ */
+export function getHeavyZipExportGate(
+  assessment: DeviceCapabilityAssessment,
+  browserCompat: BrowserCompatibilityAssessment
+): HeavyZipExportGate {
+  const requiresConfirmation =
+    assessment.tier === 1 || browserCompat.shouldConfirmHeavyZipExport;
+
+  if (!requiresConfirmation) {
+    return {
+      requiresConfirmation: false,
+      title: '',
+      body: '',
+      advice: '',
+    };
+  }
+
+  return {
+    requiresConfirmation: true,
+    title: 'Memory Caution for Older or Lower-Memory Device',
+    body:
+      browserCompat.heavyZipCautionReason ||
+      'Your device or browser may have limited memory for building large compressed .ZIP files.',
+    advice:
+      'You can still try creating the .ZIP archive below. If it fails or reloads the page, please use Timestamped Backup (.JSON) instead — it safely backs up your herd using much less memory because of your older device or browser.',
+  };
+}
+

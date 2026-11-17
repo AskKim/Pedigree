@@ -88,6 +88,16 @@ export function AnimalPhotoGallery({
     onClose: () => setLightboxOpen(false),
   });
 
+  const captionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (captionPulseTimerRef.current !== null) {
+        clearTimeout(captionPulseTimerRef.current);
+      }
+    };
+  }, []);
+
   // Clear per-animal resolved full-res image URLs when switching animals
   useEffect(() => {
     setHydratedUrls({});
@@ -105,9 +115,13 @@ export function AnimalPhotoGallery({
     void onLoadFullPhoto(targetId)
       .then((resolved) => {
         if (cancelled || !resolved) return;
-        setHydratedUrls((prev) =>
-          prev[targetId] === resolved ? prev : { ...prev, [targetId]: resolved }
-        );
+        setHydratedUrls((prev) => {
+          if (prev[targetId] === resolved) return prev;
+          const entries = Object.entries(prev).filter(([k]) => k !== targetId);
+          // Keep local component state bounded even on large multi-photo galleries
+          const trimmed = entries.slice(-7);
+          return Object.fromEntries([...trimmed, [targetId, resolved]]);
+        });
       })
       .finally(() => {
         if (!cancelled) {
@@ -221,7 +235,13 @@ export function AnimalPhotoGallery({
     if (trimmed === activePhoto.caption) return;
     await onUpdateCaption(activePhoto.id, trimmed);
     setCaptionSavedPulse(true);
-    setTimeout(() => setCaptionSavedPulse(false), 1800);
+    if (captionPulseTimerRef.current !== null) {
+      clearTimeout(captionPulseTimerRef.current);
+    }
+    captionPulseTimerRef.current = setTimeout(() => {
+      captionPulseTimerRef.current = null;
+      setCaptionSavedPulse(false);
+    }, 1800);
   };
 
   return (
