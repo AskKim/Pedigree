@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   ArrowRight,
   CalendarCheck,
+  Clock,
   FileBarChart2,
   GitFork,
   HelpCircle,
@@ -43,7 +44,11 @@ import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { useDeviceCapability } from './storage/deviceCapabilityDetector';
 import { usePwaUpdateStatus } from './storage/pwaUpdateManager';
-import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
+import {
+  formatClockSkewHuman,
+  useConnectivityStatus,
+  usePWAInstall,
+} from './storage/storageProtection';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './utils/lazyRoute';
 import { useAccessibleDialog } from './utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from './utils/useAsyncSubmitLock';
@@ -98,7 +103,8 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
 export default function App() {
   const store = useBarnStore();
   const deviceCapability = useDeviceCapability();
-  const isOnline = useOnlineStatus();
+  const connectivity = useConnectivityStatus();
+  const isOnline = connectivity.isEffectivelyOnline;
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
   const { state: pwaUpdate, applyUpdate: applyPwaUpdate, dismissUpdate: dismissPwaUpdate } =
     usePwaUpdateStatus();
@@ -107,6 +113,7 @@ export default function App() {
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
   const [dismissedCompatBanner, setDismissedCompatBanner] = useState(false);
+  const [dismissedClockDriftBanner, setDismissedClockDriftBanner] = useState(false);
   const [hasOpenModal, setHasOpenModal] = useState(false);
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
   const vaultBannerLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
@@ -124,14 +131,30 @@ export default function App() {
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
+    let rafId: number | null = null;
     const syncOpenModalState = () => {
-      setHasOpenModal(Boolean(document.querySelector('[role="dialog"]')));
+      rafId = null;
+      const modalOpen = Boolean(document.querySelector('[role="dialog"], [aria-modal="true"]'));
+      setHasOpenModal((prev) => (prev === modalOpen ? prev : modalOpen));
     };
     syncOpenModalState();
     if (typeof MutationObserver === 'undefined') return;
-    const observer = new MutationObserver(syncOpenModalState);
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        rafId = window.requestAnimationFrame(syncOpenModalState);
+      } else {
+        syncOpenModalState();
+      }
+    };
+    const observer = new MutationObserver(scheduleSync);
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (rafId !== null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
   }, []);
 
   const triggerShortcutToast = useCallback((key: string, label: string) => {
@@ -157,9 +180,13 @@ export default function App() {
     const onGlobalShortcut = (e: KeyboardEvent) => {
       if (store.isLoading || !store.snapshot || !store.activeSpeciesData) return;
       if (store.wipedRecoveryContext?.detected) return;
-      if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.isComposing || e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
       if (showHerdSpeciesPicker || showShortcutsHelp || store.pendingCalendarSync) return;
-      if (typeof document !== 'undefined' && document.querySelector('[role="dialog"]')) return;
+      if (typeof document !== 'undefined' && document.querySelector('[role="dialog"], [aria-modal="true"]')) {
+        return;
+      }
 
       const target = e.target as HTMLElement | null;
       if (target) {
@@ -168,7 +195,12 @@ export default function App() {
           tag === 'INPUT' ||
           tag === 'TEXTAREA' ||
           tag === 'SELECT' ||
-          target.isContentEditable
+          target.isContentEditable ||
+          Boolean(
+            target.closest(
+              '[role="combobox"], [role="listbox"], [role="menu"], [role="slider"], [role="application"]'
+            )
+          )
         ) {
           return;
         }
@@ -188,6 +220,8 @@ export default function App() {
         r: { route: 'herd', label: 'Herd' },
         b: { route: 'breeding', label: 'Breeding' },
         p: { route: 'pedigree', label: 'Pedigree' },
+        o: { route: 'reports', label: 'Reports' },
+        s: { route: 'settings', label: 'Import & Settings' },
       };
       const entry = shortcutMap[key];
       if (!entry) return;
@@ -289,7 +323,7 @@ export default function App() {
     { id: 'herd', label: 'Herd', shortcut: 'r' },
     { id: 'breeding', label: 'Breeding', shortcut: 'b' },
     { id: 'pedigree', label: 'Pedigree', shortcut: 'p' },
-    { id: 'reports', label: 'Reports', shortcut: '' },
+    { id: 'reports', label: 'Reports', shortcut: 'o' },
   ];
 
   const showInstallReminder =
@@ -345,13 +379,25 @@ export default function App() {
         {/* Zone 3: Quick Reload, Offline Status, Light/Dark Toggle & Settings */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {!isOnline && (
-            <span
-              title="Operating in offline barn mode — all edits stay safe locally"
-              className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-[var(--barn-sage)] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]"
+            <button
+              type="button"
+              onClick={() => setRoute('settings')}
+              title={
+                connectivity.reason === 'manual_offline'
+                  ? 'Manual App Offline Mode enabled — click to manage in Settings'
+                  : connectivity.reason === 'captive_or_unreachable'
+                  ? 'Network probe could not reach origin — operating locally'
+                  : 'Operating in offline barn mode — all edits stay safe locally'
+              }
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-[var(--barn-sage)] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] hover:opacity-90"
             >
               <WifiOff className="w-3.5 h-3.5" aria-hidden="true" />
-              Offline Ready
-            </span>
+              {connectivity.reason === 'manual_offline'
+                ? 'App Offline'
+                : connectivity.reason === 'captive_or_unreachable'
+                ? 'No Internet'
+                : 'Offline Ready'}
+            </button>
           )}
 
           <button
@@ -406,6 +452,12 @@ export default function App() {
             type="button"
             onClick={() => setRoute(route === 'settings' ? 'dashboard' : 'settings')}
             aria-current={route === 'settings' ? 'page' : undefined}
+            aria-keyshortcuts="s"
+            title={
+              route === 'settings'
+                ? `Back to ${activeSpeciesName}`
+                : 'Import & Settings (Shortcut: S)'
+            }
             aria-label={
               route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import and Settings'
             }
@@ -432,58 +484,143 @@ export default function App() {
       >
         {/* Offline Barn Mode Banner on Mobile */}
         {!isOnline && (
-          <div className="sm:hidden bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-xl px-3.5 py-2 text-xs font-medium flex items-center gap-2">
-            <WifiOff className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-            <span>Offline Barn Mode — all records saved locally on device.</span>
+          <div className="sm:hidden bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-xl px-3.5 py-2 text-xs font-medium flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 min-w-0">
+              <WifiOff className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span className="truncate">
+                {connectivity.reason === 'manual_offline'
+                  ? 'Manual App Offline Mode — network actions held locally.'
+                  : connectivity.reason === 'captive_or_unreachable'
+                  ? 'Unreachable or captive Wi-Fi — saving locally.'
+                  : 'Offline Barn Mode — all records saved locally on device.'}
+              </span>
+            </span>
           </div>
         )}
 
-        {/* Manual Service Worker Update Gate with Open-Dialog Protection */}
-        {pwaUpdate.updateAvailable && !pwaUpdate.dismissed && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
-          >
-            <div className="flex items-start gap-2 min-w-0 flex-1">
-              <RefreshCw className="w-4 h-4 text-[var(--barn-sage)] shrink-0 mt-0.5" aria-hidden="true" />
-              <div className="min-w-0 space-y-0.5">
-                <div className="font-semibold">App Update Ready Offline</div>
-                <div className="text-[11px] text-[var(--barn-muted)]">
-                  {hasOpenModal
-                    ? 'Update deferred while a dialog or editor is open. Save and close your open window before applying so unsaved edits are protected.'
-                    : 'A newer cached version of Community Pedigree is ready. Apply now to reload cleanly across open tabs.'}
+        {/* Release Status / Upgrade Gate Block Warning */}
+        {pwaUpdate.policy !== 'pinned' &&
+          pwaUpdate.gateDecision &&
+          !pwaUpdate.gateDecision.canProceedWithDirectSwSwap && (
+            <div
+              role="alert"
+              className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+            >
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                <AlertTriangle
+                  className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 space-y-0.5">
+                  <div className="font-semibold">{pwaUpdate.gateDecision.headline}</div>
+                  <div className="text-[11px] text-[var(--barn-muted)]">
+                    {pwaUpdate.gateDecision.detail}
+                  </div>
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {pwaUpdate.gateDecision.status === 'requires_verified_backup' && (
+                  <button
+                    type="button"
+                    onClick={() => void store.createAndVerifyPreUpgradeBackup()}
+                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  >
+                    Verify &amp; Download Safety Backup
+                  </button>
+                )}
+                {route !== 'settings' && (
+                  <button
+                    type="button"
+                    onClick={() => setRoute('settings')}
+                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold whitespace-nowrap"
+                  >
+                    Manage Updates in Settings
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                disabled={hasOpenModal || pwaUpdate.applying}
-                onClick={() => void applyPwaUpdate()}
-                title={
-                  hasOpenModal
-                    ? 'Close the active editor dialog first to protect unsaved changes'
-                    : 'Activate waiting update and reload cleanly'
-                }
-                className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {pwaUpdate.applying
-                  ? 'Applying Update...'
-                  : hasOpenModal
-                  ? 'Finish Editing First'
-                  : 'Apply Update & Reload'}
-              </button>
-              <button
-                type="button"
-                onClick={dismissPwaUpdate}
-                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
-              >
-                Later
-              </button>
+          )}
+
+        {/* Manual Service Worker Update Gate with Policy Governor & Open-Dialog Protection */}
+        {pwaUpdate.policy !== 'pinned' &&
+          pwaUpdate.updateAvailable &&
+          !pwaUpdate.dismissed &&
+          (pwaUpdate.policy === 'notify' ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[var(--barn-ink)] rounded-xl px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2"
+            >
+              <span className="flex items-center gap-2 text-[var(--barn-muted)]">
+                <RefreshCw className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                <span>
+                  <strong className="text-[var(--barn-ink)]">App Update Available</strong> (passive notify mode).
+                </span>
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                {route !== 'settings' && (
+                  <button
+                    type="button"
+                    onClick={() => setRoute('settings')}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)]"
+                  >
+                    Review in Settings
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={dismissPwaUpdate}
+                  className="min-h-[30px] px-2 text-[11px] underline"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          ) : (
+            <div
+              role="status"
+              aria-live="polite"
+              className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+            >
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                <RefreshCw className="w-4 h-4 text-[var(--barn-sage)] shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="min-w-0 space-y-0.5">
+                  <div className="font-semibold">App Update Ready Offline</div>
+                  <div className="text-[11px] text-[var(--barn-muted)]">
+                    {hasOpenModal
+                      ? 'Update deferred while a dialog or editor is open. Save and close your open window before applying so unsaved edits are protected.'
+                      : 'A newer cached version of Community Pedigree is ready. Apply now to reload cleanly across open tabs.'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={hasOpenModal || pwaUpdate.applying}
+                  onClick={() => void applyPwaUpdate()}
+                  title={
+                    hasOpenModal
+                      ? 'Close the active editor dialog first to protect unsaved changes'
+                      : 'Activate waiting update and reload cleanly'
+                  }
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {pwaUpdate.applying
+                    ? 'Applying Update...'
+                    : hasOpenModal
+                    ? 'Finish Editing First'
+                    : 'Apply Update & Reload'}
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissPwaUpdate}
+                  className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+                >
+                  Later
+                </button>
+              </div>
+            </div>
+          ))}
 
         {/* Home Screen Install & Storage Eviction Defense Prompt */}
         {showInstallReminder && (
@@ -610,6 +747,38 @@ export default function App() {
                 Snooze 24h
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Clock Skew / Drift Nudge Banner (IMP-023) */}
+        {connectivity.clockDriftWarning && !dismissedClockDriftBanner && (
+          <div
+            role="status"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <Clock
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-semibold">
+                  Device Clock Appears Off ({formatClockSkewHuman(connectivity.clockSkewMs)})
+                </div>
+                <div className="text-[11px] text-[var(--barn-muted)]">
+                  Multi-worker sync timestamps are automatically compensated so your edits stay in
+                  order, though checking your device&apos;s Date &amp; Time settings keeps due-date
+                  alerts accurate.
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDismissedClockDriftBanner(true)}
+              className="min-h-[44px] sm:min-h-[32px] px-2.5 text-[11px] underline whitespace-nowrap shrink-0"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -1077,7 +1246,12 @@ export default function App() {
             onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
             onRestoreRollingBackup={store.restoreRollingBackupByKey}
             onExportSqliteBytes={store.exportSqliteBytes}
+            onInspectSqliteRestoreBytes={store.inspectSqliteRestoreBytes}
             onImportSqliteBytes={store.importSqliteBytes}
+            onAnalyzePhotoFootprint={store.analyzePhotoStorageFootprint}
+            onPruneOrphanPhotos={store.pruneOrphanAnimalPhotos}
+            onReoptimizeOversizedPhotos={store.reoptimizeOversizedAnimalPhotos}
+            onPruneFullResPhotoPayloads={store.pruneFullResPhotoPayloadsKeepingThumbnails}
             onScanDatabaseHealth={store.scanDatabaseHealth}
             onRepairDatabaseHealth={store.runHealthCheckAndRepair}
             onResetDatabaseConnection={store.resetDatabaseConnection}
@@ -1107,6 +1281,7 @@ export default function App() {
             rollingBackups={store.rollingBackups}
             archivedHerdBundles={store.archivedHerdBundles}
             onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
+            onCreateVerifiedPreUpgradeBackup={store.createAndVerifyPreUpgradeBackup}
             onRestoreOpfsVaultBackup={store.restoreOpfsVaultBackup}
             onDownloadOpfsVaultBackup={store.downloadOpfsVaultBackupByKey}
             onDeleteOpfsVaultBackup={store.deleteOpfsVaultBackupByKey}
@@ -1135,7 +1310,9 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">D</kbd> Dashboard ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">R</kbd> Herd ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
-              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
             </span>
             <button
               type="button"
@@ -1289,6 +1466,8 @@ export default function App() {
                 { key: 'R', label: 'Herd Registry', desc: 'Open Herd (or Select Livestock Herd from Home)' },
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
+                { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
+                { key: 'S', label: 'Import & Settings', desc: 'Backups, external platform importer, diagnostics & sync' },
                 { key: '?', label: 'Shortcuts Help', desc: 'Open this quick keyboard reference' },
                 { key: 'Tab / Esc', label: 'Dialog Controls', desc: 'Cycle controls inside modals or press Esc to close' },
               ].map((item) => (

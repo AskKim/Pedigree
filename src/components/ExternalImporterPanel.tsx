@@ -76,6 +76,7 @@ import {
   validateUploadFileSize,
 } from '../core/inputSanitization';
 import { copyTextWithFallback } from '../utils/webFileActions';
+import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 
@@ -105,6 +106,7 @@ export function ExternalImporterPanel({
   );
   const [speciesMenuOpen, setSpeciesMenuOpen] = useState<boolean>(false);
   const [isFilteringSpecies, setIsFilteringSpecies] = useState<boolean>(false);
+  const [speciesActiveIndex, setSpeciesActiveIndex] = useState<number>(-1);
 
   const [customSpeciesOverrides, setCustomSpeciesOverrides] = useState<
     Record<string, CustomSpeciesImportOverride>
@@ -129,6 +131,7 @@ export function ExternalImporterPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const speciesComboRef = useRef<HTMLDivElement | null>(null);
   const speciesInputRef = useRef<HTMLInputElement | null>(null);
+  const speciesOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const importer = getPlatformImporterById(selectedPlatformId);
 
@@ -210,6 +213,33 @@ export function ExternalImporterPanel({
     const inPresets = PREDEFINED_SPECIES_PRESETS.some((p) => isSameSpecies(p.name, clean));
     return !inConfigured && !inPresets;
   }, [fallbackSpecies, snapshot.speciesProfiles]);
+
+  const speciesDisplayOptions = useMemo(() => {
+    const items: Array<
+      | { kind: 'custom'; name: string }
+      | { kind: 'preset'; name: string; subtitle: string; isCustomConfigured: boolean }
+    > = [];
+    if (typedSpeciesIsBrandNew && fallbackSpecies.trim()) {
+      items.push({ kind: 'custom', name: fallbackSpecies.trim() });
+    }
+    for (const opt of dropdownSpeciesOptions) {
+      items.push({ kind: 'preset', ...opt });
+    }
+    return items;
+  }, [typedSpeciesIsBrandNew, fallbackSpecies, dropdownSpeciesOptions]);
+
+  useEffect(() => {
+    if (!speciesMenuOpen) {
+      setSpeciesActiveIndex(-1);
+      return;
+    }
+    setSpeciesActiveIndex((prev) => clampComboboxIndex(prev, speciesDisplayOptions.length));
+  }, [speciesMenuOpen, speciesDisplayOptions.length]);
+
+  useEffect(() => {
+    if (!speciesMenuOpen || speciesActiveIndex < 0) return;
+    speciesOptionRefs.current[speciesActiveIndex]?.scrollIntoView?.({ block: 'nearest' });
+  }, [speciesMenuOpen, speciesActiveIndex]);
 
   const handleStageFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -560,7 +590,17 @@ export function ExternalImporterPanel({
         </div>
 
         {/* Custom Accessible Combobox: Drops down immediately on click/tap AND allows typing custom species */}
-        <div ref={speciesComboRef} className="relative">
+        <div
+          ref={speciesComboRef}
+          onBlur={(e) => {
+            if (!speciesComboRef.current?.contains(e.relatedTarget as Node | null)) {
+              setSpeciesMenuOpen(false);
+              setIsFilteringSpecies(false);
+              setSpeciesActiveIndex(-1);
+            }
+          }}
+          className="relative"
+        >
           <label
             htmlFor="importer-default-species-input"
             className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
@@ -574,7 +614,12 @@ export function ExternalImporterPanel({
               type="text"
               role="combobox"
               aria-expanded={speciesMenuOpen}
-              aria-controls="importer-species-listbox"
+              aria-controls={speciesMenuOpen ? 'importer-species-listbox' : undefined}
+              aria-activedescendant={
+                speciesMenuOpen && speciesActiveIndex >= 0 && speciesDisplayOptions[speciesActiveIndex]
+                  ? `importer-species-opt-${speciesActiveIndex}`
+                  : undefined
+              }
               aria-autocomplete="list"
               value={fallbackSpecies}
               onFocus={() => {
@@ -588,14 +633,46 @@ export function ExternalImporterPanel({
                 setFallbackSpecies(e.target.value);
                 setIsFilteringSpecies(true);
                 setSpeciesMenuOpen(true);
+                setSpeciesActiveIndex(-1);
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Escape') {
+                if (e.key === 'Escape' && speciesMenuOpen) {
+                  e.preventDefault();
+                  e.stopPropagation();
                   setSpeciesMenuOpen(false);
                   setIsFilteringSpecies(false);
-                } else if (e.key === 'ArrowDown' && !speciesMenuOpen) {
-                  setIsFilteringSpecies(false);
-                  setSpeciesMenuOpen(true);
+                  setSpeciesActiveIndex(-1);
+                } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  const next = stepEnabledComboboxIndex(
+                    speciesMenuOpen ? speciesActiveIndex : -1,
+                    speciesDisplayOptions.length,
+                    e.key
+                  );
+                  if (!speciesMenuOpen) {
+                    setIsFilteringSpecies(false);
+                    setSpeciesMenuOpen(true);
+                  }
+                  setSpeciesActiveIndex(next);
+                } else if (
+                  (e.key === 'Home' || e.key === 'End') &&
+                  speciesMenuOpen &&
+                  speciesDisplayOptions.length > 0
+                ) {
+                  e.preventDefault();
+                  setSpeciesActiveIndex(
+                    stepEnabledComboboxIndex(speciesActiveIndex, speciesDisplayOptions.length, e.key)
+                  );
+                } else if (e.key === 'Enter' && speciesMenuOpen) {
+                  const highlighted =
+                    speciesActiveIndex >= 0 ? speciesDisplayOptions[speciesActiveIndex] : undefined;
+                  if (highlighted) {
+                    e.preventDefault();
+                    setFallbackSpecies(highlighted.name);
+                    setSpeciesMenuOpen(false);
+                    setIsFilteringSpecies(false);
+                    setSpeciesActiveIndex(-1);
+                  }
                 }
               }}
               placeholder="Select or type any species (e.g. Goat, Yak, Duck)..."
@@ -603,13 +680,17 @@ export function ExternalImporterPanel({
             />
             <button
               type="button"
+              tabIndex={-1}
               aria-label={speciesMenuOpen ? 'Close species list' : 'Open species list'}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 setIsFilteringSpecies(false);
                 setSpeciesMenuOpen((open) => {
                   const next = !open;
                   if (next) {
                     speciesInputRef.current?.focus();
+                  } else {
+                    setSpeciesActiveIndex(-1);
                   }
                   return next;
                 });
@@ -628,49 +709,74 @@ export function ExternalImporterPanel({
             <div
               id="importer-species-listbox"
               role="listbox"
+              aria-label="Default species options"
               className="absolute z-30 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] shadow-xl divide-y divide-[var(--barn-border)]"
             >
-              {typedSpeciesIsBrandNew && fallbackSpecies.trim() && (
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={true}
-                  onClick={() => {
-                    setFallbackSpecies(fallbackSpecies.trim());
-                    setSpeciesMenuOpen(false);
-                    setIsFilteringSpecies(false);
-                  }}
-                  className="w-full text-left px-3 py-2.5 bg-[var(--barn-sage-tint)] hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 text-xs"
-                >
-                  <div className="min-w-0">
-                    <div className="font-semibold text-[var(--barn-ink)] truncate">
-                      + Use Custom Species: &ldquo;{fallbackSpecies.trim()}&rdquo;
-                    </div>
-                    <div className="text-[11px] text-[var(--barn-muted)]">
-                      Not in predefined list — schedule will be created automatically
-                    </div>
-                  </div>
-                  <Check className="w-4 h-4 text-[var(--barn-sage)] shrink-0" />
-                </button>
-              )}
+              {speciesDisplayOptions.map((opt, idx) => {
+                const optionId = `importer-species-opt-${idx}`;
+                const isHighlighted = idx === speciesActiveIndex;
 
-              {dropdownSpeciesOptions.map((opt) => {
+                if (opt.kind === 'custom') {
+                  return (
+                    <button
+                      key={`__custom__:${opt.name}`}
+                      id={optionId}
+                      ref={(el) => {
+                        speciesOptionRefs.current[idx] = el;
+                      }}
+                      type="button"
+                      role="option"
+                      aria-selected={true}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => setSpeciesActiveIndex(idx)}
+                      onClick={() => {
+                        setFallbackSpecies(opt.name);
+                        setSpeciesMenuOpen(false);
+                        setIsFilteringSpecies(false);
+                        setSpeciesActiveIndex(-1);
+                      }}
+                      className={`w-full text-left px-3 py-2.5 bg-[var(--barn-sage-tint)] hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 text-xs ${
+                        isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)]' : ''
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold text-[var(--barn-ink)] truncate">
+                          + Use Custom Species: &ldquo;{opt.name}&rdquo;
+                        </div>
+                        <div className="text-[11px] text-[var(--barn-muted)]">
+                          Not in predefined list — schedule will be created automatically
+                        </div>
+                      </div>
+                      <Check className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    </button>
+                  );
+                }
+
                 const isSelected = isSameSpecies(fallbackSpecies, opt.name);
                 return (
                   <button
                     key={opt.name}
+                    id={optionId}
+                    ref={(el) => {
+                      speciesOptionRefs.current[idx] = el;
+                    }}
                     type="button"
                     role="option"
                     aria-selected={isSelected}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setSpeciesActiveIndex(idx)}
                     onClick={() => {
                       setFallbackSpecies(opt.name);
                       setSpeciesMenuOpen(false);
                       setIsFilteringSpecies(false);
+                      setSpeciesActiveIndex(-1);
                     }}
                     className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors ${
                       isSelected
                         ? 'bg-[var(--barn-subtle)] font-semibold'
                         : 'hover:bg-[var(--barn-subtle)]/70'
+                    } ${
+                      isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
                     }`}
                   >
                     <div className="min-w-0">
@@ -687,7 +793,7 @@ export function ExternalImporterPanel({
                       </div>
                     </div>
                     {isSelected && (
-                      <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" />
+                      <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
                     )}
                   </button>
                 );

@@ -365,6 +365,7 @@ export interface BarnSettings {
     fileName?: string;
   };
   backupReminderSnoozedUntilMs?: number;
+  _rev?: number;
   updatedAt: string;
 }
 
@@ -401,6 +402,7 @@ export interface SpeciesProfile {
   offspringLabel: string;
   exampleBreeds: string[];
   milestones: SpeciesMilestoneTemplate[];
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -451,6 +453,7 @@ export interface Animal {
   notes: string;
   offloadedArchiveKey?: string;
   offloadedAtIso?: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -465,6 +468,7 @@ export interface CageLocation {
   section: string;
   capacity: number;
   notes: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -496,6 +500,7 @@ export interface BreedingRecord {
   ultrasoundFetalCount?: number;
   ultrasoundProjectedDueIso?: string;
   notes: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -514,6 +519,7 @@ export interface BarnTask {
   linkedAnimalName: string;
   linkedBreedingId: string;
   completed: boolean;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -541,6 +547,7 @@ export interface CareLog {
   ultrasoundResult?: UltrasoundResult;
   ultrasoundFetalCount?: number;
   notes: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -558,6 +565,7 @@ export interface ShowEvent {
   entryDeadlineIso: string; // YYYY-MM-DD or ""
   enteredAnimalIds: string[];
   notes: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -582,6 +590,7 @@ export interface AnimalPhoto {
   storedBytes: number;
   thumbnailDataUrl: string;
   dataUrl: string;
+  _rev?: number;
   createdAt: string;
   updatedAt: string;
 }

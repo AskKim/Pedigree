@@ -40,7 +40,9 @@ import {
   SpeciesProfile,
 } from '../core/models';
 import {
+  buildPedigreeBranchViewport,
   buildPedigreeSlots,
+  getGen3BranchesWithKnownAncestors,
   getPedigreeCompletenessSummary,
   PedigreeSlot,
   wouldCreateCycle,
@@ -108,6 +110,7 @@ export function PedigreeScreen({
   } = activeData;
 
   const [zoom, setZoom] = useState<number>(1);
+  const [expandedGen3Branches, setExpandedGen3Branches] = useState<Set<number>>(() => new Set());
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
   const [includeArchivedInLink, setIncludeArchivedInLink] = useState(false);
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
@@ -256,6 +259,32 @@ export function PedigreeScreen({
     if (!subject) return [];
     return buildPedigreeSlots(subject, herdById, generations, speciesProfile);
   }, [subject, herdById, generations, speciesProfile]);
+
+  useEffect(() => {
+    setExpandedGen3Branches(new Set());
+  }, [subject?.id, generations, speciesProfile.name]);
+
+  const branchViewport = useMemo(
+    () => buildPedigreeBranchViewport(slots, generations, expandedGen3Branches),
+    [slots, generations, expandedGen3Branches]
+  );
+
+  const toggleGen3Branch = useCallback((branchIndex: number) => {
+    setExpandedGen3Branches((prev) => {
+      const next = new Set(prev);
+      if (next.has(branchIndex)) {
+        next.delete(branchIndex);
+      } else {
+        next.add(branchIndex);
+      }
+      return next;
+    });
+  }, []);
+
+  const branchesWithKnownGen4 = useMemo(
+    () => (generations >= 4 ? getGen3BranchesWithKnownAncestors(slots) : []),
+    [slots, generations]
+  );
 
   const coi = subject ? coiByAnimalId.get(subject.id) : null;
 
@@ -499,21 +528,6 @@ export function PedigreeScreen({
     }
   }, [subject?.id, applyVisualZoomFrame]);
 
-  useEffect(() => {
-    zoomRef.current = zoom;
-    const dims = canvasDimsRef.current;
-    if (sizerRef.current) {
-      sizerRef.current.style.width = `${dims.width * zoom}px`;
-      sizerRef.current.style.height = `${dims.height * zoom}px`;
-    }
-    if (stageRef.current) {
-      stageRef.current.style.transform = `scale(${zoom})`;
-    }
-    if (zoomLabelRef.current) {
-      zoomLabelRef.current.textContent = `${Math.round(zoom * 100)}%`;
-    }
-  }, [zoom, generations]);
-
   const handleFitTreeWidth = () => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -537,24 +551,123 @@ export function PedigreeScreen({
   );
 
   const { colWidth, cardWidth, cardHeight, rowPitch, compact } = layoutConfig;
-  const leafCount = 1 << generations;
-  const canvasHeight = Math.max(460, leafCount * rowPitch + 40);
-  const canvasWidth = (generations + 1) * colWidth + 24;
-  canvasDimsRef.current = { width: canvasWidth, height: canvasHeight };
+  const branchToggleGutter = generations >= 4 ? 78 : 0;
+  const hasAnyExpandedGen4 = generations >= 4 && expandedGen3Branches.size > 0;
 
-  const { nodeCoords, connectorPaths } = useMemo(() => {
+  const { nodeCoords, connectorPaths, canvasWidth, canvasHeight } = useMemo(() => {
     const coords = new Map<string, { x: number; y: number; slot: PedigreeSlot }>();
     const paths: Array<{ d: string; isSire: boolean; isKnown: boolean }> = [];
-    if (slots.length === 0) {
-      return { nodeCoords: coords, connectorPaths: paths };
+    if (branchViewport.visibleSlots.length === 0) {
+      return {
+        nodeCoords: coords,
+        connectorPaths: paths,
+        canvasWidth: 960,
+        canvasHeight: 640,
+      };
     }
 
-    for (const sl of slots) {
-      const slotsInGen = 1 << sl.generation;
-      const x = 16 + sl.generation * colWidth;
-      const bandHeight = (canvasHeight - 32) / slotsInGen;
-      const y = 16 + bandHeight * (sl.slotIndex + 0.5) - cardHeight / 2;
-      coords.set(`${sl.generation}:${sl.slotIndex}`, { x, y, slot: sl });
+    const slotByKey = new Map<string, PedigreeSlot>();
+    for (const sl of branchViewport.visibleSlots) {
+      slotByKey.set(`${sl.generation}:${sl.slotIndex}`, sl);
+    }
+
+    let computedHeight: number;
+    let computedWidth: number;
+
+    if (generations <= 3) {
+      const leafCount = 1 << generations;
+      computedHeight = Math.max(460, leafCount * rowPitch + 40);
+      computedWidth = (generations + 1) * colWidth + 24;
+
+      for (const sl of branchViewport.visibleSlots) {
+        const slotsInGen = 1 << sl.generation;
+        const x = 16 + sl.generation * colWidth;
+        const bandHeight = (computedHeight - 32) / slotsInGen;
+        const y = 16 + bandHeight * (sl.slotIndex + 0.5) - cardHeight / 2;
+        coords.set(`${sl.generation}:${sl.slotIndex}`, { x, y, slot: sl });
+      }
+    } else {
+      computedWidth = hasAnyExpandedGen4
+        ? (generations + 1) * colWidth + branchToggleGutter + 24
+        : 4 * colWidth + branchToggleGutter + 32;
+
+      const xForGen = (gen: number) =>
+        16 + gen * colWidth + (gen >= 4 ? branchToggleGutter : 0);
+
+      let yCursor = 16;
+      const gen3CenterY = new Array<number>(8);
+      const subLeafCountPerBranch = 1 << (generations - 3);
+      const collapsedBranchBandHeight = Math.max(cardHeight + 18, 68);
+
+      for (let b = 0; b < 8; b++) {
+        if (expandedGen3Branches.has(b)) {
+          const bandHeight = Math.max(cardHeight + 18, subLeafCountPerBranch * rowPitch);
+          for (let g = 4; g <= generations; g++) {
+            const slotsPerBranchAtG = 1 << (g - 3);
+            const slotBand = bandHeight / slotsPerBranchAtG;
+            const baseIdx = b * slotsPerBranchAtG;
+            for (let k = 0; k < slotsPerBranchAtG; k++) {
+              const slotIdx = baseIdx + k;
+              const sl = slotByKey.get(`${g}:${slotIdx}`);
+              if (!sl) continue;
+              const y = yCursor + slotBand * (k + 0.5) - cardHeight / 2;
+              coords.set(`${g}:${slotIdx}`, { x: xForGen(g), y, slot: sl });
+            }
+          }
+          gen3CenterY[b] = yCursor + bandHeight / 2;
+          yCursor += bandHeight;
+        } else {
+          gen3CenterY[b] = yCursor + collapsedBranchBandHeight / 2;
+          yCursor += collapsedBranchBandHeight;
+        }
+
+        const g3Slot = slotByKey.get(`3:${b}`);
+        if (g3Slot) {
+          coords.set(`3:${b}`, {
+            x: xForGen(3),
+            y: gen3CenterY[b] - cardHeight / 2,
+            slot: g3Slot,
+          });
+        }
+      }
+
+      const gen2CenterY = new Array<number>(4);
+      for (let i = 0; i < 4; i++) {
+        gen2CenterY[i] = (gen3CenterY[i * 2] + gen3CenterY[i * 2 + 1]) / 2;
+        const sl = slotByKey.get(`2:${i}`);
+        if (sl) {
+          coords.set(`2:${i}`, {
+            x: xForGen(2),
+            y: gen2CenterY[i] - cardHeight / 2,
+            slot: sl,
+          });
+        }
+      }
+
+      const gen1CenterY = new Array<number>(2);
+      for (let i = 0; i < 2; i++) {
+        gen1CenterY[i] = (gen2CenterY[i * 2] + gen2CenterY[i * 2 + 1]) / 2;
+        const sl = slotByKey.get(`1:${i}`);
+        if (sl) {
+          coords.set(`1:${i}`, {
+            x: xForGen(1),
+            y: gen1CenterY[i] - cardHeight / 2,
+            slot: sl,
+          });
+        }
+      }
+
+      const rootCenterY = (gen1CenterY[0] + gen1CenterY[1]) / 2;
+      const rootSlot = slotByKey.get('0:0');
+      if (rootSlot) {
+        coords.set('0:0', {
+          x: xForGen(0),
+          y: rootCenterY - cardHeight / 2,
+          slot: rootSlot,
+        });
+      }
+
+      computedHeight = Math.max(460, yCursor + 24);
     }
 
     for (let g = 0; g < generations; g++) {
@@ -584,8 +697,39 @@ export function PedigreeScreen({
       }
     }
 
-    return { nodeCoords: coords, connectorPaths: paths };
-  }, [slots, colWidth, cardWidth, cardHeight, canvasHeight, generations]);
+    return {
+      nodeCoords: coords,
+      connectorPaths: paths,
+      canvasWidth: computedWidth,
+      canvasHeight: computedHeight,
+    };
+  }, [
+    branchViewport.visibleSlots,
+    expandedGen3Branches,
+    hasAnyExpandedGen4,
+    branchToggleGutter,
+    colWidth,
+    cardWidth,
+    cardHeight,
+    rowPitch,
+    generations,
+  ]);
+
+  canvasDimsRef.current = { width: canvasWidth, height: canvasHeight };
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+    if (sizerRef.current) {
+      sizerRef.current.style.width = `${canvasWidth * zoom}px`;
+      sizerRef.current.style.height = `${canvasHeight * zoom}px`;
+    }
+    if (stageRef.current) {
+      stageRef.current.style.transform = `scale(${zoom})`;
+    }
+    if (zoomLabelRef.current) {
+      zoomLabelRef.current.textContent = `${Math.round(zoom * 100)}%`;
+    }
+  }, [zoom, generations, canvasWidth, canvasHeight]);
 
   const handleViewportKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const vp = viewportRef.current;
@@ -857,10 +1001,41 @@ export function PedigreeScreen({
       {/* Scrollable Pinch-to-Zoom & Pan Bezier Pedigree Canvas */}
       <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl overflow-hidden">
         <div className="px-3 sm:px-4 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/55 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <span className="text-xs font-medium text-[var(--barn-muted)] truncate">
               {subject.name} · {generations}-Gen
             </span>
+            {generations >= 4 && (
+              <>
+                <span className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)]">
+                  ({branchViewport.visibleSlotsCount}/{branchViewport.totalSlotsCount} cards rendered
+                  {branchViewport.hiddenKnownAncestorsCount > 0
+                    ? ` · ${branchViewport.hiddenKnownAncestorsCount} hidden known`
+                    : ''}
+                  )
+                </span>
+                {branchesWithKnownGen4.length > 0 && expandedGen3Branches.size < branchesWithKnownGen4.length && (
+                  <button
+                    type="button"
+                    onClick={() => setExpandedGen3Branches(new Set(branchesWithKnownGen4))}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-sage)]/55 bg-[var(--barn-sage-tint)] text-[11px] font-semibold text-[var(--barn-ink)] hover:opacity-90 whitespace-nowrap"
+                  >
+                    Expand Known Gen 4+ ({branchesWithKnownGen4.length})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedGen3Branches((prev) =>
+                      prev.size === 8 ? new Set() : new Set([0, 1, 2, 3, 4, 5, 6, 7])
+                    )
+                  }
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
+                >
+                  {expandedGen3Branches.size === 8 ? 'Collapse Gen 4+' : 'Expand All Gen 4+'}
+                </button>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
@@ -1012,7 +1187,13 @@ export function PedigreeScreen({
                                 ? onOpenAnimalInHerd(a.id)
                                 : handleDrillToAnimal(a.id)
                             }
-                            className={`font-semibold text-left truncate hover:underline ${
+                            onFocus={(e) =>
+                              e.currentTarget.scrollIntoView?.({
+                                block: 'nearest',
+                                inline: 'nearest',
+                              })
+                            }
+                            className={`font-semibold text-left truncate hover:underline rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--barn-sage)] ${
                               compact ? 'text-[10.5px] leading-tight' : 'text-xs'
                             }`}
                             title={
@@ -1113,11 +1294,20 @@ export function PedigreeScreen({
                             setLinkSearchQuery('');
                             setLinkingSlot(slot);
                           }}
-                          className={`rounded-md border border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60 bg-[var(--barn-surface)] dark:bg-[var(--barn-canvas)] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-0.5 shrink-0 ${
+                          onFocus={(e) =>
+                            e.currentTarget.scrollIntoView?.({
+                              block: 'nearest',
+                              inline: 'nearest',
+                            })
+                          }
+                          aria-label={`Link missing ${
+                            isMaleSlot ? speciesProfile.maleLabel : speciesProfile.femaleLabel
+                          } for slot ${slot.generation}-${slot.slotIndex + 1}`}
+                          className={`rounded-md border border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60 bg-[var(--barn-surface)] dark:bg-[var(--barn-canvas)] font-medium text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--barn-sage)] inline-flex items-center gap-0.5 shrink-0 ${
                             compact ? 'px-1.5 py-0.5 text-[9.5px]' : 'min-h-[30px] px-2 py-1 text-[11px]'
                           }`}
                         >
-                          <Plus className="w-2.5 h-2.5" />
+                          <Plus className="w-2.5 h-2.5" aria-hidden="true" />
                           Link
                         </button>
                       )}
@@ -1126,6 +1316,56 @@ export function PedigreeScreen({
                 </div>
               );
             })}
+
+            {generations >= 4 &&
+              Array.from(branchViewport.branchSummaries.values()).map((summary) => {
+                const g3Box = nodeCoords.get(summary.slotKey);
+                if (!g3Box) return null;
+                const btnLeft = g3Box.x + cardWidth + 8;
+                const btnTop = g3Box.y + cardHeight / 2 - 14;
+                const g3Name = g3Box.slot.animal?.name || g3Box.slot.roleLabel;
+                return (
+                  <button
+                    key={`branch-toggle-${summary.branchIndex}`}
+                    type="button"
+                    aria-expanded={summary.isExpanded}
+                    onClick={() => toggleGen3Branch(summary.branchIndex)}
+                    onFocus={(e) =>
+                      e.currentTarget.scrollIntoView?.({
+                        block: 'nearest',
+                        inline: 'nearest',
+                      })
+                    }
+                    title={
+                      summary.isExpanded
+                        ? `Collapse Gen 4–${generations} ancestors behind ${g3Name}`
+                        : `Expand Gen 4–${generations} ancestors behind ${g3Name} (${summary.hiddenKnownAncestors} known of ${summary.hiddenTotalSlots} slots)`
+                    }
+                    aria-label={
+                      summary.isExpanded
+                        ? `Collapse generation 4 plus ancestors for ${g3Name}`
+                        : `Expand generation 4 plus ancestors for ${g3Name}: ${summary.hiddenKnownAncestors} known`
+                    }
+                    style={{
+                      left: `${btnLeft}px`,
+                      top: `${btnTop}px`,
+                    }}
+                    className={`absolute h-[28px] px-2 rounded-lg border text-[10px] font-semibold font-mono whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--barn-sage)] ${
+                      summary.isExpanded
+                        ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-transparent'
+                        : summary.hiddenKnownAncestors > 0
+                        ? 'bg-[var(--barn-sage-tint)] text-[var(--barn-ink)] border-[var(--barn-sage)] hover:opacity-90'
+                        : 'bg-[var(--barn-surface)] text-[var(--barn-muted)] border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+                    }`}
+                  >
+                    {summary.isExpanded
+                      ? 'Hide −'
+                      : summary.hiddenKnownAncestors > 0
+                      ? `+${summary.hiddenKnownAncestors} known`
+                      : `+${summary.hiddenTotalSlots}`}
+                  </button>
+                );
+              })}
           </div>
         </div>
         </div>

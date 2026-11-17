@@ -616,3 +616,109 @@ export function buildPedigreeSlots(
 
   return slots;
 }
+
+export interface PedigreeGen3BranchSummary {
+  branchIndex: number; // 0..7 corresponding to generation 3 slotIndex
+  slotKey: string; // "3:<branchIndex>"
+  isExpanded: boolean;
+  hiddenTotalSlots: number;
+  hiddenKnownAncestors: number;
+}
+
+export interface PedigreeBranchViewportResult {
+  visibleSlots: PedigreeSlot[];
+  branchSummaries: Map<string, PedigreeGen3BranchSummary>;
+  totalSlotsCount: number;
+  visibleSlotsCount: number;
+  hiddenSlotsCount: number;
+  hiddenKnownAncestorsCount: number;
+}
+
+/**
+ * Maps any slot at generation >= 4 back to its Generation-3 great-grandparent branch index (0..7).
+ * Returns `null` for generations 0..3.
+ */
+export function getGen3BranchIndex(generation: number, slotIndex: number): number | null {
+  if (generation < 4) return null;
+  const shift = generation - 3;
+  return Math.floor(slotIndex / (1 << shift));
+}
+
+/**
+ * Keeps Generation 0–3 (`15` slots max) active in the pedigree chart DOM by default and filters
+ * Generation 4–6 ancestor slots strictly to explicitly expanded Generation-3 branches.
+ * Note: `buildPedigreeSlots` continues returning full depth for `.HTM` & Barn Binder printouts.
+ */
+export function buildPedigreeBranchViewport(
+  slots: PedigreeSlot[],
+  maxGeneration: number,
+  expandedGen3Branches: ReadonlySet<number>
+): PedigreeBranchViewportResult {
+  const branchTotals = new Array<number>(8).fill(0);
+  const branchKnowns = new Array<number>(8).fill(0);
+
+  if (maxGeneration >= 4) {
+    for (const slot of slots) {
+      const branchIdx = getGen3BranchIndex(slot.generation, slot.slotIndex);
+      if (branchIdx === null || branchIdx < 0 || branchIdx >= 8) continue;
+      branchTotals[branchIdx] += 1;
+      if (slot.animal) {
+        branchKnowns[branchIdx] += 1;
+      }
+    }
+  }
+
+  const branchSummaries = new Map<string, PedigreeGen3BranchSummary>();
+  if (maxGeneration >= 4) {
+    for (let b = 0; b < 8; b++) {
+      const isExpanded = expandedGen3Branches.has(b);
+      branchSummaries.set(`3:${b}`, {
+        branchIndex: b,
+        slotKey: `3:${b}`,
+        isExpanded,
+        hiddenTotalSlots: isExpanded ? 0 : branchTotals[b],
+        hiddenKnownAncestors: isExpanded ? 0 : branchKnowns[b],
+      });
+    }
+  }
+
+  const visibleSlots: PedigreeSlot[] = [];
+  let hiddenKnownAncestorsCount = 0;
+
+  for (const slot of slots) {
+    if (slot.generation <= 3) {
+      visibleSlots.push(slot);
+      continue;
+    }
+    const branchIdx = getGen3BranchIndex(slot.generation, slot.slotIndex);
+    if (branchIdx !== null && expandedGen3Branches.has(branchIdx)) {
+      visibleSlots.push(slot);
+    } else if (slot.animal) {
+      hiddenKnownAncestorsCount += 1;
+    }
+  }
+
+  return {
+    visibleSlots,
+    branchSummaries,
+    totalSlotsCount: slots.length,
+    visibleSlotsCount: visibleSlots.length,
+    hiddenSlotsCount: slots.length - visibleSlots.length,
+    hiddenKnownAncestorsCount,
+  };
+}
+
+/**
+ * Returns the Generation-3 branch indices (`0..7`) that have at least one recorded Generation 4+ ancestor.
+ */
+export function getGen3BranchesWithKnownAncestors(slots: PedigreeSlot[]): number[] {
+  const active = new Set<number>();
+  for (const slot of slots) {
+    if (slot.generation >= 4 && slot.animal) {
+      const b = getGen3BranchIndex(slot.generation, slot.slotIndex);
+      if (b !== null) active.add(b);
+    }
+  }
+  return Array.from(active).sort((a, b) => a - b);
+}
+

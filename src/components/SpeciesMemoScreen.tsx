@@ -227,9 +227,14 @@ export function SpeciesMemoScreen({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="flex items-center p-0.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+            <div
+              role="group"
+              aria-label="Memo view mode"
+              className="flex items-center p-0.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+            >
               <button
                 type="button"
+                aria-pressed={viewMode === 'edit'}
                 onClick={() => setViewMode('edit')}
                 className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
                   viewMode === 'edit'
@@ -242,6 +247,7 @@ export function SpeciesMemoScreen({
               </button>
               <button
                 type="button"
+                aria-pressed={viewMode === 'preview'}
                 onClick={() => setViewMode('preview')}
                 className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
                   viewMode === 'preview'

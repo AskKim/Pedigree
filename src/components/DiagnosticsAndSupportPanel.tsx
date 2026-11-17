@@ -22,6 +22,8 @@ import {
   ChevronUp,
   Copy,
   Download,
+  HardDrive,
+  Image as ImageIcon,
   Mail,
   RefreshCw,
   RotateCcw,
@@ -35,7 +37,11 @@ import {
   BarnHealthRepairResult,
   BarnHealthReport,
 } from '../core/dataHealthCheck';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import {
+  formatByteSizePure,
+  ImageOptimizationPresetId,
+} from '../core/imageOptimizationSpec';
+import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
 import {
   buildImprovementsRecoveryJson,
   formatImprovementsMarkdown,
@@ -92,6 +98,14 @@ interface DiagnosticsAndSupportPanelProps {
     targetSnapshot?: BarnDatabaseSnapshot,
     filterSpecies?: string
   ) => Promise<BarnDatabaseSnapshot>;
+  onAnalyzePhotoFootprint?: (
+    presetId?: ImageOptimizationPresetId
+  ) => Promise<PhotoStorageFootprintReport | null>;
+  onPruneOrphanPhotos?: () => Promise<{ removedCount: number; reclaimedBytes: number }>;
+  onReoptimizeOversizedPhotos?: (
+    presetId?: ImageOptimizationPresetId
+  ) => Promise<{ updatedCount: number; oversizedFound: number; reclaimedBytes: number }>;
+  onPruneFullResPhotoPayloads?: () => Promise<{ prunedCount: number; reclaimedBytes: number }>;
 }
 
 type LogFilterTab = 'all' | 'errors' | 'memory';
@@ -105,6 +119,10 @@ export function DiagnosticsAndSupportPanel({
   onPurgeCorruptedCaches,
   onLocateConflicts,
   onHydrateSnapshotForExport,
+  onAnalyzePhotoFootprint,
+  onPruneOrphanPhotos,
+  onReoptimizeOversizedPhotos,
+  onPruneFullResPhotoPayloads,
 }: DiagnosticsAndSupportPanelProps) {
   const [config, setConfig] = useState(() => getDiagnosticConfig());
   const [entries, setEntries] = useState<DiagnosticLogEntry[]>([]);
@@ -139,6 +157,9 @@ export function DiagnosticsAndSupportPanel({
   const [recoveryFeedback, setRecoveryFeedback] = useState<string | null>(null);
   const [healthReport, setHealthReport] = useState<BarnHealthReport | null>(null);
   const [healthRepairsList, setHealthRepairsList] = useState<string[] | null>(null);
+  const [photoFootprint, setPhotoFootprint] = useState<PhotoStorageFootprintReport | null>(null);
+  const [confirmPruneFullRes, setConfirmPruneFullRes] = useState(false);
+  const [photoMaintenanceFeedback, setPhotoMaintenanceFeedback] = useState<string | null>(null);
 
   const heavyBundleGate = deviceCapability
     ? getHeavyZipExportGate(deviceCapability.assessment, deviceCapability.browserCompatibility)
@@ -815,6 +836,215 @@ export function DiagnosticsAndSupportPanel({
           </div>
         )}
       </div>
+
+      {/* Photo Storage & Orphan Attachment Pruner (IMP-023) */}
+      {onAnalyzePhotoFootprint && (
+        <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="text-xs font-semibold text-[var(--barn-ink)] flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                <span>Photo Storage &amp; Orphan Attachment Pruner</span>
+              </div>
+              <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
+                Audits per-species photo byte usage, cleans orphan images left by deleted animals,
+                re-compresses oversized photos under your active preset, or compacts full-res
+                copies down to crisp thumbnails.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={busyAction}
+              onClick={() =>
+                void actionLock.runLocked(async () => {
+                  setPhotoMaintenanceFeedback(null);
+                  setConfirmPruneFullRes(false);
+                  const rep = await onAnalyzePhotoFootprint();
+                  setPhotoFootprint(rep);
+                  if (rep) {
+                    setPhotoMaintenanceFeedback(
+                      `Scanned ${rep.totalPhotoCount} photo(s) (${formatByteSizePure(rep.totalStoredBytes)}): ${rep.orphanPhotoIds.length} orphan(s), ${rep.oversizedPhotoIds.length} oversized, ${rep.fullResPrunableIds.length} compactable.`
+                    );
+                  }
+                })
+              }
+              className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-55"
+            >
+              <ImageIcon className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+              Analyze Photo Storage
+            </button>
+          </div>
+
+          {photoFootprint && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                  <div className="text-[var(--barn-muted)]">Total Stored</div>
+                  <div className="font-mono font-semibold text-[var(--barn-ink)] mt-0.5">
+                    {photoFootprint.totalPhotoCount} photo
+                    {photoFootprint.totalPhotoCount === 1 ? '' : 's'} ·{' '}
+                    {formatByteSizePure(photoFootprint.totalStoredBytes)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                  <div className="text-[var(--barn-muted)]">Orphan Attachments</div>
+                  <div className="font-mono font-semibold text-[var(--barn-ink)] mt-0.5">
+                    {photoFootprint.orphanPhotoIds.length} ·{' '}
+                    {formatByteSizePure(photoFootprint.orphanBytes)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                  <div className="text-[var(--barn-muted)]">
+                    Oversized (&gt;{photoFootprint.activePresetMaxDimension}px)
+                  </div>
+                  <div className="font-mono font-semibold text-[var(--barn-ink)] mt-0.5">
+                    {photoFootprint.oversizedPhotoIds.length} ·{' '}
+                    {formatByteSizePure(photoFootprint.oversizedBytes)}
+                  </div>
+                </div>
+              </div>
+
+              {photoFootprint.speciesBreakdown.length > 0 && (
+                <div className="rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] overflow-hidden">
+                  <div className="px-3 py-1.5 border-b border-[var(--barn-border)] text-[11px] font-semibold text-[var(--barn-muted)]">
+                    Per-Species Photo Breakdown
+                  </div>
+                  <div className="divide-y divide-[var(--barn-border)] max-h-40 overflow-y-auto text-[11px]">
+                    {photoFootprint.speciesBreakdown.map((sp) => (
+                      <div
+                        key={sp.species}
+                        className="px-3 py-1.5 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="font-medium text-[var(--barn-ink)]">{sp.species}</span>
+                        <span className="font-mono text-[var(--barn-muted)] tabular-nums">
+                          {sp.photoCount} photo{sp.photoCount === 1 ? '' : 's'} ·{' '}
+                          {formatByteSizePure(sp.storedBytes)}
+                          {sp.orphanCount > 0 ? ` · ${sp.orphanCount} orphan` : ''}
+                          {sp.oversizedCount > 0 ? ` · ${sp.oversizedCount} oversized` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                {onPruneOrphanPhotos && (
+                  <button
+                    type="button"
+                    disabled={busyAction || photoFootprint.orphanPhotoIds.length === 0}
+                    onClick={() =>
+                      void actionLock.runLocked(async () => {
+                        const res = await onPruneOrphanPhotos();
+                        const refreshed = await onAnalyzePhotoFootprint();
+                        if (refreshed) setPhotoFootprint(refreshed);
+                        setPhotoMaintenanceFeedback(
+                          res.removedCount > 0
+                            ? `Removed ${res.removedCount} orphan photo(s), reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
+                            : 'No orphan photo attachments needed removal.'
+                        );
+                      })
+                    }
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-[var(--barn-terracotta)]" aria-hidden="true" />
+                    Remove Orphan Photos ({photoFootprint.orphanPhotoIds.length})
+                  </button>
+                )}
+
+                {onReoptimizeOversizedPhotos && (
+                  <button
+                    type="button"
+                    disabled={busyAction || photoFootprint.oversizedPhotoIds.length === 0}
+                    onClick={() =>
+                      void actionLock.runLocked(async () => {
+                        const res = await onReoptimizeOversizedPhotos();
+                        const refreshed = await onAnalyzePhotoFootprint();
+                        if (refreshed) setPhotoFootprint(refreshed);
+                        setPhotoMaintenanceFeedback(
+                          res.updatedCount > 0
+                            ? `Re-optimized ${res.updatedCount} of ${res.oversizedFound} oversized photo(s), reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
+                            : `Checked ${res.oversizedFound} oversized photo(s) — existing files were already as compact as possible.`
+                        );
+                      })
+                    }
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                    Re-Optimize Oversized ({photoFootprint.oversizedPhotoIds.length})
+                  </button>
+                )}
+
+                {onPruneFullResPhotoPayloads && !confirmPruneFullRes && (
+                  <button
+                    type="button"
+                    disabled={busyAction || photoFootprint.fullResPrunableIds.length === 0}
+                    onClick={() => setConfirmPruneFullRes(true)}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold text-[var(--barn-terracotta)] hover:bg-[var(--barn-subtle)] disabled:opacity-50"
+                  >
+                    Compact Full-Res to Thumbnails ({photoFootprint.fullResPrunableIds.length} · ~
+                    {formatByteSizePure(photoFootprint.estimatedReclaimableFullResBytes)})
+                  </button>
+                )}
+              </div>
+
+              {confirmPruneFullRes && onPruneFullResPhotoPayloads && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-[11px]"
+                >
+                  <p className="font-medium text-[var(--barn-ink)]">
+                    A safety snapshot will be saved automatically first. Full-resolution image
+                    payloads will be replaced with their crisp thumbnails while keeping every animal
+                    photo entry and caption intact (~
+                    {formatByteSizePure(photoFootprint.estimatedReclaimableFullResBytes)}{' '}
+                    reclaimable).
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busyAction}
+                      onClick={() =>
+                        void actionLock.runLocked(async () => {
+                          const res = await onPruneFullResPhotoPayloads();
+                          setConfirmPruneFullRes(false);
+                          const refreshed = await onAnalyzePhotoFootprint();
+                          if (refreshed) setPhotoFootprint(refreshed);
+                          setPhotoMaintenanceFeedback(
+                            res.prunedCount > 0
+                              ? `Compacted ${res.prunedCount} full-res photo(s) to thumbnails, reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
+                              : 'No full-resolution photo payloads needed compacting.'
+                          );
+                        })
+                      }
+                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white font-semibold disabled:opacity-60"
+                    >
+                      Confirm Compact to Thumbnails
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmPruneFullRes(false)}
+                      className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {photoMaintenanceFeedback && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]"
+            >
+              {photoMaintenanceFeedback}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Self-Service Database Health Check & Non-Destructive Auto-Repair */}
       <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">

@@ -10,6 +10,9 @@
  */
 
 import {
+  inspectParsedArchiveBeforeRestorePure,
+} from '../core/archiveInspector';
+import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
   parseBackupArchiveInput,
@@ -60,6 +63,14 @@ export type ArchiveWorkerRequest =
       id: string;
       kind: 'buildSupportBundleZip';
       params: SupportBundleBuildParams;
+    }
+  | {
+      id: string;
+      kind: 'inspectBackupArchive';
+      bytes: Uint8Array;
+      fileName: string;
+      currentSnapshot: BarnDatabaseSnapshot;
+      encrypted?: boolean;
     };
 
 export type ArchiveWorkerResponse =
@@ -133,6 +144,28 @@ workerScope.onmessage = (event: MessageEvent<ArchiveWorkerRequest>) => {
         { id: req.id, ok: true, result },
         [result.bytes.buffer]
       );
+      return;
+    }
+
+    if (req.kind === 'inspectBackupArchive') {
+      const parsed = parseBackupArchiveInput(
+        req.bytes,
+        req.fileName,
+        req.currentSnapshot.settings
+      );
+      const inspection = inspectParsedArchiveBeforeRestorePure(
+        parsed,
+        req.currentSnapshot,
+        {
+          fileName: req.fileName,
+          encrypted: Boolean(req.encrypted),
+        }
+      );
+      workerScope.postMessage({
+        id: req.id,
+        ok: true,
+        result: { parsed, inspection },
+      });
       return;
     }
 

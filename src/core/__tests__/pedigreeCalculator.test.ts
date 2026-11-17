@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildPedigreeBranchViewport,
   buildPedigreeSlots,
   buildSpeciesHerdMap,
   calculateAnimalCoi,
   calculatePairingCoi,
   describeCoiRisk,
+  getGen3BranchesWithKnownAncestors,
+  getGen3BranchIndex,
   getPedigreeCompletenessSummary,
   wouldCreateCycle,
 } from '../pedigreeCalculator';
@@ -200,5 +203,63 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
     expect(summaryComplete.percent3Gen).toBe(100);
     expect(summaryComplete.isSparsePedigree).toBe(false);
     expect(summaryComplete.isIncompleteZeroOutcross).toBe(false);
+  });
+
+  it('bounds collapsed 5-gen and 6-gen charts to 15 Gen 0–3 slots and reveals branches on demand', () => {
+    const animals = [];
+    // Populate Gen 5 ancestor on Sire Branch 0 and Gen 4 ancestor on Dam Branch 4
+    const gen5SireRoot = makeAnimal('g5-b0', { sex: 'Male', name: 'Branch 0 Founder' });
+    const gen4SireRoot = makeAnimal('g4-b0', { sex: 'Male', sireId: 'g5-b0' });
+    const gen3Sire = makeAnimal('g3-0', { sex: 'Male', sireId: 'g4-b0' });
+    const gen2Sire = makeAnimal('g2-0', { sex: 'Male', sireId: 'g3-0' });
+    const gen1Sire = makeAnimal('g1-0', { sex: 'Male', sireId: 'g2-0' });
+
+    const gen4DamRoot = makeAnimal('g4-b4', { sex: 'Male', name: 'Branch 4 Sire' });
+    const gen3Dam = makeAnimal('g3-4', { sex: 'Male', sireId: 'g4-b4' });
+    const gen2Dam = makeAnimal('g2-2', { sex: 'Male', sireId: 'g3-4' });
+    const gen1Dam = makeAnimal('g1-1', { sex: 'Female', sireId: 'g2-2' });
+
+    const subject = makeAnimal('subj-vp', {
+      sex: 'Female',
+      sireId: 'g1-0',
+      damId: 'g1-1',
+    });
+    animals.push(
+      gen5SireRoot,
+      gen4SireRoot,
+      gen3Sire,
+      gen2Sire,
+      gen1Sire,
+      gen4DamRoot,
+      gen3Dam,
+      gen2Dam,
+      gen1Dam,
+      subject
+    );
+
+    const herd = buildSpeciesHerdMap(animals, 'Rabbit');
+    const slots6 = buildPedigreeSlots(subject, herd, 6, makeSpeciesProfile('Rabbit'));
+    expect(slots6).toHaveLength(127);
+
+    expect(getGen3BranchIndex(3, 2)).toBeNull();
+    expect(getGen3BranchIndex(4, 0)).toBe(0);
+    expect(getGen3BranchIndex(5, 16)).toBe(4);
+    expect(getGen3BranchIndex(6, 63)).toBe(7);
+
+    expect(getGen3BranchesWithKnownAncestors(slots6)).toEqual([0, 4]);
+
+    const collapsed = buildPedigreeBranchViewport(slots6, 6, new Set());
+    expect(collapsed.visibleSlots).toHaveLength(15);
+    expect(collapsed.hiddenSlotsCount).toBe(112);
+    expect(collapsed.hiddenKnownAncestorsCount).toBe(3); // g4-b0, g5-b0, g4-b4
+    expect(collapsed.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(2);
+    expect(collapsed.branchSummaries.get('3:4')?.hiddenKnownAncestors).toBe(1);
+
+    // Expanding Gen-3 Branch 0 adds its 2 + 4 + 8 = 14 descendant slots (15 + 14 = 29 visible)
+    const branch0Expanded = buildPedigreeBranchViewport(slots6, 6, new Set([0]));
+    expect(branch0Expanded.visibleSlots).toHaveLength(29);
+    expect(branch0Expanded.hiddenKnownAncestorsCount).toBe(1);
+    expect(branch0Expanded.branchSummaries.get('3:0')?.isExpanded).toBe(true);
+    expect(branch0Expanded.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(0);
   });
 });

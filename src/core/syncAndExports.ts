@@ -1341,7 +1341,11 @@ export function buildPdfReadyBarnSnapshot(
         weightFormatted: formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, snapshot.settings)),
         coiPercent: `${coi.coiPercent.toFixed(2)}%`,
         genotype: a.genotypeRaw || formatGenotypeArray(a.genotype),
-        carrierDisclosures: formatCompactCarrierDisclosure(a),
+        carrierDisclosures: formatCompactCarrierDisclosure(a, {
+          herdById: herdMap,
+          includeCleared: true,
+          includeLineage: true,
+        }),
         cageLocation: a.cageLocation,
         ownershipType: normalizeOwnershipType(a.ownershipType, 'Owned'),
         culled: Boolean(a.culled),

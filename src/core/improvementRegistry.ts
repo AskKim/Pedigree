@@ -1168,6 +1168,263 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `enqueueStoreMutation` + boolean/id Promise returns in `src/hooks/useBarnStore.ts` and `useAsyncSubmitLock` / `useAsyncKeyedLock` guards in `App.tsx`, `AnimalEditorModal.tsx`, `BreedingScreen.tsx`, `HerdScreen.tsx`, `SpeciesDashboardScreen.tsx`, `SpeciesEditorModal.tsx`, `SettingsAndSyncScreen.tsx`, and `DiagnosticsAndSupportPanel.tsx`.',
     ],
   },
+  {
+    id: 'IMP-021',
+    title: 'ARIA Combobox Navigation, Reports/Settings Shortcuts, Focus Polish & rAF Observer Optimization',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Adds full WAI-ARIA keyboard navigation (`stepEnabledComboboxIndex`, `aria-activedescendant`, `ArrowDown`/`ArrowUp`/`Home`/`End`/`Enter`/`Escape`, `scrollIntoView`, and blur boundary closing) across `CarrierTraitCombobox`, `SearchableParentPicker`, and `ExternalImporterPanel`; adds `O` (Reports) and `S` (Import & Settings) global shortcuts with IME/widget guards and synchronized help panels; restores visible focus rings and pedigree focus scrolling; coalesces `App.tsx` modal `MutationObserver` via `requestAnimationFrame`; and aligns `buildPdfReadyBarnSnapshot` carrier disclosures.',
+    userIntent:
+      'Restore and strengthen keyboard shortcuts, tab stops, ARIA combobox navigation, and focus indicators while cleaning up minor export and DOM observer inefficiencies.',
+    files: [
+      'src/utils/comboboxNav.ts',
+      'src/utils/__tests__/comboboxNav.test.ts',
+      'src/components/CarrierTraitCombobox.tsx',
+      'src/components/SearchableParentPicker.tsx',
+      'src/components/ExternalImporterPanel.tsx',
+      'src/App.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/HomeSpeciesScreen.tsx',
+      'src/components/AnimalPhotoGallery.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/SpeciesMemoScreen.tsx',
+      'src/core/syncAndExports.ts',
+      'docs/plans/optimization-and-resilience-phase-plan.md',
+    ],
+    invariants: [
+      {
+        filePath: 'src/utils/comboboxNav.ts',
+        requiredSubstrings: ['clampComboboxIndex', 'stepEnabledComboboxIndex'],
+        rationale: 'Pure combobox index-stepping helper powers keyboard traversal across all custom listboxes.',
+      },
+      {
+        filePath: 'src/components/CarrierTraitCombobox.tsx',
+        requiredSubstrings: ['aria-activedescendant', 'stepEnabledComboboxIndex'],
+        rationale: 'Carrier trait combobox must expose aria-activedescendant and full keyboard navigation.',
+      },
+      {
+        filePath: 'src/components/SearchableParentPicker.tsx',
+        requiredSubstrings: ['aria-activedescendant', 'stepEnabledComboboxIndex'],
+        rationale: 'Searchable parent picker must expose aria-activedescendant and full keyboard navigation.',
+      },
+      {
+        filePath: 'src/components/ExternalImporterPanel.tsx',
+        requiredSubstrings: ['aria-activedescendant', 'stepEnabledComboboxIndex', 'speciesOptionRefs'],
+        rationale: 'Default species combobox must support keyboard traversal and close on focus blur.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: [
+          'requestAnimationFrame',
+          "o: { route: 'reports', label: 'Reports' }",
+          "s: { route: 'settings', label: 'Import & Settings' }",
+          'e.isComposing',
+        ],
+        rationale: 'Root shell coalesces MutationObserver work via rAF and guards O/S/H/D/R/B/P/? shortcuts cleanly.',
+      },
+      {
+        filePath: 'src/core/syncAndExports.ts',
+        requiredSubstrings: ['includeCleared: true,\n          includeLineage: true'],
+        rationale: 'PDF snapshot DTO exports must include cleared and ancestral lineage carrier disclosures.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `src/utils/comboboxNav.ts` wired into `CarrierTraitCombobox.tsx`, `SearchableParentPicker.tsx`, and `ExternalImporterPanel.tsx` with `aria-activedescendant` and `onBlur`.',
+      'Keep rAF-coalesced `MutationObserver`, IME/widget guards, and `O`/`S` shortcuts in `src/App.tsx` synced with `SettingsAndSyncScreen.tsx`.',
+      'Preserve `focus-visible` outlines (`HomeSpeciesScreen.tsx`, `PedigreeScreen.tsx`, `AnimalPhotoGallery.tsx`), `WeightTrendSvg` ARIA labels (`HerdScreen.tsx`), `aria-pressed` (`SpeciesMemoScreen.tsx`), and `buildPdfReadyBarnSnapshot` carrier options (`syncAndExports.ts`).',
+    ],
+  },
+  {
+    id: 'IMP-022',
+    title: 'Virtualized Pedigree Branch Loading, PWA Update Governor, Offline Probe & Upgrade Gate',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Bounds collapsed 4–6 generation pedigree chart DOM to Gen 0–3 (15 slots max) via lazy per-branch Gen 4+ expansion (`buildPedigreeBranchViewport`) while preserving full-depth `.HTM`/Barn Binder printouts; decouples PWA updates from raw `navigator.onLine` using `auto`/`notify`/`pinned` policy governance, a Manual App Offline toggle, and a timed `AbortController` captive-portal connectivity probe; and serves uncached `version.json`/`status.json` manifests with pre-upgrade SHA-256 backup verification and Safe-Harbor reset gates.',
+    userIntent:
+      'Keep pedigree SVG/DOM light on mobile devices, prevent unwanted or revoked app-shell reloads during active barn sessions, separate app offline holding from device Airplane Mode, and require verified backups on multi-version schema jumps.',
+    files: [
+      'src/core/pedigreeCalculator.ts',
+      'src/core/upgradeGate.ts',
+      'src/core/backupVault.ts',
+      'src/components/PedigreeScreen.tsx',
+      'src/storage/pwaUpdateManager.ts',
+      'src/storage/storageProtection.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/App.tsx',
+      'public/version.json',
+      'public/status.json',
+      'vite.config.ts',
+      'src/core/__tests__/upgradeGate.test.ts',
+      'src/core/__tests__/pedigreeCalculator.test.ts',
+      'src/storage/__tests__/es2018AndPwaUpdate.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/pedigreeCalculator.ts',
+        requiredSubstrings: ['buildPedigreeBranchViewport', 'getGen3BranchesWithKnownAncestors'],
+        rationale: 'Pure branch viewport helper keeps initial 4–6 gen DOM compact while preserving full-depth export slots.',
+      },
+      {
+        filePath: 'src/components/PedigreeScreen.tsx',
+        requiredSubstrings: ['expandedGen3Branches', 'buildPedigreeBranchViewport'],
+        rationale: 'Interactive pedigree chart must lazy-expand Gen 4+ branches on demand without losing focus or keyboard access.',
+      },
+      {
+        filePath: 'src/core/upgradeGate.ts',
+        requiredSubstrings: ['evaluateUpgradeGate', 'parseVersionManifestJson', 'parseStatusManifestJson'],
+        rationale: 'Pure pre-flight Upgrade Gate evaluates revoked builds, paused updates, Safe-Harbor schema floors, and schemaDelta>=2 backup gates.',
+      },
+      {
+        filePath: 'src/core/backupVault.ts',
+        requiredSubstrings: ['buildVerifiedPreUpgradeJsonBackup', 'verifyPreUpgradeJsonBackup'],
+        rationale: 'Pre-upgrade safety backups must emit _schemaVersion-stamped envelopes and verify SHA-256 round-trip integrity.',
+      },
+      {
+        filePath: 'src/storage/pwaUpdateManager.ts',
+        requiredSubstrings: ['pedigree_pwa_update_policy_v1', 'fetchUpgradeGateDecision'],
+        rationale: 'PWA updater enforces persisted auto/notify/pinned policies and uncached Upgrade Gate checks before posting SKIP_WAITING.',
+      },
+      {
+        filePath: 'src/storage/storageProtection.ts',
+        requiredSubstrings: ['pedigree_manual_offline_v1', 'probeNetworkConnectivity'],
+        rationale: 'Connectivity governor combines Manual App Offline Mode with a timed AbortController captive-portal probe.',
+      },
+      {
+        filePath: 'public/version.json',
+        requiredSubstrings: ['minDirectUpgradeSchema'],
+        rationale: 'Release version manifest must expose current appVersion, schemaVersion, and minDirectUpgradeSchema floor.',
+      },
+      {
+        filePath: 'public/status.json',
+        requiredSubstrings: ['revokedVersions'],
+        rationale: 'Remote killswitch manifest must expose allowUpdates and revokedVersions lists.',
+      },
+      {
+        filePath: 'vite.config.ts',
+        requiredSubstrings: ['navigateFallbackDenylist: [/^\\/api\\//, /^\\/version\\.json/, /^\\/status\\.json/]'],
+        rationale: 'Service worker navigation fallback must never intercept or precache uncached version.json / status.json manifests.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `buildPedigreeBranchViewport`, `getGen3BranchIndex`, and `getGen3BranchesWithKnownAncestors` in `src/core/pedigreeCalculator.ts` wired into `PedigreeScreen.tsx`.',
+      'Preserve `src/core/upgradeGate.ts`, `buildVerifiedPreUpgradeJsonBackup` / `verifyPreUpgradeJsonBackup` in `src/core/backupVault.ts`, and uncached `public/version.json` & `public/status.json` with `no-store` middleware + Workbox denylist in `vite.config.ts`.',
+      'Keep `PwaUpdatePolicy` (`auto` / `notify` / `pinned`) + `fetchUpgradeGateDecision` in `src/storage/pwaUpdateManager.ts`, `setManualOfflineMode` + `probeNetworkConnectivity` in `src/storage/storageProtection.ts`, and UI controls in `App.tsx`, `useBarnStore.ts`, and `SettingsAndSyncScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-023',
+    title: 'Storage Pruning, Pre-Restore Archive Inspector, Clock-Skew Compensation, Monotonic _rev & Encrypted Backups',
+    category: 'backup-safety',
+    source: 'session',
+    summary:
+      'Adds a Diagnostics Photo Storage & Orphan Attachment Pruner (`photoMaintenance.ts`, `reoptimizeAnimalPhotoRecord`), an off-thread Pre-Restore Archive Inspector dry-run for `.ZIP`/`.JSON`/`.SQLITE` (`archiveInspector.ts`, `inspectRawSqliteBytes`), persistent HTTP `Date` clock-skew compensation (`recordServerDateHeaderSkew`, `getAdjustedNowIsoUtc`) with a non-blocking drift banner, per-record monotonic `_rev` counters (`compareSameEntitySyncOperations`, `bumpRecordRevision`) paired with deterministic `[a-v0-9]` Google Calendar IDs + `409` `PUT` updates, and optional PBKDF2-SHA256 + AES-256-GCM passphrase encryption for shared backups and SyncThing deltas (`encryptedExport.ts`, `passphraseCrypto.ts`) while keeping plain 1-click exports as the default.',
+    userIntent:
+      'Prevent runaway photo quota growth, inspect backups for species/conflicts before committing restores, protect multi-device sync order against wrong or rewound clocks, avoid duplicate Google Calendar events, and offer opt-in passphrase encryption for shared archives/sync folders.',
+    files: [
+      'src/core/photoMaintenance.ts',
+      'src/core/archiveInspector.ts',
+      'src/core/encryptedExport.ts',
+      'src/core/syncOutbox.ts',
+      'src/core/calendarExport.ts',
+      'src/core/models.ts',
+      'src/core/inputSanitization.ts',
+      'src/storage/passphraseCrypto.ts',
+      'src/storage/storageProtection.ts',
+      'src/storage/localSyncChannels.ts',
+      'src/storage/offThreadWorkerClient.ts',
+      'src/storage/archiveAndImport.worker.ts',
+      'src/storage/webImageOptimizer.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/utils/googleCalendarClient.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/DiagnosticsAndSupportPanel.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/App.tsx',
+      'src/core/__tests__/stageBResilience.test.ts',
+      'src/storage/__tests__/passphraseAndClockSkew.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/photoMaintenance.ts',
+        requiredSubstrings: [
+          'analyzePhotoStorageFootprintPure',
+          'removeOrphanPhotosFromSnapshotPure',
+          'pruneFullResPayloadsFromSnapshotPure',
+        ],
+        rationale: 'Pure photo storage footprint analyzer, orphan cleaner, and thumbnail compactor must stay DOM-free.',
+      },
+      {
+        filePath: 'src/core/archiveInspector.ts',
+        requiredSubstrings: [
+          'inspectSnapshotBeforeRestorePure',
+          'inspectParsedArchiveBeforeRestorePure',
+        ],
+        rationale: 'Dry-run pre-restore inspector summarizes species, conflicts, and replace/merge impact before DB writes.',
+      },
+      {
+        filePath: 'src/core/encryptedExport.ts',
+        requiredSubstrings: [
+          'ENCRYPTED_ENVELOPE_FORMAT',
+          'wrapEncryptedZipContainer',
+          'tryExtractEncryptedEnvelopeFromZip',
+        ],
+        rationale: 'Pure encrypted envelope framing and ZIP wrapper/extractor must remain intact.',
+      },
+      {
+        filePath: 'src/storage/passphraseCrypto.ts',
+        requiredSubstrings: ['encryptBytesWithPassphrase', 'decryptBytesWithPassphrase'],
+        rationale: 'Client-side PBKDF2-SHA256 + AES-256-GCM encryption runs strictly with memory-only passphrases.',
+      },
+      {
+        filePath: 'src/storage/storageProtection.ts',
+        requiredSubstrings: [
+          'recordServerDateHeaderSkew',
+          'getAdjustedNowIsoUtc',
+          'clockDriftWarning',
+        ],
+        rationale: 'Server Date skew capture compensates timestamps and flags drift >= 5 minutes cleanly.',
+      },
+      {
+        filePath: 'src/core/syncOutbox.ts',
+        requiredSubstrings: ['compareSameEntitySyncOperations', 'bumpRecordRevision'],
+        rationale: 'Monotonic record_rev ensures newer same-entity edits win even when a device clock rewinds.',
+      },
+      {
+        filePath: 'src/core/calendarExport.ts',
+        requiredSubstrings: ['buildDeterministicGoogleCalendarEventId'],
+        rationale: 'Deterministic [a-v0-9] Google Calendar IDs prevent duplicate calendar events on retry/sync.',
+      },
+      {
+        filePath: 'src/utils/googleCalendarClient.ts',
+        requiredSubstrings: ['res.status === 409'],
+        rationale: 'Google Calendar push must update existing events via PUT when deterministic ID returns HTTP 409.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['pendingRestoreInspection', 'encryptBackupExport'],
+        rationale: 'Settings must require Pre-Restore Inspector confirmation and expose opt-in backup/sync encryption.',
+      },
+      {
+        filePath: 'src/components/DiagnosticsAndSupportPanel.tsx',
+        requiredSubstrings: ['onAnalyzePhotoFootprint', 'onPruneOrphanPhotos'],
+        rationale: 'Diagnostics exposes Photo Storage & Orphan Attachment Pruner actions safely.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['connectivity.clockDriftWarning'],
+        rationale: 'Root shell renders non-blocking Clock Drift Nudge Banner when drift reaches threshold.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep pure modules `src/core/photoMaintenance.ts`, `src/core/archiveInspector.ts`, `src/core/encryptedExport.ts`, `_rev` logic in `src/core/syncOutbox.ts`, and `buildDeterministicGoogleCalendarEventId` in `src/core/calendarExport.ts`.',
+      'Keep `src/storage/passphraseCrypto.ts`, clock-skew compensation in `src/storage/storageProtection.ts`, encrypted delta/directory sync in `src/storage/localSyncChannels.ts`, off-thread inspection in `src/storage/offThreadWorkerClient.ts`, and `inspectRawSqliteBytes` in `src/storage/webSqliteAdapter.ts`.',
+      'Keep Stage B store handlers in `src/hooks/useBarnStore.ts`, `409` PUT retry in `src/utils/googleCalendarClient.ts`, and UI mounts in `DiagnosticsAndSupportPanel.tsx`, `SettingsAndSyncScreen.tsx`, and `App.tsx`.',
+    ],
+  },
 ];
 
 /**

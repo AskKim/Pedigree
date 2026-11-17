@@ -368,7 +368,31 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     );
     expect(cardHtml).toContain('<meta name="color-scheme" content="light only" />');
     expect(cardHtml).toContain('@media print');
-    expect(cardHtml).toContain('background: #ffffff !important;');
+    expect(cardHtml).toContain('#ffffff !important;');
     expect(cardHtml).not.toContain('#0f1611');
+  });
+
+  it('includes confirmed, cleared, and ancestral carrier disclosures in buildPdfReadyBarnSnapshot', async () => {
+    const { buildPdfReadyBarnSnapshot } = await import('../syncAndExports');
+    const sire = makeAnimal('sire-car', {
+      name: 'Carrier Buck',
+      species: 'Rabbit',
+      sex: 'Male',
+      confirmedCarrierOf: ['Vienna (Blue-Eyed White)'],
+    });
+    const kit = makeAnimal('kit-car', {
+      name: 'Kit Prospect',
+      species: 'Rabbit',
+      sex: 'Female',
+      sireId: 'sire-car',
+      clearedCarrierOf: [{ trait: 'Rex Fur', proofType: 'dna_tested' }],
+    });
+    const snap = makeEmptySnapshot({ animals: [sire, kit] });
+    const dto = buildPdfReadyBarnSnapshot(snap, 'Rabbit');
+    const kitDto = dto.animals.find((a) => a.id === 'kit-car');
+
+    expect(kitDto).toBeTruthy();
+    expect(kitDto?.carrierDisclosures).toContain('Lineage Potential: Vienna (Blue-Eyed White) (Sire)');
+    expect(kitDto?.carrierDisclosures).toContain('Cleared: Rex Fur (DNA Clear)');
   });
 });

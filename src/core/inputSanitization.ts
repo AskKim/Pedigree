@@ -485,6 +485,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'sireId',
     'damId',
     'notes',
+    '_rev',
   ]),
   breeding: new Set([
     'species',
@@ -509,6 +510,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'ultrasoundFetalCount',
     'ultrasoundProjectedDueIso',
     'notes',
+    '_rev',
   ]),
   task: new Set([
     'species',
@@ -520,6 +522,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'linkedAnimalName',
     'linkedBreedingId',
     'completed',
+    '_rev',
   ]),
   careLog: new Set([
     'species',
@@ -540,6 +543,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'ultrasoundResult',
     'ultrasoundFetalCount',
     'notes',
+    '_rev',
   ]),
   show: new Set([
     'species',
@@ -550,8 +554,9 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'entryDeadlineIso',
     'enteredAnimalIds',
     'notes',
+    '_rev',
   ]),
-  cage: new Set(['species', 'label', 'section', 'capacity', 'notes']),
+  cage: new Set(['species', 'label', 'section', 'capacity', 'notes', '_rev']),
   species: new Set([
     'name',
     'sortOrder',
@@ -569,6 +574,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'offspringLabel',
     'exampleBreeds',
     'milestones',
+    '_rev',
   ]),
   settings: new Set([
     'barnName',
@@ -589,6 +595,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'speciesHubBlockOrder',
     'includePhotoOnPedigree',
     'calendarSync',
+    '_rev',
   ]),
   photo: new Set([
     'species',
@@ -604,6 +611,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'storedBytes',
     'thumbnailDataUrl',
     'dataUrl',
+    '_rev',
   ]),
 };
 
@@ -622,6 +630,14 @@ export function isValidSyncOperation(op: unknown): op is SyncOperation {
   if (typeof candidate.device_id !== 'string' || !candidate.device_id.trim()) return false;
   if (typeof candidate.timestamp !== 'string' || !candidate.timestamp.trim()) return false;
   if (typeof candidate.logical_counter !== 'number' || !Number.isFinite(candidate.logical_counter)) {
+    return false;
+  }
+  if (
+    candidate.record_rev !== undefined &&
+    (typeof candidate.record_rev !== 'number' ||
+      !Number.isFinite(candidate.record_rev) ||
+      candidate.record_rev < 0)
+  ) {
     return false;
   }
   const field = candidate.field_name;

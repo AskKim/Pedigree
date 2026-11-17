@@ -55,6 +55,8 @@ export interface SyncOperation {
   device_id: string;
   timestamp: string; // ISO-8601 UTC
   logical_counter: number;
+  /** Optional per-record monotonic revision counter protecting sequential edits against device clock rewinds. */
+  record_rev?: number;
   field_name: string; // '__create__', '__delete__', or a specific property name
   new_value: unknown;
 }
@@ -90,8 +92,9 @@ export function createOutboxOperation(params: {
   fieldName: string;
   newValue: unknown;
   timestamp?: string;
+  recordRev?: number;
 }): SyncOperation {
-  return {
+  const op: SyncOperation = {
     op_id: generateUuid(),
     entity_type: params.entityType,
     entity_uuid: params.entityUuid,
@@ -101,6 +104,10 @@ export function createOutboxOperation(params: {
     field_name: params.fieldName,
     new_value: params.newValue,
   };
+  if (typeof params.recordRev === 'number' && Number.isFinite(params.recordRev) && params.recordRev >= 0) {
+    op.record_rev = Math.floor(params.recordRev);
+  }
+  return op;
 }
 
 /**
@@ -117,19 +124,58 @@ export function compareSyncOperations(a: SyncOperation, b: SyncOperation): numbe
 }
 
 /**
+ * Ordering for two operations targeting the EXACT same `(entity_type, entity_uuid)`.
+ * When both carry monotonic `record_rev` numbers that differ, the higher revision
+ * always wins even if one device's local wall-clock was rewound backward.
+ */
+export function compareSameEntitySyncOperations(a: SyncOperation, b: SyncOperation): number {
+  if (
+    a.entity_type === b.entity_type &&
+    a.entity_uuid === b.entity_uuid &&
+    typeof a.record_rev === 'number' &&
+    Number.isFinite(a.record_rev) &&
+    typeof b.record_rev === 'number' &&
+    Number.isFinite(b.record_rev) &&
+    a.record_rev !== b.record_rev
+  ) {
+    return a.record_rev - b.record_rev;
+  }
+  return compareSyncOperations(a, b);
+}
+
+/**
+ * Returns the next monotonic `_rev` integer for a mutated record.
+ */
+export function bumpRecordRevision(previous?: { _rev?: number } | null): number {
+  const prevRev =
+    previous && typeof previous._rev === 'number' && Number.isFinite(previous._rev) && previous._rev >= 0
+      ? Math.floor(previous._rev)
+      : 0;
+  return prevRev + 1;
+}
+
+/**
  * Computes fine-grained field-level `SyncOperation` diffs between two versions of a plain entity.
  */
-export function diffEntityFieldsToOperations<T extends { id: string }>(params: {
+export function diffEntityFieldsToOperations<T extends { id: string; _rev?: number }>(params: {
   entityType: SyncEntityType;
   previous: T | undefined;
   next: T;
   deviceId: string;
   nextCounter: () => number;
   ignoreFields?: string[];
+  timestamp?: string;
+  recordRev?: number;
 }): SyncOperation[] {
   const ops: SyncOperation[] = [];
-  const ignore = new Set(['updatedAt', 'createdAt', ...(params.ignoreFields || [])]);
-  const ts = nowIsoUtc();
+  const ignore = new Set(['updatedAt', 'createdAt', '_rev', ...(params.ignoreFields || [])]);
+  const ts = params.timestamp || nowIsoUtc();
+  const explicitRev =
+    typeof params.recordRev === 'number' && Number.isFinite(params.recordRev)
+      ? Math.floor(params.recordRev)
+      : typeof params.next._rev === 'number' && Number.isFinite(params.next._rev)
+      ? Math.floor(params.next._rev)
+      : bumpRecordRevision(params.previous);
 
   if (!params.previous) {
     ops.push(
@@ -141,6 +187,7 @@ export function diffEntityFieldsToOperations<T extends { id: string }>(params: {
         fieldName: '__create__',
         newValue: params.next,
         timestamp: ts,
+        recordRev: explicitRev,
       })
     );
     return ops;
@@ -165,6 +212,7 @@ export function diffEntityFieldsToOperations<T extends { id: string }>(params: {
           fieldName: key,
           newValue: nextVal,
           timestamp: ts,
+          recordRev: explicitRev,
         })
       );
     }
@@ -266,13 +314,17 @@ export function mergeDeltaOperations(
   for (const op of existingOps) {
     const key = `${op.entity_type}::${op.entity_uuid}::${op.field_name}`;
     const prev = lastFieldOp.get(key);
-    if (!prev || compareSyncOperations(prev, op) < 0) {
+    if (!prev || compareSameEntitySyncOperations(prev, op) < 0) {
       lastFieldOp.set(key, op);
     }
   }
 
   const newConflicts: SyncConflictEntry[] = [];
-  const unseenSorted = [...unseenIncoming].sort(compareSyncOperations);
+  const unseenSorted = [...unseenIncoming].sort((a, b) =>
+    a.entity_type === b.entity_type && a.entity_uuid === b.entity_uuid
+      ? compareSameEntitySyncOperations(a, b)
+      : compareSyncOperations(a, b)
+  );
 
   for (const op of unseenSorted) {
     const fieldKey = `${op.entity_type}::${op.entity_uuid}::${op.field_name}`;
@@ -287,10 +339,16 @@ export function mergeDeltaOperations(
       JSON.stringify(existingFieldOp.new_value) !== JSON.stringify(op.new_value)
     ) {
       // Only raise conflict if timestamps are within 7 days of independent offline edits
+      // and neither operation strictly supersedes the other via sequential `_rev`
       const msA = Date.parse(existingFieldOp.timestamp) || 0;
       const msB = Date.parse(op.timestamp) || 0;
-      if (Math.abs(msA - msB) <= 7 * 86400_000) {
-        const opWins = compareSyncOperations(existingFieldOp, op) < 0;
+      const sequentialSupersede =
+        typeof existingFieldOp.record_rev === 'number' &&
+        typeof op.record_rev === 'number' &&
+        existingFieldOp.record_rev !== op.record_rev &&
+        Math.abs(existingFieldOp.record_rev - op.record_rev) > 0;
+      if (Math.abs(msA - msB) <= 7 * 86400_000 || sequentialSupersede) {
+        const opWins = compareSameEntitySyncOperations(existingFieldOp, op) < 0;
         const winner = opWins ? op : existingFieldOp;
         const loser = opWins ? existingFieldOp : op;
         newConflicts.push({
@@ -312,15 +370,18 @@ export function mergeDeltaOperations(
     }
 
     // Only apply if this operation beats any already-recorded op for the exact same field
-    if (existingFieldOp && compareSyncOperations(op, existingFieldOp) < 0 && op.field_name !== '__create__') {
+    if (existingFieldOp && compareSameEntitySyncOperations(op, existingFieldOp) < 0 && op.field_name !== '__create__') {
       continue;
     }
     lastFieldOp.set(fieldKey, op);
 
-    const applyToMap = <T extends { id: string; updatedAt: string }>(map: Map<string, T>) => {
+    const applyToMap = <T extends { id: string; updatedAt: string; _rev?: number }>(map: Map<string, T>) => {
       if (op.field_name === '__create__' && op.new_value && typeof op.new_value === 'object') {
         if (!map.has(op.entity_uuid)) {
           const clone: Record<string, unknown> = { ...(op.new_value as Record<string, unknown>), id: op.entity_uuid };
+          if (typeof op.record_rev === 'number' && Number.isFinite(op.record_rev)) {
+            clone._rev = Math.max(Number(clone._rev) || 0, Math.floor(op.record_rev));
+          }
           if (op.entity_type === 'photo') {
             const safeData = sanitizeSafeRasterImageDataUrl(clone.dataUrl);
             if (!safeData) return;
@@ -348,6 +409,9 @@ export function mergeDeltaOperations(
         }
         (target as Record<string, unknown>)[op.field_name] = nextVal;
         target.updatedAt = op.timestamp;
+        if (typeof op.record_rev === 'number' && Number.isFinite(op.record_rev)) {
+          target._rev = Math.max(target._rev ?? 0, Math.floor(op.record_rev));
+        }
       }
     };
 
@@ -384,6 +448,9 @@ export function mergeDeltaOperations(
               : op.new_value;
           (settings as unknown as Record<string, unknown>)[op.field_name] = nextSettingsVal;
           settings.updatedAt = op.timestamp;
+          if (typeof op.record_rev === 'number' && Number.isFinite(op.record_rev)) {
+            settings._rev = Math.max(settings._rev ?? 0, Math.floor(op.record_rev));
+          }
         }
         break;
     }

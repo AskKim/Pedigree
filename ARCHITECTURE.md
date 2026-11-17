@@ -10,10 +10,12 @@
 
 1. **100% Pure TypeScript Domain Core (`src/core/`):**
    - `models.ts`: Canonical entities (`BarnSettings`, `SpeciesProfile`, `Animal`, `CageLocation`, `BreedingRecord`, `BarnTask`, `CareLog`, `ShowEvent`) with globally unique `id` (UUID v4), ISO-8601 UTC `updatedAt` timestamps, per-species weight unit overrides (`lbs_oz`, `lbs`, `kg`, `grams`), and species-aware identifier labels.
-   - `pedigreeCalculator.ts`: Recursive pedigree slot builder (3–6 gen), exact topological Wright COI / coancestry engine, depth-8 shared ancestor path contributions, pedigree completeness summaries, and cycle prevention.
+   - `pedigreeCalculator.ts`: Recursive pedigree slot builder (3–6 gen), lazy Gen 4+ branch viewport helper (`buildPedigreeBranchViewport`), exact topological Wright COI / coancestry engine, depth-8 shared ancestor path contributions, pedigree completeness summaries, and cycle prevention.
    - `geneticsEngine.ts`: Multi-species coat color loci, allele inference, and Punnett test-breeding simulator across 11 predefined species plus custom-species fallback (flagged under development / incomplete via `ColorGeneticsNotice` and export notices pending domain-expert sign-off).
    - `masterTaskList.ts`: Automated Master Task List chore cascading from configurable species milestone offsets.
    - `syncAndExports.ts`: Deterministic UUID + ISO-8601 `updatedAt` multi-device merge engine, `.json` (v5 + legacy v3/v4 import), `.csv`, Evans-compatible `.HTM` pedigrees, 4"×2" thermal cage cards, and PDF-ready DTO snapshots.
+   - `backupVault.ts`, `upgradeGate.ts`, `archiveInspector.ts`, `encryptedExport.ts`, `photoMaintenance.ts`: `_schemaVersion`-stamped SHA-256 vault/pre-upgrade backup verification, pure uncached `version.json`/`status.json` release gate evaluation (`revokedVersions`, `schemaDelta >= 2`, Safe-Harbor floor), dry-run pre-restore species/conflict inspection, pure PBKDF2/AES-GCM container framing, and photo storage/orphan footprint auditing.
+   - `syncOutbox.ts` & `calendarExport.ts`: Monotonic per-record `_rev` counters paired with clock-skew-adjusted timestamps (`compareSameEntitySyncOperations`) and deterministic base32hex Google Calendar event IDs.
    - **Zero Browser DOM Coupling:** None of the modules in `src/core/` touch `window` or `document`, so `src/core/` copies directly into an Expo / React Native codebase untouched.
 
 2. **Pluggable Storage Adapter (`src/storage/`):**
@@ -26,4 +28,4 @@
    - `useBarnStore.ts` computes `activeSpeciesData` via case-insensitive `isSameSpecies(...)` filtering and resets selected animal IDs on species switch so records from one species never leak into another species' Herd, Breeding, or Pedigree screens.
 
 4. **Documentation & Backlog (`docs/plans/`):**
-   - Active unimplemented suggestions live in `docs/plans/suggestions-backlog.md` alongside `ARCHITECTURE.md` and `IMPROVEMENTS.md` so roadmap items persist across GitHub syncs and AI Studio reinstalls.
+   - Active unimplemented suggestions live in `docs/plans/suggestions-backlog.md` and the current optimization roadmap lives in `docs/plans/optimization-and-resilience-phase-plan.md` alongside `ARCHITECTURE.md` and `IMPROVEMENTS.md` so roadmap items persist across GitHub syncs and AI Studio reinstalls.

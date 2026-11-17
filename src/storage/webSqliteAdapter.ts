@@ -822,15 +822,19 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  private queryObjects(sql: string): Record<string, any>[] {
-    if (!this.db) return [];
-    const stmt = this.db.prepare(sql);
+  private queryObjectsFromDb(db: Database, sql: string): Record<string, any>[] {
+    const stmt = db.prepare(sql);
     const rows: Record<string, any>[] = [];
     while (stmt.step()) {
       rows.push(stmt.getAsObject());
     }
     stmt.free();
     return rows;
+  }
+
+  private queryObjects(sql: string): Record<string, any>[] {
+    if (!this.db) return [];
+    return this.queryObjectsFromDb(this.db, sql);
   }
 
   private safeParseJson<T>(raw: unknown, fallback: T, contextLabel: string): T {
@@ -854,6 +858,14 @@ export class WebSqliteAdapter implements StorageAdapter {
       const base = this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
       return options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(base) : base;
     }
+    return this.readSnapshotFromDatabase(this.db, options);
+  }
+
+  private readSnapshotFromDatabase(
+    db: Database,
+    options?: SnapshotLoadOptions
+  ): BarnDatabaseSnapshot {
+    const runQuery = (sql: string) => this.queryObjectsFromDb(db, sql);
 
     let sanitizedNumericCount = 0;
     const finiteNum = (raw: unknown, fallback: number): number => {
@@ -875,7 +887,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     };
     const safeArray = <T>(val: unknown): T[] => (Array.isArray(val) ? (val as T[]) : []);
 
-    const settingsRows = this.queryObjects('SELECT * FROM barn_settings LIMIT 1');
+    const settingsRows = runQuery('SELECT * FROM barn_settings LIMIT 1');
     const sRow = settingsRows[0];
     const extraSettings = sRow?.extra_settings_json
       ? this.safeParseJson<Record<string, any>>(
@@ -973,7 +985,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           updatedAt: nowIsoUtc(),
         };
 
-    const speciesProfiles: SpeciesProfile[] = this.queryObjects(
+    const speciesProfiles: SpeciesProfile[] = runQuery(
       'SELECT * FROM species_profiles ORDER BY sort_order ASC, name ASC'
     ).map((r, idx) => {
       const maturity = finiteNonNeg(r.maturity_days, 0);
@@ -1018,7 +1030,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       };
     });
 
-    const animals: Animal[] = this.queryObjects('SELECT * FROM animals ORDER BY name ASC').map(
+    const animals: Animal[] = runQuery('SELECT * FROM animals ORDER BY name ASC').map(
       (r) => {
         const animalLabel = String(r.name || r.id || 'unknown');
         const suspectedRaw = this.safeParseJson<unknown>(
@@ -1104,7 +1116,7 @@ export class WebSqliteAdapter implements StorageAdapter {
          FROM animal_photos ORDER BY is_primary DESC, sort_order ASC, created_at ASC`
       : 'SELECT * FROM animal_photos ORDER BY is_primary DESC, sort_order ASC, created_at ASC';
 
-    const animalPhotos: AnimalPhoto[] = this.queryObjects(photoQuerySql).map((r) => ({
+    const animalPhotos: AnimalPhoto[] = runQuery(photoQuerySql).map((r) => ({
       id: String(r.id),
       species: String(r.species),
       animalId: String(r.animal_id),
@@ -1123,7 +1135,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       updatedAt: String(r.updated_at),
     }));
 
-    const cages: CageLocation[] = this.queryObjects('SELECT * FROM cages ORDER BY label ASC').map(
+    const cages: CageLocation[] = runQuery('SELECT * FROM cages ORDER BY label ASC').map(
       (r) => ({
         id: String(r.id),
         species: String(r.species),
@@ -1136,7 +1148,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       })
     );
 
-    const breedings: BreedingRecord[] = this.queryObjects(
+    const breedings: BreedingRecord[] = runQuery(
       'SELECT * FROM breedings ORDER BY bred_date_iso DESC'
     ).map((r) => ({
       id: String(r.id),
@@ -1166,7 +1178,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       updatedAt: String(r.updated_at),
     }));
 
-    const tasks: BarnTask[] = this.queryObjects(
+    const tasks: BarnTask[] = runQuery(
       'SELECT * FROM barn_tasks ORDER BY completed ASC, due_date_iso ASC'
     ).map((r) => ({
       id: String(r.id),
@@ -1183,7 +1195,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       updatedAt: String(r.updated_at),
     }));
 
-    const careLogs: CareLog[] = this.queryObjects(
+    const careLogs: CareLog[] = runQuery(
       'SELECT * FROM care_logs ORDER BY date_iso DESC'
     ).map((r) => ({
       id: String(r.id),
@@ -1209,7 +1221,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       updatedAt: String(r.updated_at),
     }));
 
-    const shows: ShowEvent[] = this.queryObjects(
+    const shows: ShowEvent[] = runQuery(
       'SELECT * FROM shows ORDER BY event_date_iso ASC'
     ).map((r) => ({
       id: String(r.id),
@@ -2022,6 +2034,35 @@ export class WebSqliteAdapter implements StorageAdapter {
   async exportRawSqliteBytes(): Promise<Uint8Array | null> {
     if (!this.db) return null;
     return this.db.export();
+  }
+
+  async inspectRawSqliteBytes(
+    bytes: Uint8Array,
+    options?: SnapshotLoadOptions
+  ): Promise<BarnDatabaseSnapshot> {
+    const headerCheck = validateSqliteFileHeader(bytes);
+    if (!headerCheck.ok) {
+      throw new Error(headerCheck.error);
+    }
+    if (!this.SQL) {
+      this.SQL = await initSqlJs({
+        locateFile: () => sqlWasmUrl,
+      });
+    }
+    if (!this.SQL) {
+      throw new Error('SQLite WebAssembly engine is not available in this browser.');
+    }
+    const tempDb = new this.SQL.Database(bytes);
+    try {
+      applySchemaMigrations(tempDb);
+      return this.readSnapshotFromDatabase(tempDb, options);
+    } finally {
+      try {
+        tempDb.close();
+      } catch {
+        // Ignore close error on inspection database
+      }
+    }
   }
 
   async importRawSqliteBytes(

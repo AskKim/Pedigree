@@ -431,23 +431,317 @@ export async function deleteRollingSnapshotBackup(key: string): Promise<boolean>
   }
 }
 
-export function useOnlineStatus(): boolean {
-  const [isOnline, setIsOnline] = useState(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
-  );
+// Manual Offline Mode Toggle & Timed Connectivity Probe
+const MANUAL_OFFLINE_STORAGE_KEY = 'pedigree_manual_offline_v1';
+const CLOCK_SKEW_STORAGE_KEY = 'pedigree_clock_skew_ms_v1';
+export const CLOCK_DRIFT_WARNING_THRESHOLD_MS = 5 * 60_000; // 5 minutes
+
+export type ConnectivityReason =
+  | 'online'
+  | 'manual_offline'
+  | 'navigator_offline'
+  | 'captive_or_unreachable';
+
+export interface ConnectivityStatusSnapshot {
+  navigatorOnline: boolean;
+  manualOffline: boolean;
+  probeStatus: 'idle' | 'probing' | 'reachable' | 'unreachable';
+  probeDetail: string;
+  lastProbeAtIso: string | null;
+  clockSkewMs: number | null;
+  clockDriftWarning: boolean;
+  isEffectivelyOnline: boolean;
+  reason: ConnectivityReason;
+}
+
+function readPersistedManualOffline(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(MANUAL_OFFLINE_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function readPersistedClockSkewMs(): number | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(CLOCK_SKEW_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+let manualOfflineState: boolean = readPersistedManualOffline();
+let probeStatusState: ConnectivityStatusSnapshot['probeStatus'] = 'idle';
+let probeDetailState = '';
+let lastProbeAtIsoState: string | null = null;
+let clockSkewMsState: number | null = readPersistedClockSkewMs();
+const connectivityListeners = new Set<() => void>();
+let browserConnectivityHooksAttached = false;
+
+function computeConnectivityReason(
+  navigatorOnline: boolean,
+  manualOffline: boolean,
+  probeStatus: ConnectivityStatusSnapshot['probeStatus']
+): ConnectivityReason {
+  if (manualOffline) return 'manual_offline';
+  if (!navigatorOnline) return 'navigator_offline';
+  if (probeStatus === 'unreachable') return 'captive_or_unreachable';
+  return 'online';
+}
+
+export function getRecordedClockSkewMs(): number | null {
+  return clockSkewMsState;
+}
+
+export function getAdjustedNowMs(): number {
+  const skew = clockSkewMsState;
+  if (skew === null || !Number.isFinite(skew)) return Date.now();
+  return Date.now() + skew;
+}
+
+export function getAdjustedNowIsoUtc(): string {
+  return new Date(getAdjustedNowMs()).toISOString();
+}
+
+export function formatClockSkewHuman(skewMs: number | null | undefined): string {
+  if (skewMs === null || skewMs === undefined || !Number.isFinite(skewMs)) {
+    return '0 min';
+  }
+  const absMins = Math.round(Math.abs(skewMs) / 60_000);
+  const direction = skewMs > 0 ? 'behind server time' : 'ahead of server time';
+  if (absMins >= 120) {
+    const hours = (absMins / 60).toFixed(1).replace(/\.0$/, '');
+    return `${hours} hr ${direction}`;
+  }
+  return `${Math.max(1, absMins)} min ${direction}`;
+}
+
+export function recordServerDateHeaderSkew(
+  dateHeader: string | null | undefined,
+  localNowMs: number = Date.now()
+): number | null {
+  if (!dateHeader || typeof dateHeader !== 'string') return null;
+  const parsedServerMs = Date.parse(dateHeader);
+  if (!Number.isFinite(parsedServerMs) || parsedServerMs <= 0) return null;
+  const skewMs = parsedServerMs - localNowMs;
+  clockSkewMsState = skewMs;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(CLOCK_SKEW_STORAGE_KEY, String(Math.round(skewMs)));
+    }
+  } catch {
+    // Non-fatal in private browsing
+  }
+  notifyConnectivityListeners();
+  return skewMs;
+}
+
+export function getConnectivitySnapshot(): ConnectivityStatusSnapshot {
+  const navigatorOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+  const reason = computeConnectivityReason(navigatorOnline, manualOfflineState, probeStatusState);
+  const clockDriftWarning =
+    clockSkewMsState !== null &&
+    Number.isFinite(clockSkewMsState) &&
+    Math.abs(clockSkewMsState) >= CLOCK_DRIFT_WARNING_THRESHOLD_MS;
+  return {
+    navigatorOnline,
+    manualOffline: manualOfflineState,
+    probeStatus: probeStatusState,
+    probeDetail: probeDetailState,
+    lastProbeAtIso: lastProbeAtIsoState,
+    clockSkewMs: clockSkewMsState,
+    clockDriftWarning,
+    isEffectivelyOnline: reason === 'online',
+    reason,
+  };
+}
+
+function notifyConnectivityListeners(): void {
+  for (const listener of connectivityListeners) {
+    listener();
+  }
+}
+
+export function isManualOfflineMode(): boolean {
+  return manualOfflineState;
+}
+
+export function getEffectiveOnlineStatus(): boolean {
+  return getConnectivitySnapshot().isEffectivelyOnline;
+}
+
+export function setManualOfflineMode(enabled: boolean): void {
+  manualOfflineState = Boolean(enabled);
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(MANUAL_OFFLINE_STORAGE_KEY, manualOfflineState ? 'true' : 'false');
+    }
+  } catch {
+    // Non-fatal in private browsing
+  }
+  if (manualOfflineState) {
+    probeDetailState = 'Manual App Offline Mode active — network actions held locally.';
+  } else if (probeStatusState === 'unreachable') {
+    probeStatusState = 'idle';
+    probeDetailState = '';
+  }
+  notifyConnectivityListeners();
+}
+
+export function resetConnectivityStateForTests(): void {
+  manualOfflineState = false;
+  probeStatusState = 'idle';
+  probeDetailState = '';
+  lastProbeAtIsoState = null;
+  clockSkewMsState = null;
+  connectivityListeners.clear();
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(MANUAL_OFFLINE_STORAGE_KEY);
+      localStorage.removeItem(CLOCK_SKEW_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+export async function probeNetworkConnectivity(options?: {
+  timeoutMs?: number;
+  probeUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<ConnectivityStatusSnapshot> {
+  const snapBefore = getConnectivitySnapshot();
+  if (snapBefore.manualOffline) {
+    probeStatusState = 'idle';
+    probeDetailState = 'Skipped probe: Manual App Offline Mode is enabled.';
+    notifyConnectivityListeners();
+    return getConnectivitySnapshot();
+  }
+  if (!snapBefore.navigatorOnline) {
+    probeStatusState = 'unreachable';
+    probeDetailState = 'Browser reports no network interface connection.';
+    lastProbeAtIsoState = nowIsoUtc();
+    notifyConnectivityListeners();
+    return getConnectivitySnapshot();
+  }
+
+  const fetchFn = options?.fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!fetchFn) {
+    probeStatusState = 'unreachable';
+    probeDetailState = 'Fetch API unavailable to probe connectivity.';
+    notifyConnectivityListeners();
+    return getConnectivitySnapshot();
+  }
+
+  probeStatusState = 'probing';
+  probeDetailState = 'Checking live reachability...';
+  notifyConnectivityListeners();
+
+  const timeoutMs = Math.max(500, options?.timeoutMs ?? 3500);
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  try {
+    const baseProbeUrl = options?.probeUrl || './version.json';
+    const sep = baseProbeUrl.includes('?') ? '&' : '?';
+    const res = await fetchFn(`${baseProbeUrl}${sep}_probe=${Date.now()}`, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller?.signal,
+    });
+
+    const dateHdr = res.headers?.get?.('date');
+    if (dateHdr) {
+      recordServerDateHeaderSkew(dateHdr);
+    }
+
+    if (!res.ok) {
+      probeStatusState = 'unreachable';
+      probeDetailState = `Probe returned HTTP ${res.status} (offline or captive Wi-Fi portal).`;
+    } else {
+      const contentType = res.headers?.get?.('content-type') || '';
+      if (contentType && !/json|text\/plain/i.test(contentType)) {
+        probeStatusState = 'unreachable';
+        probeDetailState = 'Unexpected captive portal or proxy response instead of app manifest.';
+      } else {
+        await res.json();
+        probeStatusState = 'reachable';
+        probeDetailState = 'Live app manifest reachable.';
+      }
+    }
+  } catch (err) {
+    probeStatusState = 'unreachable';
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    probeDetailState = isAbort
+      ? `Connectivity probe timed out after ${timeoutMs}ms (captive Wi-Fi or dead zone).`
+      : 'Network unreachable during connectivity probe — holding edits locally.';
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+    lastProbeAtIsoState = nowIsoUtc();
+    notifyConnectivityListeners();
+  }
+
+  return getConnectivitySnapshot();
+}
+
+export function useConnectivityStatus(): ConnectivityStatusSnapshot & {
+  setManualOffline: (enabled: boolean) => void;
+  probeNow: (options?: { timeoutMs?: number }) => Promise<ConnectivityStatusSnapshot>;
+} {
+  const [snap, setSnap] = useState<ConnectivityStatusSnapshot>(getConnectivitySnapshot);
 
   useEffect(() => {
-    const onOnline = () => setIsOnline(true);
-    const onOffline = () => setIsOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
+    const sync = () => setSnap(getConnectivitySnapshot());
+    connectivityListeners.add(sync);
+
+    if (!browserConnectivityHooksAttached && typeof window !== 'undefined') {
+      browserConnectivityHooksAttached = true;
+      const handleBrowserOnline = () => {
+        if (probeStatusState === 'unreachable') {
+          probeStatusState = 'idle';
+          probeDetailState = '';
+        }
+        notifyConnectivityListeners();
+      };
+      const handleBrowserOffline = () => {
+        notifyConnectivityListeners();
+      };
+      window.addEventListener('online', handleBrowserOnline);
+      window.addEventListener('offline', handleBrowserOffline);
+    }
+
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+    sync();
+
     return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
+      connectivityListeners.delete(sync);
+      window.removeEventListener('online', sync);
+      window.removeEventListener('offline', sync);
     };
   }, []);
 
-  return isOnline;
+  const probeNow = useCallback(
+    (opts?: { timeoutMs?: number }) => probeNetworkConnectivity(opts),
+    []
+  );
+
+  return {
+    ...snap,
+    setManualOffline: setManualOfflineMode,
+    probeNow,
+  };
+}
+
+export function useOnlineStatus(): boolean {
+  return useConnectivityStatus().isEffectivelyOnline;
 }
 
 interface BeforeInstallPromptEvent extends Event {

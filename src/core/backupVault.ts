@@ -397,6 +397,85 @@ export function serializeVaultBackupEnvelope(
   return { envelope, jsonText };
 }
 
+export interface PreUpgradeBackupVerificationResult {
+  ok: boolean;
+  checksumSha256: string;
+  schemaVersion: number;
+  animalCount: number;
+  reason?: string;
+}
+
+/**
+ * Generates a `_schemaVersion`-stamped, SHA-256-checksummed `pre_upgrade` JSON backup
+ * and validates its round-trip parse & checksum in memory before returning.
+ */
+export function buildVerifiedPreUpgradeJsonBackup(
+  snapshot: BarnDatabaseSnapshot,
+  createdByAppVersion: string = APP_SCHEMA_BUILD_TAG,
+  note = 'Automated pre-upgrade SHA-256 verified backup'
+): {
+  envelope: VaultBackupEnvelope;
+  jsonText: string;
+  verification: PreUpgradeBackupVerificationResult;
+} {
+  const { envelope, jsonText } = serializeVaultBackupEnvelope(snapshot, {
+    kind: 'pre_upgrade',
+    createdByAppVersion,
+    note,
+  });
+  const verification = verifyPreUpgradeJsonBackup(jsonText, envelope.checksumSha256);
+  if (!verification.ok) {
+    throw new Error(verification.reason || 'Pre-upgrade backup checksum verification failed.');
+  }
+  return { envelope, jsonText, verification };
+}
+
+export function verifyPreUpgradeJsonBackup(
+  jsonText: string,
+  expectedChecksumSha256?: string
+): PreUpgradeBackupVerificationResult {
+  try {
+    const parsedRaw = JSON.parse(jsonText) as Record<string, unknown>;
+    const declaredChecksum =
+      typeof parsedRaw?.checksumSha256 === 'string'
+        ? parsedRaw.checksumSha256.trim().toLowerCase()
+        : '';
+    if (!declaredChecksum) {
+      return {
+        ok: false,
+        checksumSha256: '',
+        schemaVersion: Number(parsedRaw?._schemaVersion) || 0,
+        animalCount: 0,
+        reason: 'Pre-upgrade backup is missing a SHA-256 checksum.',
+      };
+    }
+    if (expectedChecksumSha256 && declaredChecksum !== expectedChecksumSha256.trim().toLowerCase()) {
+      return {
+        ok: false,
+        checksumSha256: declaredChecksum,
+        schemaVersion: Number(parsedRaw?._schemaVersion) || 0,
+        animalCount: 0,
+        reason: 'Pre-upgrade backup SHA-256 checksum mismatch.',
+      };
+    }
+    const migrated = migrateAndValidateBackupEnvelope(parsedRaw);
+    return {
+      ok: migrated.checksumValid === true,
+      checksumSha256: declaredChecksum,
+      schemaVersion: migrated.schemaVersion,
+      animalCount: migrated.snapshot.animals.length,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      checksumSha256: '',
+      schemaVersion: 0,
+      animalCount: 0,
+      reason: err instanceof Error ? err.message : 'Pre-upgrade backup verification failed.',
+    };
+  }
+}
+
 export const VAULT_ZIP_ENTRY_NAME = 'vault-backup.json';
 
 export function isZipMagicBytes(bytes: Uint8Array): boolean {

@@ -2294,7 +2294,16 @@ function WeightTrendSvg({
           {points[points.length - 1].dateIso})
         </span>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-20 overflow-visible">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`Weight trend chart from ${formatWeight(points[0].weightGrams, unit)} on ${
+          points[0].dateIso
+        } to ${formatWeight(points[points.length - 1].weightGrams, unit)} on ${
+          points[points.length - 1].dateIso
+        } across ${points.length} measurements`}
+        className="w-full h-20 overflow-visible"
+      >
         <polyline
           fill="none"
           stroke="var(--barn-sage)"

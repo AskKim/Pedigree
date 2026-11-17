@@ -20,11 +20,22 @@ import {
   applyImportConflictAttentionFlags,
   LitterOffspringDraft,
 } from '../core/animalConflicts';
+import {
+  inspectSnapshotBeforeRestorePure,
+  PreRestoreArchiveInspection,
+} from '../core/archiveInspector';
+import {
+  analyzePhotoStorageFootprintPure,
+  PhotoStorageFootprintReport,
+  pruneFullResPayloadsFromSnapshotPure,
+  removeOrphanPhotosFromSnapshotPure,
+} from '../core/photoMaintenance';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { formatGenotypeArray, parseGenotypeString } from '../core/geneticsEngine';
 import {
   calculateSavingsPercent,
   formatByteSizePure,
+  ImageOptimizationPresetId,
   OptimizedImagePayload,
 } from '../core/imageOptimizationSpec';
 import {
@@ -71,9 +82,11 @@ import {
 import {
   ArchivedHerdIndexEntry,
   buildArchivedAnimalsBundle,
+  buildVerifiedPreUpgradeJsonBackup,
   mergeRestoredArchiveIntoSnapshot,
   VaultBackupMetadata,
 } from '../core/backupVault';
+import { CURRENT_APP_VERSION } from '../core/upgradeGate';
 import {
   buildSpeciesHerdMap,
   calculatePairingCoi,
@@ -112,6 +125,7 @@ import {
   SpeciesMigrationResult,
 } from '../core/speciesMigration';
 import {
+  bumpRecordRevision,
   createOutboxOperation,
   diffEntityFieldsToOperations,
   mergeDeltaOperations,
@@ -168,6 +182,8 @@ import {
 import {
   checkStorageStatus,
   deleteRollingSnapshotBackup,
+  getAdjustedNowIsoUtc,
+  getEffectiveOnlineStatus,
   isQuotaExceededError,
   listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
@@ -176,7 +192,9 @@ import {
   saveRollingSnapshotBackup,
   StorageProtectionStatus,
 } from '../storage/storageProtection';
+import { reoptimizeAnimalPhotoRecord } from '../storage/webImageOptimizer';
 import { detectCurrentDeviceCapability } from '../storage/deviceCapabilityDetector';
+import { markPreUpgradeBackupVerified } from '../storage/pwaUpdateManager';
 import {
   clearOpfsPruneSinkWarning,
   clearPriorUseSentinel,
@@ -309,6 +327,8 @@ export function useBarnStore() {
   const [requestedHerdConflictNonce, setRequestedHerdConflictNonce] = useState<number>(0);
   const [storageStatus, setStorageStatus] = useState<StorageProtectionStatus | null>(null);
   const [syncOperations, setSyncOperations] = useState<SyncOperation[]>([]);
+  const syncOperationsRef = useRef<SyncOperation[]>([]);
+  syncOperationsRef.current = syncOperations;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflictEntry[]>([]);
   const [openAddSpeciesInSettings, setOpenAddSpeciesInSettings] = useState<boolean>(false);
   const [localLastBackupMeta, setLocalLastBackupMeta] = useState<LastBackupMeta | null>(() => {
@@ -338,6 +358,16 @@ export function useBarnStore() {
   const [pruneSinkWarning, setPruneSinkWarning] = useState<OpfsPruneSinkWarning | null>(() =>
     readOpfsPruneSinkWarning()
   );
+
+  const nextEntityRev = useCallback((entityUuid: string, currentRev?: number): number => {
+    let maxSeen = typeof currentRev === 'number' && Number.isFinite(currentRev) ? currentRev : 0;
+    for (const op of syncOperationsRef.current) {
+      if (op.entity_uuid === entityUuid && typeof op.record_rev === 'number' && op.record_rev > maxSeen) {
+        maxSeen = op.record_rev;
+      }
+    }
+    return bumpRecordRevision({ _rev: maxSeen });
+  }, []);
 
   const enqueueStoreMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
     const next = writeQueueRef.current.then(task, task);
@@ -1105,10 +1135,13 @@ export function useBarnStore() {
     async (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => {
       if (!snapshot) return;
       try {
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(snapshot.settings.id, snapshot.settings._rev);
         const updated: BarnSettings = {
           ...snapshot.settings,
           ...patch,
-          updatedAt: nowIsoUtc(),
+          _rev: rev,
+          updatedAt: ts,
         };
         await adapterRef.current!.saveSettings(updated);
         const ops = diffEntityFieldsToOperations({
@@ -1117,6 +1150,8 @@ export function useBarnStore() {
           next: updated,
           deviceId,
           nextCounter: allocateNextLogicalCounter,
+          timestamp: ts,
+          recordRev: rev,
         });
         await recordOutboxOps(ops);
         if (patch.defaultGenerations) {
@@ -1130,7 +1165,7 @@ export function useBarnStore() {
         reportPersistenceFailure('save barn preferences', err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, notify, reportPersistenceFailure]
+    [snapshot, deviceId, nextEntityRev, recordOutboxOps, notify, reportPersistenceFailure]
   );
 
   const ignoreTaskAlertsPermanently = useCallback(
@@ -1229,10 +1264,11 @@ export function useBarnStore() {
 
   const saveSpeciesProfile = useCallback(
     async (profile: SpeciesProfile) => {
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
       const existing = snapshot?.speciesProfiles.find((sp) => sp.id === profile.id);
       try {
         if (existing) {
+          const rev = nextEntityRev(existing.id, existing._rev);
           const clean: SpeciesProfile = {
             ...profile,
             sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
@@ -1240,6 +1276,7 @@ export function useBarnStore() {
             defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
             memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
             memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
+            _rev: rev,
             createdAt: profile.createdAt || existing.createdAt || ts,
             updatedAt: ts,
           };
@@ -1321,6 +1358,8 @@ export function useBarnStore() {
               next: clean,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
             })
           );
           await reloadFromAdapter();
@@ -1331,14 +1370,17 @@ export function useBarnStore() {
           );
         } else {
           const currentList = snapshot?.speciesProfiles ?? [];
+          const newId = profile.id || `species-${generateUuid()}`;
+          const rev = nextEntityRev(newId, profile._rev);
           const cleanNew: SpeciesProfile = {
             ...profile,
-            id: profile.id || `species-${generateUuid()}`,
+            id: newId,
             sortOrder: currentList.length,
             name: profile.name.trim(),
             defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
             memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
             memoUpdatedAt: profile.memoUpdatedAt ?? '',
+            _rev: rev,
             createdAt: profile.createdAt || ts,
             updatedAt: ts,
           };
@@ -1350,6 +1392,8 @@ export function useBarnStore() {
               next: cleanNew,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
             })
           );
           await reloadFromAdapter();
@@ -1365,6 +1409,7 @@ export function useBarnStore() {
       snapshot,
       activeSpeciesName,
       deviceId,
+      nextEntityRev,
       recordOutboxOps,
       reloadFromAdapter,
       notify,
@@ -1379,11 +1424,13 @@ export function useBarnStore() {
       if (!existing) return;
       const cleanMemo = sanitizeSpeciesMemo(rawMemoText);
       if ((existing.memoText ?? '') === cleanMemo) return;
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
+      const rev = nextEntityRev(existing.id, existing._rev);
       const updated: SpeciesProfile = {
         ...existing,
         memoText: cleanMemo,
         memoUpdatedAt: ts,
+        _rev: rev,
         updatedAt: ts,
       };
       try {
@@ -1395,6 +1442,8 @@ export function useBarnStore() {
             next: updated,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
           })
         );
         await reloadFromAdapter();
@@ -1405,7 +1454,7 @@ export function useBarnStore() {
         reportPersistenceFailure(`save ${existing.name} memo pad`, err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const reorderSpeciesCards = useCallback(
@@ -1604,9 +1653,13 @@ export function useBarnStore() {
           draft.ignoredConflicts ?? previous?.ignoredConflicts
         );
 
+        const animalId = draft.id || generateUuid();
+        const rev = nextEntityRev(animalId, previous?._rev);
+        const adjustedTs = getAdjustedNowIsoUtc();
+
         const animal: Animal = {
           ...draft,
-          id: draft.id || generateUuid(),
+          id: animalId,
           tattoo: draft.tattoo.trim(),
           name: draft.name.trim(),
           archived: Boolean(draft.archived),
@@ -1618,8 +1671,9 @@ export function useBarnStore() {
           suspectedCarrierOf: carriers.suspectedCarrierOf,
           confirmedCarrierOf: carriers.confirmedCarrierOf,
           clearedCarrierOf: carriers.clearedCarrierOf,
-          createdAt: draft.createdAt || ts,
-          updatedAt: ts,
+          _rev: rev,
+          createdAt: draft.createdAt || adjustedTs,
+          updatedAt: adjustedTs,
         };
 
         try {
@@ -1631,6 +1685,8 @@ export function useBarnStore() {
               next: animal,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: adjustedTs,
+              recordRev: rev,
             })
           );
 
@@ -1654,8 +1710,8 @@ export function useBarnStore() {
               storedBytes: pay.storedBytes,
               thumbnailDataUrl: pay.thumbnailDataUrl,
               dataUrl: pay.dataUrl,
-              createdAt: ts,
-              updatedAt: ts,
+              createdAt: adjustedTs,
+              updatedAt: adjustedTs,
             }));
             await adapterRef.current!.saveAnimalPhotosBatch(newPhotoRecords);
             for (const rec of newPhotoRecords) {
@@ -1676,11 +1732,13 @@ export function useBarnStore() {
                   } of "${child.name}"`,
                 });
               } else {
+                const childRev = nextEntityRev(child.id, child._rev);
                 const updatedChild: Animal = {
                   ...child,
                   sireId: linkParentTarget.asSire ? animal.id : child.sireId,
                   damId: !linkParentTarget.asSire ? animal.id : child.damId,
-                  updatedAt: ts,
+                  _rev: childRev,
+                  updatedAt: adjustedTs,
                 };
                 await adapterRef.current!.saveAnimal(updatedChild);
                 await recordOutboxOps(
@@ -1690,6 +1748,8 @@ export function useBarnStore() {
                     next: updatedChild,
                     deviceId,
                     nextCounter: allocateNextLogicalCounter,
+                    timestamp: adjustedTs,
+                    recordRev: childRev,
                   })
                 );
               }
@@ -1712,6 +1772,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -1725,7 +1786,8 @@ export function useBarnStore() {
       if (!snapshot || kinds.length === 0) return;
       const target = snapshot.animals.find((a) => a.id === animalId);
       if (!target) return;
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
+      const rev = nextEntityRev(target.id, target._rev);
       const nextIgnored = normalizeIgnoredConflicts([
         ...(target.ignoredConflicts || []),
         ...kinds,
@@ -1740,6 +1802,7 @@ export function useBarnStore() {
         ...target,
         ignoredConflicts: nextIgnored,
         needsAttention: stillHasActive ? target.needsAttention : false,
+        _rev: rev,
         updatedAt: ts,
       };
       try {
@@ -1751,6 +1814,8 @@ export function useBarnStore() {
             next: updated,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
           })
         );
         await reloadFromAdapter();
@@ -1761,7 +1826,7 @@ export function useBarnStore() {
         reportPersistenceFailure(`ignore conflict for ${target.name}`, err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const restoreAnimalConflictAlert = useCallback(
@@ -1769,7 +1834,8 @@ export function useBarnStore() {
       if (!snapshot) return;
       const target = snapshot.animals.find((a) => a.id === animalId);
       if (!target) return;
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
+      const rev = nextEntityRev(target.id, target._rev);
       const currentIgnored = normalizeIgnoredConflicts(target.ignoredConflicts);
       const nextIgnored =
         kinds && kinds.length > 0
@@ -1785,6 +1851,7 @@ export function useBarnStore() {
         ...target,
         ignoredConflicts: nextIgnored,
         needsAttention: hasActive ? true : target.needsAttention,
+        _rev: rev,
         updatedAt: ts,
       };
       try {
@@ -1796,6 +1863,8 @@ export function useBarnStore() {
             next: updated,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
           })
         );
         await reloadFromAdapter();
@@ -1804,19 +1873,20 @@ export function useBarnStore() {
         reportPersistenceFailure(`restore conflict alert for ${target.name}`, err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const archiveAnimals = useCallback(
     async (animalIds: string[], archived: boolean) => {
       if (!snapshot || animalIds.length === 0) return;
       const idSet = new Set(animalIds);
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
       const ops: SyncOperation[] = [];
       const updatedBatch: Animal[] = [];
 
       for (const animal of snapshot.animals) {
         if (!idSet.has(animal.id)) continue;
+        const rev = nextEntityRev(animal.id, animal._rev);
         const nextStatus =
           !archived &&
           (animal.status === 'Archived' ||
@@ -1831,6 +1901,7 @@ export function useBarnStore() {
           ...animal,
           archived,
           status: nextStatus,
+          _rev: rev,
           updatedAt: ts,
         };
         updatedBatch.push(updated);
@@ -1841,6 +1912,8 @@ export function useBarnStore() {
             next: updated,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
           })
         );
       }
@@ -1870,7 +1943,7 @@ export function useBarnStore() {
         reportPersistenceFailure(archived ? 'archive animal(s)' : 'restore animal(s)', err);
       }
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteAnimalsBatch = useCallback(
@@ -1879,7 +1952,7 @@ export function useBarnStore() {
       try {
         await saveSafetyRollingBackup(snapshot);
         const idSet = new Set(animalIds);
-        const ts = nowIsoUtc();
+        const ts = getAdjustedNowIsoUtc();
         const ops: SyncOperation[] = [];
 
         // Unlink offspring sire/dam references pointing to deleted animals in a single batch
@@ -1893,6 +1966,7 @@ export function useBarnStore() {
               ...a,
               sireId: clearSire ? '' : a.sireId,
               damId: clearDam ? '' : a.damId,
+              _rev: nextEntityRev(a.id, a._rev),
               updatedAt: ts,
             });
           }
@@ -1903,6 +1977,7 @@ export function useBarnStore() {
 
         await adapterRef.current!.deleteAnimalsBatch(Array.from(idSet));
         for (const id of idSet) {
+          const deletedAnimal = snapshot.animals.find((a) => a.id === id);
           ops.push(
             createOutboxOperation({
               entityType: 'animal',
@@ -1912,6 +1987,7 @@ export function useBarnStore() {
               fieldName: '__delete__',
               newValue: true,
               timestamp: ts,
+              recordRev: nextEntityRev(id, deletedAnimal?._rev),
             })
           );
         }
@@ -1930,6 +2006,7 @@ export function useBarnStore() {
       selectedAnimalId,
       pedigreeAnimalId,
       deviceId,
+      nextEntityRev,
       recordOutboxOps,
       reloadFromAdapter,
       notify,
@@ -2123,14 +2200,17 @@ export function useBarnStore() {
     ): Promise<boolean> => {
       return enqueueStoreMutation(async () => {
         const latestSnapshot = snapshotRef.current ?? snapshot;
-        const ts = nowIsoUtc();
+        const ts = getAdjustedNowIsoUtc();
         const prev = cageDraft.id
           ? latestSnapshot?.cages.find((c) => c.id === cageDraft.id)
           : undefined;
+        const cageId = cageDraft.id || generateUuid();
+        const rev = nextEntityRev(cageId, prev?._rev);
         const cage: CageLocation = {
           ...cageDraft,
-          id: cageDraft.id || generateUuid(),
+          id: cageId,
           label: cageDraft.label.trim(),
+          _rev: rev,
           createdAt: prev?.createdAt || ts,
           updatedAt: ts,
         };
@@ -2143,6 +2223,8 @@ export function useBarnStore() {
               next: cage,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
             })
           );
           await reloadFromAdapter();
@@ -2157,6 +2239,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -2201,7 +2284,7 @@ export function useBarnStore() {
       const targetSpeciesName =
         params.dam?.species || params.sire?.species || activeSpeciesName;
       const sp = resolveSpeciesProfile(targetSpeciesName, currentSnapshot.speciesProfiles);
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
 
       const buildQuickParent = (rawName: string, sex: 'Male' | 'Female'): Animal => ({
         id: generateUuid(),
@@ -2227,6 +2310,7 @@ export function useBarnStore() {
         sireId: '',
         damId: '',
         notes: 'Quick-added during breeding entry — review and complete record details.',
+        _rev: 1,
         createdAt: ts,
         updatedAt: ts,
       });
@@ -2271,6 +2355,7 @@ export function useBarnStore() {
         serviceFeeCents: Math.max(0, Math.round(Number(params.serviceFeeCents) || 0)),
         serviceFeeDirection: normalizeServiceFeeDirection(params.serviceFeeDirection),
         notes: params.notes.trim(),
+        _rev: 1,
         createdAt: ts,
         updatedAt: ts,
       };
@@ -2287,6 +2372,8 @@ export function useBarnStore() {
                 next: created,
                 deviceId,
                 nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: 1,
               })
             );
           }
@@ -2300,13 +2387,18 @@ export function useBarnStore() {
             next: breeding,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: 1,
           })
         );
 
         let cascaded: BarnTask[] = [];
         let taskCount = 0;
         if (params.autoScheduleChores) {
-          cascaded = generateCascadedTasksForBreeding(breeding, sp);
+          cascaded = generateCascadedTasksForBreeding(breeding, sp).map((t) => ({
+            ...t,
+            _rev: 1,
+          }));
           taskCount = cascaded.length;
           await adapterRef.current!.saveTasksBatch(cascaded);
           for (const t of cascaded) {
@@ -2317,6 +2409,8 @@ export function useBarnStore() {
                 next: t,
                 deviceId,
                 nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: 1,
               })
             );
           }
@@ -2330,7 +2424,7 @@ export function useBarnStore() {
         if (calConfig.autoAddNewTasks && calConfig.includeBreedingTasks && cascaded.length > 0) {
           const dated = cascaded.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''));
           if (dated.length > 0) {
-            const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+            const isOnline = getEffectiveOnlineStatus();
             if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
               setPendingCalendarSync({
                 tasks: dated,
@@ -2420,7 +2514,7 @@ export function useBarnStore() {
       return enqueueStoreMutation(async () => {
       const currentSnapshot = snapshotRef.current ?? snapshot;
       if (!currentSnapshot) return false;
-      const ts = nowIsoUtc();
+      const ts = getAdjustedNowIsoUtc();
       const sp = resolveSpeciesProfile(existing.species, currentSnapshot.speciesProfiles);
       const ops: SyncOperation[] = [];
 
@@ -2472,6 +2566,7 @@ export function useBarnStore() {
               sireId: existing.sireId,
               damId: existing.damId,
               notes: `Auto-registered from ${existing.sireName} × ${existing.damName} litter.`,
+              _rev: 1,
               createdAt: ts,
               updatedAt: ts,
             };
@@ -2483,6 +2578,8 @@ export function useBarnStore() {
                 next: jr,
                 deviceId,
                 nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: 1,
               })
             );
           }
@@ -2490,6 +2587,7 @@ export function useBarnStore() {
           createdAny = true;
         }
 
+        const breedingRev = nextEntityRev(existing.id, existing._rev);
         const updated: BreedingRecord = {
           ...existing,
           status: patch.status,
@@ -2524,6 +2622,7 @@ export function useBarnStore() {
               ? patch.ultrasoundProjectedDueIso
               : existing.ultrasoundProjectedDueIso || '',
           notes: patch.notes,
+          _rev: breedingRev,
           updatedAt: ts,
         };
 
@@ -2535,6 +2634,8 @@ export function useBarnStore() {
             next: updated,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: breedingRev,
           })
         );
         await recordOutboxOps(ops);
@@ -2554,6 +2655,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -2581,14 +2683,17 @@ export function useBarnStore() {
     ): Promise<boolean> => {
       return enqueueStoreMutation(async () => {
         const currentSnapshot = snapshotRef.current ?? snapshot;
-        const ts = nowIsoUtc();
+        const ts = getAdjustedNowIsoUtc();
         const prev = taskDraft.id
           ? currentSnapshot?.tasks.find((t) => t.id === taskDraft.id)
           : undefined;
+        const taskId = taskDraft.id || generateUuid();
+        const taskRev = nextEntityRev(taskId, prev?._rev);
         const task: BarnTask = {
           ...taskDraft,
-          id: taskDraft.id || generateUuid(),
+          id: taskId,
           title: taskDraft.title.trim(),
+          _rev: taskRev,
           createdAt: prev?.createdAt || ts,
           updatedAt: ts,
         };
@@ -2601,6 +2706,8 @@ export function useBarnStore() {
               next: task,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: taskRev,
             })
           );
           await reloadFromAdapter();
@@ -2611,7 +2718,7 @@ export function useBarnStore() {
               currentSnapshot?.settings.calendarSync
             );
             if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
-              const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+              const isOnline = getEffectiveOnlineStatus();
               if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
                 setPendingCalendarSync({
                   tasks: [task],
@@ -2661,6 +2768,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -2743,7 +2851,7 @@ export function useBarnStore() {
       }
 
       const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
-      const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+      const isOnline = getEffectiveOnlineStatus();
 
       if (calConfig.deliveryMode === 'google_calendar') {
         if (!isOnline) {
@@ -2815,7 +2923,7 @@ export function useBarnStore() {
     const { tasks: queuedTasks, filenameHint } = pendingCalendarSync;
     const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
     const token = getGoogleCalendarAccessToken();
-    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+    const isOnline = getEffectiveOnlineStatus();
 
     if (!isOnline || !token) {
       setPendingCalendarSync(null);
@@ -2913,10 +3021,13 @@ export function useBarnStore() {
   const toggleTaskCompleted = useCallback(
     async (task: BarnTask): Promise<boolean> => {
       return enqueueStoreMutation(async () => {
-        const updated = {
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(task.id, task._rev);
+        const updated: BarnTask = {
           ...task,
           completed: !task.completed,
-          updatedAt: nowIsoUtc(),
+          _rev: rev,
+          updatedAt: ts,
         };
         try {
           await adapterRef.current!.saveTask(updated);
@@ -2927,6 +3038,8 @@ export function useBarnStore() {
               next: updated,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
             })
           );
           await reloadFromAdapter();
@@ -2939,6 +3052,7 @@ export function useBarnStore() {
     },
     [
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -2963,10 +3077,11 @@ export function useBarnStore() {
       return enqueueStoreMutation(async () => {
         const currentSnapshot = snapshotRef.current ?? snapshot;
         if (!currentSnapshot) return false;
-        const ts = nowIsoUtc();
+        const ts = getAdjustedNowIsoUtc();
         const log: CareLog = {
           ...draft,
           id: generateUuid(),
+          _rev: 1,
           createdAt: ts,
           updatedAt: ts,
         };
@@ -2978,14 +3093,18 @@ export function useBarnStore() {
             next: log,
             deviceId,
             nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: 1,
           });
 
           const animal = currentSnapshot.animals.find((a) => a.id === draft.animalId);
           if (animal && (draft.weightGrams > 0 || draft.showLegEarned)) {
+            const animalRev = nextEntityRev(animal.id, animal._rev);
             const nextAnimal: Animal = {
               ...animal,
               weightGrams: draft.weightGrams > 0 ? draft.weightGrams : animal.weightGrams,
               legsCount: draft.showLegEarned ? animal.legsCount + 1 : animal.legsCount,
+              _rev: animalRev,
               updatedAt: ts,
             };
             await adapterRef.current!.saveAnimal(nextAnimal);
@@ -2996,6 +3115,8 @@ export function useBarnStore() {
                 next: nextAnimal,
                 deviceId,
                 nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: animalRev,
               })
             );
           }
@@ -3013,6 +3134,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -3039,14 +3161,17 @@ export function useBarnStore() {
     ): Promise<boolean> => {
       return enqueueStoreMutation(async () => {
         const currentSnapshot = snapshotRef.current ?? snapshot;
-        const ts = nowIsoUtc();
+        const ts = getAdjustedNowIsoUtc();
         const prev = draft.id
           ? currentSnapshot?.shows.find((s) => s.id === draft.id)
           : undefined;
+        const showId = draft.id || generateUuid();
+        const rev = nextEntityRev(showId, prev?._rev);
         const show: ShowEvent = {
           ...draft,
-          id: draft.id || generateUuid(),
+          id: showId,
           name: draft.name.trim(),
+          _rev: rev,
           createdAt: prev?.createdAt || ts,
           updatedAt: ts,
         };
@@ -3059,6 +3184,8 @@ export function useBarnStore() {
               next: show,
               deviceId,
               nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
             })
           );
           await reloadFromAdapter();
@@ -3073,6 +3200,7 @@ export function useBarnStore() {
     [
       snapshot,
       deviceId,
+      nextEntityRev,
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
@@ -3544,6 +3672,8 @@ export function useBarnStore() {
         logicalCounter: allocateNextLogicalCounter(),
         fieldName: conflict.field_name,
         newValue: chosenValue,
+        timestamp: getAdjustedNowIsoUtc(),
+        recordRev: nextEntityRev(conflict.entity_uuid),
       });
 
       const applied = mergeDeltaOperations(snapshot, syncOperations, [op], deviceId);
@@ -3559,7 +3689,7 @@ export function useBarnStore() {
       await reloadFromAdapter();
       notify(`Applied chosen value for ${conflict.entity_label} (${conflict.field_name}).`);
     },
-    [snapshot, syncConflicts, syncOperations, deviceId, reloadFromAdapter, notify]
+    [snapshot, syncConflicts, syncOperations, deviceId, nextEntityRev, reloadFromAdapter, notify]
   );
 
   const dismissSyncConflict = useCallback(
@@ -3635,6 +3765,52 @@ export function useBarnStore() {
     },
     [snapshot, hydrateSnapshotForExport, refreshVaultAndArchives, recordBackupExport, notify, reportPersistenceFailure]
   );
+
+  const createAndVerifyPreUpgradeBackup = useCallback(async (): Promise<{
+    verified: boolean;
+    checksumSha256: string;
+    fileName: string;
+  } | null> => {
+    if (!snapshot) return null;
+    try {
+      const hydrated = await hydrateSnapshotForExport(snapshot);
+      const { jsonText, verification } = buildVerifiedPreUpgradeJsonBackup(
+        hydrated,
+        CURRENT_APP_VERSION
+      );
+      const stampSlug = formatTimestampedBackupSlug();
+      const fileName = `community-pedigree-pre-upgrade-backup-${stampSlug}.json`;
+      await downloadTextFile(fileName, jsonText, 'application/json');
+      if (isOpfsSupported()) {
+        await saveOpfsVaultBackup(hydrated, {
+          kind: 'pre_upgrade',
+          appVersion: CURRENT_APP_VERSION,
+          note: `Pre-upgrade verified (${verification.checksumSha256.slice(0, 12)})`,
+        }).catch(() => null);
+        await refreshVaultAndArchives();
+      }
+      await recordBackupExport('json', fileName);
+      markPreUpgradeBackupVerified(verification.ok);
+      notify(
+        `Verified Pre-Upgrade Safety Backup saved (${verification.animalCount} animals · SHA-256 ${verification.checksumSha256.slice(0, 12)}…).`
+      );
+      return {
+        verified: verification.ok,
+        checksumSha256: verification.checksumSha256,
+        fileName,
+      };
+    } catch (err) {
+      reportPersistenceFailure('create verified pre-upgrade safety backup', err);
+      return null;
+    }
+  }, [
+    snapshot,
+    hydrateSnapshotForExport,
+    refreshVaultAndArchives,
+    recordBackupExport,
+    notify,
+    reportPersistenceFailure,
+  ]);
 
   const restoreOpfsVaultBackup = useCallback(
     async (key: string) => {
@@ -4037,6 +4213,22 @@ export function useBarnStore() {
     return adapterRef.current!.exportRawSqliteBytes();
   }, []);
 
+  const inspectSqliteRestoreBytes = useCallback(
+    async (bytes: Uint8Array, fileName = 'backup.sqlite'): Promise<PreRestoreArchiveInspection> => {
+      const adapter = adapterRef.current!;
+      if (!adapter.inspectRawSqliteBytes) {
+        throw new Error('SQLite inspection is unavailable in this browser.');
+      }
+      const incomingSnap = await adapter.inspectRawSqliteBytes(bytes, { lightweightPhotos: true });
+      const baseSnap = snapshotRef.current ?? snapshot ?? incomingSnap;
+      return inspectSnapshotBeforeRestorePure(incomingSnap, baseSnap, {
+        fileName,
+        sourceFormat: 'sqlite',
+      });
+    },
+    [snapshot]
+  );
+
   const importSqliteBytes = useCallback(
     async (bytes: Uint8Array) => {
       if (snapshot && snapshot.animals.length > 0) {
@@ -4056,6 +4248,135 @@ export function useBarnStore() {
     },
     [snapshot, saveSafetyRollingBackup, refreshStorageStatus, refreshVaultAndArchives, notify]
   );
+
+  const analyzePhotoStorageFootprint = useCallback(
+    async (presetId?: ImageOptimizationPresetId): Promise<PhotoStorageFootprintReport | null> => {
+      const base = snapshotRef.current ?? snapshot;
+      if (!base) return null;
+      const hydrated = await hydrateSnapshotForExport(base);
+      return analyzePhotoStorageFootprintPure(
+        hydrated,
+        presetId ?? hydrated.settings.imageOptimizationPreset
+      );
+    },
+    [snapshot, hydrateSnapshotForExport]
+  );
+
+  const pruneOrphanAnimalPhotos = useCallback(async (): Promise<{
+    removedCount: number;
+    reclaimedBytes: number;
+  }> => {
+    return enqueueStoreMutation(async () => {
+      const base = snapshotRef.current ?? snapshot;
+      if (!base) return { removedCount: 0, reclaimedBytes: 0 };
+      const hydrated = await hydrateSnapshotForExport(base);
+      const res = removeOrphanPhotosFromSnapshotPure(hydrated);
+      if (res.removedCount === 0) {
+        notify('Photo check finished — zero orphan attachments found.');
+        return { removedCount: 0, reclaimedBytes: 0 };
+      }
+      await saveSafetyRollingBackup(hydrated, 'Pre-orphan-photo-prune safety snapshot');
+      await adapterRef.current!.replaceSnapshot(res.nextSnapshot);
+      for (const id of res.removedPhotoIds) {
+        photoCacheRef.current.delete(id);
+      }
+      await reloadFromAdapter();
+      void refreshStorageStatus();
+      notify(
+        `Removed ${res.removedCount} orphan photo(s), reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
+      );
+      return { removedCount: res.removedCount, reclaimedBytes: res.reclaimedBytes };
+    });
+  }, [snapshot, enqueueStoreMutation, hydrateSnapshotForExport, saveSafetyRollingBackup, reloadFromAdapter, refreshStorageStatus, notify]);
+
+  const reoptimizeOversizedAnimalPhotos = useCallback(
+    async (
+      presetId?: ImageOptimizationPresetId
+    ): Promise<{ updatedCount: number; oversizedFound: number; reclaimedBytes: number }> => {
+      return enqueueStoreMutation(async () => {
+        const base = snapshotRef.current ?? snapshot;
+        if (!base) return { updatedCount: 0, oversizedFound: 0, reclaimedBytes: 0 };
+        const hydrated = await hydrateSnapshotForExport(base);
+        const targetPreset = presetId ?? hydrated.settings.imageOptimizationPreset ?? 'balanced';
+        const report = analyzePhotoStorageFootprintPure(hydrated, targetPreset);
+        if (report.oversizedPhotoIds.length === 0) {
+          notify('All animal photos already fit cleanly inside the active optimization preset.');
+          return { updatedCount: 0, oversizedFound: 0, reclaimedBytes: 0 };
+        }
+        const oversizedSet = new Set(report.oversizedPhotoIds);
+        const updatedPhotos: AnimalPhoto[] = [];
+        let reclaimedBytes = 0;
+
+        for (const photo of hydrated.animalPhotos ?? []) {
+          if (!oversizedSet.has(photo.id)) continue;
+          const res = await reoptimizeAnimalPhotoRecord(photo, targetPreset);
+          if (res.updated && res.reclaimedBytes > 0) {
+            const rev = nextEntityRev(photo.id, photo._rev);
+            const nextRec: AnimalPhoto = {
+              ...res.photo,
+              _rev: rev,
+              updatedAt: getAdjustedNowIsoUtc(),
+            };
+            updatedPhotos.push(nextRec);
+            reclaimedBytes += res.reclaimedBytes;
+          }
+        }
+
+        if (updatedPhotos.length === 0) {
+          notify('Checked oversized photos — existing encodings are already smaller than re-encoding.');
+          return {
+            updatedCount: 0,
+            oversizedFound: report.oversizedPhotoIds.length,
+            reclaimedBytes: 0,
+          };
+        }
+
+        await saveSafetyRollingBackup(hydrated, 'Pre-photo-reoptimization safety snapshot');
+        await adapterRef.current!.saveAnimalPhotosBatch(updatedPhotos);
+        for (const p of updatedPhotos) {
+          photoCacheRef.current.set(p.id, p.dataUrl);
+        }
+        await reloadFromAdapter();
+        void refreshStorageStatus();
+        notify(
+          `Re-optimized ${updatedPhotos.length} oversized photo(s), reclaiming ${formatByteSizePure(reclaimedBytes)}.`
+        );
+        return {
+          updatedCount: updatedPhotos.length,
+          oversizedFound: report.oversizedPhotoIds.length,
+          reclaimedBytes,
+        };
+      });
+    },
+    [snapshot, enqueueStoreMutation, hydrateSnapshotForExport, nextEntityRev, saveSafetyRollingBackup, reloadFromAdapter, refreshStorageStatus, notify]
+  );
+
+  const pruneFullResPhotoPayloadsKeepingThumbnails = useCallback(async (): Promise<{
+    prunedCount: number;
+    reclaimedBytes: number;
+  }> => {
+    return enqueueStoreMutation(async () => {
+      const base = snapshotRef.current ?? snapshot;
+      if (!base) return { prunedCount: 0, reclaimedBytes: 0 };
+      const hydrated = await hydrateSnapshotForExport(base);
+      const res = pruneFullResPayloadsFromSnapshotPure(hydrated);
+      if (res.prunedCount === 0) {
+        notify('No full-resolution photo payloads needed compacting.');
+        return { prunedCount: 0, reclaimedBytes: 0 };
+      }
+      await saveSafetyRollingBackup(hydrated, 'Pre-fullres-photo-prune safety snapshot');
+      await adapterRef.current!.saveAnimalPhotosBatch(res.updatedPhotos);
+      for (const p of res.updatedPhotos) {
+        photoCacheRef.current.set(p.id, p.dataUrl);
+      }
+      await reloadFromAdapter();
+      void refreshStorageStatus();
+      notify(
+        `Compacted ${res.prunedCount} photo(s) to lightweight thumbnails, reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
+      );
+      return { prunedCount: res.prunedCount, reclaimedBytes: res.reclaimedBytes };
+    });
+  }, [snapshot, enqueueStoreMutation, hydrateSnapshotForExport, saveSafetyRollingBackup, reloadFromAdapter, refreshStorageStatus, notify]);
 
   const scanDatabaseHealth = useCallback((): BarnHealthReport | null => {
     if (!snapshot) return null;
@@ -4219,6 +4540,7 @@ export function useBarnStore() {
     archivedHerdBundles,
     refreshVaultAndArchives,
     saveManualOpfsVaultBackup,
+    createAndVerifyPreUpgradeBackup,
     restoreOpfsVaultBackup,
     downloadOpfsVaultBackupByKey,
     deleteOpfsVaultBackupByKey,
@@ -4312,7 +4634,12 @@ export function useBarnStore() {
     importBackupArchiveBytes,
     applyPlatformImportPreview,
     exportSqliteBytes,
+    inspectSqliteRestoreBytes,
     importSqliteBytes,
+    analyzePhotoStorageFootprint,
+    pruneOrphanAnimalPhotos,
+    reoptimizeOversizedAnimalPhotos,
+    pruneFullResPhotoPayloadsKeepingThumbnails,
     scanDatabaseHealth,
     runHealthCheckAndRepair,
     resetDatabaseConnection,

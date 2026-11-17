@@ -11,6 +11,7 @@
  * and direct deep links back into the app's task entry.
  */
 
+import { sha256HexPure } from './backupVault';
 import {
   addDaysIso,
   Animal,
@@ -427,6 +428,8 @@ export function buildIcsCalendarForTasks(
 }
 
 export interface GoogleCalendarEventPayload {
+  /** Deterministic Google Calendar base32hex event ID (`[a-v0-9]`, 5–1024 chars) to deduplicate retries/updates. */
+  id?: string;
   summary: string;
   description: string;
   start: { dateTime: string; timeZone: string };
@@ -436,6 +439,15 @@ export interface GoogleCalendarEventPayload {
     overrides?: Array<{ method: 'popup'; minutes: number }>;
   };
   source?: { title: string; url: string };
+}
+
+/**
+ * Generates a deterministic Google Calendar API v3 compatible event `id` strictly using
+ * lowercase base32hex characters (`[a-v0-9]`, 36 chars long) derived from `task.id`.
+ */
+export function buildDeterministicGoogleCalendarEventId(taskId: string): string {
+  const hashHex = sha256HexPure(`community-pedigree-task:${String(taskId || '').trim()}`);
+  return `cped${hashHex.slice(0, 32).toLowerCase()}`;
 }
 
 function buildTaskCalendarMetadata(
@@ -526,6 +538,7 @@ export function buildGoogleCalendarEventPayload(
   const alarmMins = Math.min(40320, Math.max(0, Math.round(config.alarmMinutesBefore)));
 
   return {
+    id: buildDeterministicGoogleCalendarEventId(task.id),
     summary: meta.summaryText,
     description: meta.descriptionText,
     start: {

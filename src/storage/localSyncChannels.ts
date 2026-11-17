@@ -14,6 +14,9 @@
  */
 
 import {
+  tryParseEncryptedEnvelopeJson,
+} from '../core/encryptedExport';
+import {
   isValidSyncOperation,
   MAX_DELTA_BATCH_FILES,
   MAX_DELTA_JSON_BYTES,
@@ -32,6 +35,11 @@ import {
   isDocumentHidden,
 } from './backgroundFreezeCoordinator';
 import { logDiagnosticEvent } from './crashLogger';
+import {
+  decryptTextWithPassphrase,
+  encryptTextWithPassphrase,
+} from './passphraseCrypto';
+import { getAdjustedNowIsoUtc } from './storageProtection';
 
 const SYNC_IDB_NAME = 'community_pedigree_sync_v1';
 const SYNC_IDB_VERSION = 3;
@@ -400,6 +408,16 @@ export async function clearAllSyncStateInIdb(): Promise<void> {
   }
 }
 
+export class EncryptedSyncPassphraseError extends Error {
+  readonly code: 'PASSPHRASE_REQUIRED' | 'PASSPHRASE_INCORRECT';
+
+  constructor(code: 'PASSPHRASE_REQUIRED' | 'PASSPHRASE_INCORRECT', message: string) {
+    super(message);
+    this.name = 'EncryptedSyncPassphraseError';
+    this.code = code;
+  }
+}
+
 export function buildDeltaFilePayload(
   deviceId: string,
   operations: SyncOperation[]
@@ -407,7 +425,7 @@ export function buildDeltaFilePayload(
   return {
     format: 'community-pedigree-delta-v1',
     device_id: deviceId,
-    exported_at: nowIsoUtc(),
+    exported_at: getAdjustedNowIsoUtc(),
     operations: operations.filter((op) => op.device_id === deviceId),
   };
 }
@@ -416,6 +434,13 @@ export function parseDeltaFileJson(text: string): SyncOperation[] {
   const sizeCheck = validateUploadFileSize('delta.json', text.length, MAX_DELTA_JSON_BYTES, 'a sync delta file');
   if (!sizeCheck.ok) {
     throw new Error(sizeCheck.error);
+  }
+  const encryptedEnv = tryParseEncryptedEnvelopeJson(text);
+  if (encryptedEnv) {
+    throw new EncryptedSyncPassphraseError(
+      'PASSPHRASE_REQUIRED',
+      'This delta sync file is passphrase-encrypted. Enter the sync passphrase to unlock it.'
+    );
   }
   const parsed = JSON.parse(text);
   const rawOps =
@@ -433,6 +458,39 @@ export function parseDeltaFileJson(text: string): SyncOperation[] {
     );
   }
   return rawOps.filter((op: unknown): op is SyncOperation => isValidSyncOperation(op));
+}
+
+export async function parseDeltaFileTextAsync(
+  text: string,
+  passphrase?: string
+): Promise<{ operations: SyncOperation[]; wasEncrypted: boolean }> {
+  const sizeCheck = validateUploadFileSize('delta.json', text.length, MAX_DELTA_JSON_BYTES, 'a sync delta file');
+  if (!sizeCheck.ok) {
+    throw new Error(sizeCheck.error);
+  }
+  const encryptedEnv = tryParseEncryptedEnvelopeJson(text);
+  if (!encryptedEnv) {
+    return { operations: parseDeltaFileJson(text), wasEncrypted: false };
+  }
+  const cleanPass = passphrase?.trim() || passphrase || '';
+  if (!cleanPass) {
+    throw new EncryptedSyncPassphraseError(
+      'PASSPHRASE_REQUIRED',
+      'This delta sync file is passphrase-encrypted. Enter the sync passphrase above and try again.'
+    );
+  }
+  let decryptedText: string;
+  try {
+    decryptedText = await decryptTextWithPassphrase(encryptedEnv, cleanPass);
+  } catch (err) {
+    throw new EncryptedSyncPassphraseError(
+      'PASSPHRASE_INCORRECT',
+      err instanceof Error
+        ? err.message
+        : 'Incorrect passphrase for encrypted delta sync file.'
+    );
+  }
+  return { operations: parseDeltaFileJson(decryptedText), wasEncrypted: true };
 }
 
 export function supportsDirectoryPicker(): boolean {
@@ -747,15 +805,20 @@ async function runDirectorySyncWithHandle(params: {
   deviceId: string;
   localOperations: SyncOperation[];
   masterBackupJson: string;
+  passphrase?: string;
   visibilityDoc?: { visibilityState?: string };
 }): Promise<{
   folderName: string;
   peerFilesRead: number;
   incomingOps: SyncOperation[];
+  encryptedPeersSkipped: number;
+  wroteEncrypted: boolean;
 }> {
   const folderName = String(params.dirHandle?.name || 'Sync Folder');
   const incomingOps: SyncOperation[] = [];
   let peerFilesRead = 0;
+  let encryptedPeersSkipped = 0;
+  const activePassphrase = params.passphrase?.trim() ? params.passphrase : undefined;
 
   for await (const [name, handle] of params.dirHandle.entries()) {
     if (isDocumentHidden(params.visibilityDoc)) {
@@ -782,10 +845,13 @@ async function runDirectorySyncWithHandle(params: {
         );
         if (!check.ok) continue;
         const text = await file.text();
-        const ops = parseDeltaFileJson(text);
-        incomingOps.push(...ops);
+        const parsed = await parseDeltaFileTextAsync(text, activePassphrase);
+        incomingOps.push(...parsed.operations);
         peerFilesRead++;
-      } catch {
+      } catch (err) {
+        if (err instanceof EncryptedSyncPassphraseError) {
+          encryptedPeersSkipped++;
+        }
         // Ignore corrupt/partial sync temp files safely
       }
     }
@@ -800,13 +866,23 @@ async function runDirectorySyncWithHandle(params: {
     });
   }
 
-  // Write this device's own immutable delta file
+  // Write this device's own immutable delta file (optionally encrypted)
   const deltaFilename = `delta_${params.deviceId}.json`;
-  const deltaPayload = JSON.stringify(
+  const plainDeltaJson = JSON.stringify(
     buildDeltaFilePayload(params.deviceId, params.localOperations),
     null,
     2
   );
+  const deltaPayload = activePassphrase
+    ? JSON.stringify(
+        await encryptTextWithPassphrase(plainDeltaJson, activePassphrase, {
+          payloadKind: 'delta_log',
+          originalFileName: deltaFilename,
+        }),
+        null,
+        2
+      )
+    : plainDeltaJson;
   const deltaHandle = await params.dirHandle.getFileHandle(deltaFilename, { create: true });
   const deltaWritable = await deltaHandle.createWritable();
   try {
@@ -824,13 +900,23 @@ async function runDirectorySyncWithHandle(params: {
     });
   }
 
-  // Also refresh local master JSON in the sync folder for full snapshot redundancy
+  // Also refresh local master JSON in the sync folder for full snapshot redundancy (optionally encrypted)
+  const masterPayload = activePassphrase
+    ? JSON.stringify(
+        await encryptTextWithPassphrase(params.masterBackupJson, activePassphrase, {
+          payloadKind: 'json_backup',
+          originalFileName: 'pedigree_master_backup.json',
+        }),
+        null,
+        2
+      )
+    : params.masterBackupJson;
   const masterHandle = await params.dirHandle.getFileHandle('pedigree_master_backup.json', {
     create: true,
   });
   const masterWritable = await masterHandle.createWritable();
   try {
-    await masterWritable.write(params.masterBackupJson);
+    await masterWritable.write(masterPayload);
   } finally {
     await masterWritable.close();
   }
@@ -841,6 +927,8 @@ async function runDirectorySyncWithHandle(params: {
     folderName,
     peerFilesRead,
     incomingOps,
+    encryptedPeersSkipped,
+    wroteEncrypted: Boolean(activePassphrase),
   };
 }
 
@@ -852,6 +940,7 @@ export async function resumePersistedDirectorySyncIfGranted(params: {
   deviceId: string;
   localOperations: SyncOperation[];
   masterBackupJson: string;
+  passphrase?: string;
   visibilityDoc?: { visibilityState?: string };
 }): Promise<
   | {
@@ -859,6 +948,8 @@ export async function resumePersistedDirectorySyncIfGranted(params: {
       folderName: string;
       peerFilesRead: number;
       incomingOps: SyncOperation[];
+      encryptedPeersSkipped: number;
+      wroteEncrypted: boolean;
     }
   | {
       resumed: false;
@@ -883,6 +974,7 @@ export async function resumePersistedDirectorySyncIfGranted(params: {
     deviceId: params.deviceId,
     localOperations: params.localOperations,
     masterBackupJson: params.masterBackupJson,
+    passphrase: params.passphrase,
     visibilityDoc: params.visibilityDoc,
   });
   return { resumed: true, ...res };
@@ -897,12 +989,15 @@ export async function syncWithPickedDirectory(params: {
   deviceId: string;
   localOperations: SyncOperation[];
   masterBackupJson: string;
+  passphrase?: string;
   dirHandleOverride?: any;
   visibilityDoc?: { visibilityState?: string };
 }): Promise<{
   folderName: string;
   peerFilesRead: number;
   incomingOps: SyncOperation[];
+  encryptedPeersSkipped: number;
+  wroteEncrypted: boolean;
 }> {
   let dirHandle = params.dirHandleOverride;
   if (!dirHandle) {
@@ -924,6 +1019,7 @@ export async function syncWithPickedDirectory(params: {
     deviceId: params.deviceId,
     localOperations: params.localOperations,
     masterBackupJson: params.masterBackupJson,
+    passphrase: params.passphrase,
     visibilityDoc: params.visibilityDoc,
   });
 }

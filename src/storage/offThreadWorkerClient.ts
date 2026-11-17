@@ -11,6 +11,10 @@
  */
 
 import {
+  inspectParsedArchiveBeforeRestorePure,
+  PreRestoreArchiveInspection,
+} from '../core/archiveInspector';
+import {
   BackupArchiveBuildResult,
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
@@ -297,6 +301,43 @@ export async function buildSupportBundleZipOffThread(
   }
   await yieldToUiFrame();
   return buildSupportBundleZipArchive(params);
+}
+
+export async function inspectBackupArchiveOffThread(
+  bytes: Uint8Array,
+  fileName: string,
+  currentSnapshot: BarnDatabaseSnapshot,
+  encrypted = false
+): Promise<{
+  parsed: ParsedBackupArchive;
+  inspection: PreRestoreArchiveInspection;
+}> {
+  const lightCurrent = buildImporterWorkerSnapshot(currentSnapshot);
+  const workerPromise = runInWorker<{
+    parsed: ParsedBackupArchive;
+    inspection: PreRestoreArchiveInspection;
+  }>((id) => ({
+    id,
+    kind: 'inspectBackupArchive',
+    bytes,
+    fileName,
+    currentSnapshot: lightCurrent,
+    encrypted,
+  }));
+  if (workerPromise) {
+    return workerPromise;
+  }
+  await yieldToUiFrame();
+  const parsed = parseBackupArchiveInput(
+    bytes,
+    fileName,
+    lightCurrent.settings
+  );
+  const inspection = inspectParsedArchiveBeforeRestorePure(parsed, lightCurrent, {
+    fileName,
+    encrypted,
+  });
+  return { parsed, inspection };
 }
 
 export function isArchiveWorkerDisabled(): boolean {

@@ -32,6 +32,9 @@ self.addEventListener('activate', (event) => {
           res.end(selfDestructSw);
           return;
         }
+        if (url.endsWith('/version.json') || url.endsWith('/status.json')) {
+          res.setHeader('Cache-Control', 'no-store, max-age=0');
+        }
         next();
       });
     },
@@ -91,7 +94,7 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           navigateFallback: 'index.html',
-          navigateFallbackDenylist: [/^\/api\//],
+          navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/status\.json/],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,

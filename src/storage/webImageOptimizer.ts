@@ -18,6 +18,7 @@
  * On React Native / Expo, swap in `expo-image-manipulator` implementing the same `OptimizedImagePayload` output.
  */
 
+import { dataUrlToBinary } from '../core/backupArchive';
 import {
   calculateSavingsPercent,
   computeScaledDimensions,
@@ -422,4 +423,48 @@ export async function optimizeStagedImporterPhotos(
     totalStoredBytes,
     failedFiles,
   };
+}
+
+/**
+ * Re-optimizes an existing stored `AnimalPhoto` record down to `targetPresetId`.
+ * Honors Never-Inflate protection so photos that are already compact remain untouched.
+ */
+export async function reoptimizeAnimalPhotoRecord(
+  photo: AnimalPhoto,
+  targetPresetId?: ImageOptimizationPresetId
+): Promise<{
+  updated: boolean;
+  reclaimedBytes: number;
+  photo: AnimalPhoto;
+}> {
+  if (!photo.dataUrl) {
+    return { updated: false, reclaimedBytes: 0, photo };
+  }
+  const binary = dataUrlToBinary(photo.dataUrl, photo.mimeType || 'image/webp');
+  if (!binary || binary.bytes.byteLength === 0) {
+    return { updated: false, reclaimedBytes: 0, photo };
+  }
+  const opt = await optimizeImageBytes(
+    binary.bytes,
+    photo.originalFileName || `${photo.id}.webp`,
+    binary.mimeType,
+    targetPresetId
+  );
+  const beforeBytes = Math.max(photo.storedBytes || 0, binary.bytes.byteLength);
+  if (opt.storedBytes >= beforeBytes) {
+    return { updated: false, reclaimedBytes: 0, photo };
+  }
+  const reclaimedBytes = Math.max(0, beforeBytes - opt.storedBytes);
+  const nextPhoto: AnimalPhoto = {
+    ...photo,
+    mimeType: opt.mimeType,
+    width: opt.width,
+    height: opt.height,
+    storedBytes: opt.storedBytes,
+    thumbnailDataUrl: opt.thumbnailDataUrl || photo.thumbnailDataUrl,
+    dataUrl: opt.dataUrl,
+    _rev: (photo._rev ?? 0) + 1,
+    updatedAt: nowIsoUtc(),
+  };
+  return { updated: true, reclaimedBytes, photo: nextPhoto };
 }

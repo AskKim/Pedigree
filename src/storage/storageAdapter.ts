@@ -101,6 +101,9 @@ export interface StorageAdapter {
   /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
   exportRawSqliteBytes(): Promise<Uint8Array | null>;
 
+  /** Inspects a `.sqlite` binary database without modifying or closing the active local database. */
+  inspectRawSqliteBytes?(bytes: Uint8Array, options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
+
   /** Imports a raw unencrypted `.sqlite` binary database file and persists it locally. */
   importRawSqliteBytes(bytes: Uint8Array, options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 

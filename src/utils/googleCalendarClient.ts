@@ -27,6 +27,7 @@ import {
 import { BarnTask, CalendarSyncSettings } from '../core/models';
 
 import { logDiagnosticEvent } from '../storage/crashLogger';
+import { recordServerDateHeaderSkew } from '../storage/storageProtection';
 
 export const GOOGLE_CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -163,6 +164,7 @@ export async function listWritableGoogleCalendars(
       },
     }
   );
+  recordServerDateHeaderSkew(res.headers?.get?.('date'));
   if (res.status === 401 || res.status === 403) {
     cachedAccessToken = null;
     throw new Error('GOOGLE_AUTH_EXPIRED');
@@ -223,7 +225,7 @@ export async function pushTasksToGoogleCalendar(params: {
     if (!payload) continue;
 
     try {
-      const res = await fetch(
+      let res = await fetch(
         `https://www.googleapis.com/calendar/v3/calendars/${targetId}/events`,
         {
           method: 'POST',
@@ -234,6 +236,23 @@ export async function pushTasksToGoogleCalendar(params: {
           body: JSON.stringify(payload),
         }
       );
+      recordServerDateHeaderSkew(res.headers?.get?.('date'));
+
+      // Deterministic event ID already exists on Google Calendar -> update in place (prevents duplicates)
+      if (res.status === 409 && payload.id) {
+        res = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${targetId}/events/${encodeURIComponent(payload.id)}`,
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          }
+        );
+        recordServerDateHeaderSkew(res.headers?.get?.('date'));
+      }
 
       if (res.status === 401 || res.status === 403) {
         cachedAccessToken = null;

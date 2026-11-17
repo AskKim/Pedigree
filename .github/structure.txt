@@ -9,6 +9,7 @@ Pedigree/
 │   └── structure.txt
 ├── docs/
 │   └── plans/
+│       ├── optimization-and-resilience-phase-plan.md
 │       └── suggestions-backlog.md
 ├── public/
 ├── scripts/

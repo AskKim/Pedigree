@@ -153,9 +153,11 @@ export function AnimalPhotoGallery({
     if (!lightboxOpen || photos.length <= 1) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight') {
+        e.preventDefault();
         const next = photos[(activeIndex + 1) % photos.length];
         if (next) setSelectedPhotoId(next.id);
       } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
         const prev = photos[(activeIndex - 1 + photos.length) % photos.length];
         if (prev) setSelectedPhotoId(prev.id);
       }
@@ -345,12 +347,18 @@ export function AnimalPhotoGallery({
             {/* Active Photo Showcase Card */}
             <div className="rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden">
               <div className="relative bg-black/20 flex items-center justify-center max-h-72 overflow-hidden group">
-                <img
-                  src={activePhotoSrc}
-                  alt={activePhoto.caption || `${animal.name} photo`}
+                <button
+                  type="button"
                   onClick={() => setLightboxOpen(true)}
-                  className="max-h-72 w-auto object-contain cursor-zoom-in select-none"
-                />
+                  aria-label={`Inspect ${activePhoto.caption || `${animal.name} photo`} full size`}
+                  className="max-h-72 flex items-center justify-center cursor-zoom-in focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--barn-sage)]"
+                >
+                  <img
+                    src={activePhotoSrc}
+                    alt={activePhoto.caption || `${animal.name} photo`}
+                    className="max-h-72 w-auto object-contain select-none"
+                  />
+                </button>
                 {loadingPhotoId === activePhoto.id && !activePhoto.dataUrl && !hydratedUrls[activePhoto.id] && (
                   <span
                     role="status"

@@ -10,8 +10,9 @@
  */
 
 import { Check, ChevronDown, Plus, X } from 'lucide-react';
-import React, { useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { normalizeCarrierTraitList } from '../core/carrierGenetics';
+import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 
 interface CarrierTraitComboboxProps {
   label: string;
@@ -40,8 +41,10 @@ export function CarrierTraitCombobox({
   const listboxId = useId();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
 
   const selectedLower = useMemo(
     () => new Set(selected.map((item) => item.trim().toLowerCase())),
@@ -73,6 +76,34 @@ export function CarrierTraitCombobox({
     !disabledLower.has(queryLower) &&
     !allOptions.some((opt) => opt.toLowerCase() === queryLower);
 
+  const displayOptions = useMemo(() => {
+    const items: Array<{ kind: 'custom' | 'preset'; value: string; disabled: boolean }> = [];
+    if (canAddCustom) {
+      items.push({ kind: 'custom', value: trimmedQuery, disabled: false });
+    }
+    for (const opt of filteredOptions) {
+      items.push({
+        kind: 'preset',
+        value: opt,
+        disabled: disabledLower.has(opt.toLowerCase()),
+      });
+    }
+    return items;
+  }, [canAddCustom, trimmedQuery, filteredOptions, disabledLower]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setActiveIndex(-1);
+      return;
+    }
+    setActiveIndex((prev) => clampComboboxIndex(prev, displayOptions.length));
+  }, [isOpen, displayOptions.length]);
+
+  useEffect(() => {
+    if (!isOpen || activeIndex < 0) return;
+    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+  }, [isOpen, activeIndex]);
+
   const toggleTrait = (trait: string) => {
     const clean = trait.replace(/\s+/g, ' ').trim();
     if (!clean) return;
@@ -95,6 +126,7 @@ export function CarrierTraitCombobox({
       onChange(normalizeCarrierTraitList([...selected, valueToAdd]));
     }
     setQuery('');
+    setActiveIndex(-1);
   };
 
   const removeTrait = (trait: string) => {
@@ -109,12 +141,18 @@ export function CarrierTraitCombobox({
       ? 'border-[var(--barn-slate)] bg-[var(--barn-canvas)] text-[var(--barn-ink)]'
       : 'border-[var(--barn-terracotta)]/70 bg-[var(--barn-terracotta-tint)]/75 text-[var(--barn-ink)]';
 
+  const activeOptionId =
+    isOpen && activeIndex >= 0 && displayOptions[activeIndex]
+      ? `${listboxId}-opt-${activeIndex}`
+      : undefined;
+
   return (
     <div
       ref={containerRef}
       onBlur={(e) => {
         if (!containerRef.current?.contains(e.relatedTarget as Node | null)) {
           setIsOpen(false);
+          setActiveIndex(-1);
         }
       }}
       className="relative space-y-1.5"
@@ -161,12 +199,14 @@ export function CarrierTraitCombobox({
           role="combobox"
           aria-expanded={isOpen}
           aria-controls={isOpen ? listboxId : undefined}
+          aria-activedescendant={activeOptionId}
           aria-autocomplete="list"
           placeholder={placeholder}
           value={query}
           onFocus={() => setIsOpen(true)}
           onChange={(e) => {
             setQuery(e.target.value);
+            setActiveIndex(-1);
             if (!isOpen) setIsOpen(true);
           }}
           onKeyDown={(e) => {
@@ -174,11 +214,39 @@ export function CarrierTraitCombobox({
               e.preventDefault();
               e.stopPropagation();
               setIsOpen(false);
-            } else if (e.key === 'Enter' && trimmedQuery) {
+              setActiveIndex(-1);
+            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault();
-              addCustomOrExact();
-            } else if (e.key === 'ArrowDown' && !isOpen) {
-              setIsOpen(true);
+              const next = stepEnabledComboboxIndex(
+                isOpen ? activeIndex : -1,
+                displayOptions.length,
+                e.key,
+                (idx) => Boolean(displayOptions[idx]?.disabled)
+              );
+              if (!isOpen) setIsOpen(true);
+              setActiveIndex(next);
+            } else if ((e.key === 'Home' || e.key === 'End') && isOpen && displayOptions.length > 0) {
+              e.preventDefault();
+              const next = stepEnabledComboboxIndex(
+                activeIndex,
+                displayOptions.length,
+                e.key,
+                (idx) => Boolean(displayOptions[idx]?.disabled)
+              );
+              setActiveIndex(next);
+            } else if (e.key === 'Enter') {
+              const highlighted = isOpen && activeIndex >= 0 ? displayOptions[activeIndex] : undefined;
+              if (highlighted && !highlighted.disabled) {
+                e.preventDefault();
+                if (highlighted.kind === 'custom') {
+                  addCustomOrExact();
+                } else {
+                  toggleTrait(highlighted.value);
+                }
+              } else if (trimmedQuery) {
+                e.preventDefault();
+                addCustomOrExact();
+              }
             }
           }}
           className="w-full min-h-[42px] pl-3 pr-10 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--barn-sage)]"
@@ -191,6 +259,7 @@ export function CarrierTraitCombobox({
           onClick={() => {
             if (isOpen) {
               setIsOpen(false);
+              setActiveIndex(-1);
             } else {
               setIsOpen(true);
               inputRef.current?.focus();
@@ -216,46 +285,72 @@ export function CarrierTraitCombobox({
           aria-label={`${label} options`}
           className="absolute left-0 right-0 z-30 mt-1 max-h-56 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg divide-y divide-[var(--barn-border)]"
         >
-          {canAddCustom && (
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={addCustomOrExact}
-              className="w-full text-left px-3 py-2.5 text-xs font-medium text-[var(--barn-sage)] bg-[var(--barn-sage-tint)]/60 hover:bg-[var(--barn-sage-tint)] flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              <span>Add custom trait &ldquo;{trimmedQuery}&rdquo;</span>
-            </button>
-          )}
-
-          {filteredOptions.length === 0 && !canAddCustom ? (
+          {displayOptions.length === 0 ? (
             <div className="px-3 py-3 text-xs text-[var(--barn-muted)]">
               No matching presets. Keep typing to add a custom entry.
             </div>
           ) : (
-            filteredOptions.map((opt) => {
-              const lower = opt.toLowerCase();
+            displayOptions.map((item, idx) => {
+              const optionId = `${listboxId}-opt-${idx}`;
+              const isHighlighted = idx === activeIndex;
+
+              if (item.kind === 'custom') {
+                return (
+                  <button
+                    key={`__custom__:${item.value}`}
+                    id={optionId}
+                    ref={(el) => {
+                      optionRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    role="option"
+                    aria-selected={false}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={addCustomOrExact}
+                    className={`w-full text-left px-3 py-2.5 text-xs font-medium text-[var(--barn-sage)] bg-[var(--barn-sage-tint)]/60 hover:bg-[var(--barn-sage-tint)] flex items-center gap-1.5 ${
+                      isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-sage-tint)]' : ''
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>Add custom trait &ldquo;{item.value}&rdquo;</span>
+                  </button>
+                );
+              }
+
+              const lower = item.value.toLowerCase();
               const isSelected = selectedLower.has(lower);
-              const isDisabled = disabledLower.has(lower);
+              const isDisabled = item.disabled;
 
               return (
                 <button
-                  key={opt}
+                  key={item.value}
+                  id={optionId}
+                  ref={(el) => {
+                    optionRefs.current[idx] = el;
+                  }}
                   type="button"
                   role="option"
                   aria-selected={isSelected}
                   disabled={isDisabled}
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => toggleTrait(opt)}
+                  onMouseEnter={() => {
+                    if (!isDisabled) setActiveIndex(idx);
+                  }}
+                  onClick={() => toggleTrait(item.value)}
                   className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-2 transition-colors ${
                     isDisabled
                       ? 'opacity-55 cursor-not-allowed bg-[var(--barn-canvas)]/50'
                       : isSelected
                       ? 'bg-[var(--barn-sage-tint)]/75 font-semibold hover:bg-[var(--barn-sage-tint)]'
                       : 'hover:bg-[var(--barn-subtle)]'
+                  } ${
+                    isHighlighted && !isDisabled
+                      ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]'
+                      : ''
                   }`}
                 >
-                  <span className="min-w-0 truncate text-[var(--barn-ink)]">{opt}</span>
+                  <span className="min-w-0 truncate text-[var(--barn-ink)]">{item.value}</span>
                   <span className="inline-flex items-center gap-1.5 shrink-0">
                     {isDisabled && disabledReason && (
                       <span className="text-[10px] font-mono text-[var(--barn-muted)]">

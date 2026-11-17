@@ -614,7 +614,7 @@ export function HomeSpeciesScreen({
                           type="button"
                           onClick={() => onOpenSpecies(sp.name, 'dashboard')}
                           aria-label={`Open ${sp.name} hub`}
-                          className="text-left text-inherit font-inherit truncate max-w-full hover:opacity-80 focus:outline-none focus-visible:underline cursor-pointer"
+                          className="rounded text-left text-inherit font-inherit truncate max-w-full hover:opacity-80 focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--barn-sage)] cursor-pointer"
                         >
                           {sp.name}
                         </button>
