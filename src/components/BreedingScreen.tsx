@@ -8,7 +8,7 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { AlertTriangle, Trash2, UserPlus } from 'lucide-react';
+import { AlertTriangle, Loader2, Trash2, UserPlus } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   findLitterOffspringTattooConflicts,
@@ -45,6 +45,7 @@ import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/ped
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
+import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -62,7 +63,7 @@ interface BreedingScreenProps {
     serviceFeeDirection?: ServiceFeeDirection;
     notes: string;
     autoScheduleChores: boolean;
-  }) => void;
+  }) => Promise<boolean | void> | void;
   onUpdateOutcome: (
     existing: BreedingRecord,
     patch: {
@@ -82,7 +83,7 @@ interface BreedingScreenProps {
       registerJuniorCount: number;
       offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
     }
-  ) => void;
+  ) => Promise<boolean | void> | void;
   onDeleteBreeding: (id: string) => void;
 }
 
@@ -182,6 +183,8 @@ export function BreedingScreen({
   const [outOffspringDrafts, setOutOffspringDrafts] = useState<LitterOffspringDraft[]>([]);
   const [outOverrideInput, setOutOverrideInput] = useState('');
   const [outConflictError, setOutConflictError] = useState<string | null>(null);
+  const breedingSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
+  const outcomeSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
 
   const idLabels = useMemo(
     () => getSpeciesIdentifierLabels(speciesProfile.name),
@@ -332,32 +335,35 @@ export function BreedingScreen({
     return Math.round(parsed * 100);
   };
 
-  const handleLogSubmit = (e: React.FormEvent) => {
+  const handleLogSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmitBreeding) return;
-    onLogBreeding({
-      sire: usingQuickSire ? undefined : selectedSire,
-      quickSireName: usingQuickSire ? quickSireName.trim() : undefined,
-      dam: usingQuickDam ? undefined : selectedDam,
-      quickDamName: usingQuickDam ? quickDamName.trim() : undefined,
-      bredDateIso,
-      status,
-      serviceFeeDirection,
-      serviceFeeCents: serviceFeeDirection === 'none' ? 0 : parseMoneyToCents(serviceFeeInput),
-      notes,
-      autoScheduleChores: autoCascade,
+    await breedingSubmitLock.runLocked(async () => {
+      const ok = await onLogBreeding({
+        sire: usingQuickSire ? undefined : selectedSire,
+        quickSireName: usingQuickSire ? quickSireName.trim() : undefined,
+        dam: usingQuickDam ? undefined : selectedDam,
+        quickDamName: usingQuickDam ? quickDamName.trim() : undefined,
+        bredDateIso,
+        status,
+        serviceFeeDirection,
+        serviceFeeCents: serviceFeeDirection === 'none' ? 0 : parseMoneyToCents(serviceFeeInput),
+        notes,
+        autoScheduleChores: autoCascade,
+      });
+      if (ok === false) return;
+      setNotes('');
+      setServiceFeeDirection('none');
+      setServiceFeeInput('');
+      if (usingQuickSire) {
+        setQuickSireName('');
+        if (males.length > 0) setQuickAddSire(false);
+      }
+      if (usingQuickDam) {
+        setQuickDamName('');
+        if (females.length > 0) setQuickAddDam(false);
+      }
     });
-    setNotes('');
-    setServiceFeeDirection('none');
-    setServiceFeeInput('');
-    if (usingQuickSire) {
-      setQuickSireName('');
-      if (males.length > 0) setQuickAddSire(false);
-    }
-    if (usingQuickDam) {
-      setQuickDamName('');
-      if (females.length > 0) setQuickAddDam(false);
-    }
   };
 
   const openOutcomeModal = (rec: BreedingRecord) => {
@@ -421,7 +427,7 @@ export function BreedingScreen({
     });
   };
 
-  const submitOutcome = (e: React.FormEvent) => {
+  const submitOutcome = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingRecord) return;
     if (hasLitterTattooConflict && !isLitterOverrideConfirmed) {
@@ -430,31 +436,39 @@ export function BreedingScreen({
       );
       return;
     }
-    const regCount = Math.min(16, Math.max(0, Math.round(Number(outRegisterCount) || 0)));
-    onUpdateOutcome(editingRecord, {
-      status: outStatus,
-      actualBirthDateIso:
-        outStatus === 'Born' || outStatus === 'Weaned' || editingRecord.actualBirthDateIso
-          ? outBirthIso
-          : '',
-      liveCount: Math.max(0, Number(outLive) || 0),
-      stillbornCount: Math.max(0, Number(outStillborn) || 0),
-      fosteredCount: Number(outFostered) || 0,
-      weanedCount: Math.max(0, Number(outWeaned) || 0),
-      serviceFeeDirection: outFeeDirection,
-      serviceFeeCents: outFeeDirection === 'none' ? 0 : parseMoneyToCents(outFeeInput),
-      ultrasoundDateIso: outUltrasoundDateIso,
-      ultrasoundResult: outUltrasoundResult,
-      ultrasoundFetalCount: Math.max(0, Math.round(Number(outUltrasoundFetalCount) || 0)),
-      ultrasoundProjectedDueIso: outUltrasoundProjectedDueIso,
-      notes: outNotes,
-      registerJuniorCount: regCount,
-      offspringDrafts:
-        regCount > 0 && outOffspringDrafts.length > 0
-          ? outOffspringDrafts.map(({ name, tattoo, sex }) => ({ name, tattoo, sex }))
-          : undefined,
+    await outcomeSubmitLock.runLocked(async () => {
+      const regCount = Math.min(16, Math.max(0, Math.round(Number(outRegisterCount) || 0)));
+      const ok = await onUpdateOutcome(editingRecord, {
+        status: outStatus,
+        actualBirthDateIso:
+          outStatus === 'Born' || outStatus === 'Weaned' || editingRecord.actualBirthDateIso
+            ? outBirthIso
+            : '',
+        liveCount: Math.max(0, Number(outLive) || 0),
+        stillbornCount: Math.max(0, Number(outStillborn) || 0),
+        fosteredCount: Number(outFostered) || 0,
+        weanedCount: Math.max(0, Number(outWeaned) || 0),
+        serviceFeeDirection: outFeeDirection,
+        serviceFeeCents: outFeeDirection === 'none' ? 0 : parseMoneyToCents(outFeeInput),
+        ultrasoundDateIso: outUltrasoundDateIso,
+        ultrasoundResult: outUltrasoundResult,
+        ultrasoundFetalCount: Math.max(0, Math.round(Number(outUltrasoundFetalCount) || 0)),
+        ultrasoundProjectedDueIso: outUltrasoundProjectedDueIso,
+        notes: outNotes,
+        registerJuniorCount: regCount,
+        offspringDrafts:
+          regCount > 0 && outOffspringDrafts.length > 0
+            ? outOffspringDrafts.map(({ name, tattoo, sex }) => ({ name, tattoo, sex }))
+            : undefined,
+      });
+      if (ok === false) {
+        setOutConflictError(
+          'Could not save outcome to local storage — your entries have been kept intact. Check storage space and retry.'
+        );
+        return;
+      }
+      setEditingRecord(null);
     });
-    setEditingRecord(null);
   };
 
   return (
@@ -734,10 +748,16 @@ export function BreedingScreen({
 
             <button
               type="submit"
-              disabled={!canSubmitBreeding}
-              className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-sm font-semibold hover:opacity-95 disabled:opacity-45 disabled:pointer-events-none transition-opacity"
+              disabled={!canSubmitBreeding || breedingSubmitLock.isSubmitting}
+              aria-busy={breedingSubmitLock.isSubmitting}
+              className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-sm font-semibold hover:opacity-95 disabled:opacity-45 disabled:pointer-events-none transition-opacity inline-flex items-center justify-center gap-2"
             >
-              Log {speciesProfile.name} Breeding
+              {breedingSubmitLock.isSubmitting && (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              )}
+              {breedingSubmitLock.isSubmitting
+                ? `Saving ${speciesProfile.name} Breeding...`
+                : `Log ${speciesProfile.name} Breeding`}
             </button>
           </form>
         </section>
@@ -1539,16 +1559,22 @@ export function BreedingScreen({
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
+                disabled={outcomeSubmitLock.isSubmitting}
                 onClick={() => setEditingRecord(null)}
-                className="min-h-[40px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium"
+                className="min-h-[40px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium disabled:opacity-55"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="min-h-[40px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+                disabled={outcomeSubmitLock.isSubmitting}
+                aria-busy={outcomeSubmitLock.isSubmitting}
+                className="min-h-[40px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
               >
-                Save Outcome
+                {outcomeSubmitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                )}
+                {outcomeSubmitLock.isSubmitting ? 'Saving Outcome...' : 'Save Outcome'}
               </button>
             </div>
           </form>

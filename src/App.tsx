@@ -35,15 +35,18 @@ import {
   X,
 } from 'lucide-react';
 import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { useDeviceCapability } from './storage/deviceCapabilityDetector';
+import { usePwaUpdateStatus } from './storage/pwaUpdateManager';
 import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './utils/lazyRoute';
 import { useAccessibleDialog } from './utils/useAccessibleDialog';
+import { useAsyncSubmitLock } from './utils/useAsyncSubmitLock';
 
 const SpeciesDashboardScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SpeciesDashboardScreen')['SpeciesDashboardScreen']>
@@ -97,12 +100,17 @@ export default function App() {
   const deviceCapability = useDeviceCapability();
   const isOnline = useOnlineStatus();
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
+  const { state: pwaUpdate, applyUpdate: applyPwaUpdate, dismissUpdate: dismissPwaUpdate } =
+    usePwaUpdateStatus();
 
   const [showHerdSpeciesPicker, setShowHerdSpeciesPicker] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
   const [dismissedCompatBanner, setDismissedCompatBanner] = useState(false);
+  const [hasOpenModal, setHasOpenModal] = useState(false);
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
+  const vaultBannerLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
+  const reconnectDbLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
 
   const shortcutToastTimerRef = useRef<number | null>(null);
   const herdPickerModalRef = useAccessibleDialog({
@@ -113,6 +121,18 @@ export default function App() {
     isOpen: showShortcutsHelp,
     onClose: () => setShowShortcutsHelp(false),
   });
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const syncOpenModalState = () => {
+      setHasOpenModal(Boolean(document.querySelector('[role="dialog"]')));
+    };
+    syncOpenModalState();
+    if (typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(syncOpenModalState);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
 
   const triggerShortcutToast = useCallback((key: string, label: string) => {
     if (shortcutToastTimerRef.current !== null) {
@@ -225,10 +245,12 @@ export default function App() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => void store.resetDatabaseConnection()}
-              className="min-h-[40px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+              disabled={reconnectDbLock.isSubmitting}
+              aria-busy={reconnectDbLock.isSubmitting}
+              onClick={() => void reconnectDbLock.runLocked(() => store.resetDatabaseConnection())}
+              className="min-h-[40px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60"
             >
-              Reconnect Database
+              {reconnectDbLock.isSubmitting ? 'Reconnecting...' : 'Reconnect Database'}
             </button>
             <button
               type="button"
@@ -239,6 +261,10 @@ export default function App() {
             </button>
           </div>
         </div>
+        <AsyncErrorToastHost
+          onOpenDiagnostics={() => store.setRoute('settings')}
+          isOnSettingsRoute={store.route === 'settings'}
+        />
       </main>
     );
   }
@@ -333,7 +359,7 @@ export default function App() {
             onClick={() => window.location.reload()}
             title="Reload app preview (stays in full screen)"
             aria-label="Reload app preview"
-            className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+            className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
           >
             <RefreshCw className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -356,7 +382,7 @@ export default function App() {
                 ? 'Switch to Light mode'
                 : 'Switch to Dark mode'
             }
-            className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
+            className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors"
           >
             {snapshot.settings.themeMode === 'dark' ? (
               <Sun className="w-4 h-4 text-[var(--barn-terracotta)]" aria-hidden="true" />
@@ -383,7 +409,7 @@ export default function App() {
             aria-label={
               route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import and Settings'
             }
-            className={`min-h-[36px] sm:min-h-[38px] px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
+            className={`min-h-[44px] sm:min-h-[38px] px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               route === 'settings'
                 ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
                 : 'border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
@@ -412,6 +438,53 @@ export default function App() {
           </div>
         )}
 
+        {/* Manual Service Worker Update Gate with Open-Dialog Protection */}
+        {pwaUpdate.updateAvailable && !pwaUpdate.dismissed && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <RefreshCw className="w-4 h-4 text-[var(--barn-sage)] shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-semibold">App Update Ready Offline</div>
+                <div className="text-[11px] text-[var(--barn-muted)]">
+                  {hasOpenModal
+                    ? 'Update deferred while a dialog or editor is open. Save and close your open window before applying so unsaved edits are protected.'
+                    : 'A newer cached version of Community Pedigree is ready. Apply now to reload cleanly across open tabs.'}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={hasOpenModal || pwaUpdate.applying}
+                onClick={() => void applyPwaUpdate()}
+                title={
+                  hasOpenModal
+                    ? 'Close the active editor dialog first to protect unsaved changes'
+                    : 'Activate waiting update and reload cleanly'
+                }
+                className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {pwaUpdate.applying
+                  ? 'Applying Update...'
+                  : hasOpenModal
+                  ? 'Finish Editing First'
+                  : 'Apply Update & Reload'}
+              </button>
+              <button
+                type="button"
+                onClick={dismissPwaUpdate}
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Home Screen Install & Storage Eviction Defense Prompt */}
         {showInstallReminder && (
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
@@ -435,7 +508,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void promptInstall()}
-                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
                   Install App
                 </button>
@@ -443,7 +516,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setDismissedInstallBanner(true)}
-                className="min-h-[32px] px-2 text-[11px] text-[var(--barn-muted)] underline"
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] text-[var(--barn-muted)] underline"
               >
                 Dismiss
               </button>
@@ -474,7 +547,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setRoute('settings')}
-                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
                   Open Backups
                 </button>
@@ -482,7 +555,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={store.dismissExportCanaryWarning}
-                className="min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
               >
                 Dismiss
               </button>
@@ -506,16 +579,22 @@ export default function App() {
               {store.opfsSupported && (
                 <button
                   type="button"
-                  onClick={() => void store.saveManualOpfsVaultBackup('Banner 1-click save')}
-                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  disabled={vaultBannerLock.isSubmitting}
+                  aria-busy={vaultBannerLock.isSubmitting}
+                  onClick={() =>
+                    void vaultBannerLock.runLocked(() =>
+                      store.saveManualOpfsVaultBackup('Banner 1-click save')
+                    )
+                  }
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-60"
                 >
-                  Save to Vault
+                  {vaultBannerLock.isSubmitting ? 'Saving...' : 'Save to Vault'}
                 </button>
               )}
               <button
                 type="button"
                 onClick={() => setRoute('settings')}
-                className={`min-h-[32px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
+                className={`min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
                   store.opfsSupported
                     ? 'border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)]'
                     : 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
@@ -526,7 +605,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void store.snoozeBackupReminder(24)}
-                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                className="min-h-[44px] sm:min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
               >
                 Snooze 24h
               </button>
@@ -568,7 +647,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setRoute('settings')}
-                    className="min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                    className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
                   >
                     Open Backups &amp; Compatibility
                   </button>
@@ -576,7 +655,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setDismissedCompatBanner(true)}
-                  className="min-h-[32px] px-2 text-[11px] underline"
+                  className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline"
                 >
                   Dismiss
                 </button>
@@ -602,7 +681,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setRoute('settings')}
-                  className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
                   Open Recovery &amp; Backups
                 </button>
@@ -801,9 +880,7 @@ export default function App() {
             onTogglePinSpecies={(speciesName) => {
               void store.togglePinSpeciesLanding(speciesName);
             }}
-            onSaveSpecies={(profile) => {
-              void store.saveSpeciesProfile(profile);
-            }}
+            onSaveSpecies={(profile) => store.saveSpeciesProfile(profile)}
             onDeleteSpecies={(profile) => {
               void store.deleteSpeciesProfile(profile);
             }}
@@ -872,9 +949,7 @@ export default function App() {
             onDeleteAnimal={(animal) => {
               void store.deleteAnimal(animal);
             }}
-            onArchiveAnimals={(ids, archived) => {
-              void store.archiveAnimals(ids, archived);
-            }}
+            onArchiveAnimals={(ids, archived) => store.archiveAnimals(ids, archived)}
             onDeleteAnimalsBatch={(ids) => {
               void store.deleteAnimalsBatch(ids);
             }}
@@ -884,9 +959,7 @@ export default function App() {
             onToggleIncludePhotoOnPedigree={(include) => {
               void store.updateSettings({ includePhotoOnPedigree: include }, { silent: true });
             }}
-            onAddCareLog={(draft) => {
-              void store.addCareLog(draft);
-            }}
+            onAddCareLog={(draft) => store.addCareLog(draft)}
             onDeleteCareLog={(id) => {
               void store.deleteCareLog(id);
             }}
@@ -914,12 +987,8 @@ export default function App() {
           <BreedingScreen
             activeData={activeSpeciesData}
             settings={snapshot.settings}
-            onLogBreeding={(params) => {
-              void store.logBreedingWithCascade(params);
-            }}
-            onUpdateOutcome={(existing, patch) => {
-              void store.updateBreedingOutcome(existing, patch);
-            }}
+            onLogBreeding={(params) => store.logBreedingWithCascade(params)}
+            onUpdateOutcome={(existing, patch) => store.updateBreedingOutcome(existing, patch)}
             onDeleteBreeding={(id) => {
               void store.deleteBreeding(id);
             }}
@@ -943,9 +1012,9 @@ export default function App() {
             onToggleIncludePhotoOnPedigree={(include) => {
               void store.updateSettings({ includePhotoOnPedigree: include }, { silent: true });
             }}
-            onSaveAnimal={(draft, linkTarget, pendingPhotos) => {
-              void store.saveAnimal(draft, linkTarget, pendingPhotos);
-            }}
+            onSaveAnimal={(draft, linkTarget, pendingPhotos) =>
+              store.saveAnimal(draft, linkTarget, pendingPhotos)
+            }
             onIgnoreConflicts={(animalId, kinds) => {
               void store.ignoreAnimalConflicts(animalId, kinds);
             }}
@@ -994,9 +1063,7 @@ export default function App() {
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
-            onSaveSpecies={(profile) => {
-              void store.saveSpeciesProfile(profile);
-            }}
+            onSaveSpecies={(profile) => store.saveSpeciesProfile(profile)}
             onDeleteSpecies={(profile) => {
               void store.deleteSpeciesProfile(profile);
             }}
@@ -1260,6 +1327,11 @@ export default function App() {
           </span>
         </div>
       )}
+
+      <AsyncErrorToastHost
+        onOpenDiagnostics={() => setRoute('settings')}
+        isOnSettingsRoute={route === 'settings'}
+      />
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}
       <nav

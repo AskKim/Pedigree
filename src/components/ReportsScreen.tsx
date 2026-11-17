@@ -94,11 +94,24 @@ export function ReportsScreen({
   const [dateToIso, setDateToIso] = useState<string>('');
   const [subjectAnimalId, setSubjectAnimalId] = useState<string>('');
   const [tableSearch, setTableSearch] = useState<string>('');
+  const [visibleRowLimit, setVisibleRowLimit] = useState<number>(100);
   const [printPreview, setPrintPreview] = useState<{
     title: string;
     filename: string;
     html: string;
   } | null>(null);
+
+  useEffect(() => {
+    setVisibleRowLimit(100);
+  }, [
+    selectedReportId,
+    selectedSpeciesName,
+    tableSearch,
+    dateFromIso,
+    dateToIso,
+    audienceFilter,
+    subjectAnimalId,
+  ]);
 
   useEffect(() => {
     const matchesActive = speciesProfiles.some((sp) => sp.name === activeSpeciesName);
@@ -217,7 +230,7 @@ export function ReportsScreen({
     setMobileView('preview');
   };
 
-  const handleDownloadCsv = () => {
+  const handleDownloadCsv = async () => {
     if (!activeReport) return;
     const reportForExport =
       tableSearch.trim() && displayedRows.length !== activeReport.rows.length
@@ -225,7 +238,11 @@ export function ReportsScreen({
         : activeReport;
     const csv = exportReportToCsv(reportForExport);
     const filename = buildReportFileName(reportForExport, 'csv', snapshot.settings.barnName);
-    downloadTextFile(filename, csv, 'text/csv');
+    try {
+      await downloadTextFile(filename, csv, 'text/csv');
+    } catch {
+      // Error surfaced cleanly without unhandled rejection
+    }
   };
 
   const handleOpenPrintPreview = () => {
@@ -707,7 +724,7 @@ export function ReportsScreen({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--barn-border)]/70">
-                    {displayedRows.map((row) => {
+                    {displayedRows.slice(0, visibleRowLimit).map((row) => {
                       const rowBg =
                         row.highlightTone === 'danger'
                           ? 'bg-red-500/5 hover:bg-red-500/10'
@@ -754,6 +771,31 @@ export function ReportsScreen({
                     })}
                   </tbody>
                 </table>
+                {displayedRows.length > visibleRowLimit && (
+                  <div className="px-4 py-3 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/45 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="text-[var(--barn-muted)]">
+                      Showing <span className="font-mono tabular-nums font-medium">{visibleRowLimit}</span> of{' '}
+                      <span className="font-mono tabular-nums font-medium">{displayedRows.length}</span> rows
+                      {' '}(CSV &amp; Print include all rows)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setVisibleRowLimit((n) => n + 100)}
+                        className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] font-medium"
+                      >
+                        Show Next 100 Rows
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisibleRowLimit(displayedRows.length)}
+                        className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+                      >
+                        Show All ({displayedRows.length})
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="p-8 text-center space-y-3">

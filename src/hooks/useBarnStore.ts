@@ -139,6 +139,12 @@ import {
   saveSyncConflictInIdb,
 } from '../storage/localSyncChannels';
 import {
+  assertForegroundOrPause,
+  BackgroundPausedError,
+  registerFreezeLifecycleListener,
+} from '../storage/backgroundFreezeCoordinator';
+import {
+  emitAsyncErrorToast,
   isMemoryLikeError,
   logDiagnosticEvent,
   setCurrentDiagnosticRoute,
@@ -206,6 +212,7 @@ import {
   signOutGoogleCalendar,
 } from '../utils/googleCalendarClient';
 import {
+  copyTextWithFallback,
   downloadBinaryFile,
   downloadBlobDirect,
   downloadTextFile,
@@ -265,6 +272,7 @@ export function useBarnStore() {
   });
   const photoCacheRef = useRef<BoundedPhotoDataCache>(initialPhotoCache);
   const snapshotRef = useRef<BarnDatabaseSnapshot | null>(null);
+  const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const backgroundMaintenanceInFlightRef = useRef<boolean>(false);
   const offloadAnimalsRef = useRef<
     ((animalIds: string[]) => Promise<{
@@ -331,12 +339,42 @@ export function useBarnStore() {
     readOpfsPruneSinkWarning()
   );
 
+  const enqueueStoreMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const next = writeQueueRef.current.then(task, task);
+    // Keep queue chain alive even if an individual write rejects
+    writeQueueRef.current = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }, []);
+
   const notify = useCallback((msg: string) => {
     setErrorMessage(null);
     setStatusMessage(msg);
   }, []);
 
   const reportPersistenceFailure = useCallback((actionLabel: string, err: unknown) => {
+    if (err instanceof BackgroundPausedError || (err as { name?: string })?.name === 'BackgroundPausedError') {
+      const paused = err as BackgroundPausedError;
+      const isSeverity = Boolean(paused.severityIssue);
+      logDiagnosticEvent({
+        level: isSeverity ? 'warn' : 'info',
+        category: 'lifecycle',
+        message: paused.message,
+      });
+      emitAsyncErrorToast({
+        title: isSeverity ? `${paused.taskName} Needs Attention` : `${paused.taskName} Paused`,
+        detail: isSeverity
+          ? `${paused.severityIssue} Tap Resume when ready.`
+          : 'Progress was safely saved before switching apps and will auto-resume.',
+        severity: isSeverity ? 'error' : 'warning',
+        sticky: isSeverity,
+        category: 'lifecycle',
+        canOpenDiagnostics: isSeverity,
+      });
+      return;
+    }
     const quotaHit = isQuotaExceededError(err);
     const memoryHit = isMemoryLikeError(err);
     logDiagnosticEvent({
@@ -346,16 +384,39 @@ export function useBarnStore() {
       error: err,
     });
     if (quotaHit) {
-      setErrorMessage(
-        `Device storage is full while trying to ${actionLabel}. Open Import & Settings to download a backup, switch photos to Compact (960px), or free device space.`
-      );
+      const msg = `Device storage is full while trying to ${actionLabel}. Open Import & Settings to download a backup, switch photos to Compact (960px), or free device space.`;
+      setErrorMessage(msg);
+      emitAsyncErrorToast({
+        title: 'Device Storage Full',
+        detail: msg,
+        severity: 'error',
+        sticky: true,
+        category: 'storage',
+        canOpenDiagnostics: true,
+      });
     } else if (memoryHit) {
-      setErrorMessage(
-        `Low device memory while trying to ${actionLabel}. Close other browser tabs or use Compact photos in Import & Settings.`
-      );
+      const msg = `Low device memory while trying to ${actionLabel}. Close other browser tabs or use Compact photos in Import & Settings.`;
+      setErrorMessage(msg);
+      emitAsyncErrorToast({
+        title: 'Low Memory Warning',
+        detail: msg,
+        severity: 'error',
+        sticky: true,
+        category: 'memory',
+        canOpenDiagnostics: true,
+      });
     } else {
       const detail = err instanceof Error ? err.message : 'Local storage write failed.';
-      setErrorMessage(`Could not ${actionLabel}: ${detail}`);
+      const msg = `Could not ${actionLabel}: ${detail}`;
+      setErrorMessage(msg);
+      emitAsyncErrorToast({
+        title: `Could Not ${actionLabel}`,
+        detail,
+        severity: 'error',
+        sticky: true,
+        category: 'storage',
+        canOpenDiagnostics: true,
+      });
     }
   }, []);
 
@@ -908,16 +969,14 @@ export function useBarnStore() {
     markPriorUseSentinelFromSnapshot(snapshot);
   }, [snapshot, isLoading, wipedRecoveryContext]);
 
-  // Trim cached full-res photos whenever the browser tab moves to the background
+  // Trim cached full-res photos whenever the browser tab moves to the background (via shared freeze dispatcher)
   useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const onVisibilityTrim = () => {
-      if (document.visibilityState === 'hidden') {
+    return registerFreezeLifecycleListener({
+      id: 'barn-store-photo-cache-trim',
+      onHidden: () => {
         photoCacheRef.current?.clear();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityTrim);
-    return () => document.removeEventListener('visibilitychange', onVisibilityTrim);
+      },
+    });
   }, []);
 
   const hasSnapshotReady = Boolean(snapshot);
@@ -944,7 +1003,9 @@ export function useBarnStore() {
         try {
           if (currentSnapshot.animals.length > 0 && hasNonTestingBarnData(currentSnapshot)) {
             if (await shouldCreateMonthlyOpfsBackup()) {
+              assertForegroundOrPause('Monthly OPFS Backup');
               const hydrated = await hydrateSnapshotForExport(currentSnapshot);
+              assertForegroundOrPause('Monthly OPFS Backup');
               const saved = await saveOpfsVaultBackup(hydrated, {
                 kind: 'monthly',
                 note: 'Scheduled 30-day automatic backup',
@@ -954,7 +1015,10 @@ export function useBarnStore() {
               }
             }
           }
-        } catch {
+        } catch (bgErr) {
+          if (bgErr instanceof BackgroundPausedError) {
+            return;
+          }
           // Non-fatal background monthly backup check
         }
 
@@ -963,6 +1027,7 @@ export function useBarnStore() {
 
         try {
           if (shouldRunExportCanary()) {
+            assertForegroundOrPause('Export Canary');
             const latestSnap = snapshotRef.current ?? currentSnapshot;
             const res = await runOpfsExportCanary(latestSnap);
             if (!res.ok && !cancelled) {
@@ -971,7 +1036,10 @@ export function useBarnStore() {
               );
             }
           }
-        } catch {
+        } catch (canaryErr) {
+          if (canaryErr instanceof BackgroundPausedError) {
+            return;
+          }
           // Non-fatal canary probe check
         }
       } finally {
@@ -1007,20 +1075,16 @@ export function useBarnStore() {
 
     scheduleIdleRun();
 
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
+    const unregisterFreeze = registerFreezeLifecycleListener({
+      id: 'barn-store-idle-maintenance',
+      onVisible: () => {
         scheduleIdleRun();
-      }
-    };
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', onVisibilityChange);
-    }
+      },
+    });
 
     return () => {
       cancelled = true;
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onVisibilityChange);
-      }
+      unregisterFreeze();
       const win = typeof window !== 'undefined' ? (window as unknown as {
         cancelIdleCallback?: (id: number) => void;
       }) : null;
@@ -1291,8 +1355,10 @@ export function useBarnStore() {
           await reloadFromAdapter();
           notify(`${cleanNew.name} added to your barn.`);
         }
+        return true;
       } catch (err) {
         reportPersistenceFailure(`save ${profile.name} species schedule`, err);
+        return false;
       }
     },
     [
@@ -1491,7 +1557,7 @@ export function useBarnStore() {
         backupReason: reason,
         targetSpecies: speciesName,
       });
-      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      await downloadBinaryFile(filename, archive.bytes, 'application/zip');
       void recordBackupExport('zip', filename);
       notify(
         `Saved ${speciesName} backup archive: ${filename} (${archive.animalCount} animals, ${archive.photoCount} photos, Printable Barn Binder included)`
@@ -1505,140 +1571,153 @@ export function useBarnStore() {
       draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
       linkParentTarget?: { childId: string; asSire: boolean },
       initialPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-    ): Promise<string> => {
-      const ts = nowIsoUtc();
-      const previous = draft.id ? snapshot?.animals.find((a) => a.id === draft.id) : undefined;
-      const hasExplicitRaw = typeof draft.genotypeRaw === 'string';
-      const trimmedRaw = (draft.genotypeRaw || '').trim();
-      const parsedGeno =
-        hasExplicitRaw
-          ? trimmedRaw
-            ? draft.genotype &&
-              draft.genotype.length > 0 &&
-              formatGenotypeArray(draft.genotype) === trimmedRaw
-              ? draft.genotype
-              : parseGenotypeString(trimmedRaw, draft.species)
-            : []
-          : draft.genotype && draft.genotype.length > 0
-          ? draft.genotype
-          : [];
-      const normalizedRaw = trimmedRaw || (hasExplicitRaw ? '' : formatGenotypeArray(parsedGeno));
+    ): Promise<string | null> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = nowIsoUtc();
+        const previous = draft.id
+          ? latestSnapshot?.animals.find((a) => a.id === draft.id)
+          : undefined;
+        const hasExplicitRaw = typeof draft.genotypeRaw === 'string';
+        const trimmedRaw = (draft.genotypeRaw || '').trim();
+        const parsedGeno =
+          hasExplicitRaw
+            ? trimmedRaw
+              ? draft.genotype &&
+                draft.genotype.length > 0 &&
+                formatGenotypeArray(draft.genotype) === trimmedRaw
+                ? draft.genotype
+                : parseGenotypeString(trimmedRaw, draft.species)
+              : []
+            : draft.genotype && draft.genotype.length > 0
+            ? draft.genotype
+            : [];
+        const normalizedRaw = trimmedRaw || (hasExplicitRaw ? '' : formatGenotypeArray(parsedGeno));
 
-      const carriers = reconcileCarrierTraitLists(
-        draft.suspectedCarrierOf,
-        draft.confirmedCarrierOf,
-        draft.clearedCarrierOf
-      );
-
-      const resolvedIgnored = normalizeIgnoredConflicts(
-        draft.ignoredConflicts ?? previous?.ignoredConflicts
-      );
-
-      const animal: Animal = {
-        ...draft,
-        id: draft.id || generateUuid(),
-        tattoo: draft.tattoo.trim(),
-        name: draft.name.trim(),
-        archived: Boolean(draft.archived),
-        needsAttention: Boolean(draft.needsAttention),
-        ignoredConflicts: resolvedIgnored,
-        genotype: parsedGeno,
-        genotypeRaw: normalizedRaw,
-        rufusLevel: normalizeRufusLevel(draft.rufusLevel),
-        suspectedCarrierOf: carriers.suspectedCarrierOf,
-        confirmedCarrierOf: carriers.confirmedCarrierOf,
-        clearedCarrierOf: carriers.clearedCarrierOf,
-        createdAt: draft.createdAt || ts,
-        updatedAt: ts,
-      };
-
-      try {
-        await adapterRef.current!.saveAnimal(animal);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'animal',
-            previous,
-            next: animal,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
+        const carriers = reconcileCarrierTraitLists(
+          draft.suspectedCarrierOf,
+          draft.confirmedCarrierOf,
+          draft.clearedCarrierOf
         );
 
-        if (initialPhotos && initialPhotos.length > 0) {
-          const existingPhotos = (snapshot?.animalPhotos ?? []).filter(
-            (p) => p.animalId === animal.id
-          );
-          const hasPrimary = existingPhotos.some((p) => p.isPrimary);
-          const newPhotoRecords: AnimalPhoto[] = initialPhotos.map((pay, idx) => ({
-            id: generateUuid(),
-            species: animal.species,
-            animalId: animal.id,
-            isPrimary: !hasPrimary && idx === 0,
-            sortOrder: existingPhotos.length + idx,
-            caption: (pay.caption || '').trim(),
-            originalFileName: pay.originalFileName,
-            mimeType: pay.mimeType,
-            width: pay.width,
-            height: pay.height,
-            originalBytes: pay.originalBytes,
-            storedBytes: pay.storedBytes,
-            thumbnailDataUrl: pay.thumbnailDataUrl,
-            dataUrl: pay.dataUrl,
-            createdAt: ts,
-            updatedAt: ts,
-          }));
-          await adapterRef.current!.saveAnimalPhotosBatch(newPhotoRecords);
-          for (const rec of newPhotoRecords) {
-            photoCacheRef.current.set(rec.id, rec.dataUrl);
-          }
-        }
+        const resolvedIgnored = normalizeIgnoredConflicts(
+          draft.ignoredConflicts ?? previous?.ignoredConflicts
+        );
 
-        if (linkParentTarget && snapshot) {
-          const child = snapshot.animals.find((a) => a.id === linkParentTarget.childId);
-          const expectedSex = linkParentTarget.asSire ? 'Male' : 'Female';
-          if (child && isSameSpecies(child.species, animal.species) && child.id !== animal.id) {
-            if (animal.sex !== expectedSex) {
-              logDiagnosticEvent({
-                level: 'warn',
-                category: 'storage',
-                message: `Prevented parent sex mismatch when linking "${animal.name}" (${animal.sex}) as ${
-                  linkParentTarget.asSire ? 'Sire' : 'Dam'
-                } of "${child.name}"`,
-              });
-            } else {
-              const updatedChild: Animal = {
-                ...child,
-                sireId: linkParentTarget.asSire ? animal.id : child.sireId,
-                damId: !linkParentTarget.asSire ? animal.id : child.damId,
-                updatedAt: ts,
-              };
-              await adapterRef.current!.saveAnimal(updatedChild);
-              await recordOutboxOps(
-                diffEntityFieldsToOperations({
-                  entityType: 'animal',
-                  previous: child,
-                  next: updatedChild,
-                  deviceId,
-                  nextCounter: allocateNextLogicalCounter,
-                })
-              );
+        const animal: Animal = {
+          ...draft,
+          id: draft.id || generateUuid(),
+          tattoo: draft.tattoo.trim(),
+          name: draft.name.trim(),
+          archived: Boolean(draft.archived),
+          needsAttention: Boolean(draft.needsAttention),
+          ignoredConflicts: resolvedIgnored,
+          genotype: parsedGeno,
+          genotypeRaw: normalizedRaw,
+          rufusLevel: normalizeRufusLevel(draft.rufusLevel),
+          suspectedCarrierOf: carriers.suspectedCarrierOf,
+          confirmedCarrierOf: carriers.confirmedCarrierOf,
+          clearedCarrierOf: carriers.clearedCarrierOf,
+          createdAt: draft.createdAt || ts,
+          updatedAt: ts,
+        };
+
+        try {
+          await adapterRef.current!.saveAnimal(animal);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'animal',
+              previous,
+              next: animal,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+
+          if (initialPhotos && initialPhotos.length > 0) {
+            const existingPhotos = (latestSnapshot?.animalPhotos ?? []).filter(
+              (p) => p.animalId === animal.id
+            );
+            const hasPrimary = existingPhotos.some((p) => p.isPrimary);
+            const newPhotoRecords: AnimalPhoto[] = initialPhotos.map((pay, idx) => ({
+              id: generateUuid(),
+              species: animal.species,
+              animalId: animal.id,
+              isPrimary: !hasPrimary && idx === 0,
+              sortOrder: existingPhotos.length + idx,
+              caption: (pay.caption || '').trim(),
+              originalFileName: pay.originalFileName,
+              mimeType: pay.mimeType,
+              width: pay.width,
+              height: pay.height,
+              originalBytes: pay.originalBytes,
+              storedBytes: pay.storedBytes,
+              thumbnailDataUrl: pay.thumbnailDataUrl,
+              dataUrl: pay.dataUrl,
+              createdAt: ts,
+              updatedAt: ts,
+            }));
+            await adapterRef.current!.saveAnimalPhotosBatch(newPhotoRecords);
+            for (const rec of newPhotoRecords) {
+              photoCacheRef.current.set(rec.id, rec.dataUrl);
             }
           }
-        }
 
-        await reloadFromAdapter();
-        notify(
-          initialPhotos && initialPhotos.length > 0
-            ? `${animal.name} saved with ${initialPhotos.length} optimized photo(s).`
-            : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`
-        );
-        return animal.id;
-      } catch (err) {
-        reportPersistenceFailure(`save ${animal.name}`, err);
-        return animal.id;
-      }
+          if (linkParentTarget && latestSnapshot) {
+            const child = latestSnapshot.animals.find((a) => a.id === linkParentTarget.childId);
+            const expectedSex = linkParentTarget.asSire ? 'Male' : 'Female';
+            if (child && isSameSpecies(child.species, animal.species) && child.id !== animal.id) {
+              if (animal.sex !== expectedSex) {
+                logDiagnosticEvent({
+                  level: 'warn',
+                  category: 'storage',
+                  message: `Prevented parent sex mismatch when linking "${animal.name}" (${animal.sex}) as ${
+                    linkParentTarget.asSire ? 'Sire' : 'Dam'
+                  } of "${child.name}"`,
+                });
+              } else {
+                const updatedChild: Animal = {
+                  ...child,
+                  sireId: linkParentTarget.asSire ? animal.id : child.sireId,
+                  damId: !linkParentTarget.asSire ? animal.id : child.damId,
+                  updatedAt: ts,
+                };
+                await adapterRef.current!.saveAnimal(updatedChild);
+                await recordOutboxOps(
+                  diffEntityFieldsToOperations({
+                    entityType: 'animal',
+                    previous: child,
+                    next: updatedChild,
+                    deviceId,
+                    nextCounter: allocateNextLogicalCounter,
+                  })
+                );
+              }
+            }
+          }
+
+          await reloadFromAdapter();
+          notify(
+            initialPhotos && initialPhotos.length > 0
+              ? `${animal.name} saved with ${initialPhotos.length} optimized photo(s).`
+              : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`
+          );
+          return animal.id;
+        } catch (err) {
+          reportPersistenceFailure(`save ${animal.name}`, err);
+          return null;
+        }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const ignoreAnimalConflicts = useCallback(
@@ -2039,34 +2118,51 @@ export function useBarnStore() {
   );
 
   const saveCage = useCallback(
-    async (cageDraft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => {
-      const ts = nowIsoUtc();
-      const prev = cageDraft.id ? snapshot?.cages.find((c) => c.id === cageDraft.id) : undefined;
-      const cage: CageLocation = {
-        ...cageDraft,
-        id: cageDraft.id || generateUuid(),
-        label: cageDraft.label.trim(),
-        createdAt: prev?.createdAt || ts,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveCage(cage);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'cage',
-            previous: prev,
-            next: cage,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
-        notify(`Location ${cage.label} saved.`);
-      } catch (err) {
-        reportPersistenceFailure(`save location ${cage.label}`, err);
-      }
+    async (
+      cageDraft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = nowIsoUtc();
+        const prev = cageDraft.id
+          ? latestSnapshot?.cages.find((c) => c.id === cageDraft.id)
+          : undefined;
+        const cage: CageLocation = {
+          ...cageDraft,
+          id: cageDraft.id || generateUuid(),
+          label: cageDraft.label.trim(),
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveCage(cage);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'cage',
+              previous: prev,
+              next: cage,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Location ${cage.label} saved.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save location ${cage.label}`, err);
+          return false;
+        }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteCage = useCallback(
@@ -2098,11 +2194,13 @@ export function useBarnStore() {
       serviceFeeDirection?: ServiceFeeDirection;
       notes: string;
       autoScheduleChores: boolean;
-    }) => {
-      if (!snapshot) return;
+    }): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current ?? snapshot;
+      if (!currentSnapshot) return false;
       const targetSpeciesName =
         params.dam?.species || params.sire?.species || activeSpeciesName;
-      const sp = resolveSpeciesProfile(targetSpeciesName, snapshot.speciesProfiles);
+      const sp = resolveSpeciesProfile(targetSpeciesName, currentSnapshot.speciesProfiles);
       const ts = nowIsoUtc();
 
       const buildQuickParent = (rawName: string, sex: 'Male' | 'Female'): Animal => ({
@@ -2145,10 +2243,10 @@ export function useBarnStore() {
         newlyCreatedParents.push(resolvedDam);
       }
 
-      if (!resolvedSire || !resolvedDam) return;
+      if (!resolvedSire || !resolvedDam) return false;
 
       const herdMap = buildSpeciesHerdMap(
-        [...snapshot.animals, ...newlyCreatedParents],
+        [...currentSnapshot.animals, ...newlyCreatedParents],
         sp.name
       );
       const coi = calculatePairingCoi(resolvedSire.id, resolvedDam.id, herdMap).coiPercent;
@@ -2228,7 +2326,7 @@ export function useBarnStore() {
         await reloadFromAdapter();
 
         let calendarResultMsg = '';
-        const calConfig = normalizeCalendarSyncSettings(snapshot.settings.calendarSync);
+        const calConfig = normalizeCalendarSyncSettings(currentSnapshot.settings.calendarSync);
         if (calConfig.autoAddNewTasks && calConfig.includeBreedingTasks && cascaded.length > 0) {
           const dated = cascaded.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''));
           if (dated.length > 0) {
@@ -2247,17 +2345,17 @@ export function useBarnStore() {
               const ics = buildIcsCalendarForTasks(
                 dated,
                 calConfig,
-                snapshot.settings.barnName,
+                currentSnapshot.settings.barnName,
                 `${resolvedDam.name}-breeding-chores`,
                 {
-                  animals: [...snapshot.animals, ...newlyCreatedParents],
-                  breedings: [...snapshot.breedings, breeding],
-                  speciesProfiles: snapshot.speciesProfiles,
+                  animals: [...currentSnapshot.animals, ...newlyCreatedParents],
+                  breedings: [...currentSnapshot.breedings, breeding],
+                  speciesProfiles: currentSnapshot.speciesProfiles,
                   appBaseUrl,
                 }
               );
               if (ics) {
-                downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+                await downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
                 calendarResultMsg =
                   calConfig.deliveryMode === 'google_calendar' && !isOnline
                     ? ` & downloaded offline .ICS fallback (${ics.eventCount} event(s)).`
@@ -2279,14 +2377,18 @@ export function useBarnStore() {
               : `Logged ${resolvedSire.name} × ${resolvedDam.name} and cascaded ${taskCount} barn chores.`
             : `Logged pairing ${resolvedSire.name} × ${resolvedDam.name}.`) + quickAddNote
         );
+        return true;
       } catch (err) {
         reportPersistenceFailure('save breeding record', err);
+        return false;
       }
+      });
     },
     [
       snapshot,
       activeSpeciesName,
       deviceId,
+      enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
       notify,
@@ -2314,10 +2416,12 @@ export function useBarnStore() {
         registerJuniorCount: number;
         offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
       }
-    ) => {
-      if (!snapshot) return;
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current ?? snapshot;
+      if (!currentSnapshot) return false;
       const ts = nowIsoUtc();
-      const sp = resolveSpeciesProfile(existing.species, snapshot.speciesProfiles);
+      const sp = resolveSpeciesProfile(existing.species, currentSnapshot.speciesProfiles);
       const ops: SyncOperation[] = [];
 
       try {
@@ -2327,8 +2431,8 @@ export function useBarnStore() {
           ? Math.min(16, requestedDrafts.length)
           : Math.min(16, Math.max(0, patch.registerJuniorCount));
         if (effectiveCount > 0) {
-          const sire = snapshot.animals.find((a) => a.id === existing.sireId);
-          const dam = snapshot.animals.find((a) => a.id === existing.damId);
+          const sire = currentSnapshot.animals.find((a) => a.id === existing.sireId);
+          const dam = currentSnapshot.animals.find((a) => a.id === existing.damId);
           const createdJuniors: Animal[] = [];
           for (let i = 1; i <= effectiveCount; i++) {
             const draftItem = requestedDrafts?.[i - 1];
@@ -2362,8 +2466,8 @@ export function useBarnStore() {
               grandChampionNumber: '',
               legsCount: 0,
               cageLocation: dam?.cageLocation || '',
-              breederName: snapshot.settings.breederName || dam?.breederName || '',
-              ownerName: snapshot.settings.barnName || '',
+              breederName: currentSnapshot.settings.breederName || dam?.breederName || '',
+              ownerName: currentSnapshot.settings.barnName || '',
               ownershipType: 'Owned',
               sireId: existing.sireId,
               damId: existing.damId,
@@ -2440,11 +2544,22 @@ export function useBarnStore() {
             ? `Litter updated & ${effectiveCount} ${sp.offspringLabel.toLowerCase()} records created.`
             : 'Litter outcome saved.'
         );
+        return true;
       } catch (err) {
         reportPersistenceFailure('save litter outcome', err);
+        return false;
       }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteBreeding = useCallback(
@@ -2461,74 +2576,97 @@ export function useBarnStore() {
   );
 
   const saveTask = useCallback(
-    async (taskDraft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => {
-      const ts = nowIsoUtc();
-      const prev = taskDraft.id ? snapshot?.tasks.find((t) => t.id === taskDraft.id) : undefined;
-      const task: BarnTask = {
-        ...taskDraft,
-        id: taskDraft.id || generateUuid(),
-        title: taskDraft.title.trim(),
-        createdAt: prev?.createdAt || ts,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveTask(task);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'task',
-            previous: prev,
-            next: task,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
+    async (
+      taskDraft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        const ts = nowIsoUtc();
+        const prev = taskDraft.id
+          ? currentSnapshot?.tasks.find((t) => t.id === taskDraft.id)
+          : undefined;
+        const task: BarnTask = {
+          ...taskDraft,
+          id: taskDraft.id || generateUuid(),
+          title: taskDraft.title.trim(),
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveTask(task);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'task',
+              previous: prev,
+              next: task,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
 
-        let calendarNote = '';
-        if (!prev && task.dueDateIso) {
-          const calConfig = normalizeCalendarSyncSettings(snapshot?.settings.calendarSync);
-          if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
-            const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
-            if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
-              setPendingCalendarSync({
-                tasks: [task],
-                filenameHint: formatSystemTaskTitle(task, calConfig, snapshot ?? undefined),
-              });
-              calendarNote = ' Ready to add to Google Calendar.';
-            } else {
-              const appBaseUrl =
-                typeof window !== 'undefined'
-                  ? `${window.location.origin}${window.location.pathname}`
-                  : '';
-              const ics = buildIcsCalendarForTasks(
-                [task],
-                calConfig,
-                snapshot?.settings.barnName,
-                undefined,
-                {
-                  animals: snapshot?.animals,
-                  breedings: snapshot?.breedings,
-                  speciesProfiles: snapshot?.speciesProfiles,
-                  appBaseUrl,
+          let calendarNote = '';
+          if (!prev && task.dueDateIso) {
+            const calConfig = normalizeCalendarSyncSettings(
+              currentSnapshot?.settings.calendarSync
+            );
+            if (calConfig.autoAddNewTasks && calConfig.includeManualTasks) {
+              const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+              if (calConfig.deliveryMode === 'google_calendar' && isOnline) {
+                setPendingCalendarSync({
+                  tasks: [task],
+                  filenameHint: formatSystemTaskTitle(
+                    task,
+                    calConfig,
+                    currentSnapshot ?? undefined
+                  ),
+                });
+                calendarNote = ' Ready to add to Google Calendar.';
+              } else {
+                const appBaseUrl =
+                  typeof window !== 'undefined'
+                    ? `${window.location.origin}${window.location.pathname}`
+                    : '';
+                const ics = buildIcsCalendarForTasks(
+                  [task],
+                  calConfig,
+                  currentSnapshot?.settings.barnName,
+                  undefined,
+                  {
+                    animals: currentSnapshot?.animals,
+                    breedings: currentSnapshot?.breedings,
+                    speciesProfiles: currentSnapshot?.speciesProfiles,
+                    appBaseUrl,
+                  }
+                );
+                if (ics) {
+                  await downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+                  calendarNote =
+                    calConfig.deliveryMode === 'google_calendar' && !isOnline
+                      ? ' Offline — downloaded .ICS fallback.'
+                      : ' Exported to calendar (.ICS).';
                 }
-              );
-              if (ics) {
-                downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
-                calendarNote =
-                  calConfig.deliveryMode === 'google_calendar' && !isOnline
-                    ? ' Offline — downloaded .ICS fallback.'
-                    : ' Exported to calendar (.ICS).';
               }
             }
           }
-        }
 
-        notify(calendarNote ? `Barn chore saved.${calendarNote}` : 'Barn chore saved.');
-      } catch (err) {
-        reportPersistenceFailure('save barn chore', err);
-      }
+          notify(calendarNote ? `Barn chore saved.${calendarNote}` : 'Barn chore saved.');
+          return true;
+        } catch (err) {
+          reportPersistenceFailure('save barn chore', err);
+          return false;
+        }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const downloadOfflineIcsForTasks = useCallback(
@@ -2581,7 +2719,9 @@ export function useBarnStore() {
         return ics.eventCount;
       }
 
-      downloadTextFile(ics.filename, ics.icsContent, 'text/calendar');
+      void downloadTextFile(ics.filename, ics.icsContent, 'text/calendar').catch((err) => {
+        reportPersistenceFailure('download .ICS calendar file', err);
+      });
       const prefix = options?.fallbackPrefix ? `${options.fallbackPrefix} ` : '';
       notify(
         `${prefix}Downloaded ${ics.eventCount} calendar event${
@@ -2590,7 +2730,7 @@ export function useBarnStore() {
       );
       return ics.eventCount;
     },
-    [snapshot, notify]
+    [snapshot, notify, reportPersistenceFailure]
   );
 
   const exportTasksToCalendar = useCallback(
@@ -2760,14 +2900,10 @@ export function useBarnStore() {
           : '';
       const link = buildTaskAppDeepLink(appBaseUrl, task);
       if (!link) return;
-      try {
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-          await navigator.clipboard.writeText(link);
-          notify('Copied direct app task link to clipboard.');
-          return;
-        }
-      } catch {
-        // Fallback below if clipboard permission is blocked in preview frame
+      const mode = await copyTextWithFallback(link);
+      if (mode !== 'unsupported') {
+        notify('Copied direct app task link to clipboard.');
+        return;
       }
       notify(`App task link: ${link}`);
     },
@@ -2775,29 +2911,39 @@ export function useBarnStore() {
   );
 
   const toggleTaskCompleted = useCallback(
-    async (task: BarnTask) => {
-      const updated = {
-        ...task,
-        completed: !task.completed,
-        updatedAt: nowIsoUtc(),
-      };
-      try {
-        await adapterRef.current!.saveTask(updated);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'task',
-            previous: task,
-            next: updated,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
-      } catch (err) {
-        reportPersistenceFailure('update task completion', err);
-      }
+    async (task: BarnTask): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const updated = {
+          ...task,
+          completed: !task.completed,
+          updatedAt: nowIsoUtc(),
+        };
+        try {
+          await adapterRef.current!.saveTask(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'task',
+              previous: task,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
+          return true;
+        } catch (err) {
+          reportPersistenceFailure('update task completion', err);
+          return false;
+        }
+      });
     },
-    [deviceId, recordOutboxOps, reloadFromAdapter, reportPersistenceFailure]
+    [
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteTask = useCallback(
@@ -2813,53 +2959,66 @@ export function useBarnStore() {
   );
 
   const addCareLog = useCallback(
-    async (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => {
-      if (!snapshot) return;
-      const ts = nowIsoUtc();
-      const log: CareLog = {
-        ...draft,
-        id: generateUuid(),
-        createdAt: ts,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveCareLog(log);
-        const ops: SyncOperation[] = diffEntityFieldsToOperations({
-          entityType: 'careLog',
-          previous: undefined,
-          next: log,
-          deviceId,
-          nextCounter: allocateNextLogicalCounter,
-        });
+    async (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) return false;
+        const ts = nowIsoUtc();
+        const log: CareLog = {
+          ...draft,
+          id: generateUuid(),
+          createdAt: ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveCareLog(log);
+          const ops: SyncOperation[] = diffEntityFieldsToOperations({
+            entityType: 'careLog',
+            previous: undefined,
+            next: log,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          });
 
-        const animal = snapshot.animals.find((a) => a.id === draft.animalId);
-        if (animal && (draft.weightGrams > 0 || draft.showLegEarned)) {
-          const nextAnimal: Animal = {
-            ...animal,
-            weightGrams: draft.weightGrams > 0 ? draft.weightGrams : animal.weightGrams,
-            legsCount: draft.showLegEarned ? animal.legsCount + 1 : animal.legsCount,
-            updatedAt: ts,
-          };
-          await adapterRef.current!.saveAnimal(nextAnimal);
-          ops.push(
-            ...diffEntityFieldsToOperations({
-              entityType: 'animal',
-              previous: animal,
-              next: nextAnimal,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-            })
-          );
+          const animal = currentSnapshot.animals.find((a) => a.id === draft.animalId);
+          if (animal && (draft.weightGrams > 0 || draft.showLegEarned)) {
+            const nextAnimal: Animal = {
+              ...animal,
+              weightGrams: draft.weightGrams > 0 ? draft.weightGrams : animal.weightGrams,
+              legsCount: draft.showLegEarned ? animal.legsCount + 1 : animal.legsCount,
+              updatedAt: ts,
+            };
+            await adapterRef.current!.saveAnimal(nextAnimal);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'animal',
+                previous: animal,
+                next: nextAnimal,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+              })
+            );
+          }
+
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(`${draft.type} logged.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save ${draft.type} entry`, err);
+          return false;
         }
-
-        await recordOutboxOps(ops);
-        await reloadFromAdapter();
-        notify(`${draft.type} logged.`);
-      } catch (err) {
-        reportPersistenceFailure(`save ${draft.type} entry`, err);
-      }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteCareLog = useCallback(
@@ -2875,34 +3034,51 @@ export function useBarnStore() {
   );
 
   const saveShow = useCallback(
-    async (draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => {
-      const ts = nowIsoUtc();
-      const prev = draft.id ? snapshot?.shows.find((s) => s.id === draft.id) : undefined;
-      const show: ShowEvent = {
-        ...draft,
-        id: draft.id || generateUuid(),
-        name: draft.name.trim(),
-        createdAt: prev?.createdAt || ts,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveShow(show);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'show',
-            previous: prev,
-            next: show,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-          })
-        );
-        await reloadFromAdapter();
-        notify(`Show "${show.name}" saved.`);
-      } catch (err) {
-        reportPersistenceFailure(`save show "${show.name}"`, err);
-      }
+    async (
+      draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        const ts = nowIsoUtc();
+        const prev = draft.id
+          ? currentSnapshot?.shows.find((s) => s.id === draft.id)
+          : undefined;
+        const show: ShowEvent = {
+          ...draft,
+          id: draft.id || generateUuid(),
+          name: draft.name.trim(),
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveShow(show);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'show',
+              previous: prev,
+              next: show,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Show "${show.name}" saved.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save show "${show.name}"`, err);
+          return false;
+        }
+      });
     },
-    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      deviceId,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteShow = useCallback(
@@ -3328,27 +3504,30 @@ export function useBarnStore() {
 
   const importDeltaOperations = useCallback(
     async (incomingOps: SyncOperation[]) => {
-      if (!snapshot) return;
-      const result = mergeDeltaOperations(snapshot, syncOperations, incomingOps, deviceId);
-      if (result.appliedOpCount === 0) {
-        notify('Delta sync checked — no new remote operations needed applying.');
-        return;
-      }
-      await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
-      await replaceSyncOperationsInIdb(result.mergedOperations);
-      setSyncOperations(result.mergedOperations);
-      if (result.newConflicts.length > 0) {
-        await appendSyncConflictsToIdb(result.newConflicts);
-        setSyncConflicts((prev) => [...result.newConflicts, ...prev]);
-      }
-      await reloadFromAdapter();
-      notify(
-        result.newConflicts.length > 0
-          ? `Merged ${result.appliedOpCount} field operation(s); ${result.newConflicts.length} field collision(s) logged for review.`
-          : `Merged ${result.appliedOpCount} field operation(s) cleanly with zero collisions.`
-      );
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) return;
+        const result = mergeDeltaOperations(currentSnapshot, syncOperations, incomingOps, deviceId);
+        if (result.appliedOpCount === 0) {
+          notify('Delta sync checked — no new remote operations needed applying.');
+          return;
+        }
+        await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
+        await replaceSyncOperationsInIdb(result.mergedOperations);
+        setSyncOperations(result.mergedOperations);
+        if (result.newConflicts.length > 0) {
+          await appendSyncConflictsToIdb(result.newConflicts);
+          setSyncConflicts((prev) => [...result.newConflicts, ...prev]);
+        }
+        await reloadFromAdapter();
+        notify(
+          result.newConflicts.length > 0
+            ? `Merged ${result.appliedOpCount} field operation(s); ${result.newConflicts.length} field collision(s) logged for review.`
+            : `Merged ${result.appliedOpCount} field operation(s) cleanly with zero collisions.`
+        );
+      });
     },
-    [snapshot, syncOperations, deviceId, reloadFromAdapter, notify]
+    [snapshot, syncOperations, deviceId, enqueueStoreMutation, reloadFromAdapter, notify]
   );
 
   const resolveSyncConflict = useCallback(
@@ -3940,7 +4119,7 @@ export function useBarnStore() {
           const hydrated = await hydrateSnapshotForExport(snapshot);
           const zip = await buildCompleteBackupZipOffThread(hydrated);
           backupFilename = `pedigree-recovery-backup-${formatTimestampedBackupSlug()}.zip`;
-          downloadBinaryFile(backupFilename, zip.bytes, 'application/zip');
+          await downloadBinaryFile(backupFilename, zip.bytes, 'application/zip');
         } catch (err) {
           logDiagnosticEvent({
             level: 'error',

@@ -178,7 +178,7 @@ export function UnifiedBackupVaultPanel({
               type="button"
               onClick={onDismissPruneWarning}
               aria-label="Dismiss prune warning"
-              className="min-h-[30px] min-w-[30px] rounded-lg hover:bg-[var(--barn-surface)]/70 flex items-center justify-center shrink-0"
+              className="min-h-[44px] min-w-[44px] sm:min-h-[30px] sm:min-w-[30px] rounded-lg hover:bg-[var(--barn-surface)]/70 flex items-center justify-center shrink-0"
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -204,7 +204,10 @@ export function UnifiedBackupVaultPanel({
                   : 'Disabled: Persistent folder access (showDirectoryPicker) is unsupported in this browser (e.g., iOS Safari or older Firefox). Export manual .JSON backups off-device regularly.'}
             </p>
             {opfsSupported && backupSinkStatus?.configured && (
-              <div className="text-[11px] font-mono text-[var(--barn-muted)] pt-0.5">
+              <div
+                aria-live="polite"
+                className="text-[11px] font-mono text-[var(--barn-muted)] pt-0.5"
+              >
                 Permission:{' '}
                 <span className="text-[var(--barn-ink)] font-semibold">
                   {backupSinkStatus.permissionState === 'granted'
@@ -237,7 +240,7 @@ export function UnifiedBackupVaultPanel({
                           setSinkBusy(false);
                         }
                       }}
-                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
+                      className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
                     >
                       Re-authorize Folder
                     </button>
@@ -254,7 +257,7 @@ export function UnifiedBackupVaultPanel({
                           setSinkBusy(false);
                         }
                       }}
-                      className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
+                      className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
                     >
                       <RefreshCw className="w-3 h-3" aria-hidden="true" />
                       Sync Vault Now
@@ -272,7 +275,7 @@ export function UnifiedBackupVaultPanel({
                           setSinkBusy(false);
                         }
                       }}
-                      className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] whitespace-nowrap disabled:opacity-50"
+                      className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] whitespace-nowrap disabled:opacity-50"
                     >
                       Disconnect
                     </button>
@@ -291,7 +294,7 @@ export function UnifiedBackupVaultPanel({
                         setSinkBusy(false);
                       }
                     }}
-                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                    className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
                   >
                     <FolderSync className="w-3.5 h-3.5" aria-hidden="true" />
                     Connect Backup Sink Folder
@@ -303,7 +306,7 @@ export function UnifiedBackupVaultPanel({
                 type="button"
                 disabled
                 aria-describedby="vault-sink-availability-reason"
-                className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap opacity-55 cursor-not-allowed"
+                className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap opacity-55 cursor-not-allowed"
               >
                 <FolderSync className="w-3.5 h-3.5" aria-hidden="true" />
                 Connect Backup Sink Folder
@@ -338,6 +341,7 @@ export function UnifiedBackupVaultPanel({
       {vaultError && (
         <div
           role="alert"
+          aria-live="polite"
           className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)]"
         >
           {vaultError}
@@ -383,14 +387,14 @@ export function UnifiedBackupVaultPanel({
                         type="button"
                         disabled={isBusy}
                         onClick={() => void handleRestoreOpfs(item.key)}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
                       >
                         {isBusy ? 'Restoring...' : 'Confirm Restore'}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmRestoreKey(null)}
-                        className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                       >
                         Cancel
                       </button>
@@ -404,14 +408,14 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(null);
                           void onDeleteOpfsBackup(item.key);
                         }}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold whitespace-nowrap"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold whitespace-nowrap"
                       >
                         Confirm Delete
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteKey(null)}
-                        className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                       >
                         Cancel
                       </button>
@@ -422,7 +426,7 @@ export function UnifiedBackupVaultPanel({
                         type="button"
                         onClick={() => void onDownloadOpfsBackup(item.key)}
                         aria-label={`Download ${item.fileName}`}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                       >
                         <Download className="w-3.5 h-3.5" aria-hidden="true" />
                         Download
@@ -433,7 +437,7 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(null);
                           setConfirmRestoreKey(`opfs:${item.key}`);
                         }}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                       >
                         <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                         Restore
@@ -445,7 +449,7 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(`opfs:${item.key}`);
                         }}
                         aria-label={`Delete backup ${item.fileName}`}
-                        className="min-h-[40px] min-w-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
+                        className="min-h-[44px] min-w-[44px] sm:min-h-[40px] sm:min-w-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
                       >
                         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                       </button>
@@ -487,14 +491,14 @@ export function UnifiedBackupVaultPanel({
                         type="button"
                         disabled={isBusy}
                         onClick={() => void handleRestoreRolling(rb.key)}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
                       >
                         {isBusy ? 'Restoring...' : 'Confirm Restore'}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmRestoreKey(null)}
-                        className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                       >
                         Cancel
                       </button>
@@ -508,14 +512,14 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(null);
                           void onDeleteRollingBackup(rb.key);
                         }}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold whitespace-nowrap"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold whitespace-nowrap"
                       >
                         Confirm Delete
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteKey(null)}
-                        className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                       >
                         Cancel
                       </button>
@@ -528,7 +532,7 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(null);
                           setConfirmRestoreKey(`idb:${rb.key}`);
                         }}
-                        className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                        className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                       >
                         <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                         Restore
@@ -540,7 +544,7 @@ export function UnifiedBackupVaultPanel({
                           setConfirmDeleteKey(`idb:${rb.key}`);
                         }}
                         aria-label={`Delete IndexedDB rolling backup ${rb.savedAtIso}`}
-                        className="min-h-[40px] min-w-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
+                        className="min-h-[44px] min-w-[44px] sm:min-h-[40px] sm:min-w-[40px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
                       >
                         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                       </button>

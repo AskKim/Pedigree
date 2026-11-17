@@ -9,7 +9,7 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { AlertCircle, AlertTriangle, Camera, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Camera, Loader2, Trash2, X } from 'lucide-react';
 import React, { useId, useMemo, useRef, useState } from 'react';
 import {
   findAllSpeciesDuplicateTattooPeers,
@@ -80,6 +80,7 @@ import {
 } from '../core/inputSanitization';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
+import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { CarrierTraitCombobox } from './CarrierTraitCombobox';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
@@ -100,10 +101,10 @@ interface AnimalEditorModalProps {
   onSave: (
     draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => Promise<string | void> | string | void;
+  ) => Promise<string | null | void> | string | void;
   onOffloadRetiredAnimal?: (animalId: string) => Promise<void> | void;
   onSetAutoOffloadRetired?: (enabled: boolean) => void;
-  onDelete?: (animal: Animal) => void;
+  onDelete?: (animal: Animal) => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -135,6 +136,7 @@ export function AnimalEditorModal({
   } | null>(null);
   const [rememberAutoOffload, setRememberAutoOffload] = useState(false);
   const [offloadingNow, setOffloadingNow] = useState(false);
+  const submitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
 
   const [tattoo, setTattoo] = useState(initialAnimal?.tattoo || '');
   const [name, setName] = useState(() => {
@@ -537,90 +539,99 @@ export function AnimalEditorModal({
       return;
     }
     setSubmitGuardError(null);
-    const reconciled = reconcileCarrierTraitLists(
-      suspectedCarrierOf,
-      confirmedCarrierOf,
-      clearedCarrierOf
-    );
-    const wasRetired = Boolean(
-      initialAnimal && (initialAnimal.status === 'Sold' || initialAnimal.status === 'Deceased')
-    );
-    const becomingRetired =
-      (status === 'Sold' || status === 'Deceased') &&
-      !wasRetired &&
-      !initialAnimal?.offloadedArchiveKey;
+    await submitLock.runLocked(async () => {
+      const reconciled = reconcileCarrierTraitLists(
+        suspectedCarrierOf,
+        confirmedCarrierOf,
+        clearedCarrierOf
+      );
+      const wasRetired = Boolean(
+        initialAnimal && (initialAnimal.status === 'Sold' || initialAnimal.status === 'Deceased')
+      );
+      const becomingRetired =
+        (status === 'Sold' || status === 'Deceased') &&
+        !wasRetired &&
+        !initialAnimal?.offloadedArchiveKey;
 
-    const savedResult = await onSave(
-      {
-        id: initialAnimal?.id,
-        createdAt: initialAnimal?.createdAt,
-        tattoo: tattoo.trim(),
-        name: name.trim(),
-        species: speciesProfile.name, // Strictly locked to active species
-        breed: breed.trim(),
-        variety: variety.trim(),
-        sex,
-        status,
-        archived,
-        needsAttention,
-        birthDateIso,
-        weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
-        genotype: parseGenotypeString(genotypeRaw, speciesProfile.name),
-        genotypeRaw: genotypeRaw.trim(),
-        rufusLevel,
-        suspectedCarrierOf: reconciled.suspectedCarrierOf,
-        confirmedCarrierOf: reconciled.confirmedCarrierOf,
-        clearedCarrierOf: reconciled.clearedCarrierOf,
-        registrationNumber: registrationNumber.trim(),
-        grandChampionNumber: grandChampionNumber.trim(),
-        legsCount: Math.max(0, Number(legsCount) || 0),
-        cageLocation: cageLocation.trim(),
-        breederName: breederName.trim(),
-        ownerName: ownerName.trim(),
-        ownershipType,
-        culled,
-        cullDateIso: culled ? cullDateIso : '',
-        cullReason: culled ? cullReason.trim() : '',
-        deceasedDateIso: status === 'Deceased' ? deceasedDateIso : initialAnimal?.deceasedDateIso || '',
-        deathCause: status === 'Deceased' ? deathCause.trim() : initialAnimal?.deathCause || '',
-        soldDateIso: status === 'Sold' ? soldDateIso : initialAnimal?.soldDateIso || '',
-        salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
-        purchaseCostCents: parseMoneyToCents(purchaseCostInput),
-        buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
-        sireId,
-        damId,
-        notes: notes.trim(),
-        offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
-        offloadedAtIso: initialAnimal?.offloadedAtIso,
-      },
-      stagedPhotos.length > 0 ? stagedPhotos : undefined
-    );
+      const savedResult = await onSave(
+        {
+          id: initialAnimal?.id,
+          createdAt: initialAnimal?.createdAt,
+          tattoo: tattoo.trim(),
+          name: name.trim(),
+          species: speciesProfile.name, // Strictly locked to active species
+          breed: breed.trim(),
+          variety: variety.trim(),
+          sex,
+          status,
+          archived,
+          needsAttention,
+          birthDateIso,
+          weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
+          genotype: parseGenotypeString(genotypeRaw, speciesProfile.name),
+          genotypeRaw: genotypeRaw.trim(),
+          rufusLevel,
+          suspectedCarrierOf: reconciled.suspectedCarrierOf,
+          confirmedCarrierOf: reconciled.confirmedCarrierOf,
+          clearedCarrierOf: reconciled.clearedCarrierOf,
+          registrationNumber: registrationNumber.trim(),
+          grandChampionNumber: grandChampionNumber.trim(),
+          legsCount: Math.max(0, Number(legsCount) || 0),
+          cageLocation: cageLocation.trim(),
+          breederName: breederName.trim(),
+          ownerName: ownerName.trim(),
+          ownershipType,
+          culled,
+          cullDateIso: culled ? cullDateIso : '',
+          cullReason: culled ? cullReason.trim() : '',
+          deceasedDateIso: status === 'Deceased' ? deceasedDateIso : initialAnimal?.deceasedDateIso || '',
+          deathCause: status === 'Deceased' ? deathCause.trim() : initialAnimal?.deathCause || '',
+          soldDateIso: status === 'Sold' ? soldDateIso : initialAnimal?.soldDateIso || '',
+          salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
+          purchaseCostCents: parseMoneyToCents(purchaseCostInput),
+          buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
+          sireId,
+          damId,
+          notes: notes.trim(),
+          offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
+          offloadedAtIso: initialAnimal?.offloadedAtIso,
+        },
+        stagedPhotos.length > 0 ? stagedPhotos : undefined
+      );
 
-    const savedId =
-      typeof savedResult === 'string' && savedResult.trim()
-        ? savedResult.trim()
-        : initialAnimal?.id || '';
-
-    if (becomingRetired && opfsSupported && onOffloadRetiredAnimal && savedId) {
-      if (autoOffloadRetiredToOpfs) {
-        setOffloadingNow(true);
-        try {
-          await onOffloadRetiredAnimal(savedId);
-        } finally {
-          setOffloadingNow(false);
-        }
-        onClose();
+      if (savedResult === null) {
+        setSubmitGuardError(
+          'Could not save record to browser storage — your typed entries have been kept intact. Check available storage and try again.'
+        );
         return;
       }
-      setPendingOffloadPrompt({
-        animalId: savedId,
-        animalName: name.trim(),
-        status,
-      });
-      return;
-    }
 
-    onClose();
+      const savedId =
+        typeof savedResult === 'string' && savedResult.trim()
+          ? savedResult.trim()
+          : initialAnimal?.id || '';
+
+      if (becomingRetired && opfsSupported && onOffloadRetiredAnimal && savedId) {
+        if (autoOffloadRetiredToOpfs) {
+          setOffloadingNow(true);
+          try {
+            await onOffloadRetiredAnimal(savedId);
+          } finally {
+            setOffloadingNow(false);
+          }
+          onClose();
+          return;
+        }
+        setPendingOffloadPrompt({
+          animalId: savedId,
+          animalName: name.trim(),
+          status,
+        });
+        return;
+      }
+
+      onClose();
+    });
   };
 
   return (
@@ -2033,18 +2044,22 @@ export function AnimalEditorModal({
                   </span>
                   <button
                     type="button"
+                    disabled={submitLock.isSubmitting}
                     onClick={() => {
-                      onDelete(initialAnimal!);
-                      onClose();
+                      void submitLock.runLocked(async () => {
+                        await onDelete(initialAnimal!);
+                        onClose();
+                      });
                     }}
-                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold"
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold disabled:opacity-55"
                   >
-                    Yes, Delete
+                    {submitLock.isSubmitting ? 'Deleting...' : 'Yes, Delete'}
                   </button>
                   <button
                     type="button"
+                    disabled={submitLock.isSubmitting}
                     onClick={() => setConfirmDelete(false)}
-                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs"
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs disabled:opacity-55"
                   >
                     Cancel
                   </button>
@@ -2052,8 +2067,9 @@ export function AnimalEditorModal({
               ) : (
                 <button
                   type="button"
+                  disabled={submitLock.isSubmitting}
                   onClick={() => setConfirmDelete(true)}
-                  className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)]"
+                  className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-55"
                 >
                   Delete Animal
                 </button>
@@ -2065,16 +2081,24 @@ export function AnimalEditorModal({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={submitLock.isSubmitting}
                 onClick={onClose}
-                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="min-h-[42px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95"
+                disabled={submitLock.isSubmitting}
+                aria-busy={submitLock.isSubmitting}
+                className="min-h-[42px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
               >
-                Save {speciesProfile.name}
+                {submitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                )}
+                {submitLock.isSubmitting
+                  ? `Saving ${speciesProfile.name}...`
+                  : `Save ${speciesProfile.name}`}
               </button>
             </div>
           </div>

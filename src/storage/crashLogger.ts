@@ -19,6 +19,10 @@
  */
 
 import { generateUuid, nowIsoUtc } from '../core/models';
+import {
+  BackgroundPausedError,
+  notifyBackgroundTransition,
+} from './backgroundFreezeCoordinator';
 
 export const DEFAULT_SUPPORT_EMAIL = '';
 
@@ -85,13 +89,31 @@ const LOG_IDB_NAME = 'community_pedigree_diagnostics_v1';
 const LOG_STORE_NAME = 'diagnostic_logs';
 const CONFIG_STORAGE_KEY = 'pedigree_diagnostic_config_v1';
 const RING_STORAGE_KEY = 'pedigree_crash_ring_v1';
+const EMERGENCY_SESSION_TRACE_KEY = 'pedigree_emergency_trace_v1';
 const SESSION_HEARTBEAT_KEY = 'pedigree_session_heartbeat_v1';
 
 const MAX_RING_ENTRIES = 60;
+const MAX_EMERGENCY_SESSION_ENTRIES = 5;
 const MAX_IDB_ENTRIES = 500;
 const MEMORY_POLL_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const VERBOSE_MEMORY_HEARTBEAT_MS = 5 * 60_000;
+const ASYNC_TOAST_DEDUPE_MS = 4500;
+const ASYNC_TOAST_AUTO_DISMISS_MS = 9000;
+const MAX_ACTIVE_ASYNC_TOASTS = 2;
+
+export interface AsyncErrorNotice {
+  id: string;
+  timestampMs: number;
+  title: string;
+  detail: string;
+  severity: 'warning' | 'error';
+  sticky: boolean;
+  category: DiagnosticCategory;
+  canOpenDiagnostics?: boolean;
+  actionLabel?: string;
+  actionJobId?: string;
+}
 
 const DEFAULT_CONFIG: DiagnosticConfig = {
   verboseEnabled: true,
@@ -120,6 +142,10 @@ let memoryIntervalId: ReturnType<typeof setInterval> | null = null;
 let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
 
 const subscribers = new Set<() => void>();
+const asyncToastSubscribers = new Set<(notices: AsyncErrorNotice[]) => void>();
+let activeAsyncToasts: AsyncErrorNotice[] = [];
+const asyncToastTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastToastBySignature = new Map<string, number>();
 
 function notifySubscribers(): void {
   for (const cb of subscribers) {
@@ -136,6 +162,131 @@ export function subscribeDiagnosticLogs(callback: () => void): () => void {
   return () => {
     subscribers.delete(callback);
   };
+}
+
+function notifyAsyncToastSubscribers(): void {
+  const snapshot = [...activeAsyncToasts];
+  for (const cb of asyncToastSubscribers) {
+    try {
+      cb(snapshot);
+    } catch {
+      // Never let UI subscriber crash error toast emitter
+    }
+  }
+}
+
+export function getActiveAsyncErrorToasts(): AsyncErrorNotice[] {
+  return [...activeAsyncToasts];
+}
+
+export function dismissAsyncErrorToast(id: string): void {
+  const timer = asyncToastTimers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    asyncToastTimers.delete(id);
+  }
+  const next = activeAsyncToasts.filter((t) => t.id !== id);
+  if (next.length !== activeAsyncToasts.length) {
+    activeAsyncToasts = next;
+    notifyAsyncToastSubscribers();
+  }
+}
+
+export function subscribeAsyncErrorToasts(
+  callback: (notices: AsyncErrorNotice[]) => void
+): () => void {
+  asyncToastSubscribers.add(callback);
+  try {
+    callback([...activeAsyncToasts]);
+  } catch {
+    // Ignore initial callback error
+  }
+  return () => {
+    asyncToastSubscribers.delete(callback);
+  };
+}
+
+/**
+ * Emits a deduplicated, memory-bounded UI notice for uncaught async errors or paused background work.
+ * Minor warnings auto-dismiss after 9s; severity issues (storage/quota/memory/write failure) remain
+ * sticky until dismissed.
+ */
+export function emitAsyncErrorToast(params: {
+  title: string;
+  detail: string;
+  severity: 'warning' | 'error';
+  sticky?: boolean;
+  category?: DiagnosticCategory;
+  canOpenDiagnostics?: boolean;
+  actionLabel?: string;
+  actionJobId?: string;
+}): AsyncErrorNotice | null {
+  const cleanTitle = sanitizeLogString(params.title, 120);
+  const cleanDetail = sanitizeLogString(params.detail, 260);
+  const signature = `${params.severity}|${cleanTitle}|${cleanDetail}`.toLowerCase();
+  const now = Date.now();
+
+  const lastShown = lastToastBySignature.get(signature);
+  if (lastShown !== undefined && now - lastShown < ASYNC_TOAST_DEDUPE_MS) {
+    return null;
+  }
+  lastToastBySignature.set(signature, now);
+  if (lastToastBySignature.size > 32) {
+    // Keep signature map tightly bounded
+    const oldestKey = lastToastBySignature.keys().next().value;
+    if (oldestKey !== undefined) {
+      lastToastBySignature.delete(oldestKey);
+    }
+  }
+
+  const sticky = params.sticky ?? params.severity === 'error';
+  const notice: AsyncErrorNotice = {
+    id: generateUuid(),
+    timestampMs: now,
+    title: cleanTitle,
+    detail: cleanDetail,
+    severity: params.severity,
+    sticky,
+    category: params.category || 'promise',
+    canOpenDiagnostics: params.canOpenDiagnostics ?? params.severity === 'error',
+    actionLabel: params.actionLabel,
+    actionJobId: params.actionJobId,
+  };
+
+  while (activeAsyncToasts.length >= MAX_ACTIVE_ASYNC_TOASTS) {
+    // Drop oldest non-sticky notice first, otherwise oldest notice
+    const nonStickyIdx = activeAsyncToasts.findIndex((t) => !t.sticky);
+    const dropIdx = nonStickyIdx >= 0 ? nonStickyIdx : 0;
+    const [dropped] = activeAsyncToasts.splice(dropIdx, 1);
+    if (dropped) {
+      const oldTimer = asyncToastTimers.get(dropped.id);
+      if (oldTimer !== undefined) {
+        clearTimeout(oldTimer);
+        asyncToastTimers.delete(dropped.id);
+      }
+    }
+  }
+
+  activeAsyncToasts = [...activeAsyncToasts, notice];
+  if (!sticky) {
+    const timer = setTimeout(() => {
+      asyncToastTimers.delete(notice.id);
+      dismissAsyncErrorToast(notice.id);
+    }, ASYNC_TOAST_AUTO_DISMISS_MS);
+    asyncToastTimers.set(notice.id, timer);
+  }
+  notifyAsyncToastSubscribers();
+  return notice;
+}
+
+export function resetAsyncErrorToastsForTests(): void {
+  for (const timer of asyncToastTimers.values()) {
+    clearTimeout(timer);
+  }
+  asyncToastTimers.clear();
+  lastToastBySignature.clear();
+  activeAsyncToasts = [];
+  notifyAsyncToastSubscribers();
 }
 
 export function setCurrentDiagnosticRoute(route: string): void {
@@ -286,23 +437,92 @@ function readRingBuffer(): DiagnosticLogEntry[] {
   }
 }
 
-function writeRingBufferSync(entry: DiagnosticLogEntry): void {
-  if (typeof localStorage === 'undefined') return;
+export function readEmergencySessionTrace(
+  sessionStore: Pick<Storage, 'getItem'> | null | undefined =
+    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+): DiagnosticLogEntry[] {
+  if (!sessionStore) return [];
   try {
-    const existing = readRingBuffer();
-    const cutoff = getCutoffTimestampMs(getDiagnosticConfig().retentionDays);
-    const filtered = [
-      ...existing.filter((e) => e.id !== entry.id && e.timestampMs >= cutoff),
-      entry,
-    ].slice(-MAX_RING_ENTRIES);
-    localStorage.setItem(RING_STORAGE_KEY, JSON.stringify(filtered));
+    const raw = sessionStore.getItem(EMERGENCY_SESSION_TRACE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item: any) => item && typeof item.id === 'string' && typeof item.timestampMs === 'number'
+    );
   } catch {
-    // If localStorage is completely full, trim aggressively and retry once
+    return [];
+  }
+}
+
+export function clearEmergencySessionTrace(
+  sessionStore: Pick<Storage, 'removeItem'> | null | undefined =
+    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+): void {
+  if (!sessionStore) return;
+  try {
+    sessionStore.removeItem(EMERGENCY_SESSION_TRACE_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+export function writeEmergencySessionTraceSync(
+  entry: DiagnosticLogEntry,
+  sessionStore: Pick<Storage, 'getItem' | 'setItem'> | null | undefined =
+    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+): boolean {
+  if (!sessionStore) return false;
+  const compactEntry: DiagnosticLogEntry = {
+    id: entry.id,
+    timestampIso: entry.timestampIso,
+    timestampMs: entry.timestampMs,
+    sessionId: entry.sessionId,
+    level: entry.level,
+    category: entry.category,
+    route: entry.route,
+    message: sanitizeLogString(entry.message, 240),
+    stack: entry.stack ? sanitizeLogString(entry.stack, 240) : undefined,
+  };
+  try {
+    const existing = readEmergencySessionTrace(sessionStore).filter((e) => e.id !== entry.id);
+    const next = [...existing, compactEntry].slice(-MAX_EMERGENCY_SESSION_ENTRIES);
+    sessionStore.setItem(EMERGENCY_SESSION_TRACE_KEY, JSON.stringify(next));
+    return true;
+  } catch {
     try {
-      localStorage.setItem(RING_STORAGE_KEY, JSON.stringify([entry]));
+      sessionStore.setItem(EMERGENCY_SESSION_TRACE_KEY, JSON.stringify([compactEntry]));
+      return true;
     } catch {
-      // Ignore
+      return false;
     }
+  }
+}
+
+function writeRingBufferSync(entry: DiagnosticLogEntry): void {
+  let localWriteOk = false;
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const existing = readRingBuffer();
+      const cutoff = getCutoffTimestampMs(getDiagnosticConfig().retentionDays);
+      const filtered = [
+        ...existing.filter((e) => e.id !== entry.id && e.timestampMs >= cutoff),
+        entry,
+      ].slice(-MAX_RING_ENTRIES);
+      localStorage.setItem(RING_STORAGE_KEY, JSON.stringify(filtered));
+      localWriteOk = true;
+    } catch {
+      // If localStorage is completely full, trim aggressively and retry once
+      try {
+        localStorage.setItem(RING_STORAGE_KEY, JSON.stringify([entry]));
+        localWriteOk = true;
+      } catch {
+        localWriteOk = false;
+      }
+    }
+  }
+  if (!localWriteOk) {
+    writeEmergencySessionTraceSync(entry);
   }
 }
 
@@ -389,18 +609,21 @@ function openLogsIdb(): Promise<IDBDatabase> {
 
 async function persistEntryToIdb(entry: DiagnosticLogEntry): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openLogsIdb();
+    db = await openLogsIdb();
     await new Promise<void>((resolve) => {
-      const tx = db.transaction(LOG_STORE_NAME, 'readwrite');
+      const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
       const store = tx.objectStore(LOG_STORE_NAME);
       store.put(entry);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
-    db.close();
   } catch {
     // Ring buffer already persisted critical entries synchronously
+  } finally {
+    db?.close();
   }
 }
 
@@ -418,10 +641,11 @@ export async function pruneExpiredDiagnosticLogs(): Promise<void> {
   }
 
   if (typeof indexedDB === 'undefined') return;
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openLogsIdb();
+    db = await openLogsIdb();
     await new Promise<void>((resolve) => {
-      const tx = db.transaction(LOG_STORE_NAME, 'readwrite');
+      const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
       const store = tx.objectStore(LOG_STORE_NAME);
       const req = store.getAll();
       req.onsuccess = () => {
@@ -435,10 +659,12 @@ export async function pruneExpiredDiagnosticLogs(): Promise<void> {
       };
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
-    db.close();
   } catch {
     // Ignore
+  } finally {
+    db?.close();
   }
 }
 
@@ -452,15 +678,16 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
   }
 
   if (typeof indexedDB !== 'undefined') {
+    let db: IDBDatabase | null = null;
     try {
-      const db = await openLogsIdb();
+      db = await openLogsIdb();
       const idbItems = await new Promise<DiagnosticLogEntry[]>((resolve) => {
-        const tx = db.transaction(LOG_STORE_NAME, 'readonly');
+        const tx = db!.transaction(LOG_STORE_NAME, 'readonly');
         const req = tx.objectStore(LOG_STORE_NAME).getAll();
         req.onsuccess = () => resolve((req.result as DiagnosticLogEntry[]) || []);
         req.onerror = () => resolve([]);
+        tx.onabort = () => resolve([]);
       });
-      db.close();
       for (const e of idbItems) {
         if (e && e.timestampMs >= cutoff) {
           byId.set(e.id, e);
@@ -468,6 +695,14 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
       }
     } catch {
       // Fall back to ring buffer entries
+    } finally {
+      db?.close();
+    }
+  }
+
+  for (const e of readEmergencySessionTrace()) {
+    if (e.timestampMs >= cutoff && !byId.has(e.id)) {
+      byId.set(e.id, e);
     }
   }
 
@@ -475,6 +710,7 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
 }
 
 export async function clearAllDiagnosticLogs(): Promise<void> {
+  clearEmergencySessionTrace();
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(RING_STORAGE_KEY);
@@ -483,17 +719,20 @@ export async function clearAllDiagnosticLogs(): Promise<void> {
     }
   }
   if (typeof indexedDB !== 'undefined') {
+    let db: IDBDatabase | null = null;
     try {
-      const db = await openLogsIdb();
+      db = await openLogsIdb();
       await new Promise<void>((resolve) => {
-        const tx = db.transaction(LOG_STORE_NAME, 'readwrite');
+        const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
         tx.objectStore(LOG_STORE_NAME).clear();
         tx.oncomplete = () => resolve();
         tx.onerror = () => resolve();
+        tx.onabort = () => resolve();
       });
-      db.close();
     } catch {
       // Ignore
+    } finally {
+      db?.close();
     }
   }
   notifySubscribers();
@@ -736,6 +975,84 @@ async function sampleMemoryPressure(): Promise<void> {
   }
 }
 
+export function handleUnhandledRejectionReason(reason: unknown): void {
+  const errName = reason && typeof reason === 'object' ? String((reason as { name?: string }).name || '') : '';
+  // Skip intentional user file-picker cancellations cleanly
+  if (errName === 'AbortError') {
+    return;
+  }
+
+  const rawMsg =
+    reason instanceof Error
+      ? `${reason.name}: ${reason.message}`
+      : sanitizeLogString(reason, 400);
+
+  if (reason instanceof BackgroundPausedError || errName === 'BackgroundPausedError') {
+    const pausedErr = reason as BackgroundPausedError;
+    const isSeverity = Boolean(pausedErr.severityIssue);
+    logDiagnosticEvent({
+      level: isSeverity ? 'warn' : 'info',
+      category: 'lifecycle',
+      message: rawMsg,
+    });
+    emitAsyncErrorToast({
+      title: isSeverity ? `${pausedErr.taskName} Needs Attention` : `${pausedErr.taskName} Paused`,
+      detail: isSeverity
+        ? `${pausedErr.severityIssue} Tap Resume when ready.`
+        : 'Progress was checkpointed when the app moved to the background and will resume automatically.',
+      severity: isSeverity ? 'error' : 'warning',
+      sticky: isSeverity,
+      category: 'lifecycle',
+      canOpenDiagnostics: isSeverity,
+    });
+    return;
+  }
+
+  const quotaLike =
+    /quotaexceeded|ns_error_dom_quota/i.test(rawMsg) ||
+    errName === 'QuotaExceededError' ||
+    errName === 'NS_ERROR_DOM_QUOTA_REACHED';
+  const memoryLike = isMemoryLikeError(reason || rawMsg);
+
+  logDiagnosticEvent({
+    level: 'error',
+    category: memoryLike ? 'memory' : quotaLike ? 'storage' : 'promise',
+    message: `Unhandled Promise Rejection: ${rawMsg}`,
+    error: reason,
+  });
+
+  if (quotaLike) {
+    emitAsyncErrorToast({
+      title: 'Device Storage Full',
+      detail:
+        'A background save could not fit in browser storage. Open Backups to download a .JSON copy or free space.',
+      severity: 'error',
+      sticky: true,
+      category: 'storage',
+      canOpenDiagnostics: true,
+    });
+  } else if (memoryLike) {
+    emitAsyncErrorToast({
+      title: 'Low Memory During Background Action',
+      detail:
+        'Close other tabs or switch to Compact photos in Import & Settings, then retry your action.',
+      severity: 'error',
+      sticky: true,
+      category: 'memory',
+      canOpenDiagnostics: true,
+    });
+  } else {
+    emitAsyncErrorToast({
+      title: 'Background Task Did Not Finish',
+      detail: `${sanitizeLogString(rawMsg, 150)} — Open Diagnostics to inspect details.`,
+      severity: 'error',
+      sticky: true,
+      category: 'promise',
+      canOpenDiagnostics: true,
+    });
+  }
+}
+
 export function installGlobalCrashHandlers(): void {
   if (typeof window === 'undefined' || handlersInstalled) return;
   handlersInstalled = true;
@@ -785,17 +1102,7 @@ export function installGlobalCrashHandlers(): void {
 
   // 2. Unhandled Promise rejections
   window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-    const reason = event.reason;
-    const msg =
-      reason instanceof Error
-        ? `Unhandled Promise Rejection: ${reason.name}: ${reason.message}`
-        : `Unhandled Promise Rejection: ${sanitizeLogString(reason, 400)}`;
-    logDiagnosticEvent({
-      level: 'error',
-      category: isMemoryLikeError(reason || msg) ? 'memory' : 'promise',
-      message: msg,
-      error: reason,
-    });
+    handleUnhandledRejectionReason(event.reason);
   });
 
   // 3. Intercept console.error and console.warn safely
@@ -867,25 +1174,29 @@ export function installGlobalCrashHandlers(): void {
     }
   };
 
-  // 4. Clean exit & visibility lifecycle hooks
+  // 4. Clean exit & visibility lifecycle hooks (shared dispatcher to BackgroundFreezeCoordinator)
   window.addEventListener('pagehide', () => {
     stopVisibleWatchdogs();
     updateSessionHeartbeat(false);
+    notifyBackgroundTransition('hidden');
   });
 
   window.addEventListener('beforeunload', () => {
     stopVisibleWatchdogs();
     updateSessionHeartbeat(false);
+    notifyBackgroundTransition('hidden');
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       stopVisibleWatchdogs();
       updateSessionHeartbeat(false);
+      notifyBackgroundTransition('hidden');
     } else {
       updateSessionHeartbeat(true);
       void sampleMemoryPressure();
       startVisibleWatchdogs();
+      notifyBackgroundTransition('visible');
     }
   });
 

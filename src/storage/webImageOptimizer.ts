@@ -36,6 +36,10 @@ import {
 } from '../core/inputSanitization';
 import { AnimalPhoto, nowIsoUtc } from '../core/models';
 import { logDiagnosticEvent } from './crashLogger';
+import {
+  detectCurrentDeviceCapability,
+  probeWebpEncodeSupport,
+} from './deviceCapabilityDetector';
 
 interface DecodedCanvasSource {
   source: CanvasImageSource;
@@ -113,9 +117,11 @@ function renderToDataUrl(
     ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
 
     // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
-    const webpUrl = canvas.toDataURL('image/webp', quality);
-    if (webpUrl.startsWith('data:image/webp')) {
-      return { dataUrl: webpUrl, mimeType: 'image/webp' };
+    if (probeWebpEncodeSupport()) {
+      const webpUrl = canvas.toDataURL('image/webp', quality);
+      if (webpUrl.startsWith('data:image/webp')) {
+        return { dataUrl: webpUrl, mimeType: 'image/webp' };
+      }
     }
 
     // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
@@ -319,13 +325,15 @@ export interface BatchImportPhotoResult {
 }
 
 /**
- * Optimizes all `StagedImportedPhoto` items from any platform importer in non-blocking batches of 4,
+ * Optimizes all `StagedImportedPhoto` items from any platform importer in tier-aware
+ * non-blocking batches (1 on Tier 1–2 low-memory devices, 2 on Tier 3, 4 on Tiers 4–5),
  * producing ready-to-save `AnimalPhoto` entities with deterministic IDs.
  */
 export async function optimizeStagedImporterPhotos(
   staged: StagedImportedPhoto[],
   presetId?: ImageOptimizationPresetId,
-  onProgress?: (progress: BatchImportPhotoProgress) => void
+  onProgress?: (progress: BatchImportPhotoProgress) => void,
+  options?: { concurrency?: number }
 ): Promise<BatchImportPhotoResult> {
   const ts = nowIsoUtc();
   const photos: AnimalPhoto[] = [];
@@ -333,7 +341,9 @@ export async function optimizeStagedImporterPhotos(
   let totalOriginalBytes = 0;
   let totalStoredBytes = 0;
 
-  const CHUNK_SIZE = 4;
+  const detectedTier = detectCurrentDeviceCapability().tier;
+  const defaultChunkSize = detectedTier <= 2 ? 1 : detectedTier === 3 ? 2 : 4;
+  const CHUNK_SIZE = Math.max(1, Math.min(8, Math.round(options?.concurrency ?? defaultChunkSize)));
   for (let i = 0; i < staged.length; i += CHUNK_SIZE) {
     const slice = staged.slice(i, i + CHUNK_SIZE);
     const chunkResults = await Promise.all(

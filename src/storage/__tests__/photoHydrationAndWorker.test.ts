@@ -310,3 +310,135 @@ describe('offThreadWorkerClient async ZIP & external import execution', () => {
     expect(bundle.includedPhotos).toBe(false);
   });
 });
+
+describe('Phase 2 compatibility & memory fallbacks', () => {
+  it('detects iPadOS 13+ MacIntel multi-touch UA in isIosBrowser cleanly', async () => {
+    const { isIosBrowser } = await import('../storageProtection');
+    const originalNav = globalThis.navigator;
+    try {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {
+          userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+          platform: 'MacIntel',
+          maxTouchPoints: 5,
+        },
+        configurable: true,
+      });
+      expect(isIosBrowser()).toBe(true);
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {
+          userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+          platform: 'MacIntel',
+          maxTouchPoints: 0,
+        },
+        configurable: true,
+      });
+      expect(isIosBrowser()).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: originalNav,
+        configurable: true,
+      });
+    }
+  });
+
+  it('copyTextWithFallback uses clipboard first, falls back to execCommand, and returns unsupported safely', async () => {
+    const { copyTextWithFallback } = await import('../../utils/webFileActions');
+    const originalNav = globalThis.navigator;
+    const originalDoc = globalThis.document;
+
+    try {
+      // 1. Primary clipboard API succeeds
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { clipboard: { writeText: vi.fn(async () => {}) } },
+        configurable: true,
+      });
+      expect(await copyTextWithFallback('https://example.test/?task=1')).toBe('clipboard');
+
+      // 2. Primary clipboard rejects -> falls back to document.execCommand('copy')
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {
+          clipboard: {
+            writeText: vi.fn(async () => {
+              throw new Error('Blocked in iframe');
+            }),
+          },
+        },
+        configurable: true,
+      });
+      const fakeTextarea = {
+        value: '',
+        style: {} as Record<string, string>,
+        setAttribute: vi.fn(),
+        focus: vi.fn(),
+        select: vi.fn(),
+      };
+      const fakeBody = {
+        appendChild: vi.fn(),
+        removeChild: vi.fn(),
+      };
+      Object.defineProperty(globalThis, 'document', {
+        value: {
+          createElement: vi.fn(() => fakeTextarea),
+          execCommand: vi.fn(() => true),
+          body: fakeBody,
+        },
+        configurable: true,
+      });
+      expect(await copyTextWithFallback('fallback-text')).toBe('execCommand');
+      expect(fakeBody.appendChild).toHaveBeenCalledTimes(1);
+      expect(fakeBody.removeChild).toHaveBeenCalledTimes(1);
+
+      // 3. Neither available -> returns 'unsupported' without throwing
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {},
+        configurable: true,
+      });
+      Object.defineProperty(globalThis, 'document', {
+        value: undefined,
+        configurable: true,
+      });
+      expect(await copyTextWithFallback('no-copy')).toBe('unsupported');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: originalNav,
+        configurable: true,
+      });
+      Object.defineProperty(globalThis, 'document', {
+        value: originalDoc,
+        configurable: true,
+      });
+    }
+  });
+
+  it('bounds optimizeStagedImporterPhotos concurrency and yields progress accurately', async () => {
+    const { optimizeStagedImporterPhotos } = await import('../webImageOptimizer');
+    const staged = Array.from({ length: 3 }, (_, idx) => ({
+      id: `p-${idx}`,
+      species: 'Rabbit',
+      animalId: 'a-1',
+      animalName: 'Clover',
+      isPrimary: idx === 0,
+      sortOrder: idx,
+      caption: '',
+      entryPath: `photos/img-${idx}.jpg`,
+      originalFileName: `img-${idx}.jpg`,
+      mimeHint: 'image/jpeg',
+      // Small fake payload will fail canvas decode in Node and cleanly record failedFiles
+      bytes: new Uint8Array([1, 2, 3]),
+    }));
+
+    const progressCalls: number[] = [];
+    const result = await optimizeStagedImporterPhotos(
+      staged,
+      'compact',
+      (p) => progressCalls.push(p.completed),
+      { concurrency: 1 }
+    );
+
+    expect(result.failedFiles).toHaveLength(3);
+    expect(progressCalls).toEqual([1, 2, 3]);
+  });
+});
+

@@ -7,7 +7,7 @@
  * Portable UI Note: Maps cleanly to React Native `Modal` + `ScrollView` + `TextInput` + `Pressable`.
  */
 
-import { Download, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Download, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import {
   generateUuid,
@@ -26,12 +26,13 @@ import {
 } from '../core/models';
 import { describeMilestoneOffset } from '../core/taskMaster';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
+import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 
 interface SpeciesEditorModalProps {
   initialProfile: SpeciesProfile | null;
   existingNames: string[];
   recordCount?: number;
-  onSave: (profile: SpeciesProfile) => void;
+  onSave: (profile: SpeciesProfile) => Promise<boolean | void> | boolean | void;
   onDelete?: (profile: SpeciesProfile) => void;
   onDownloadTimestampedBackup?: (speciesName: string) => void;
   onClose: () => void;
@@ -71,7 +72,13 @@ export function SpeciesEditorModal({
   onClose,
 }: SpeciesEditorModalProps) {
   const baseId = useId();
-  const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
+  const submitLock = useAsyncSubmitLock();
+  const dialogRef = useAccessibleDialog({
+    isOpen: true,
+    onClose: () => {
+      if (!submitLock.isLockedNow()) onClose();
+    },
+  });
   const isEditing = Boolean(initialProfile);
   const canDeleteEmptySpecies =
     isEditing && Boolean(onDelete) && recordCount === 0 && existingNames.length > 1;
@@ -180,7 +187,7 @@ export function SpeciesEditorModal({
     setRuleLabel('');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = name.trim();
     if (!cleanName) {
@@ -197,37 +204,41 @@ export function SpeciesEditorModal({
       return;
     }
 
-    const parsedBreeds = breedsCsv
-      .split(',')
-      .map((b) => b.trim())
-      .filter(Boolean);
+    await submitLock.runLocked(async () => {
+      const parsedBreeds = breedsCsv
+        .split(',')
+        .map((b) => b.trim())
+        .filter(Boolean);
 
-    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const ts = nowIsoUtc();
+      const slug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const ts = nowIsoUtc();
 
-    onSave({
-      id: initialProfile?.id || `species-${slug || generateUuid()}`,
-      sortOrder: initialProfile?.sortOrder,
-      name: cleanName,
-      defaultAnimalPrefix: defaultAnimalPrefix.trim(),
-      preferredUnit: preferredUnit || undefined,
-      memoText: initialProfile?.memoText ?? '',
-      memoUpdatedAt: initialProfile?.memoUpdatedAt ?? '',
-      gestationDays: Math.max(1, Number(gestationDays) || 31),
-      rebreedDaysAfterBirth: Math.max(0, Number(rebreedDays) || 28),
-      weanDaysAfterBirth: Math.max(1, Number(weanDays) || 42),
-      maturityDays:
-        Number(maturityDays) > 0 ? Math.max(1, Math.round(Number(maturityDays))) : undefined,
-      birthEventLabel: birthEventLabel.trim() || 'Birth',
-      maleLabel: maleLabel.trim() || 'Male',
-      femaleLabel: femaleLabel.trim() || 'Female',
-      offspringLabel: offspringLabel.trim() || 'Offspring',
-      exampleBreeds: parsedBreeds,
-      milestones,
-      createdAt: initialProfile?.createdAt || ts,
-      updatedAt: ts,
+      const saved = await onSave({
+        id: initialProfile?.id || `species-${slug || generateUuid()}`,
+        sortOrder: initialProfile?.sortOrder,
+        name: cleanName,
+        defaultAnimalPrefix: defaultAnimalPrefix.trim(),
+        preferredUnit: preferredUnit || undefined,
+        memoText: initialProfile?.memoText ?? '',
+        memoUpdatedAt: initialProfile?.memoUpdatedAt ?? '',
+        gestationDays: Math.max(1, Number(gestationDays) || 31),
+        rebreedDaysAfterBirth: Math.max(0, Number(rebreedDays) || 28),
+        weanDaysAfterBirth: Math.max(1, Number(weanDays) || 42),
+        maturityDays:
+          Number(maturityDays) > 0 ? Math.max(1, Math.round(Number(maturityDays))) : undefined,
+        birthEventLabel: birthEventLabel.trim() || 'Birth',
+        maleLabel: maleLabel.trim() || 'Male',
+        femaleLabel: femaleLabel.trim() || 'Female',
+        offspringLabel: offspringLabel.trim() || 'Offspring',
+        exampleBreeds: parsedBreeds,
+        milestones,
+        createdAt: initialProfile?.createdAt || ts,
+        updatedAt: ts,
+      });
+      if (saved !== false) {
+        onClose();
+      }
     });
-    onClose();
   };
 
   return (
@@ -729,16 +740,26 @@ export function SpeciesEditorModal({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={submitLock.isSubmitting}
                 onClick={onClose}
-                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="min-h-[42px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95"
+                disabled={submitLock.isSubmitting}
+                aria-busy={submitLock.isSubmitting}
+                className="min-h-[42px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 inline-flex items-center gap-1.5 disabled:opacity-65"
               >
-                {isEditing ? 'Save Livestock Schedule' : 'Create Custom Livestock'}
+                {submitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                )}
+                {submitLock.isSubmitting
+                  ? 'Saving...'
+                  : isEditing
+                  ? 'Save Livestock Schedule'
+                  : 'Create Custom Livestock'}
               </button>
             </div>
           </div>

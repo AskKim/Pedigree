@@ -18,6 +18,7 @@ import {
   HardDrive,
   HelpCircle,
   Images,
+  Loader2,
   LogOut,
   Moon,
   Palette,
@@ -31,11 +32,19 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  BackgroundPausedError,
+  clearPausedBackgroundJob,
+  registerPausedBackgroundJob,
+} from '../storage/backgroundFreezeCoordinator';
+import { emitAsyncErrorToast } from '../storage/crashLogger';
+import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import {
   buildCompleteBackupZipOffThread,
   buildPhotosOnlyZipOffThread,
 } from '../storage/offThreadWorkerClient';
+import { stripPhotoDataUrlsFromSnapshot } from '../storage/photoHydration';
 import { BackupStatusEvaluation } from '../core/backupStatus';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
 import {
@@ -93,6 +102,8 @@ import {
 } from '../core/themePalette';
 import {
   parseDeltaFileJson,
+  reauthorizeBackupSinkFolder,
+  resumePersistedDirectorySyncIfGranted,
   shareOrDownloadFile,
   supportsDirectoryPicker,
   syncWithPickedDirectory,
@@ -135,7 +146,7 @@ interface SettingsAndSyncScreenProps {
     fileName?: string
   ) => Promise<void> | void;
   onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
-  onSaveSpecies: (profile: SpeciesProfile) => void;
+  onSaveSpecies: (profile: SpeciesProfile) => Promise<boolean | void> | void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
   onDownloadTimestampedSpeciesBackup: (speciesName: string) => Promise<void> | void;
   onApplyPlatformImport: (
@@ -167,9 +178,9 @@ interface SettingsAndSyncScreenProps {
     serviceWorkersUnregistered: number;
     backupFilename: string | null;
   }>;
-  onSeedAllSpecies: () => void;
-  onClearAllRecords: () => void;
-  onRestoreFactoryDefaults: () => void;
+  onSeedAllSpecies: () => Promise<void> | void;
+  onClearAllRecords: () => Promise<void> | void;
+  onRestoreFactoryDefaults: () => Promise<void> | void;
   onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => number;
   googleAuthConnected?: boolean;
   googleUserEmail?: string | null;
@@ -316,7 +327,9 @@ export function SettingsAndSyncScreen({
   const [showCustomSpeciesModal, setShowCustomSpeciesModal] = useState(false);
   const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
   const [folderSyncBusy, setFolderSyncBusy] = useState(false);
-  const [zipExportBusy, setZipExportBusy] = useState<'complete' | 'photos' | 'json' | null>(null);
+  const [zipExportBusy, setZipExportBusy] = useState<
+    'complete' | 'photos' | 'json' | 'json-light' | null
+  >(null);
   const [pendingHeavyZipExport, setPendingHeavyZipExport] = useState<'complete' | 'photos' | null>(
     null
   );
@@ -325,6 +338,15 @@ export function SettingsAndSyncScreen({
     kind: 'archive' | 'sqlite';
     mode?: 'merge' | 'replace';
   } | null>(null);
+
+  const folderSyncLock = useAsyncSubmitLock();
+  const deltaUploadLock = useAsyncSubmitLock();
+  const deltaShareLock = useAsyncSubmitLock();
+  const sqliteExportLock = useAsyncSubmitLock();
+  const csvExportLock = useAsyncSubmitLock();
+  const reportExportLock = useAsyncSubmitLock();
+  const destructiveResetLock = useAsyncSubmitLock();
+  const conflictRowLock = useAsyncKeyedLock();
 
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
 
@@ -435,20 +457,41 @@ export function SettingsAndSyncScreen({
     }
   };
 
-  const handleExportCsv = async () => {
+  const handleDownloadDatabaseOnlyBackup = async () => {
     setImportError(null);
-    const filename = buildCleanCsvExportFileName(settings.barnName);
-    const csvContent = exportAnimalsCsv(
-      snapshot.animals,
-      snapshot.speciesProfiles,
-      settings,
-      undefined,
-      allPhotos
-    );
-    await downloadTextFile(filename, csvContent, 'text/csv');
-    setPortabilityFeedback(
-      `Exported ${snapshot.animals.length} animal record(s) to ${filename} (UTF-8 CSV with resolved parent names & tattoos).`
-    );
+    setZipExportBusy('json-light');
+    try {
+      const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
+      const stampSlug = formatTimestampedBackupSlug();
+      const filename = `community-pedigree-records-only-${stampSlug}.json`;
+      await downloadTextFile(filename, exportBarnBackupJson(lightSnapshot), 'application/json');
+      void recordBackupExport('json', filename);
+      setPortabilityFeedback(
+        `Downloaded lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
+      );
+    } catch (err: any) {
+      setImportError(err?.message || 'Could not prepare records-only JSON backup.');
+    } finally {
+      setZipExportBusy(null);
+    }
+  };
+
+  const handleExportCsv = async () => {
+    await csvExportLock.runLocked(async () => {
+      setImportError(null);
+      const filename = buildCleanCsvExportFileName(settings.barnName);
+      const csvContent = exportAnimalsCsv(
+        snapshot.animals,
+        snapshot.speciesProfiles,
+        settings,
+        undefined,
+        allPhotos
+      );
+      await downloadTextFile(filename, csvContent, 'text/csv');
+      setPortabilityFeedback(
+        `Exported ${snapshot.animals.length} animal record(s) to ${filename} (UTF-8 CSV with resolved parent names & tattoos).`
+      );
+    });
   };
 
   const activeDeviceTier = deviceCapability?.assessment.tier ?? 5;
@@ -621,88 +664,228 @@ export function SettingsAndSyncScreen({
 
   const handleDeltaFilesUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    setImportError(null);
-    setSyncFeedback(null);
-    try {
-      const list = Array.from(files);
-      if (list.length > MAX_DELTA_BATCH_FILES) {
-        setImportError(
-          `Selected ${list.length} delta files; upload at most ${MAX_DELTA_BATCH_FILES} per batch to protect mobile memory.`
-        );
-        return;
-      }
-      let totalBytes = 0;
-      for (const file of list) {
-        const check = validateUploadFileSize(
-          file.name,
-          file.size,
-          MAX_DELTA_JSON_BYTES,
-          'a delta sync JSON file'
-        );
-        if (!check.ok) {
-          setImportError(check.error);
-          return;
-        }
-        totalBytes += file.size;
-        if (totalBytes > MAX_DELTA_BATCH_TOTAL_BYTES) {
+    await deltaUploadLock.runLocked(async () => {
+      setImportError(null);
+      setSyncFeedback(null);
+      try {
+        const list = Array.from(files);
+        if (list.length > MAX_DELTA_BATCH_FILES) {
           setImportError(
-            `Combined delta batch exceeds ${formatReadableByteLimit(MAX_DELTA_BATCH_TOTAL_BYTES)}.`
+            `Selected ${list.length} delta files; upload at most ${MAX_DELTA_BATCH_FILES} per batch to protect mobile memory.`
           );
           return;
         }
+        let totalBytes = 0;
+        for (const file of list) {
+          const check = validateUploadFileSize(
+            file.name,
+            file.size,
+            MAX_DELTA_JSON_BYTES,
+            'a delta sync JSON file'
+          );
+          if (!check.ok) {
+            setImportError(check.error);
+            return;
+          }
+          totalBytes += file.size;
+          if (totalBytes > MAX_DELTA_BATCH_TOTAL_BYTES) {
+            setImportError(
+              `Combined delta batch exceeds ${formatReadableByteLimit(MAX_DELTA_BATCH_TOTAL_BYTES)}.`
+            );
+            return;
+          }
+        }
+        const combinedOps: SyncOperation[] = [];
+        for (const file of list) {
+          const text = await file.text();
+          combinedOps.push(...parseDeltaFileJson(text));
+        }
+        await onImportDeltaOperations(combinedOps);
+        setSyncFeedback(
+          `Processed ${combinedOps.length} operation(s) across ${list.length} delta file(s).`
+        );
+      } catch (err: any) {
+        setImportError(err?.message || 'Could not parse delta sync JSON file.');
       }
-      const combinedOps: SyncOperation[] = [];
-      for (const file of list) {
-        const text = await file.text();
-        combinedOps.push(...parseDeltaFileJson(text));
-      }
-      await onImportDeltaOperations(combinedOps);
-      setSyncFeedback(
-        `Processed ${combinedOps.length} operation(s) across ${list.length} delta file(s).`
-      );
-    } catch (err: any) {
-      setImportError(err?.message || 'Could not parse delta sync JSON file.');
-    }
+    });
   };
 
-  const handleDirectorySync = async () => {
+  const syncContextRef = useRef({
+    snapshot,
+    syncOperations,
+    deviceId,
+    activeDeviceTier,
+    onHydrateSnapshotForExport,
+    onImportDeltaOperations,
+  });
+  syncContextRef.current = {
+    snapshot,
+    syncOperations,
+    deviceId,
+    activeDeviceTier,
+    onHydrateSnapshotForExport,
+    onImportDeltaOperations,
+  };
+
+  const executeResumeDirectorySync = useCallback(async (triggerReauthorize: boolean) => {
     setImportError(null);
-    setSyncFeedback(null);
     setFolderSyncBusy(true);
     try {
-      const exportSnapshot = onHydrateSnapshotForExport
-        ? await onHydrateSnapshotForExport(snapshot)
-        : snapshot;
-      const res = await syncWithPickedDirectory({
-        deviceId,
-        localOperations: syncOperations,
+      if (triggerReauthorize) {
+        await reauthorizeBackupSinkFolder();
+      }
+      const ctx = syncContextRef.current;
+      const exportSnapshot =
+        ctx.activeDeviceTier === 1
+          ? stripPhotoDataUrlsFromSnapshot(ctx.snapshot)
+          : ctx.onHydrateSnapshotForExport
+          ? await ctx.onHydrateSnapshotForExport(ctx.snapshot)
+          : ctx.snapshot;
+      const resumed = await resumePersistedDirectorySyncIfGranted({
+        deviceId: ctx.deviceId,
+        localOperations: ctx.syncOperations,
         masterBackupJson: exportBarnBackupJson(exportSnapshot),
       });
-      if (res.incomingOps.length > 0) {
-        await onImportDeltaOperations(res.incomingOps);
+      if (!resumed.resumed) {
+        if (resumed.reason === 'permission_required') {
+          const reasonMsg = `Folder write permission for "${resumed.folderName || 'Sync Folder'}" must be re-confirmed before finishing sync.`;
+          registerPausedBackgroundJob({
+            taskId: 'directory_sync',
+            label: 'Folder Sync',
+            pausedAtMs: Date.now(),
+            severity: 'severity',
+            severityReason: reasonMsg,
+            resumeHandler: () => executeResumeDirectorySync(true),
+          });
+          emitAsyncErrorToast({
+            title: 'Folder Sync Paused — Permission Needed',
+            detail: reasonMsg,
+            severity: 'error',
+            sticky: true,
+            category: 'storage',
+            canOpenDiagnostics: false,
+          });
+        }
+        return;
       }
+      if (resumed.incomingOps.length > 0) {
+        await ctx.onImportDeltaOperations(resumed.incomingOps);
+      }
+      clearPausedBackgroundJob('directory_sync');
       setSyncFeedback(
-        `Synced folder "${res.folderName}": read ${res.peerFilesRead} peer delta file(s) and wrote delta_${deviceId}.json.`
+        `Resumed & synced folder "${resumed.folderName}": read ${resumed.peerFilesRead} peer delta file(s) and wrote delta_${ctx.deviceId}.json.`
       );
     } catch (err: any) {
-      if (err?.name !== 'AbortError') {
-        setImportError(err?.message || 'Local folder sync could not complete.');
+      if (err instanceof BackgroundPausedError) {
+        registerPausedBackgroundJob({
+          taskId: 'directory_sync',
+          label: 'Folder Sync',
+          pausedAtMs: Date.now(),
+          severity: err.severityIssue ? 'severity' : 'minor',
+          severityReason: err.severityIssue ?? undefined,
+          resumeHandler: () => executeResumeDirectorySync(Boolean(err.severityIssue)),
+        });
+        emitAsyncErrorToast({
+          title: 'Folder Sync Paused',
+          detail: err.checkpointSummary || err.message,
+          severity: err.severityIssue ? 'error' : 'warning',
+          sticky: Boolean(err.severityIssue),
+          category: 'lifecycle',
+          canOpenDiagnostics: Boolean(err.severityIssue),
+        });
+      } else {
+        const msg = err?.message || 'Folder sync failed to resume.';
+        registerPausedBackgroundJob({
+          taskId: 'directory_sync',
+          label: 'Folder Sync',
+          pausedAtMs: Date.now(),
+          severity: 'severity',
+          severityReason: msg,
+          resumeHandler: () => executeResumeDirectorySync(false),
+        });
+        emitAsyncErrorToast({
+          title: 'Folder Sync Resume Failed',
+          detail: msg,
+          severity: 'error',
+          sticky: true,
+          category: 'storage',
+        });
+        setImportError(msg);
       }
     } finally {
       setFolderSyncBusy(false);
     }
+  }, []);
+
+  const handleDirectorySync = async () => {
+    await folderSyncLock.runLocked(async () => {
+      setImportError(null);
+      setSyncFeedback(null);
+      setFolderSyncBusy(true);
+      try {
+        const exportSnapshot =
+          activeDeviceTier === 1
+            ? stripPhotoDataUrlsFromSnapshot(snapshot)
+            : onHydrateSnapshotForExport
+            ? await onHydrateSnapshotForExport(snapshot)
+            : snapshot;
+        const res = await syncWithPickedDirectory({
+          deviceId,
+          localOperations: syncOperations,
+          masterBackupJson: exportBarnBackupJson(exportSnapshot),
+        });
+        if (res.incomingOps.length > 0) {
+          await onImportDeltaOperations(res.incomingOps);
+        }
+        clearPausedBackgroundJob('directory_sync');
+        setSyncFeedback(
+          `Synced folder "${res.folderName}": read ${res.peerFilesRead} peer delta file(s) and wrote delta_${deviceId}.json.`
+        );
+      } catch (err: any) {
+        if (err instanceof BackgroundPausedError) {
+          const hasSeverity = Boolean(err.severityIssue);
+          registerPausedBackgroundJob({
+            taskId: 'directory_sync',
+            label: 'Folder Sync',
+            pausedAtMs: Date.now(),
+            severity: hasSeverity ? 'severity' : 'minor',
+            severityReason: err.severityIssue ?? undefined,
+            resumeHandler: () => executeResumeDirectorySync(hasSeverity),
+          });
+          setSyncFeedback(
+            hasSeverity
+              ? err.message
+              : 'Folder sync paused cleanly when app moved to background and will auto-resume when you return.'
+          );
+          emitAsyncErrorToast({
+            title: 'Folder Sync Paused',
+            detail: err.checkpointSummary || err.message,
+            severity: hasSeverity ? 'error' : 'warning',
+            sticky: hasSeverity,
+            category: 'lifecycle',
+            canOpenDiagnostics: hasSeverity,
+          });
+        } else if (err?.name !== 'AbortError') {
+          setImportError(err?.message || 'Local folder sync could not complete.');
+        }
+      } finally {
+        setFolderSyncBusy(false);
+      }
+    });
   };
 
   const handleDownloadSqlite = async () => {
-    const bytes = await onExportSqliteBytes();
-    if (!bytes) {
-      setImportError('Raw SQLite binary export is unavailable in fallback mode.');
-      return;
-    }
-    const stamp = formatTimestampedBackupSlug();
-    const filename = `community-pedigree-${stamp}.sqlite`;
-    await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
-    void recordBackupExport('sqlite', filename);
+    await sqliteExportLock.runLocked(async () => {
+      const bytes = await onExportSqliteBytes();
+      if (!bytes) {
+        setImportError('Raw SQLite binary export is unavailable in fallback mode.');
+        return;
+      }
+      const stamp = formatTimestampedBackupSlug();
+      const filename = `community-pedigree-${stamp}.sqlite`;
+      await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
+      void recordBackupExport('sqlite', filename);
+    });
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -1820,6 +2003,7 @@ export function SettingsAndSyncScreen({
             {syncFeedback && (
               <div
                 role="status"
+                aria-live="polite"
                 className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
               >
                 {syncFeedback}
@@ -1834,24 +2018,32 @@ export function SettingsAndSyncScreen({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <button
                 type="button"
-                onClick={async () => {
-                  const delta = onBuildLocalDeltaJson();
-                  const mode = await shareOrDownloadFile({
-                    filename: delta.filename,
-                    content: delta.content,
-                    mimeType: 'application/json',
-                    title: 'Community Pedigree Worker Delta Log',
-                  });
-                  setSyncFeedback(
-                    mode === 'shared'
-                      ? `Shared ${delta.filename} via native share sheet.`
-                      : `Downloaded ${delta.filename} for SyncThing / local sharing.`
-                  );
-                }}
-                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                disabled={deltaShareLock.isSubmitting}
+                aria-busy={deltaShareLock.isSubmitting}
+                onClick={() =>
+                  void deltaShareLock.runLocked(async () => {
+                    const delta = onBuildLocalDeltaJson();
+                    const mode = await shareOrDownloadFile({
+                      filename: delta.filename,
+                      content: delta.content,
+                      mimeType: 'application/json',
+                      title: 'Community Pedigree Worker Delta Log',
+                    });
+                    setSyncFeedback(
+                      mode === 'shared'
+                        ? `Shared ${delta.filename} via native share sheet.`
+                        : `Downloaded ${delta.filename} for SyncThing / local sharing.`
+                    );
+                  })
+                }
+                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-65"
               >
-                <Share2 className="w-4 h-4" aria-hidden="true" />
-                Share / Export Worker Delta
+                {deltaShareLock.isSubmitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Share2 className="w-4 h-4" aria-hidden="true" />
+                )}
+                {deltaShareLock.isSubmitting ? 'Preparing Delta...' : 'Share / Export Worker Delta'}
               </button>
 
               <input
@@ -1867,16 +2059,25 @@ export function SettingsAndSyncScreen({
               />
               <button
                 type="button"
+                disabled={deltaUploadLock.isSubmitting}
+                aria-busy={deltaUploadLock.isSubmitting}
                 onClick={() => deltaImportRef.current?.click()}
-                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-65"
               >
-                <Upload className="w-4 h-4" aria-hidden="true" />
-                Merge Peer Delta Files (.JSON)
+                {deltaUploadLock.isSubmitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="w-4 h-4" aria-hidden="true" />
+                )}
+                {deltaUploadLock.isSubmitting
+                  ? 'Merging Deltas...'
+                  : 'Merge Peer Delta Files (.JSON)'}
               </button>
 
               <button
                 type="button"
-                disabled={folderSyncBusy || !dirPickerSupported}
+                disabled={folderSyncBusy || folderSyncLock.isSubmitting || !dirPickerSupported}
+                aria-busy={folderSyncBusy || folderSyncLock.isSubmitting}
                 aria-describedby={!dirPickerSupported ? `${baseId}-dirpicker-reason` : undefined}
                 onClick={() => void handleDirectorySync()}
                 className={`sm:col-span-2 min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
@@ -1885,8 +2086,12 @@ export function SettingsAndSyncScreen({
                     : 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-60 cursor-not-allowed'
                 }`}
               >
-                <FolderSync className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
-                {folderSyncBusy
+                {folderSyncBusy || folderSyncLock.isSubmitting ? (
+                  <Loader2 className="w-4 h-4 text-[var(--barn-sage)] animate-spin" aria-hidden="true" />
+                ) : (
+                  <FolderSync className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                )}
+                {folderSyncBusy || folderSyncLock.isSubmitting
                   ? 'Syncing Local Folder...'
                   : 'Sync Directly With Local SyncThing / Shared Folder'}
               </button>
@@ -1937,22 +2142,37 @@ export function SettingsAndSyncScreen({
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => void onResolveSyncConflict(c.conflict_id, 'winning')}
-                            className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
+                            onClick={() =>
+                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
+                                onResolveSyncConflict(c.conflict_id, 'winning')
+                              )
+                            }
+                            className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-60"
                           >
                             Keep Applied
                           </button>
                           <button
                             type="button"
-                            onClick={() => void onResolveSyncConflict(c.conflict_id, 'losing')}
-                            className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
+                            onClick={() =>
+                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
+                                onResolveSyncConflict(c.conflict_id, 'losing')
+                              )
+                            }
+                            className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60"
                           >
                             Use Alternate
                           </button>
                           <button
                             type="button"
-                            onClick={() => void onDismissSyncConflict(c.conflict_id)}
-                            className="min-h-[30px] px-2 py-1 text-[11px] text-[var(--barn-muted)] underline"
+                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
+                            onClick={() =>
+                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
+                                onDismissSyncConflict(c.conflict_id)
+                              )
+                            }
+                            className="min-h-[30px] px-2 py-1 text-[11px] text-[var(--barn-muted)] underline disabled:opacity-60"
                           >
                             Dismiss
                           </button>
@@ -2021,6 +2241,7 @@ export function SettingsAndSyncScreen({
             {portabilityFeedback && !importError && (
               <div
                 role="status"
+                aria-live="polite"
                 className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
               >
                 {portabilityFeedback}
@@ -2054,7 +2275,7 @@ export function SettingsAndSyncScreen({
                       ? 'Add photos to any animal first to export a photo folder archive'
                       : 'Download all animal images organized into species & animal folders (.ZIP)'
                   }
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:pointer-events-none inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Images className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
                   {zipExportBusy === 'photos'
@@ -2064,17 +2285,22 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  disabled={isSqliteUnavailable}
+                  disabled={isSqliteUnavailable || sqliteExportLock.isSubmitting}
+                  aria-busy={sqliteExportLock.isSubmitting}
                   aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
-                  onClick={handleDownloadSqlite}
+                  onClick={() => void handleDownloadSqlite()}
                   className={`min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     isSqliteUnavailable
                       ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
-                      : 'hover:bg-[var(--barn-subtle)]'
+                      : 'hover:bg-[var(--barn-subtle)] disabled:opacity-60'
                   }`}
                 >
-                  <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Download Raw .SQLITE DB
+                  {sqliteExportLock.isSubmitting ? (
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  )}
+                  {sqliteExportLock.isSubmitting ? 'Exporting .SQLITE...' : 'Download Raw .SQLITE DB'}
                 </button>
 
                 <button
@@ -2091,26 +2317,68 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  onClick={handleExportCsv}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  disabled={zipExportBusy !== null}
+                  onClick={() => void handleDownloadDatabaseOnlyBackup()}
+                  title="Saves all herd, pedigree, breeding, and care logs as compact .JSON without loading full-resolution photos into memory"
+                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
-                  <FileSpreadsheet className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  Export CSV
+                  <Database className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  {zipExportBusy === 'json-light'
+                    ? 'Preparing Records (.JSON)...'
+                    : 'Database Only (.JSON, Skip Photos)'}
                 </button>
 
                 <button
                   type="button"
-                  onClick={() =>
-                    downloadTextFile(
-                      `barn-pdf-report-dto-${stamp}.json`,
-                      JSON.stringify(buildPdfReadyBarnSnapshot(snapshot, activeSpeciesName), null, 2),
-                      'application/json'
-                    )
-                  }
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  disabled={csvExportLock.isSubmitting}
+                  aria-busy={csvExportLock.isSubmitting}
+                  onClick={() => void handleExportCsv()}
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-60"
                 >
-                  <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Export {activeSpeciesName} Report (.JSON)
+                  {csvExportLock.isSubmitting ? (
+                    <Loader2 className="w-4 h-4 text-[var(--barn-sage)] shrink-0 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <FileSpreadsheet className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  )}
+                  {csvExportLock.isSubmitting ? 'Exporting CSV...' : 'Export CSV'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={reportExportLock.isSubmitting}
+                  aria-busy={reportExportLock.isSubmitting}
+                  onClick={() =>
+                    void reportExportLock.runLocked(async () => {
+                      setImportError(null);
+                      try {
+                        const reportFilename = `barn-pdf-report-dto-${stamp}.json`;
+                        await downloadTextFile(
+                          reportFilename,
+                          JSON.stringify(
+                            buildPdfReadyBarnSnapshot(snapshot, activeSpeciesName),
+                            null,
+                            2
+                          ),
+                          'application/json'
+                        );
+                        setPortabilityFeedback(`Downloaded ${reportFilename}.`);
+                      } catch (err) {
+                        setImportError(
+                          err instanceof Error ? err.message : 'Report JSON export failed.'
+                        );
+                      }
+                    })
+                  }
+                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-60"
+                >
+                  {reportExportLock.isSubmitting ? (
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  )}
+                  {reportExportLock.isSubmitting
+                    ? 'Preparing Report...'
+                    : `Export ${activeSpeciesName} Report (.JSON)`}
                 </button>
               </div>
 
@@ -2146,16 +2414,26 @@ export function SettingsAndSyncScreen({
                       type="button"
                       onClick={() => {
                         setPendingHeavyZipExport(null);
+                        void handleDownloadDatabaseOnlyBackup();
+                      }}
+                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+                    >
+                      Database Only (.JSON, Skip Photos)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingHeavyZipExport(null);
                         void handleDownloadTimestampedFullBackup();
                       }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold"
                     >
-                      Download .JSON Backup Instead
+                      Full .JSON Backup (With Photos)
                     </button>
                     <button
                       type="button"
                       onClick={() => setPendingHeavyZipExport(null)}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                     >
                       Cancel
                     </button>
@@ -2382,18 +2660,28 @@ export function SettingsAndSyncScreen({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      onClearAllRecords();
-                      setConfirmGlobalDeleteAll(false);
-                    }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold whitespace-nowrap"
+                    disabled={destructiveResetLock.isSubmitting}
+                    aria-busy={destructiveResetLock.isSubmitting}
+                    onClick={() =>
+                      void destructiveResetLock.runLocked(async () => {
+                        await onClearAllRecords();
+                        setConfirmGlobalDeleteAll(false);
+                      })
+                    }
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
                   >
-                    Confirm Delete All Animal Data
+                    {destructiveResetLock.isSubmitting && (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                    )}
+                    {destructiveResetLock.isSubmitting
+                      ? 'Deleting...'
+                      : 'Confirm Delete All Animal Data'}
                   </button>
                   <button
                     type="button"
+                    disabled={destructiveResetLock.isSubmitting}
                     onClick={() => setConfirmGlobalDeleteAll(false)}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs"
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs disabled:opacity-50"
                   >
                     Cancel
                   </button>
@@ -2452,18 +2740,28 @@ export function SettingsAndSyncScreen({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      onRestoreFactoryDefaults();
-                      setConfirmFactoryRestore(false);
-                    }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold whitespace-nowrap"
+                    disabled={destructiveResetLock.isSubmitting}
+                    aria-busy={destructiveResetLock.isSubmitting}
+                    onClick={() =>
+                      void destructiveResetLock.runLocked(async () => {
+                        await onRestoreFactoryDefaults();
+                        setConfirmFactoryRestore(false);
+                      })
+                    }
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
                   >
-                    Confirm Factory Restore
+                    {destructiveResetLock.isSubmitting && (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                    )}
+                    {destructiveResetLock.isSubmitting
+                      ? 'Restoring...'
+                      : 'Confirm Factory Restore'}
                   </button>
                   <button
                     type="button"
+                    disabled={destructiveResetLock.isSubmitting}
                     onClick={() => setConfirmFactoryRestore(false)}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs"
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs disabled:opacity-50"
                   >
                     Cancel
                   </button>
@@ -2477,8 +2775,11 @@ export function SettingsAndSyncScreen({
               </span>
               <button
                 type="button"
-                onClick={onSeedAllSpecies}
-                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap shrink-0"
+                disabled={destructiveResetLock.isSubmitting}
+                onClick={() =>
+                  void destructiveResetLock.runLocked(() => onSeedAllSpecies())
+                }
+                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap shrink-0 disabled:opacity-55"
               >
                 Reload 9 Sample Herds Only
               </button>

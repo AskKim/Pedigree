@@ -48,7 +48,7 @@ export default defineConfig(() => {
       tailwindcss(),
       devServiceWorkerCleanupPlugin(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
@@ -90,6 +90,8 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          navigateFallback: 'index.html',
+          navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,
@@ -129,8 +131,8 @@ export default defineConfig(() => {
       ],
     },
     build: {
-      target: ['es2020', 'chrome80', 'safari14', 'firefox80', 'edge80'],
-      cssTarget: ['chrome80', 'safari14', 'firefox80', 'edge80'],
+      target: ['es2018', 'chrome68', 'safari12', 'firefox63', 'edge79'],
+      cssTarget: ['chrome68', 'safari12', 'firefox63', 'edge79'],
     },
     worker: {
       format: 'es' as const,

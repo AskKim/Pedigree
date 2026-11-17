@@ -980,34 +980,54 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
   },
   {
     id: 'IMP-019',
-    title: 'ES2020 Compatibility Build, Pre-Flight Guard, Tier 1 .ZIP Gate & Graceful Fallbacks',
+    title: 'ES2018 Compatibility Build, Crash-Loop Circuit Breaker, Manual SW Update & Graceful Fallbacks',
     category: 'stability-pwa',
     source: 'session',
     summary:
-      'Downlevels TS/Vite build to ES2020 without legacy polyfill bloat, runs an ES5 pre-flight guard in index.html (blocking missing Promise/fetch/IDB cleanly while allowing IndexedDB JSON boot without WASM), prompts Tier 1/outdated browsers with .JSON backup advice before heavy .ZIP exports, and keeps unsupported optional controls visible in disabled state with clear reason text.',
+      'Downlevels TS/Vite build to ES2018 (2018+ devices: Chrome 68+/Safari 12+/Firefox 63+/Edge 79+) with minimal zero-bloat shims, runs an ES5 pre-flight + 3-in-60s crash-loop circuit breaker & ?emergency_reset=true hatch in index.html, switches SW updates to a manual prompt gate with controllerchange handshake and open-modal deferral, offers lightweight Database-Only .JSON backups on Tier 1/2, windows large report/care-log lists, and keeps unsupported optional controls visible with clear disabled reasons.',
     userIntent:
-      'Support older browser versions gracefully without code bloat, fail politely on blocked features, and keep unavailable controls visible with clear explanation text.',
+      'Support 2018+ browsers gracefully without polyfill bloat, break reload/crash loops cleanly, defer PWA updates while editing, offer low-memory DB-only exports, and keep unavailable controls visible with explanation text.',
     files: [
       'tsconfig.json',
       'vite.config.ts',
       'index.html',
       'src/main.tsx',
+      'src/utils/es2018Shims.ts',
+      'src/storage/pwaUpdateManager.ts',
       'src/core/deviceCapability.ts',
       'src/storage/deviceCapabilityDetector.ts',
       'src/utils/webFileActions.ts',
       'src/components/UnifiedBackupVaultPanel.tsx',
       'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/PrintPreviewModal.tsx',
+      'src/App.tsx',
     ],
     invariants: [
       {
         filePath: 'vite.config.ts',
-        requiredSubstrings: ['es2020', 'safari14', 'cssTarget'],
-        rationale: 'Vite build must target ES2020 / Safari 14+ without heavy polyfill bloat.',
+        requiredSubstrings: ['es2018', 'safari12', 'cssTarget', "registerType: 'prompt'"],
+        rationale: 'Vite build must target ES2018 / Safari 12+ (2018+ browsers) with manual prompt SW activation.',
       },
       {
         filePath: 'index.html',
-        requiredSubstrings: ['__PEDIGREE_PREFLIGHT__', 'pedigree-preflight-guard', '__PEDIGREE_BOOT_OK__'],
-        rationale: 'ES5 pre-flight guard and module boot watchdog must prevent blank screens on unsupported browsers.',
+        requiredSubstrings: [
+          '__PEDIGREE_PREFLIGHT__',
+          'pedigree-preflight-guard',
+          '__PEDIGREE_BOOT_OK__',
+          'emergency_reset=true',
+          '__PEDIGREE_RECORD_BOOT_CRASH__',
+        ],
+        rationale: 'ES5 pre-flight guard, 3-in-60s crash-loop circuit breaker, and ?emergency_reset=true recovery hatch must remain intact.',
+      },
+      {
+        filePath: 'src/utils/es2018Shims.ts',
+        requiredSubstrings: ['ensureEs2018Globals', 'allSettled', 'fromEntries'],
+        rationale: 'Zero-bloat ES2018 runtime shims prevent missing globalThis/allSettled/fromEntries crashes on 2018 browsers.',
+      },
+      {
+        filePath: 'src/storage/pwaUpdateManager.ts',
+        requiredSubstrings: ['usePwaUpdateStatus', 'controllerchange', 'applyPwaUpdateNow'],
+        rationale: 'Manual Service Worker update gate and single-reload controllerchange handshake must remain intact.',
       },
       {
         filePath: 'src/core/deviceCapability.ts',
@@ -1021,14 +1041,131 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
       {
         filePath: 'src/components/SettingsAndSyncScreen.tsx',
-        requiredSubstrings: ['pendingHeavyZipExport', 'heavyZipGate'],
-        rationale: 'Heavy .ZIP exports must warn Tier 1/outdated browsers and recommend .JSON fallback.',
+        requiredSubstrings: ['pendingHeavyZipExport', 'heavyZipGate', 'handleDownloadDatabaseOnlyBackup'],
+        rationale: 'Heavy .ZIP exports must warn Tier 1/outdated browsers and offer Database-Only .JSON fallback without photo hydration.',
       },
     ],
     restorePlaybook: [
-      'Keep ES2020 target in `tsconfig.json` and `vite.config.ts` plus ES5 inline guard in `index.html`.',
+      'Keep ES2018 target in `tsconfig.json` and `vite.config.ts` (`safari12`, `registerType: "prompt"`) plus ES5 guard, circuit breaker, and `?emergency_reset=true` in `index.html`.',
+      'Keep `src/utils/es2018Shims.ts` imported first in `src/main.tsx` alongside `src/storage/pwaUpdateManager.ts`.',
       'Keep `assessBrowserCompatibility` and `getHeavyZipExportGate` in `src/core/deviceCapability.ts` and hook probes in `src/storage/deviceCapabilityDetector.ts`.',
-      'Keep disabled-with-reason UI controls and `.ZIP` caution prompts in `UnifiedBackupVaultPanel.tsx`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `App.tsx`.',
+      'Keep disabled-with-reason UI controls (`Share .HTM` in `PrintPreviewModal.tsx`, Storage Vault, Settings), Database-Only `.JSON` export, table/care-log windowing, and open-dialog PWA update deferral in `App.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-020',
+    title: 'Mobile Background Freeze Pause/Resume, Double-Submit Guards & Async Error Toast',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Cooperatively pauses & checkpoints active Folder Sync / idle vault tasks on mobile background freeze (`visibilityState === "hidden"`), auto-resumes clean pauses on foreground return while keeping severity/permission faults sticky, adds bounded `sessionStorage` emergency crash traces (`pedigree_emergency_trace_v1`) + deduplicated `AsyncErrorToastHost` notifications for uncaught rejections/persistence errors, serializes `useBarnStore` mutations via a FIFO write queue (`enqueueStoreMutation`), and enforces synchronous `ref` + React submit locks (`useAsyncSubmitLock`, `useAsyncKeyedLock`) across primary forms, sync actions, and inline toggles.',
+    userIntent:
+      'Prevent mid-batch IndexedDB corruption on iOS/Android background freeze, stop rapid-tap duplicate submits while holding unsaved form notes on write failures, and surface gentle non-blocking recovery toasts for uncaught async errors.',
+    files: [
+      'src/storage/backgroundFreezeCoordinator.ts',
+      'src/storage/crashLogger.ts',
+      'src/storage/localSyncChannels.ts',
+      'src/utils/useAsyncSubmitLock.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/AsyncErrorToastHost.tsx',
+      'src/components/AnimalEditorModal.tsx',
+      'src/components/BreedingScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/components/SpeciesEditorModal.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/DiagnosticsAndSupportPanel.tsx',
+      'src/App.tsx',
+      'src/utils/__tests__/asyncSubmitLock.test.ts',
+      'src/storage/__tests__/backgroundFreezeAndToast.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/storage/backgroundFreezeCoordinator.ts',
+        requiredSubstrings: [
+          'BackgroundPausedError',
+          'notifyBackgroundTransition',
+          'registerPausedBackgroundJob',
+          'registerFreezeLifecycleListener',
+        ],
+        rationale:
+          'Single-source background freeze coordinator must manage cooperative pauses, auto-resume clean tasks, and hold severity tasks until acknowledged.',
+      },
+      {
+        filePath: 'src/storage/crashLogger.ts',
+        requiredSubstrings: [
+          'EMERGENCY_SESSION_TRACE_KEY',
+          'emitAsyncErrorToast',
+          'handleUnhandledRejectionReason',
+          'notifyBackgroundTransition',
+        ],
+        rationale:
+          'Uncaught rejections and QuotaExceeded writes must fall back to bounded sessionStorage emergency traces and emit deduplicated non-blocking error toasts.',
+      },
+      {
+        filePath: 'src/storage/localSyncChannels.ts',
+        requiredSubstrings: [
+          'withSyncIdb',
+          'sync_checkpoints',
+          'BackgroundPausedError',
+          'resumePersistedDirectorySyncIfGranted',
+        ],
+        rationale:
+          'Folder Sync must close IDB handles deterministically on abort, checkpoint progress on hide, and support foreground resume.',
+      },
+      {
+        filePath: 'src/utils/useAsyncSubmitLock.ts',
+        requiredSubstrings: [
+          'createAsyncLockController',
+          'createAsyncKeyedLockController',
+          'useAsyncSubmitLock',
+          'useAsyncKeyedLock',
+        ],
+        rationale:
+          'Synchronous ref-based double-submit locks must gate same-frame double taps and always unlock in finally.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'enqueueStoreMutation',
+          'registerFreezeLifecycleListener',
+          'emitAsyncErrorToast',
+        ],
+        rationale:
+          'Store mutations must run sequentially without interleaving outbox/SQLite writes and surface storage errors without dropping typed form inputs.',
+      },
+      {
+        filePath: 'src/components/AsyncErrorToastHost.tsx',
+        requiredSubstrings: ['subscribeAsyncErrorToasts', 'subscribePausedBackgroundJobs', 'Tap to Resume'],
+        rationale:
+          'Global non-blocking toast stack must render auto-dismissing minor notices, sticky error alerts, and severity-only Tap to Resume controls.',
+      },
+      {
+        filePath: 'src/components/AnimalEditorModal.tsx',
+        requiredSubstrings: ['useAsyncSubmitLock'],
+        rationale: 'Animal editor modal Save/Delete actions must prevent rapid double-tap duplicate animals.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: ['breedingSubmitLock', 'outcomeSubmitLock'],
+        rationale: 'Breeding Log and Outcome forms must block rapid double-submits and hold entered fields on storage error.',
+      },
+      {
+        filePath: 'src/components/HerdScreen.tsx',
+        requiredSubstrings: ['careLogSubmitLock', 'inlineAnimalLock'],
+        rationale: 'Care log form and inline quick animal actions must prevent duplicate writes cleanly.',
+      },
+      {
+        filePath: 'src/components/SpeciesDashboardScreen.tsx',
+        requiredSubstrings: ['taskSubmitLock', 'taskToggleLock'],
+        rationale: 'Species hub chore/cage/show forms and silent per-row chore toggles must prevent rapid double-tap races.',
+      },
+    ],
+    restorePlaybook: [
+      'Restore `src/storage/backgroundFreezeCoordinator.ts` and hook `notifyBackgroundTransition` inside `src/storage/crashLogger.ts`.',
+      'Preserve `writeEmergencySessionTraceSync`, `emitAsyncErrorToast`, and `handleUnhandledRejectionReason` in `src/storage/crashLogger.ts` and mount `<AsyncErrorToastHost />` in `src/App.tsx`.',
+      'Keep `withSyncIdb`, `sync_checkpoints` (IDB v3), `BackgroundPausedError`, and `resumePersistedDirectorySyncIfGranted` in `src/storage/localSyncChannels.ts` wired into `SettingsAndSyncScreen.tsx`.',
+      'Keep `enqueueStoreMutation` + boolean/id Promise returns in `src/hooks/useBarnStore.ts` and `useAsyncSubmitLock` / `useAsyncKeyedLock` guards in `App.tsx`, `AnimalEditorModal.tsx`, `BreedingScreen.tsx`, `HerdScreen.tsx`, `SpeciesDashboardScreen.tsx`, `SpeciesEditorModal.tsx`, `SettingsAndSyncScreen.tsx`, and `DiagnosticsAndSupportPanel.tsx`.',
     ],
   },
 ];

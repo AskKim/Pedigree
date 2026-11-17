@@ -21,7 +21,6 @@ import {
 import React from 'react';
 import { BarnDatabaseSnapshot } from '../core/models';
 import {
-  buildSupportBundleZipArchive,
   buildSupportMailtoHref,
   formatSupportReportText,
 } from '../core/supportBundle';
@@ -33,6 +32,7 @@ import {
   listDiagnosticLogs,
   recordReactCrash,
 } from '../storage/crashLogger';
+import { buildSupportBundleZipOffThread } from '../storage/offThreadWorkerClient';
 import {
   listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
@@ -65,10 +65,12 @@ interface CrashErrorBoundaryState {
   } | null;
 }
 
-async function loadBestAvailableSnapshotForSupport(): Promise<BarnDatabaseSnapshot | null> {
+async function loadBestAvailableSnapshotForSupport(
+  includePhotos: boolean
+): Promise<BarnDatabaseSnapshot | null> {
   try {
     const adapter = new WebSqliteAdapter();
-    const initPromise = adapter.initialize();
+    const initPromise = adapter.initialize({ lightweightPhotos: !includePhotos });
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Support snapshot adapter init timeout')), 8000)
     );
@@ -120,6 +122,9 @@ export class CrashErrorBoundary extends React.Component<
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     const compStack = info.componentStack || '';
     recordReactCrash(error, compStack);
+    if (typeof window !== 'undefined') {
+      window.__PEDIGREE_RECORD_BOOT_CRASH__?.();
+    }
     this.setState({ componentStack: compStack });
   }
 
@@ -128,10 +133,10 @@ export class CrashErrorBoundary extends React.Component<
     try {
       const entries = await listDiagnosticLogs();
       const summary = await getDiagnosticSummary(entries);
-      const snapshot = await loadBestAvailableSnapshotForSupport();
+      const snapshot = await loadBestAvailableSnapshotForSupport(false);
       const report = formatSupportReportText(entries, summary, snapshot);
       const filename = `pedigree-crash-logs-${formatTimestampedBackupSlug()}.txt`;
-      downloadTextFile(filename, report, 'text/plain');
+      await downloadTextFile(filename, report, 'text/plain');
       this.setState({
         busy: false,
         feedback: `Downloaded ${filename} (${entries.length} log entries + current app state).`,
@@ -150,10 +155,10 @@ export class CrashErrorBoundary extends React.Component<
       const entries = await listDiagnosticLogs();
       const summary = await getDiagnosticSummary(entries);
       const snapshot = this.state.includeData
-        ? await loadBestAvailableSnapshotForSupport()
+        ? await loadBestAvailableSnapshotForSupport(this.state.includePhotos)
         : null;
 
-      const built = buildSupportBundleZipArchive({
+      const built = await buildSupportBundleZipOffThread({
         entries,
         summary,
         snapshot,
@@ -258,13 +263,18 @@ export class CrashErrorBoundary extends React.Component<
             )}
             <button
               type="button"
+              aria-expanded={showDetails}
+              aria-controls="crash-technical-details"
               onClick={() => this.setState((s) => ({ showDetails: !s.showDetails }))}
-              className="underline text-[11px] text-[var(--barn-muted,#63584a)]"
+              className="min-h-[44px] sm:min-h-[28px] py-1 underline text-[11px] text-[var(--barn-muted,#63584a)] inline-flex items-center"
             >
               {showDetails ? 'Hide technical details' : 'Show stack trace & component details'}
             </button>
             {showDetails && (
-              <pre className="mt-2 p-2.5 rounded-lg bg-black/5 text-[10px] font-mono overflow-x-auto max-h-44 whitespace-pre-wrap break-words">
+              <pre
+                id="crash-technical-details"
+                className="mt-2 p-2.5 rounded-lg bg-black/5 text-[10px] font-mono overflow-x-auto max-h-44 whitespace-pre-wrap break-words"
+              >
                 {[error?.stack, componentStack].filter(Boolean).join('\n\n')}
               </pre>
             )}
@@ -302,12 +312,12 @@ export class CrashErrorBoundary extends React.Component<
                 try {
                   await purgeStaleBrowserCaches();
                 } finally {
-                  window.location.reload();
+                  window.location.href = `${window.location.pathname}?emergency_reset=true`;
                 }
               }}
               className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border,#cfc0a8)] text-xs font-medium inline-flex items-center gap-1.5 disabled:opacity-50"
             >
-              Purge Caches &amp; Reload
+              Purge Caches &amp; Safe Reset
             </button>
           </div>
 

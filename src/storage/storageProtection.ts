@@ -266,41 +266,47 @@ export async function saveRollingSnapshotBackup(
       snapshot: targetSnapshot,
     };
     const db = await openRollingIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
-      const store = tx.objectStore(ROLLING_STORE_NAME);
-      store.put(entry);
-
-      const metas: Array<{ key: string; savedAtIso: string }> = [];
-      const cursorReq = store.openCursor();
-      cursorReq.onsuccess = () => {
-        const cursor = cursorReq.result;
-        if (cursor) {
-          const val = cursor.value as Partial<StoredRollingBackup> | undefined;
-          if (val?.key) {
-            metas.push({
-              key: val.key,
-              savedAtIso: typeof val.savedAtIso === 'string' ? val.savedAtIso : '',
-            });
-          }
-          cursor.continue();
-        } else {
-          metas.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
-          for (let i = maxRollingCap; i < metas.length; i++) {
-            store.delete(metas[i].key);
-          }
-        }
-      };
-
-      tx.oncomplete = () => {
+    const closeDb = () => {
+      try {
         db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+      } catch {
+        // Ignore close failure
+      }
+    };
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
+        const store = tx.objectStore(ROLLING_STORE_NAME);
+        store.put(entry);
+
+        const metas: Array<{ key: string; savedAtIso: string }> = [];
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            const val = cursor.value as Partial<StoredRollingBackup> | undefined;
+            if (val?.key) {
+              metas.push({
+                key: val.key,
+                savedAtIso: typeof val.savedAtIso === 'string' ? val.savedAtIso : '',
+              });
+            }
+            cursor.continue();
+          } else {
+            metas.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
+            for (let i = maxRollingCap; i < metas.length; i++) {
+              store.delete(metas[i].key);
+            }
+          }
+        };
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Rolling backup write aborted'));
+      });
+    } finally {
+      closeDb();
+    }
   } catch (err) {
     logDiagnosticEvent({
       level: 'warn',
@@ -315,42 +321,47 @@ export async function listRollingSnapshotBackups(): Promise<RollingBackupMeta[]>
   if (typeof indexedDB === 'undefined') return [];
   try {
     const db = await openRollingIdb();
-    return await new Promise<RollingBackupMeta[]>((resolve, reject) => {
-      const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
-      const store = tx.objectStore(ROLLING_STORE_NAME);
-      const items: RollingBackupMeta[] = [];
-      const req = store.openCursor();
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (cursor) {
-          const rec = cursor.value as Partial<StoredRollingBackup> | undefined;
-          if (rec && typeof rec.key === 'string') {
-            items.push({
-              key: rec.key,
-              savedAtIso: typeof rec.savedAtIso === 'string' ? rec.savedAtIso : '',
-              animalCount: Number(rec.animalCount) || 0,
-              photoCount:
-                typeof rec.photoCount === 'number'
-                  ? rec.photoCount
-                  : Array.isArray(rec.snapshot?.animalPhotos)
-                  ? rec.snapshot.animalPhotos.length
-                  : 0,
-              speciesCount: Number(rec.speciesCount) || 0,
-              byteSize: Number(rec.byteSize) || 0,
-            });
+    try {
+      return await new Promise<RollingBackupMeta[]>((resolve, reject) => {
+        const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
+        const store = tx.objectStore(ROLLING_STORE_NAME);
+        const items: RollingBackupMeta[] = [];
+        const req = store.openCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            const rec = cursor.value as Partial<StoredRollingBackup> | undefined;
+            if (rec && typeof rec.key === 'string') {
+              items.push({
+                key: rec.key,
+                savedAtIso: typeof rec.savedAtIso === 'string' ? rec.savedAtIso : '',
+                animalCount: Number(rec.animalCount) || 0,
+                photoCount:
+                  typeof rec.photoCount === 'number'
+                    ? rec.photoCount
+                    : Array.isArray(rec.snapshot?.animalPhotos)
+                    ? rec.snapshot.animalPhotos.length
+                    : 0,
+                speciesCount: Number(rec.speciesCount) || 0,
+                byteSize: Number(rec.byteSize) || 0,
+              });
+            }
+            cursor.continue();
+          } else {
+            items.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
+            resolve(items);
           }
-          cursor.continue();
-        } else {
-          db.close();
-          items.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
-          resolve(items);
-        }
-      };
-      req.onerror = () => {
+        };
+        req.onerror = () => reject(req.error);
+        tx.onabort = () => reject(tx.error || new Error('Rolling backup list aborted'));
+      });
+    } finally {
+      try {
         db.close();
-        reject(req.error);
-      };
-    });
+      } catch {
+        // Ignore close failure
+      }
+    }
   } catch {
     return [];
   }
@@ -362,30 +373,35 @@ export async function loadRollingSnapshotBackup(
   if (typeof indexedDB === 'undefined') return null;
   try {
     const db = await openRollingIdb();
-    return await new Promise<BarnDatabaseSnapshot | null>((resolve, reject) => {
-      const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
-      const req = tx.objectStore(ROLLING_STORE_NAME).get(key);
-      req.onsuccess = () => {
+    try {
+      return await new Promise<BarnDatabaseSnapshot | null>((resolve, reject) => {
+        const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
+        const req = tx.objectStore(ROLLING_STORE_NAME).get(key);
+        req.onsuccess = () => {
+          const rec = req.result as StoredRollingBackup | undefined;
+          const snap = rec?.snapshot;
+          if (
+            !snap ||
+            typeof snap !== 'object' ||
+            !snap.settings ||
+            !Array.isArray(snap.animals) ||
+            !Array.isArray(snap.speciesProfiles)
+          ) {
+            resolve(null);
+            return;
+          }
+          resolve(snap);
+        };
+        req.onerror = () => reject(req.error);
+        tx.onabort = () => reject(tx.error || new Error('Rolling backup load aborted'));
+      });
+    } finally {
+      try {
         db.close();
-        const rec = req.result as StoredRollingBackup | undefined;
-        const snap = rec?.snapshot;
-        if (
-          !snap ||
-          typeof snap !== 'object' ||
-          !snap.settings ||
-          !Array.isArray(snap.animals) ||
-          !Array.isArray(snap.speciesProfiles)
-        ) {
-          resolve(null);
-          return;
-        }
-        resolve(snap);
-      };
-      req.onerror = () => {
-        db.close();
-        reject(req.error);
-      };
-    });
+      } catch {
+        // Ignore close failure
+      }
+    }
   } catch {
     return null;
   }
@@ -395,18 +411,21 @@ export async function deleteRollingSnapshotBackup(key: string): Promise<boolean>
   if (typeof indexedDB === 'undefined') return false;
   try {
     const db = await openRollingIdb();
-    return await new Promise<boolean>((resolve, reject) => {
-      const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
-      tx.objectStore(ROLLING_STORE_NAME).delete(key);
-      tx.oncomplete = () => {
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
+        tx.objectStore(ROLLING_STORE_NAME).delete(key);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Rolling backup delete aborted'));
+      });
+    } finally {
+      try {
         db.close();
-        resolve(true);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+      } catch {
+        // Ignore close failure
+      }
+    }
   } catch {
     return false;
   }
@@ -438,10 +457,15 @@ interface BeforeInstallPromptEvent extends Event {
 
 export function isIosBrowser(): boolean {
   if (typeof navigator === 'undefined') return false;
-  return (
-    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-    !(window as unknown as { MSStream?: unknown }).MSStream
-  );
+  const hasMsStream =
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { MSStream?: unknown }).MSStream);
+  const isTraditionalIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !hasMsStream;
+  const isIpadOsDesktopUa =
+    navigator.platform === 'MacIntel' &&
+    typeof navigator.maxTouchPoints === 'number' &&
+    navigator.maxTouchPoints > 1;
+  return isTraditionalIos || isIpadOsDesktopUa;
 }
 
 export function isStandalonePwa(): boolean {

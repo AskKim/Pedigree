@@ -11,11 +11,11 @@
  */
 
 import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
-import { downloadTextFile } from '../utils/webFileActions';
+import { downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 const MIN_PREVIEW_ZOOM = 0.2;
@@ -54,6 +54,7 @@ export function PrintPreviewModal({
   binderArchivedCount = 0,
   onClose,
 }: PrintPreviewModalProps) {
+  const shareReasonId = useId();
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const sizerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -367,8 +368,12 @@ export function PrintPreviewModal({
     cleanupDocListenersRef.current = attachPinchAndWheelListeners(doc, true);
   };
 
-  const handleDownloadHtm = () => {
-    downloadTextFile(filename, htmlContent, 'text/html');
+  const handleDownloadHtm = async () => {
+    try {
+      await downloadTextFile(filename, htmlContent, 'text/html');
+    } catch {
+      // Download error handled safely without unhandled rejection
+    }
   };
 
   const canShareHtml = useMemo(() => {
@@ -384,10 +389,14 @@ export function PrintPreviewModal({
 
   const handleShareHtm = async () => {
     try {
-      const file = new File([htmlContent], filename, { type: 'text/html' });
-      await navigator.share({ title, files: [file] });
+      await shareTextFileOrDownload({
+        filename,
+        content: htmlContent,
+        mimeType: 'text/html',
+        title,
+      });
     } catch {
-      handleDownloadHtm();
+      // Fallback handled cleanly
     }
   };
 
@@ -657,6 +666,30 @@ export function PrintPreviewModal({
               </button>
             </div>
 
+            <button
+              type="button"
+              onClick={handleShareHtm}
+              disabled={!canShareHtml}
+              aria-describedby={!canShareHtml ? shareReasonId : undefined}
+              title={
+                canShareHtml
+                  ? 'Share .HTM file using your device share sheet'
+                  : 'Native file sharing is unavailable in this browser — use Download .HTM instead.'
+              }
+              className={`min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
+                canShareHtml
+                  ? 'hover:bg-[var(--barn-subtle)]'
+                  : 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
+              }`}
+            >
+              <Share2 className="w-4 h-4" aria-hidden="true" />
+              Share .HTM
+            </button>
+            {!canShareHtml && (
+              <span id={shareReasonId} className="sr-only">
+                Native file sharing is unavailable in this browser — use Download .HTM instead.
+              </span>
+            )}
             <button
               type="button"
               onClick={handleDownloadHtm}
@@ -961,16 +994,24 @@ export function PrintPreviewModal({
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-2 sm:shrink-0 pl-6 sm:pl-0">
-              {canShareHtml && (
-                <button
-                  type="button"
-                  onClick={handleShareHtm}
-                  className="min-h-[34px] px-3 py-1 rounded-md bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
-                >
-                  <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  Share .HTM
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={!canShareHtml}
+                onClick={handleShareHtm}
+                title={
+                  canShareHtml
+                    ? 'Share .HTM file using native share sheet'
+                    : 'Native file sharing is unavailable in this browser — use Download .HTM instead.'
+                }
+                className={`min-h-[34px] px-3 py-1 rounded-md text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap ${
+                  canShareHtml
+                    ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+                    : 'border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
+                }`}
+              >
+                <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
+                Share .HTM
+              </button>
               <button
                 type="button"
                 onClick={handleDownloadHtm}
@@ -979,6 +1020,11 @@ export function PrintPreviewModal({
                 <Download className="w-3.5 h-3.5" aria-hidden="true" />
                 Download .HTM
               </button>
+              {!canShareHtml && (
+                <span className="text-[11px] text-[var(--barn-muted)]">
+                  (Share unavailable here — use Download .HTM)
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setPrintBlockedMessage(null)}

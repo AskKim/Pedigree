@@ -83,6 +83,40 @@
         font-weight: 600;
         cursor: pointer;
       }
+      .pedigree-preflight-btn:focus-visible {
+        outline: 2px solid #2d5e3f;
+        outline-offset: 2px;
+      }
+      @media (prefers-color-scheme: dark) {
+        .pedigree-preflight-wrap {
+          background-color: #141814;
+          color: #ede5d6;
+        }
+        .pedigree-preflight-card {
+          background-color: #1c221c;
+          border-color: #344034;
+          box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+        }
+        .pedigree-preflight-badge {
+          background-color: #3d241c;
+          border-color: #c96842;
+          color: #f4b79e;
+        }
+        .pedigree-preflight-title,
+        .pedigree-preflight-list {
+          color: #ede5d6;
+        }
+        .pedigree-preflight-text {
+          color: #c2b8a6;
+        }
+        .pedigree-preflight-btn {
+          background-color: #3a7550;
+          color: #fff8f0;
+        }
+        .pedigree-preflight-btn:focus-visible {
+          outline-color: #88c096;
+        }
+      }
     </style>
   </head>
   <body>
@@ -102,15 +136,251 @@
     <div id="root"></div>
     <script>
       (function () {
+        var CRASH_TS_KEY = 'pedigree_boot_crash_ts';
+        var PENDING_BOOT_KEY = 'pedigree_pending_boot_ts';
+        var CRASH_WINDOW_MS = 60000;
+        var MAX_CRASHES = 3;
+        var bootStartedAt = Date.now();
+
+        function parseTsList(raw) {
+          if (!raw) return [];
+          try {
+            var parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            var out = [];
+            for (var i = 0; i < parsed.length; i++) {
+              if (typeof parsed[i] === 'number' && isFinite(parsed[i])) {
+                out.push(parsed[i]);
+              }
+            }
+            return out;
+          } catch (e) {
+            return [];
+          }
+        }
+
+        function filterRecentTs(list, now) {
+          var kept = [];
+          for (var i = 0; i < list.length; i++) {
+            var age = now - list[i];
+            if (age >= 0 && age <= CRASH_WINDOW_MS) {
+              kept.push(list[i]);
+            }
+          }
+          return kept;
+        }
+
+        function readSessionValue(key) {
+          try {
+            return window.sessionStorage ? window.sessionStorage.getItem(key) : null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function writeSessionValue(key, val) {
+          try {
+            if (!window.sessionStorage) return;
+            if (val === null) {
+              window.sessionStorage.removeItem(key);
+            } else {
+              window.sessionStorage.setItem(key, val);
+            }
+          } catch (e) {
+            // Ignore private/restricted sessionStorage
+          }
+        }
+
+        function purgeSwAndCachesPreservingDb(onDone) {
+          var tasks = [];
+          try {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+              tasks.push(
+                navigator.serviceWorker.getRegistrations().then(function (regs) {
+                  var unreg = [];
+                  for (var i = 0; i < regs.length; i++) {
+                    unreg.push(regs[i].unregister());
+                  }
+                  return Promise.all(unreg);
+                })
+              );
+            }
+          } catch (e) {
+            // Ignore SW error
+          }
+          try {
+            if ('caches' in window && window.caches && window.caches.keys) {
+              tasks.push(
+                window.caches.keys().then(function (keys) {
+                  var dels = [];
+                  for (var i = 0; i < keys.length; i++) {
+                    dels.push(window.caches.delete(keys[i]));
+                  }
+                  return Promise.all(dels);
+                })
+              );
+            }
+          } catch (e) {
+            // Ignore CacheStorage error
+          }
+          if (typeof Promise === 'function' && Promise.all && tasks.length > 0) {
+            Promise.all(tasks).then(
+              function () { if (onDone) onDone(); },
+              function () { if (onDone) onDone(); }
+            );
+          } else if (onDone) {
+            onDone();
+          }
+        }
+
+        window.__PEDIGREE_RECORD_BOOT_CRASH__ = function () {
+          var now = Date.now();
+          if (now - bootStartedAt > CRASH_WINDOW_MS) return;
+          var list = filterRecentTs(parseTsList(readSessionValue(CRASH_TS_KEY)), now);
+          list.push(now);
+          writeSessionValue(CRASH_TS_KEY, JSON.stringify(list));
+        };
+
+        window.__PEDIGREE_MARK_BOOT_STABLE__ = function () {
+          writeSessionValue(CRASH_TS_KEY, null);
+          writeSessionValue(PENDING_BOOT_KEY, null);
+        };
+
+        function escapeHtmlText(text) {
+          return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        }
+
+        function renderNoticeCard(opts) {
+          window.__PEDIGREE_PREFLIGHT_BLOCKED__ = true;
+          var rootEl = document.getElementById('root');
+          if (rootEl) {
+            rootEl.style.display = 'none';
+          }
+          var guardEl = document.getElementById('pedigree-preflight-guard');
+          if (!guardEl) return;
+          guardEl.style.display = 'block';
+
+          var itemsHtml = '';
+          for (var i = 0; i < opts.bullets.length; i++) {
+            itemsHtml += '<li>' + escapeHtmlText(opts.bullets[i]) + '</li>';
+          }
+
+          guardEl.innerHTML =
+            '<div class="pedigree-preflight-wrap" role="alert">' +
+              '<div class="pedigree-preflight-card">' +
+                '<div class="pedigree-preflight-badge">' + escapeHtmlText(opts.badge) + '</div>' +
+                '<h1 class="pedigree-preflight-title">' + escapeHtmlText(opts.title) + '</h1>' +
+                '<p class="pedigree-preflight-text">' + escapeHtmlText(opts.intro) + '</p>' +
+                (itemsHtml ? '<ul class="pedigree-preflight-list">' + itemsHtml + '</ul>' : '') +
+                '<p class="pedigree-preflight-text">' + opts.footerHtml + '</p>' +
+                '<button type="button" class="pedigree-preflight-btn" id="pedigree-preflight-action-btn">' +
+                  escapeHtmlText(opts.buttonLabel) +
+                '</button>' +
+              '</div>' +
+            '</div>';
+
+          var actionBtn = document.getElementById('pedigree-preflight-action-btn');
+          if (actionBtn) {
+            actionBtn.onclick = opts.onAction;
+          }
+        }
+
+        var searchStr = window.location && window.location.search ? String(window.location.search) : '';
+        var isEmergencyReset = /(?:^|[?&])emergency_reset=true(?:&|$)/i.test(searchStr);
+
+        if (isEmergencyReset) {
+          writeSessionValue(CRASH_TS_KEY, null);
+          writeSessionValue(PENDING_BOOT_KEY, null);
+          purgeSwAndCachesPreservingDb(function () {
+            try {
+              if (window.history && window.history.replaceState) {
+                var cleanSearch = searchStr
+                  .replace(/([?&])emergency_reset=true(&|$)/i, function (_m, p1, p2) {
+                    return p2 ? p1 : '';
+                  })
+                  .replace(/[?&]$/, '');
+                var cleanUrl =
+                  window.location.pathname + cleanSearch + (window.location.hash || '');
+                window.history.replaceState(null, '', cleanUrl);
+              }
+            } catch (e) {
+              // Ignore history rewrite error
+            }
+          });
+          renderNoticeCard({
+            badge: 'Emergency Cache Reset',
+            title: 'Offline App Cache & Service Workers Cleared',
+            intro:
+              'Community Pedigree detected ?emergency_reset=true and unregistered cached app workers so fresh scripts can load.',
+            bullets: [
+              'Your IndexedDB / SQLite herd records and animal photos were NOT deleted.',
+              'If an incomplete cached update was looping, launching fresh below will restore clean startup.'
+            ],
+            footerHtml:
+              '<strong>Ready when you are:</strong> Click below to launch Community Pedigree with clean browser caches.',
+            buttonLabel: 'Launch Fresh App',
+            onAction: function () {
+              window.location.href = window.location.pathname + (window.location.hash || '');
+            }
+          });
+          window.__PEDIGREE_PREFLIGHT__ = {
+            passed: false,
+            wasmSupported: false,
+            blockedReasons: ['Emergency cache reset requested via ?emergency_reset=true']
+          };
+          return;
+        }
+
+        var recentCrashes = filterRecentTs(parseTsList(readSessionValue(CRASH_TS_KEY)), bootStartedAt);
+        var pendingBootRaw = readSessionValue(PENDING_BOOT_KEY);
+        if (pendingBootRaw) {
+          var pendingTs = Number(pendingBootRaw);
+          if (isFinite(pendingTs) && bootStartedAt - pendingTs >= 0 && bootStartedAt - pendingTs <= CRASH_WINDOW_MS) {
+            recentCrashes.push(pendingTs);
+            writeSessionValue(CRASH_TS_KEY, JSON.stringify(recentCrashes));
+          }
+        }
+
+        if (recentCrashes.length >= MAX_CRASHES) {
+          writeSessionValue(CRASH_TS_KEY, null);
+          writeSessionValue(PENDING_BOOT_KEY, null);
+          purgeSwAndCachesPreservingDb();
+          renderNoticeCard({
+            badge: 'Startup Recovery Guard',
+            title: 'Crash-Loop Protection Activated',
+            intro:
+              'Community Pedigree detected 3 interrupted startups within 60 seconds and cleared cached Service Worker scripts automatically to break any reload loop.',
+            bullets: [
+              'Your offline IndexedDB herd records and photos remain safely intact.',
+              'Cached offline bundles were purged so the app can fetch clean files.'
+            ],
+            footerHtml:
+              '<strong>Next step:</strong> Reload now, or open <strong>?emergency_reset=true</strong> anytime you need a clean cache reset.',
+            buttonLabel: 'Reload Clean App',
+            onAction: function () {
+              window.location.reload();
+            }
+          });
+          window.__PEDIGREE_PREFLIGHT__ = {
+            passed: false,
+            wasmSupported: false,
+            blockedReasons: ['Startup crash-loop circuit breaker tripped (3 crashes in 60s)']
+          };
+          return;
+        }
+
         var missingCritical = [];
         var wasmSupported = false;
 
         try {
-          if (typeof Promise !== 'function' || typeof Promise.allSettled !== 'function') {
-            missingCritical.push('Modern JavaScript Promises (ES2020)');
+          if (typeof Promise !== 'function') {
+            missingCritical.push('Standard JavaScript Promises (ES2018)');
           }
         } catch (e) {
-          missingCritical.push('Modern JavaScript Promises (ES2020)');
+          missingCritical.push('Standard JavaScript Promises (ES2018)');
         }
 
         try {
@@ -127,13 +397,12 @@
             typeof Set !== 'function' ||
             typeof Array.prototype.find !== 'function' ||
             typeof Object.assign !== 'function' ||
-            typeof Object.fromEntries !== 'function' ||
             typeof TextEncoder !== 'function'
           ) {
-            missingCritical.push('ES2020 standard JavaScript collections & text encoding');
+            missingCritical.push('ES2018 standard JavaScript collections & text encoding');
           }
         } catch (e) {
-          missingCritical.push('ES2020 standard JavaScript features');
+          missingCritical.push('ES2018 standard JavaScript features');
         }
 
         try {
@@ -163,45 +432,25 @@
         }
 
         function renderBlockedNotice(reasons, isWatchdogFallback) {
-          window.__PEDIGREE_PREFLIGHT_BLOCKED__ = true;
-          var rootEl = document.getElementById('root');
-          if (rootEl) {
-            rootEl.style.display = 'none';
-          }
-          var guardEl = document.getElementById('pedigree-preflight-guard');
-          if (!guardEl) return;
-          guardEl.style.display = 'block';
-
-          var itemsHtml = '';
-          for (var i = 0; i < reasons.length; i++) {
-            var safeText = String(reasons[i])
-              .replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;');
-            itemsHtml += '<li>' + safeText + '</li>';
-          }
-
           var heading = isWatchdogFallback
             ? 'This Browser Could Not Finish Loading Community Pedigree'
             : 'Older or Restricted Browser Detected';
           var intro = isWatchdogFallback
             ? 'Your browser appears to be an older version or interrupted loading before the app could start safely.'
-            : 'To protect your herd records from silent data loss, Community Pedigree requires local storage and modern browser features that are unavailable right now:';
-
-          guardEl.innerHTML =
-            '<div class="pedigree-preflight-wrap" role="alert">' +
-              '<div class="pedigree-preflight-card">' +
-                '<div class="pedigree-preflight-badge">Browser Compatibility Check</div>' +
-                '<h1 class="pedigree-preflight-title">' + heading + '</h1>' +
-                '<p class="pedigree-preflight-text">' + intro + '</p>' +
-                '<ul class="pedigree-preflight-list">' + itemsHtml + '</ul>' +
-                '<p class="pedigree-preflight-text">' +
-                  '<strong>How to fix this:</strong> Update to <strong>Chrome 80+</strong>, <strong>Safari 14+</strong>, <strong>Firefox 80+</strong>, or <strong>Edge 80+</strong>. ' +
-                  'If you are already on a newer browser, check that Private/Incognito mode or strict site-storage blocking is not disabling IndexedDB.' +
-                '</p>' +
-                '<button type="button" class="pedigree-preflight-btn" onclick="window.location.reload()">Try Reloading Page</button>' +
-              '</div>' +
-            '</div>';
+            : 'To protect your herd records from silent data loss, Community Pedigree requires local storage and ES2018 browser features that are unavailable right now:';
+          renderNoticeCard({
+            badge: 'Browser Compatibility Check',
+            title: heading,
+            intro: intro,
+            bullets: reasons,
+            footerHtml:
+              '<strong>How to fix this:</strong> Use <strong>Chrome 68+</strong>, <strong>Safari 12+</strong>, <strong>Firefox 63+</strong>, or <strong>Edge 79+</strong> (2018+ browsers). ' +
+              'If you are already on a supported browser, check that Private/Incognito mode is not blocking IndexedDB, or trigger <a href="?emergency_reset=true">?emergency_reset=true</a> to clear stale caches.',
+            buttonLabel: 'Try Reloading Page',
+            onAction: function () {
+              window.location.reload();
+            }
+          });
         }
 
         window.__PEDIGREE_PREFLIGHT__ = {
@@ -215,6 +464,7 @@
           return;
         }
 
+        writeSessionValue(PENDING_BOOT_KEY, String(bootStartedAt));
         window.__PEDIGREE_BOOT_OK__ = false;
 
         var preBootSyntaxHandled = false;

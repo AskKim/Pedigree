@@ -339,34 +339,31 @@ function openIdb(): Promise<IDBDatabase> {
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await openIdb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE_NAME, 'readonly');
-    const req = tx.objectStore(IDB_STORE_NAME).get(key);
-    req.onsuccess = () => {
-      db.close();
-      resolve(req.result as T | undefined);
-    };
-    req.onerror = () => {
-      db.close();
-      reject(req.error);
-    };
-  });
+  try {
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE_NAME, 'readonly');
+      const req = tx.objectStore(IDB_STORE_NAME).get(key);
+      req.onsuccess = () => resolve(req.result as T | undefined);
+      req.onerror = () => reject(req.error);
+      tx.onabort = () =>
+        reject(tx.error || new Error('IndexedDB read transaction aborted.'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 async function idbSet<T>(key: string, value: T): Promise<void> {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openIdb();
+    db = await openIdb();
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+      const tx = db!.transaction(IDB_STORE_NAME, 'readwrite');
       tx.objectStore(IDB_STORE_NAME).put(value, key);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () =>
+        reject(tx.error || new Error('IndexedDB write transaction aborted.'));
     });
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -375,24 +372,25 @@ async function idbSet<T>(key: string, value: T): Promise<void> {
       );
     }
     throw err;
+  } finally {
+    db?.close();
   }
 }
 
 async function idbDelete(key: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   const db = await openIdb();
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
-    tx.objectStore(IDB_STORE_NAME).delete(key);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      resolve();
-    };
-  });
+  try {
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+      tx.objectStore(IDB_STORE_NAME).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } finally {
+    db.close();
+  }
 }
 
 /**

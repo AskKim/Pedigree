@@ -716,6 +716,17 @@ export function PedigreeScreen({
               ))}
             </div>
 
+            {generations >= 5 && (
+              <button
+                type="button"
+                onClick={() => onChangeGenerations(3)}
+                title="Switch back to compact 3-generation view to reduce mobile memory load"
+                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium text-[var(--barn-muted)] whitespace-nowrap"
+              >
+                Use 3-Gen (Lighter)
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setShowPrintModal(true)}

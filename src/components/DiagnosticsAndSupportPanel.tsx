@@ -30,7 +30,7 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
@@ -59,10 +59,12 @@ import {
   listDiagnosticLogs,
   logDiagnosticEvent,
   LogRetentionDays,
+  readEmergencySessionTrace,
   subscribeDiagnosticLogs,
   updateDiagnosticConfig,
 } from '../storage/crashLogger';
 import { getHeavyZipExportGate } from '../core/deviceCapability';
+import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import {
   copyTextWithFallback,
   downloadBinaryFile,
@@ -110,11 +112,16 @@ export function DiagnosticsAndSupportPanel({
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [logFilter, setLogFilter] = useState<LogFilterTab>('all');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const basePanelId = useId();
+  const logViewerId = `${basePanelId}-log-viewer`;
+  const improvementsLogId = `${basePanelId}-improvements-log`;
 
   const [includeDataInBundle, setIncludeDataInBundle] = useState(true);
   const [includePhotosInBundle, setIncludePhotosInBundle] = useState(true);
   const [recipientEmail, setRecipientEmail] = useState('');
-  const [busyAction, setBusyAction] = useState(false);
+  const actionLock = useAsyncSubmitLock();
+  const busyAction = actionLock.isSubmitting;
+  const [emergencyTraceCount, setEmergencyTraceCount] = useState(0);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
   const [improvementsFeedback, setImprovementsFeedback] = useState<string | null>(null);
@@ -141,6 +148,7 @@ export function DiagnosticsAndSupportPanel({
     const list = await listDiagnosticLogs();
     const sum = await getDiagnosticSummary(list);
     setEntries(list);
+    setEmergencyTraceCount(readEmergencySessionTrace().length);
     setSummary(sum);
     setConfig(sum.config);
   }, []);
@@ -220,22 +228,18 @@ export function DiagnosticsAndSupportPanel({
   }, []);
 
   const handleDownloadLogsTxt = async () => {
-    setBusyAction(true);
-    try {
+    await actionLock.runLocked(async () => {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
       const filename = `pedigree-error-logs-${formatTimestampedBackupSlug()}.txt`;
       await downloadTextFile(filename, formatSupportReportText(list, sum, snapshot), 'text/plain');
       setLastBuiltMailMeta(null);
       setFeedback(`Downloaded ${filename} (${list.length} log entries + current app state).`);
-    } finally {
-      setBusyAction(false);
-    }
+    });
   };
 
   const handleDownloadLogsJson = async () => {
-    setBusyAction(true);
-    try {
+    await actionLock.runLocked(async () => {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
       const filename = `pedigree-error-logs-${formatTimestampedBackupSlug()}.json`;
@@ -246,9 +250,7 @@ export function DiagnosticsAndSupportPanel({
       );
       setLastBuiltMailMeta(null);
       setFeedback(`Downloaded ${filename} (${list.length} log entries + current app state).`);
-    } finally {
-      setBusyAction(false);
-    }
+    });
   };
 
   const handleBuildBundle = async (attemptShare: boolean, skipCaution = false) => {
@@ -259,10 +261,10 @@ export function DiagnosticsAndSupportPanel({
       return;
     }
     setPendingHeavyBundleAttemptShare(null);
-    setBusyAction(true);
-    setFeedback(null);
-    setLastBuiltMailMeta(null);
-    try {
+    await actionLock.runLocked(async () => {
+      setFeedback(null);
+      setLastBuiltMailMeta(null);
+      try {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
       const bundleSnapshot =
@@ -335,9 +337,8 @@ export function DiagnosticsAndSupportPanel({
           ? err.message
           : 'Could not build bug report bundle. Try unchecking photos if memory is low.'
       );
-    } finally {
-      setBusyAction(false);
     }
+    });
   };
 
   const handleCopySupportText = async () => {
@@ -431,6 +432,17 @@ export function DiagnosticsAndSupportPanel({
           )}
         </div>
       </div>
+
+      {emergencyTraceCount > 0 && (
+        <div
+          role="status"
+          className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)]"
+        >
+          <strong>Emergency Session Trace Active ({emergencyTraceCount}):</strong> Primary browser storage
+          could not accept one or more crash entries, so compact traces were preserved in{' '}
+          <span className="font-mono">sessionStorage</span> and merged into the log viewer below.
+        </div>
+      )}
 
       {/* Retention Window & Verbose Mode */}
       <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3 text-xs">
@@ -610,6 +622,7 @@ export function DiagnosticsAndSupportPanel({
         {feedback && (
           <div
             role="status"
+            aria-live="polite"
             className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs space-y-2"
           >
             <div>{feedback}</div>
@@ -653,8 +666,9 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             aria-expanded={showLogViewer}
+            aria-controls={logViewerId}
             onClick={() => setShowLogViewer((v) => !v)}
-            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
+            className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
           >
             <Activity className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
             {showLogViewer ? 'Hide Live Diagnostic Logs' : `Inspect Captured Logs (${entries.length})`}
@@ -677,7 +691,7 @@ export function DiagnosticsAndSupportPanel({
                 });
                 void refreshDiagnostics();
               }}
-              className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+              className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
             >
               Test Log
             </button>
@@ -685,7 +699,7 @@ export function DiagnosticsAndSupportPanel({
               type="button"
               disabled={entries.length === 0}
               onClick={() => void clearAllDiagnosticLogs().then(refreshDiagnostics)}
-              className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-40 inline-flex items-center gap-1"
+              className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-40 inline-flex items-center gap-1"
             >
               <Trash2 className="w-3 h-3" aria-hidden="true" />
               Clear Logs
@@ -694,7 +708,10 @@ export function DiagnosticsAndSupportPanel({
         </div>
 
         {showLogViewer && (
-          <div className="space-y-2.5 border border-[var(--barn-border)] rounded-xl p-3 bg-[var(--barn-canvas)]">
+          <div
+            id={logViewerId}
+            className="space-y-2.5 border border-[var(--barn-border)] rounded-xl p-3 bg-[var(--barn-canvas)]"
+          >
             <div className="flex flex-wrap items-center gap-1.5 text-xs">
               {(
                 [
@@ -739,8 +756,9 @@ export function DiagnosticsAndSupportPanel({
                       <button
                         type="button"
                         aria-expanded={isExpanded}
+                        aria-controls={`${basePanelId}-log-${entry.id}`}
                         onClick={() => setExpandedLogId(isExpanded ? null : entry.id)}
-                        className="w-full text-left flex items-start justify-between gap-2"
+                        className="w-full min-h-[44px] sm:min-h-0 py-1 text-left flex items-start justify-between gap-2"
                       >
                         <div className="min-w-0 space-y-0.5">
                           <div className="font-mono flex flex-wrap items-center gap-1.5">
@@ -767,7 +785,10 @@ export function DiagnosticsAndSupportPanel({
                       </button>
 
                       {isExpanded && (
-                        <div className="pt-1.5 border-t border-[var(--barn-border)]/60 space-y-1 font-mono text-[10px] text-[var(--barn-muted)]">
+                        <div
+                          id={`${basePanelId}-log-${entry.id}`}
+                          className="pt-1.5 border-t border-[var(--barn-border)]/60 space-y-1 font-mono text-[10px] text-[var(--barn-muted)]"
+                        >
                           <div>UTC: {entry.timestampIso}</div>
                           {entry.details && (
                             <pre className="whitespace-pre-wrap break-words bg-[var(--barn-canvas)] p-2 rounded">
@@ -855,19 +876,16 @@ export function DiagnosticsAndSupportPanel({
                 <button
                   type="button"
                   disabled={busyAction}
-                  onClick={async () => {
-                    setBusyAction(true);
-                    try {
+                  onClick={() =>
+                    void actionLock.runLocked(async () => {
                       const res = await onRepairDatabaseHealth();
                       if (res) {
                         setHealthReport(res.reportAfter);
                         setHealthRepairsList(res.repairsApplied);
                       }
-                    } finally {
-                      setBusyAction(false);
-                    }
-                  }}
-                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                    })
+                  }
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-60"
                 >
                   Save Snapshot &amp; Auto-Repair (Zero Data Loss)
                 </button>
@@ -933,23 +951,22 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             disabled={busyAction}
-            onClick={async () => {
-              setBusyAction(true);
-              setRecoveryFeedback(null);
-              try {
-                await onResetDatabaseConnection();
-                setRecoveryFeedback(
-                  'Database connection cleanly closed & re-opened with all animals and photos intact.'
-                );
-                await refreshDiagnostics();
-              } catch (err) {
-                setRecoveryFeedback(
-                  err instanceof Error ? err.message : 'Database connection reset failed.'
-                );
-              } finally {
-                setBusyAction(false);
-              }
-            }}
+            onClick={() =>
+              void actionLock.runLocked(async () => {
+                setRecoveryFeedback(null);
+                try {
+                  await onResetDatabaseConnection();
+                  setRecoveryFeedback(
+                    'Database connection cleanly closed & re-opened with all animals and photos intact.'
+                  );
+                  await refreshDiagnostics();
+                } catch (err) {
+                  setRecoveryFeedback(
+                    err instanceof Error ? err.message : 'Database connection reset failed.'
+                  );
+                }
+              })
+            }
             className="min-h-[40px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <RefreshCw className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
@@ -959,28 +976,27 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             disabled={busyAction}
-            onClick={async () => {
-              setBusyAction(true);
-              setRecoveryFeedback(null);
-              try {
-                const res = await onPurgeCorruptedCaches({
-                  downloadBackupFirst: true,
-                  rebuildLocalDb: false,
-                });
-                setRecoveryFeedback(
-                  `Cleared ${res.cachesCleared} app cache(s) & ${res.serviceWorkersUnregistered} service worker(s), kept all herd records, and retained backup ${
-                    res.backupFilename || '(zip)'
-                  }.`
-                );
-                await refreshDiagnostics();
-              } catch (err) {
-                setRecoveryFeedback(
-                  err instanceof Error ? err.message : 'Cache purge failed.'
-                );
-              } finally {
-                setBusyAction(false);
-              }
-            }}
+            onClick={() =>
+              void actionLock.runLocked(async () => {
+                setRecoveryFeedback(null);
+                try {
+                  const res = await onPurgeCorruptedCaches({
+                    downloadBackupFirst: true,
+                    rebuildLocalDb: false,
+                  });
+                  setRecoveryFeedback(
+                    `Cleared ${res.cachesCleared} app cache(s) & ${res.serviceWorkersUnregistered} service worker(s), kept all herd records, and retained backup ${
+                      res.backupFilename || '(zip)'
+                    }.`
+                  );
+                  await refreshDiagnostics();
+                } catch (err) {
+                  setRecoveryFeedback(
+                    err instanceof Error ? err.message : 'Cache purge failed.'
+                  );
+                }
+              })
+            }
             className="min-h-[40px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <RotateCcw className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
@@ -1013,10 +1029,9 @@ export function DiagnosticsAndSupportPanel({
                 <button
                   type="button"
                   disabled={busyAction}
-                  onClick={async () => {
-                    setBusyAction(true);
-                    setRecoveryFeedback(null);
-                    try {
+                  onClick={() =>
+                    void actionLock.runLocked(async () => {
+                      setRecoveryFeedback(null);
                       const res = await onPurgeCorruptedCaches({
                         downloadBackupFirst: true,
                         rebuildLocalDb: true,
@@ -1028,11 +1043,9 @@ export function DiagnosticsAndSupportPanel({
                         }, purged ${res.cachesCleared} cache(s), and rebuilt local IndexedDB cleanly. Use "Restore (.JSON / .ZIP)" above whenever ready.`
                       );
                       await refreshDiagnostics();
-                    } finally {
-                      setBusyAction(false);
-                    }
-                  }}
-                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold"
+                    })
+                  }
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold disabled:opacity-60"
                 >
                   Download Backup &amp; Rebuild DB
                 </button>
@@ -1051,6 +1064,7 @@ export function DiagnosticsAndSupportPanel({
         {recoveryFeedback && (
           <div
             role="status"
+            aria-live="polite"
             className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
           >
             {recoveryFeedback}
@@ -1072,8 +1086,9 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             aria-expanded={showImprovementsLog}
+            aria-controls={improvementsLogId}
             onClick={() => setShowImprovementsLog((v) => !v)}
-            className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+            className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
           >
             {showImprovementsLog ? (
               <>
@@ -1092,11 +1107,17 @@ export function DiagnosticsAndSupportPanel({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => {
-              downloadTextFile('IMPROVEMENTS.md', formatImprovementsMarkdown(), 'text/markdown');
-              setImprovementsFeedback('Downloaded IMPROVEMENTS.md recovery manual.');
+            onClick={async () => {
+              try {
+                await downloadTextFile('IMPROVEMENTS.md', formatImprovementsMarkdown(), 'text/markdown');
+                setImprovementsFeedback('Downloaded IMPROVEMENTS.md recovery manual.');
+              } catch (err) {
+                setImprovementsFeedback(
+                  err instanceof Error ? err.message : 'Could not download IMPROVEMENTS.md.'
+                );
+              }
             }}
-            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
             Download IMPROVEMENTS.md
@@ -1104,15 +1125,23 @@ export function DiagnosticsAndSupportPanel({
 
           <button
             type="button"
-            onClick={() => {
-              downloadTextFile(
-                'pedigree-improvements-log.json',
-                buildImprovementsRecoveryJson(),
-                'application/json'
-              );
-              setImprovementsFeedback('Downloaded pedigree-improvements-log.json.');
+            onClick={async () => {
+              try {
+                await downloadTextFile(
+                  'pedigree-improvements-log.json',
+                  buildImprovementsRecoveryJson(),
+                  'application/json'
+                );
+                setImprovementsFeedback('Downloaded pedigree-improvements-log.json.');
+              } catch (err) {
+                setImprovementsFeedback(
+                  err instanceof Error
+                    ? err.message
+                    : 'Could not download pedigree-improvements-log.json.'
+                );
+              }
             }}
-            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
             Download Recovery .JSON
@@ -1128,7 +1157,7 @@ export function DiagnosticsAndSupportPanel({
                   : 'Clipboard unavailable in this browser — use Download Recovery .JSON instead.'
               );
             }}
-            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Copy className="w-3.5 h-3.5" aria-hidden="true" />
             Copy Markdown Log
@@ -1138,6 +1167,7 @@ export function DiagnosticsAndSupportPanel({
         {improvementsFeedback && (
           <div
             role="status"
+            aria-live="polite"
             className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]"
           >
             {improvementsFeedback}
@@ -1145,7 +1175,7 @@ export function DiagnosticsAndSupportPanel({
         )}
 
         {showImprovementsLog && (
-          <div className="space-y-2 max-h-72 overflow-y-auto pt-1">
+          <div id={improvementsLogId} className="space-y-2 max-h-72 overflow-y-auto pt-1">
             {IMPROVEMENTS_REGISTRY.map((entry) => (
               <div
                 key={entry.id}

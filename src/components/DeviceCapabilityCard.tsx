@@ -23,7 +23,7 @@ import {
   Tablet,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   buildLowMemorySettingsPatch,
   DEVICE_CAPABILITY_TIER_LIST,
@@ -53,6 +53,7 @@ export function DeviceCapabilityCard({
   onOpenSettings,
 }: DeviceCapabilityCardProps) {
   const [showTierMatrix, setShowTierMatrix] = useState(false);
+  const tierMatrixId = useId();
 
   const { assessment, browserCompatibility } = controller;
   const { definition, tier, formFactor, signalSummary, confidence } = assessment;
@@ -87,7 +88,7 @@ export function DeviceCapabilityCard({
         <button
           type="button"
           onClick={controller.reopenInSettings}
-          className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold text-[var(--barn-ink)] whitespace-nowrap"
+          className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold text-[var(--barn-ink)] whitespace-nowrap"
         >
           Reopen Device Capability Details
         </button>
@@ -170,7 +171,7 @@ export function DeviceCapabilityCard({
                   ? 'Close notice on Home (reopen anytime in Settings)'
                   : 'Close notice (reopen anytime in Settings)'
               }
-              className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium text-[var(--barn-ink)] inline-flex items-center gap-1"
+              className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium text-[var(--barn-ink)] inline-flex items-center gap-1"
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
               Close
@@ -261,7 +262,7 @@ export function DeviceCapabilityCard({
             <button
               type="button"
               onClick={() => onApplyLowMemorySettings(lowMemPatch)}
-              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
               Apply Recommended Low-Memory Settings
@@ -279,7 +280,7 @@ export function DeviceCapabilityCard({
             <button
               type="button"
               onClick={onOpenSettings}
-              className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
+              className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
             >
               Image &amp; Backup Settings
             </button>
@@ -289,7 +290,7 @@ export function DeviceCapabilityCard({
             <button
               type="button"
               onClick={controller.reopenOnHome}
-              className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
+              className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
             >
               Show Notice on Home Screen Again
             </button>
@@ -299,8 +300,9 @@ export function DeviceCapabilityCard({
         <button
           type="button"
           aria-expanded={showTierMatrix}
+          aria-controls={tierMatrixId}
           onClick={() => setShowTierMatrix((prev) => !prev)}
-          className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+          className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap"
         >
           {showTierMatrix ? 'Hide All 5 Tiers' : 'See All 5 Tiers'}
           {showTierMatrix ? (
@@ -313,7 +315,7 @@ export function DeviceCapabilityCard({
 
       {/* Expandable 5-Tier Reference Matrix */}
       {showTierMatrix && (
-        <div className="pt-2 border-t border-[var(--barn-border)] space-y-2">
+        <div id={tierMatrixId} className="pt-2 border-t border-[var(--barn-border)] space-y-2">
           <div className="text-[11px] font-semibold text-[var(--barn-ink)]">
             Device Capability Tiers (Phones, Tablets &amp; Desktops)
           </div>

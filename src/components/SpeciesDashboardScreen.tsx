@@ -22,6 +22,7 @@ import {
   Download,
   GripVertical,
   Link2,
+  Loader2,
   Pin,
   Plus,
   Settings,
@@ -31,6 +32,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useState } from 'react';
+import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { evaluateSpeciesNeedsAttentionAlert } from '../core/barnAlerts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import {
@@ -73,16 +75,16 @@ interface SpeciesDashboardScreenProps {
   existingSpeciesNames: string[];
   onNavigate: (route: WorkspaceRoute) => void;
   onOpenAnimal: (animalId: string) => void;
-  onToggleTask: (task: BarnTask) => void;
-  onSaveTask: (draft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onToggleTask: (task: BarnTask) => Promise<boolean | void> | void;
+  onSaveTask: (draft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
   onDeleteTask: (id: string) => void;
-  onSaveCage: (draft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onSaveCage: (draft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
   onDeleteCage: (id: string) => void;
-  onSaveShow: (draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onSaveShow: (draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
   onDeleteShow: (id: string) => void;
   onSeedSpeciesSample: (speciesName: string) => void;
   onTogglePinSpecies: (speciesName: string) => void;
-  onSaveSpecies: (profile: SpeciesProfile) => void;
+  onSaveSpecies: (profile: SpeciesProfile) => Promise<boolean | void> | void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpeciesTestingData: (speciesName: string) => void;
   onDeleteSpeciesNonTestingData: (speciesName: string) => void;
@@ -278,6 +280,11 @@ export function SpeciesDashboardScreen({
   const [showDeadlineIso, setShowDeadlineIso] = useState('');
   const [showAnimalIds, setShowAnimalIds] = useState<string[]>([]);
 
+  const taskSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const cageSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const showSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const taskToggleLock = useAsyncKeyedLock();
+
   const activeBreedingStock = animals.filter((a) => a.status === 'Active' && !a.archived).length;
   const activeGestations = breedings.filter((b) =>
     ['Planned', 'Bred', 'Palpated Positive', 'Born'].includes(b.status)
@@ -288,56 +295,68 @@ export function SpeciesDashboardScreen({
 
   const visibleTasks = tasks.filter((t) => (taskFilter === 'open' ? !t.completed : t.completed));
 
-  const submitTask = (e: React.FormEvent) => {
+  const submitTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!taskTitle.trim()) return;
-    const linked = taskAnimalId ? herdById.get(taskAnimalId) : undefined;
-    onSaveTask({
-      species: speciesProfile.name,
-      title: taskTitle.trim(),
-      category: taskCategory,
-      priority: taskPriority,
-      dueDateIso: taskDueIso,
-      linkedAnimalId: linked?.id || '',
-      linkedAnimalName: linked?.name || '',
-      linkedBreedingId: '',
-      completed: false,
+    await taskSubmitLock.runLocked(async () => {
+      const linked = taskAnimalId ? herdById.get(taskAnimalId) : undefined;
+      const saved = await onSaveTask({
+        species: speciesProfile.name,
+        title: taskTitle.trim(),
+        category: taskCategory,
+        priority: taskPriority,
+        dueDateIso: taskDueIso,
+        linkedAnimalId: linked?.id || '',
+        linkedAnimalName: linked?.name || '',
+        linkedBreedingId: '',
+        completed: false,
+      });
+      if (saved !== false) {
+        setTaskTitle('');
+        setShowNewTaskForm(false);
+      }
     });
-    setTaskTitle('');
-    setShowNewTaskForm(false);
   };
 
-  const submitCage = (e: React.FormEvent) => {
+  const submitCage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!cageLabel.trim()) return;
-    onSaveCage({
-      species: speciesProfile.name,
-      label: cageLabel.trim(),
-      section: cageSection.trim(),
-      capacity: Math.max(1, Number(cageCapacity) || 1),
-      notes: '',
+    await cageSubmitLock.runLocked(async () => {
+      const saved = await onSaveCage({
+        species: speciesProfile.name,
+        label: cageLabel.trim(),
+        section: cageSection.trim(),
+        capacity: Math.max(1, Number(cageCapacity) || 1),
+        notes: '',
+      });
+      if (saved !== false) {
+        setCageLabel('');
+        setShowNewCageForm(false);
+      }
     });
-    setCageLabel('');
-    setShowNewCageForm(false);
   };
 
-  const submitShow = (e: React.FormEvent) => {
+  const submitShow = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showName.trim() || !showDateIso) return;
-    onSaveShow({
-      species: speciesProfile.name,
-      name: showName.trim(),
-      location: showLocation.trim(),
-      sanctioningBody: showSanction,
-      eventDateIso: showDateIso,
-      entryDeadlineIso: showDeadlineIso,
-      enteredAnimalIds: showAnimalIds.slice(0, 25),
-      notes: '',
+    await showSubmitLock.runLocked(async () => {
+      const saved = await onSaveShow({
+        species: speciesProfile.name,
+        name: showName.trim(),
+        location: showLocation.trim(),
+        sanctioningBody: showSanction,
+        eventDateIso: showDateIso,
+        entryDeadlineIso: showDeadlineIso,
+        enteredAnimalIds: showAnimalIds.slice(0, 25),
+        notes: '',
+      });
+      if (saved !== false) {
+        setShowName('');
+        setShowLocation('');
+        setShowAnimalIds([]);
+        setShowNewShowForm(false);
+      }
     });
-    setShowName('');
-    setShowLocation('');
-    setShowAnimalIds([]);
-    setShowNewShowForm(false);
   };
 
   const speciesSettingsSection = (
@@ -1121,16 +1140,22 @@ export function SpeciesDashboardScreen({
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
+                          disabled={taskSubmitLock.isSubmitting}
                           onClick={() => setShowNewTaskForm(false)}
-                          className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs"
+                          className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs disabled:opacity-50"
                         >
                           Cancel
                         </button>
                         <button
                           type="submit"
-                          className="min-h-[36px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+                          disabled={taskSubmitLock.isSubmitting}
+                          aria-busy={taskSubmitLock.isSubmitting}
+                          className="min-h-[36px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
                         >
-                          Save Chore
+                          {taskSubmitLock.isSubmitting && (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          )}
+                          {taskSubmitLock.isSubmitting ? 'Saving...' : 'Save Chore'}
                         </button>
                       </div>
                     </form>
@@ -1165,16 +1190,17 @@ export function SpeciesDashboardScreen({
                             <div className="flex items-start gap-2.5 min-w-0">
                               <button
                                 type="button"
+                                disabled={taskToggleLock.isKeyLocked(t.id)}
                                 onClick={() => {
                                   if (isHighlighted) onClearHighlightedTask?.();
-                                  onToggleTask(t);
+                                  void taskToggleLock.runKeyLocked(t.id, () => onToggleTask(t));
                                 }}
                                 aria-label={
                                   t.completed
                                     ? `Mark ${displayTitle} open`
                                     : `Complete ${displayTitle}`
                                 }
-                                className="min-h-[40px] min-w-[40px] -ml-2 rounded-lg flex items-center justify-center text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] shrink-0"
+                                className="min-h-[40px] min-w-[40px] -ml-2 rounded-lg flex items-center justify-center text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] shrink-0 disabled:opacity-60"
                               >
                                 {t.completed ? (
                                   <CheckSquare className="w-5 h-5" />
@@ -1435,16 +1461,22 @@ export function SpeciesDashboardScreen({
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
+                          disabled={cageSubmitLock.isSubmitting}
                           onClick={() => setShowNewCageForm(false)}
-                          className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs"
+                          className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs disabled:opacity-50"
                         >
                           Cancel
                         </button>
                         <button
                           type="submit"
-                          className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold"
+                          disabled={cageSubmitLock.isSubmitting}
+                          aria-busy={cageSubmitLock.isSubmitting}
+                          className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
                         >
-                          Save Location
+                          {cageSubmitLock.isSubmitting && (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          )}
+                          {cageSubmitLock.isSubmitting ? 'Saving...' : 'Save Location'}
                         </button>
                       </div>
                     </form>
@@ -1632,16 +1664,22 @@ export function SpeciesDashboardScreen({
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
+                        disabled={showSubmitLock.isSubmitting}
                         onClick={() => setShowNewShowForm(false)}
-                        className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)]"
+                        className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] disabled:opacity-50"
                       >
                         Cancel
                       </button>
                       <button
                         type="submit"
-                        className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold"
+                        disabled={showSubmitLock.isSubmitting}
+                        aria-busy={showSubmitLock.isSubmitting}
+                        className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
                       >
-                        Save Show
+                        {showSubmitLock.isSubmitting && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        )}
+                        {showSubmitLock.isSubmitting ? 'Saving...' : 'Save Show'}
                       </button>
                     </div>
                   </form>

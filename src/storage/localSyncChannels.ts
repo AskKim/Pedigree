@@ -27,19 +27,33 @@ import {
   SyncOperation,
 } from '../core/syncOutbox';
 import { downloadTextFile } from '../utils/webFileActions';
+import {
+  BackgroundPausedError,
+  isDocumentHidden,
+} from './backgroundFreezeCoordinator';
 import { logDiagnosticEvent } from './crashLogger';
 
 const SYNC_IDB_NAME = 'community_pedigree_sync_v1';
-const SYNC_IDB_VERSION = 2;
+const SYNC_IDB_VERSION = 3;
 const STORE_OUTBOX = 'sync_outbox';
 const STORE_CONFLICTS = 'sync_conflicts';
 const STORE_HANDLES = 'sync_handles';
+const STORE_CHECKPOINTS = 'sync_checkpoints';
 const BACKUP_SINK_HANDLE_KEY = 'backup_sink_folder';
 const BACKUP_SINK_ARCHIVE_SUBDIR = 'pedigree-vault-archive';
 const BACKUP_SINK_META_LS_KEY = 'pedigree.backupSinkMeta.v1';
 const DEVICE_ID_LS_KEY = 'pedigree_device_id_v1';
 const LOGICAL_COUNTER_LS_KEY = 'pedigree_logical_counter_v1';
 const SYNC_IDB_TIMEOUT_MS = 7000;
+
+export interface SyncCheckpointRecord {
+  taskId: string;
+  folderName: string;
+  phase: 'scanning_peers' | 'writing_delta' | 'writing_master';
+  peerFilesRead: number;
+  incomingOpsQueued: number;
+  updatedAtIso: string;
+}
 
 export interface BackupSinkStatus {
   supported: boolean;
@@ -130,6 +144,9 @@ function openSyncIdb(): Promise<IDBDatabase> {
           if (!db.objectStoreNames.contains(STORE_HANDLES)) {
             db.createObjectStore(STORE_HANDLES, { keyPath: 'key' });
           }
+          if (!db.objectStoreNames.contains(STORE_CHECKPOINTS)) {
+            db.createObjectStore(STORE_CHECKPOINTS, { keyPath: 'taskId' });
+          }
         } catch (upgradeErr) {
           void import('./opfsStorage')
             .then((m) =>
@@ -179,23 +196,99 @@ function openSyncIdb(): Promise<IDBDatabase> {
   });
 }
 
+async function withSyncIdb<T>(
+  run: (db: IDBDatabase) => Promise<T>
+): Promise<T> {
+  const db = await openSyncIdb();
+  let closed = false;
+  const safeClose = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      db.close();
+    } catch {
+      // Ignore close error
+    }
+  };
+  try {
+    return await run(db);
+  } finally {
+    safeClose();
+  }
+}
+
+export async function saveSyncCheckpointToIdb(
+  checkpoint: SyncCheckpointRecord
+): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_CHECKPOINTS, 'readwrite');
+          tx.objectStore(STORE_CHECKPOINTS).put(checkpoint);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync checkpoint aborted'));
+        })
+    );
+  } catch {
+    // Non-blocking safeguard
+  }
+}
+
+export async function loadSyncCheckpointFromIdb(
+  taskId: string
+): Promise<SyncCheckpointRecord | null> {
+  if (typeof indexedDB === 'undefined') return null;
+  try {
+    return await withSyncIdb(
+      (db) =>
+        new Promise<SyncCheckpointRecord | null>((resolve) => {
+          const tx = db.transaction(STORE_CHECKPOINTS, 'readonly');
+          const req = tx.objectStore(STORE_CHECKPOINTS).get(taskId);
+          req.onsuccess = () => resolve((req.result as SyncCheckpointRecord) || null);
+          req.onerror = () => resolve(null);
+          tx.onabort = () => resolve(null);
+        })
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function clearSyncCheckpointFromIdb(taskId: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve) => {
+          const tx = db.transaction(STORE_CHECKPOINTS, 'readwrite');
+          tx.objectStore(STORE_CHECKPOINTS).delete(taskId);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        })
+    );
+  } catch {
+    // Ignore
+  }
+}
+
 export async function appendSyncOperationsToIdb(ops: SyncOperation[]): Promise<void> {
   if (ops.length === 0 || typeof indexedDB === 'undefined') return;
   try {
-    const db = await openSyncIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_OUTBOX, 'readwrite');
-      const store = tx.objectStore(STORE_OUTBOX);
-      for (const op of ops) store.put(op);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+          const store = tx.objectStore(STORE_OUTBOX);
+          for (const op of ops) store.put(op);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync outbox write aborted'));
+        })
+    );
   } catch {
     // Non-blocking safeguard
   }
@@ -204,19 +297,16 @@ export async function appendSyncOperationsToIdb(ops: SyncOperation[]): Promise<v
 export async function loadAllSyncOperationsFromIdb(): Promise<SyncOperation[]> {
   if (typeof indexedDB === 'undefined') return [];
   try {
-    const db = await openSyncIdb();
-    return await new Promise<SyncOperation[]>((resolve, reject) => {
-      const tx = db.transaction(STORE_OUTBOX, 'readonly');
-      const req = tx.objectStore(STORE_OUTBOX).getAll();
-      req.onsuccess = () => {
-        db.close();
-        resolve((req.result as SyncOperation[]) || []);
-      };
-      req.onerror = () => {
-        db.close();
-        reject(req.error);
-      };
-    });
+    return await withSyncIdb(
+      (db) =>
+        new Promise<SyncOperation[]>((resolve, reject) => {
+          const tx = db.transaction(STORE_OUTBOX, 'readonly');
+          const req = tx.objectStore(STORE_OUTBOX).getAll();
+          req.onsuccess = () => resolve((req.result as SyncOperation[]) || []);
+          req.onerror = () => reject(req.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync outbox read aborted'));
+        })
+    );
   } catch {
     return [];
   }
@@ -225,21 +315,18 @@ export async function loadAllSyncOperationsFromIdb(): Promise<SyncOperation[]> {
 export async function replaceSyncOperationsInIdb(ops: SyncOperation[]): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   try {
-    const db = await openSyncIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_OUTBOX, 'readwrite');
-      const store = tx.objectStore(STORE_OUTBOX);
-      store.clear();
-      for (const op of ops) store.put(op);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+          const store = tx.objectStore(STORE_OUTBOX);
+          store.clear();
+          for (const op of ops) store.put(op);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync outbox replace aborted'));
+        })
+    );
   } catch {
     // Ignore
   }
@@ -248,20 +335,17 @@ export async function replaceSyncOperationsInIdb(ops: SyncOperation[]): Promise<
 export async function appendSyncConflictsToIdb(conflicts: SyncConflictEntry[]): Promise<void> {
   if (conflicts.length === 0 || typeof indexedDB === 'undefined') return;
   try {
-    const db = await openSyncIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_CONFLICTS, 'readwrite');
-      const store = tx.objectStore(STORE_CONFLICTS);
-      for (const c of conflicts) store.put(c);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_CONFLICTS, 'readwrite');
+          const store = tx.objectStore(STORE_CONFLICTS);
+          for (const c of conflicts) store.put(c);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync conflicts write aborted'));
+        })
+    );
   } catch {
     // Ignore
   }
@@ -270,23 +354,21 @@ export async function appendSyncConflictsToIdb(conflicts: SyncConflictEntry[]): 
 export async function loadAllSyncConflictsFromIdb(): Promise<SyncConflictEntry[]> {
   if (typeof indexedDB === 'undefined') return [];
   try {
-    const db = await openSyncIdb();
-    return await new Promise<SyncConflictEntry[]>((resolve, reject) => {
-      const tx = db.transaction(STORE_CONFLICTS, 'readonly');
-      const req = tx.objectStore(STORE_CONFLICTS).getAll();
-      req.onsuccess = () => {
-        db.close();
-        resolve(
-          ((req.result as SyncConflictEntry[]) || []).sort((a, b) =>
-            b.detected_at.localeCompare(a.detected_at)
-          )
-        );
-      };
-      req.onerror = () => {
-        db.close();
-        reject(req.error);
-      };
-    });
+    return await withSyncIdb(
+      (db) =>
+        new Promise<SyncConflictEntry[]>((resolve, reject) => {
+          const tx = db.transaction(STORE_CONFLICTS, 'readonly');
+          const req = tx.objectStore(STORE_CONFLICTS).getAll();
+          req.onsuccess = () =>
+            resolve(
+              ((req.result as SyncConflictEntry[]) || []).sort((a, b) =>
+                b.detected_at.localeCompare(a.detected_at)
+              )
+            );
+          req.onerror = () => reject(req.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync conflicts read aborted'));
+        })
+    );
   } catch {
     return [];
   }
@@ -299,20 +381,20 @@ export async function saveSyncConflictInIdb(conflict: SyncConflictEntry): Promis
 export async function clearAllSyncStateInIdb(): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   try {
-    const db = await openSyncIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction([STORE_OUTBOX, STORE_CONFLICTS], 'readwrite');
-      tx.objectStore(STORE_OUTBOX).clear();
-      tx.objectStore(STORE_CONFLICTS).clear();
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction([STORE_OUTBOX, STORE_CONFLICTS, STORE_CHECKPOINTS], 'readwrite');
+          tx.objectStore(STORE_OUTBOX).clear();
+          tx.objectStore(STORE_CONFLICTS).clear();
+          if (db.objectStoreNames.contains(STORE_CHECKPOINTS)) {
+            tx.objectStore(STORE_CHECKPOINTS).clear();
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync state clear aborted'));
+        })
+    );
   } catch {
     // Ignore
   }
@@ -404,25 +486,22 @@ async function saveBackupSinkHandleToIdb(handle: any, folderName: string): Promi
   });
   if (typeof indexedDB === 'undefined') return;
   try {
-    const db = await openSyncIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_HANDLES, 'readwrite');
-      const rec: StoredHandleRecord = {
-        key: BACKUP_SINK_HANDLE_KEY,
-        handle,
-        folderName,
-        configuredAtIso,
-      };
-      tx.objectStore(STORE_HANDLES).put(rec);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    await withSyncIdb(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_HANDLES, 'readwrite');
+          const rec: StoredHandleRecord = {
+            key: BACKUP_SINK_HANDLE_KEY,
+            handle,
+            folderName,
+            configuredAtIso,
+          };
+          tx.objectStore(STORE_HANDLES).put(rec);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('Sync handle write aborted'));
+        })
+    );
   } catch {
     // Non-fatal
   }
@@ -439,20 +518,19 @@ async function loadBackupSinkHandleRecord(): Promise<StoredHandleRecord | null> 
   }
   if (typeof indexedDB === 'undefined') return null;
   try {
-    const db = await openSyncIdb();
-    return await new Promise<StoredHandleRecord | null>((resolve) => {
-      const tx = db.transaction(STORE_HANDLES, 'readonly');
-      const req = tx.objectStore(STORE_HANDLES).get(BACKUP_SINK_HANDLE_KEY);
-      req.onsuccess = () => {
-        db.close();
-        const res = req.result as StoredHandleRecord | undefined;
-        resolve(res?.handle ? res : null);
-      };
-      req.onerror = () => {
-        db.close();
-        resolve(null);
-      };
-    });
+    return await withSyncIdb(
+      (db) =>
+        new Promise<StoredHandleRecord | null>((resolve) => {
+          const tx = db.transaction(STORE_HANDLES, 'readonly');
+          const req = tx.objectStore(STORE_HANDLES).get(BACKUP_SINK_HANDLE_KEY);
+          req.onsuccess = () => {
+            const res = req.result as StoredHandleRecord | undefined;
+            resolve(res?.handle ? res : null);
+          };
+          req.onerror = () => resolve(null);
+          tx.onabort = () => resolve(null);
+        })
+    );
   } catch {
     return null;
   }
@@ -553,19 +631,16 @@ export async function disconnectBackupSinkFolder(): Promise<BackupSinkStatus> {
   writeLocalSinkMeta(null);
   if (typeof indexedDB !== 'undefined') {
     try {
-      const db = await openSyncIdb();
-      await new Promise<void>((resolve) => {
-        const tx = db.transaction(STORE_HANDLES, 'readwrite');
-        tx.objectStore(STORE_HANDLES).delete(BACKUP_SINK_HANDLE_KEY);
-        tx.oncomplete = () => {
-          db.close();
-          resolve();
-        };
-        tx.onerror = () => {
-          db.close();
-          resolve();
-        };
-      });
+      await withSyncIdb(
+        (db) =>
+          new Promise<void>((resolve) => {
+            const tx = db.transaction(STORE_HANDLES, 'readwrite');
+            tx.objectStore(STORE_HANDLES).delete(BACKUP_SINK_HANDLE_KEY);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+            tx.onabort = () => resolve();
+          })
+      );
     } catch {
       // Ignore
     }
@@ -640,35 +715,57 @@ export async function pushBackupPayloadToSinkFolder(
   }
 }
 
-/**
- * Option B: Syncs local `delta_<device_id>.json` and master backup directly with a user-chosen
- * local folder (e.g., SyncThing folder on Android or Desktop Chrome/Edge) while reading all peer `delta_*.json`.
- * Also persists the folder handle as the pre-prune Backup Sink Folder.
- */
-export async function syncWithPickedDirectory(params: {
+async function checkpointDirectorySyncPause(params: {
+  folderName: string;
+  phase: SyncCheckpointRecord['phase'];
+  peerFilesRead: number;
+  incomingOps: SyncOperation[];
+}): Promise<never> {
+  if (params.incomingOps.length > 0) {
+    await appendSyncOperationsToIdb(params.incomingOps);
+  }
+  await saveSyncCheckpointToIdb({
+    taskId: 'directory_sync',
+    folderName: params.folderName,
+    phase: params.phase,
+    peerFilesRead: params.peerFilesRead,
+    incomingOpsQueued: params.incomingOps.length,
+    updatedAtIso: nowIsoUtc(),
+  });
+  logDiagnosticEvent({
+    level: 'info',
+    category: 'lifecycle',
+    message: `Folder sync (${params.folderName}) paused on background hide at phase "${params.phase}" (${params.incomingOps.length} incoming ops checkpointed)`,
+  });
+  throw new BackgroundPausedError('Folder Sync', {
+    checkpointSummary: `${params.incomingOps.length} peer delta operation(s) saved safely before background pause.`,
+  });
+}
+
+async function runDirectorySyncWithHandle(params: {
+  dirHandle: any;
   deviceId: string;
   localOperations: SyncOperation[];
   masterBackupJson: string;
+  visibilityDoc?: { visibilityState?: string };
 }): Promise<{
   folderName: string;
   peerFilesRead: number;
   incomingOps: SyncOperation[];
 }> {
-  const picker = (
-    window as unknown as {
-      showDirectoryPicker?: (opts?: { id?: string; mode?: 'read' | 'readwrite' }) => Promise<any>;
-    }
-  ).showDirectoryPicker;
-  if (!picker) {
-    throw new Error('Folder Sync API is not supported in this browser. Use Web Share or manual delta export instead.');
-  }
-
-  const dirHandle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
-  await saveBackupSinkHandleToIdb(dirHandle, String(dirHandle.name || 'Sync Folder'));
+  const folderName = String(params.dirHandle?.name || 'Sync Folder');
   const incomingOps: SyncOperation[] = [];
   let peerFilesRead = 0;
 
-  for await (const [name, handle] of dirHandle.entries()) {
+  for await (const [name, handle] of params.dirHandle.entries()) {
+    if (isDocumentHidden(params.visibilityDoc)) {
+      await checkpointDirectorySyncPause({
+        folderName,
+        phase: 'scanning_peers',
+        peerFilesRead,
+        incomingOps,
+      });
+    }
     if (peerFilesRead >= MAX_DELTA_BATCH_FILES) break;
     if (
       handle.kind === 'file' &&
@@ -677,7 +774,12 @@ export async function syncWithPickedDirectory(params: {
     ) {
       try {
         const file = await handle.getFile();
-        const check = validateUploadFileSize(file.name, file.size, MAX_DELTA_JSON_BYTES, 'a sync delta file');
+        const check = validateUploadFileSize(
+          file.name,
+          file.size,
+          MAX_DELTA_JSON_BYTES,
+          'a sync delta file'
+        );
         if (!check.ok) continue;
         const text = await file.text();
         const ops = parseDeltaFileJson(text);
@@ -689,6 +791,15 @@ export async function syncWithPickedDirectory(params: {
     }
   }
 
+  if (isDocumentHidden(params.visibilityDoc)) {
+    await checkpointDirectorySyncPause({
+      folderName,
+      phase: 'writing_delta',
+      peerFilesRead,
+      incomingOps,
+    });
+  }
+
   // Write this device's own immutable delta file
   const deltaFilename = `delta_${params.deviceId}.json`;
   const deltaPayload = JSON.stringify(
@@ -696,7 +807,7 @@ export async function syncWithPickedDirectory(params: {
     null,
     2
   );
-  const deltaHandle = await dirHandle.getFileHandle(deltaFilename, { create: true });
+  const deltaHandle = await params.dirHandle.getFileHandle(deltaFilename, { create: true });
   const deltaWritable = await deltaHandle.createWritable();
   try {
     await deltaWritable.write(deltaPayload);
@@ -704,8 +815,17 @@ export async function syncWithPickedDirectory(params: {
     await deltaWritable.close();
   }
 
+  if (isDocumentHidden(params.visibilityDoc)) {
+    await checkpointDirectorySyncPause({
+      folderName,
+      phase: 'writing_master',
+      peerFilesRead,
+      incomingOps,
+    });
+  }
+
   // Also refresh local master JSON in the sync folder for full snapshot redundancy
-  const masterHandle = await dirHandle.getFileHandle('pedigree_master_backup.json', {
+  const masterHandle = await params.dirHandle.getFileHandle('pedigree_master_backup.json', {
     create: true,
   });
   const masterWritable = await masterHandle.createWritable();
@@ -715,11 +835,97 @@ export async function syncWithPickedDirectory(params: {
     await masterWritable.close();
   }
 
+  await clearSyncCheckpointFromIdb('directory_sync');
+
   return {
-    folderName: String(dirHandle.name || 'Sync Folder'),
+    folderName,
     peerFilesRead,
     incomingOps,
   };
+}
+
+/**
+ * Resumes an interrupted folder sync automatically when the browser returns to `'visible'`
+ * without requiring an extra user tap as long as folder read/write permission remains `'granted'`.
+ */
+export async function resumePersistedDirectorySyncIfGranted(params: {
+  deviceId: string;
+  localOperations: SyncOperation[];
+  masterBackupJson: string;
+  visibilityDoc?: { visibilityState?: string };
+}): Promise<
+  | {
+      resumed: true;
+      folderName: string;
+      peerFilesRead: number;
+      incomingOps: SyncOperation[];
+    }
+  | {
+      resumed: false;
+      reason: 'no_handle' | 'permission_required';
+      folderName?: string;
+    }
+> {
+  const record = await loadBackupSinkHandleRecord();
+  if (!record?.handle) {
+    return { resumed: false, reason: 'no_handle' };
+  }
+  const perm = await queryHandleReadWritePermission(record.handle);
+  if (perm !== 'granted') {
+    return {
+      resumed: false,
+      reason: 'permission_required',
+      folderName: record.folderName,
+    };
+  }
+  const res = await runDirectorySyncWithHandle({
+    dirHandle: record.handle,
+    deviceId: params.deviceId,
+    localOperations: params.localOperations,
+    masterBackupJson: params.masterBackupJson,
+    visibilityDoc: params.visibilityDoc,
+  });
+  return { resumed: true, ...res };
+}
+
+/**
+ * Option B: Syncs local `delta_<device_id>.json` and master backup directly with a user-chosen
+ * local folder (e.g., SyncThing folder on Android or Desktop Chrome/Edge) while reading all peer `delta_*.json`.
+ * Also persists the folder handle as the pre-prune Backup Sink Folder and checkpoints cleanly on background freeze.
+ */
+export async function syncWithPickedDirectory(params: {
+  deviceId: string;
+  localOperations: SyncOperation[];
+  masterBackupJson: string;
+  dirHandleOverride?: any;
+  visibilityDoc?: { visibilityState?: string };
+}): Promise<{
+  folderName: string;
+  peerFilesRead: number;
+  incomingOps: SyncOperation[];
+}> {
+  let dirHandle = params.dirHandleOverride;
+  if (!dirHandle) {
+    const picker = (
+      window as unknown as {
+        showDirectoryPicker?: (opts?: { id?: string; mode?: 'read' | 'readwrite' }) => Promise<any>;
+      }
+    ).showDirectoryPicker;
+    if (!picker) {
+      throw new Error(
+        'Folder Sync API is not supported in this browser. Use Web Share or manual delta export instead.'
+      );
+    }
+    dirHandle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
+  }
+  await saveBackupSinkHandleToIdb(dirHandle, String(dirHandle.name || 'Sync Folder'));
+  return runDirectorySyncWithHandle({
+    dirHandle,
+    deviceId: params.deviceId,
+    localOperations: params.localOperations,
+    masterBackupJson: params.masterBackupJson,
+    visibilityDoc: params.visibilityDoc,
+  });
 }
 
 /**
@@ -751,6 +957,6 @@ export async function shareOrDownloadFile(params: {
       // Fall back to direct file download
     }
   }
-  downloadTextFile(params.filename, params.content, params.mimeType);
+  await downloadTextFile(params.filename, params.content, params.mimeType);
   return 'downloaded';
 }

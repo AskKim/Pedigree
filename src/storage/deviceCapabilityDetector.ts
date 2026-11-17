@@ -39,7 +39,7 @@ interface NavigatorWithDeviceMemory extends Navigator {
 
 let cachedWebpEncodeSupported: boolean | null = null;
 
-function probeWebpEncodeSupport(): boolean {
+export function probeWebpEncodeSupport(): boolean {
   if (cachedWebpEncodeSupported !== null) return cachedWebpEncodeSupported;
   if (typeof document === 'undefined') {
     return true;

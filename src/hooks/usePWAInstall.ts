@@ -2,94 +2,33 @@
  * @license
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * PWA installation & browser offline-status hooks (`usePWAInstall`, `useOnlineStatus`).
+ * Compatibility re-export wrapper delegating PWA installation & online-status
+ * detection to the canonical hooks in `src/storage/storageProtection.ts`
+ * (preventing duplicate window listeners and keeping iPadOS/legacy fallback logic unified).
  */
 
-import { useEffect, useState } from 'react';
-
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-}
+import { useCallback } from 'react';
+import {
+  useOnlineStatus as useCanonicalOnlineStatus,
+  usePWAInstall as useCanonicalPWAInstall,
+} from '../storage/storageProtection';
 
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
+  const { canPromptInstall, isInstalled, isIos, promptInstall } = useCanonicalPWAInstall();
 
-  useEffect(() => {
-    let isStandalone = (window.navigator as unknown as { standalone?: boolean }).standalone === true;
-    try {
-      if (typeof window.matchMedia === 'function') {
-        isStandalone = isStandalone || window.matchMedia('(display-mode: standalone)').matches;
-      }
-    } catch {
-      // Ignore unsupported matchMedia query on legacy mobile WebViews
-    }
-    setIsInstalled(isStandalone);
-
-    const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOSDevice =
-      /iphone|ipad|ipod/.test(userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    setIsIOS(isIOSDevice);
-
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
-    };
-
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-    };
-  }, []);
-
-  const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-      return true;
-    }
-    return false;
-  };
+  const install = useCallback(async () => {
+    const outcome = await promptInstall();
+    return outcome === 'accepted';
+  }, [promptInstall]);
 
   return {
-    isInstallable: !!deferredPrompt,
+    isInstallable: canPromptInstall,
     isInstalled,
-    isIOS,
+    isIOS: isIos,
     install,
   };
 }
 
 export function useOnlineStatus(): boolean {
-  const [isOnline, setIsOnline] = useState(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
-  );
-
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  return isOnline;
+  return useCanonicalOnlineStatus();
 }

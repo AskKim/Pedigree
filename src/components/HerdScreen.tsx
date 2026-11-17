@@ -23,6 +23,7 @@ import {
   Edit3,
   FileText,
   GitFork,
+  Loader2,
   Plus,
   Printer,
   RotateCcw,
@@ -32,6 +33,7 @@ import {
   X,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
+import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { getConflictSortPriority } from '../core/animalConflicts';
 import {
   analyzeAnimalCarrierLineage,
@@ -104,7 +106,7 @@ interface HerdScreenProps {
   onSaveAnimal: (
     draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => Promise<string | void> | string | void;
+  ) => Promise<string | null | void> | string | void;
   onAddAnimalPhotos: (
     animal: Animal,
     payloads: Array<OptimizedImagePayload & { caption?: string }>
@@ -113,7 +115,7 @@ interface HerdScreenProps {
   onUpdateAnimalPhotoCaption: (photoId: string, caption: string) => Promise<void> | void;
   onDeleteAnimalPhoto: (photoId: string) => Promise<void> | void;
   onDeleteAnimal: (animal: Animal) => void;
-  onArchiveAnimals: (animalIds: string[], archived: boolean) => void;
+  onArchiveAnimals: (animalIds: string[], archived: boolean) => Promise<void> | void;
   onDeleteAnimalsBatch: (animalIds: string[]) => void;
   onMigrateAnimalsSpecies: (
     animalIds: string[],
@@ -121,7 +123,7 @@ interface HerdScreenProps {
     options?: SpeciesMigrationOptions
   ) => Promise<void> | void;
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
-  onAddCareLog: (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onAddCareLog: (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | boolean | void;
   onDeleteCareLog: (id: string) => void;
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
@@ -433,6 +435,14 @@ export function HerdScreen({
     [careLogs, activeAnimal]
   );
 
+  const [visibleCareLogCount, setVisibleCareLogCount] = useState(30);
+  const careLogSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const inlineAnimalLock = useAsyncKeyedLock();
+
+  useEffect(() => {
+    setVisibleCareLogCount(30);
+  }, [activeAnimal?.id]);
+
   const weightPoints = useMemo(
     () =>
       [...activeAnimalLogs]
@@ -524,40 +534,44 @@ export function HerdScreen({
     return roundInt ? Math.round(bounded) : bounded;
   };
 
-  const submitCareLog = (e: React.FormEvent) => {
+  const submitCareLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeAnimal) return;
-    const effectiveDate = logDateIso || todayDateIso();
-    const withdrawalDays =
-      logType === 'Health / Vet' ? safeNonNegNumber(logWithdrawalDays, true, 3650) : 0;
-    const withdrawalClearDateIso =
-      withdrawalDays > 0 ? addDaysIso(effectiveDate, withdrawalDays) : '';
-    const isHealthScore = logType === 'Health Score / BCS';
-    const isScan = logType === 'Ultrasound' || logType === 'Palpation';
-    const parsedWeight = parseWeightInputToGrams(logWeightInput, effectiveWeightUnit);
+    await careLogSubmitLock.runLocked(async () => {
+      const effectiveDate = logDateIso || todayDateIso();
+      const withdrawalDays =
+        logType === 'Health / Vet' ? safeNonNegNumber(logWithdrawalDays, true, 3650) : 0;
+      const withdrawalClearDateIso =
+        withdrawalDays > 0 ? addDaysIso(effectiveDate, withdrawalDays) : '';
+      const isHealthScore = logType === 'Health Score / BCS';
+      const isScan = logType === 'Ultrasound' || logType === 'Palpation';
+      const parsedWeight = parseWeightInputToGrams(logWeightInput, effectiveWeightUnit);
 
-    onAddCareLog({
-      species: speciesProfile.name,
-      animalId: activeAnimal.id,
-      dateIso: effectiveDate,
-      type: logType,
-      title: logTitle.trim() || logType,
-      weightGrams: Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : 0,
-      showLegEarned: logShowLeg,
-      medicationName: logType === 'Health / Vet' ? logMedicationName.trim() : '',
-      dosage: logType === 'Health / Vet' ? logDosage.trim() : '',
-      administrationRoute: logType === 'Health / Vet' ? logAdministrationRoute.trim() : '',
-      withdrawalDays,
-      withdrawalClearDateIso,
-      bodyConditionScore: isHealthScore ? safeNonNegNumber(logBodyConditionScore, false, 20) : 0,
-      famachaScore: isHealthScore ? safeNonNegNumber(logFamachaScore, true, 5) : 0,
-      fecalEggCount: isHealthScore ? safeNonNegNumber(logFecalEggCount, true, 1_000_000) : 0,
-      ultrasoundResult: isScan ? logUltrasoundResult : '',
-      ultrasoundFetalCount: isScan ? safeNonNegNumber(logUltrasoundFetalCount, true, 100) : 0,
-      notes: logNotes.trim(),
+      const saved = await onAddCareLog({
+        species: speciesProfile.name,
+        animalId: activeAnimal.id,
+        dateIso: effectiveDate,
+        type: logType,
+        title: logTitle.trim() || logType,
+        weightGrams: Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : 0,
+        showLegEarned: logShowLeg,
+        medicationName: logType === 'Health / Vet' ? logMedicationName.trim() : '',
+        dosage: logType === 'Health / Vet' ? logDosage.trim() : '',
+        administrationRoute: logType === 'Health / Vet' ? logAdministrationRoute.trim() : '',
+        withdrawalDays,
+        withdrawalClearDateIso,
+        bodyConditionScore: isHealthScore ? safeNonNegNumber(logBodyConditionScore, false, 20) : 0,
+        famachaScore: isHealthScore ? safeNonNegNumber(logFamachaScore, true, 5) : 0,
+        fecalEggCount: isHealthScore ? safeNonNegNumber(logFecalEggCount, true, 1_000_000) : 0,
+        ultrasoundResult: isScan ? logUltrasoundResult : '',
+        ultrasoundFetalCount: isScan ? safeNonNegNumber(logUltrasoundFetalCount, true, 100) : 0,
+        notes: logNotes.trim(),
+      });
+      if (saved !== false) {
+        resetLogFields();
+        setShowLogForm(false);
+      }
     });
-    resetLogFields();
-    setShowLogForm(false);
   };
 
   const openFormalPedigreePreview = (subject: Animal) => {
@@ -605,8 +619,13 @@ export function HerdScreen({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => onArchiveAnimals([activeAnimal.id], !isAnimalArchived(activeAnimal))}
-                className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap ${
+                disabled={inlineAnimalLock.isKeyLocked(`archive-${activeAnimal.id}`)}
+                onClick={() =>
+                  void inlineAnimalLock.runKeyLocked(`archive-${activeAnimal.id}`, () =>
+                    onArchiveAnimals([activeAnimal.id], !isAnimalArchived(activeAnimal))
+                  )
+                }
+                className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-55 ${
                   isAnimalArchived(activeAnimal)
                     ? 'border-[var(--barn-sage)] text-[var(--barn-sage)] bg-[var(--barn-sage-tint)]'
                     : 'border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)]'
@@ -669,8 +688,13 @@ export function HerdScreen({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onSaveAnimal({ ...activeAnimal, needsAttention: false })}
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                  disabled={inlineAnimalLock.isKeyLocked(`attention-${activeAnimal.id}`)}
+                  onClick={() =>
+                    void inlineAnimalLock.runKeyLocked(`attention-${activeAnimal.id}`, () =>
+                      onSaveAnimal({ ...activeAnimal, needsAttention: false })
+                    )
+                  }
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-60"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
                   Mark Attention Resolved
@@ -1126,14 +1150,17 @@ export function HerdScreen({
                   {alleleInference && alleleInference.notes.length > 0 && (
                     <button
                       type="button"
+                      disabled={inlineAnimalLock.isKeyLocked(`alleles-${activeAnimal.id}`)}
                       onClick={() =>
-                        onSaveAnimal({
-                          ...activeAnimal,
-                          genotype: alleleInference.updatedPairs,
-                          genotypeRaw: alleleInference.formatted,
-                        })
+                        void inlineAnimalLock.runKeyLocked(`alleles-${activeAnimal.id}`, () =>
+                          onSaveAnimal({
+                            ...activeAnimal,
+                            genotype: alleleInference.updatedPairs,
+                            genotypeRaw: alleleInference.formatted,
+                          })
+                        )
                       }
-                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold whitespace-nowrap"
+                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold whitespace-nowrap disabled:opacity-60"
                     >
                       Save Inferred Alleles ({alleleInference.notes.length})
                     </button>
@@ -1496,19 +1523,25 @@ export function HerdScreen({
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
+                      disabled={careLogSubmitLock.isSubmitting}
                       onClick={() => {
                         resetLogFields();
                         setShowLogForm(false);
                       }}
-                      className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)]"
+                      className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] disabled:opacity-50"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="min-h-[34px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold"
+                      disabled={careLogSubmitLock.isSubmitting}
+                      aria-busy={careLogSubmitLock.isSubmitting}
+                      className="min-h-[34px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
                     >
-                      Save Entry
+                      {careLogSubmitLock.isSubmitting && (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      )}
+                      {careLogSubmitLock.isSubmitting ? 'Saving...' : 'Save Entry'}
                     </button>
                   </div>
                 </form>
@@ -1518,7 +1551,7 @@ export function HerdScreen({
                 <p className="text-xs text-[var(--barn-muted)]">No care or weight entries yet.</p>
               ) : (
                 <div className="divide-y divide-[var(--barn-border)]">
-                  {activeAnimalLogs.map((log) => {
+                  {activeAnimalLogs.slice(0, visibleCareLogCount).map((log) => {
                     const extraDetails = [
                       log.medicationName
                         ? `${log.medicationName}${log.dosage ? ` (${log.dosage})` : ''}${log.administrationRoute ? ` via ${log.administrationRoute}` : ''}`
@@ -1572,6 +1605,29 @@ export function HerdScreen({
                       </div>
                     );
                   })}
+                  {activeAnimalLogs.length > visibleCareLogCount && (
+                    <div className="pt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="text-[var(--barn-muted)]">
+                        Showing {visibleCareLogCount} of {activeAnimalLogs.length} care logs
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setVisibleCareLogCount((n) => n + 30)}
+                          className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] font-medium"
+                        >
+                          Show Next 30
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setVisibleCareLogCount(activeAnimalLogs.length)}
+                          className="min-h-[44px] sm:min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-[var(--barn-muted)]"
+                        >
+                          Show All
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

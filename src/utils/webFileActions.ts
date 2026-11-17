@@ -42,13 +42,28 @@ function toDirectBlob(payload: string | Uint8Array, mimeType: string): Blob {
 
 function estimatePayloadBytes(payload: string | Uint8Array): number {
   if (typeof payload !== 'string') return payload.byteLength;
-  if (typeof Blob !== 'undefined') {
-    return new Blob([payload]).size;
+  const len = payload.length;
+  // Fast bounds avoid allocating a multi-MB duplicate Blob/Uint8Array just to check threshold.
+  if (len * 3 < OPFS_SCRATCHPAD_THRESHOLD_BYTES) {
+    return len * 3;
+  }
+  if (len >= OPFS_SCRATCHPAD_THRESHOLD_BYTES) {
+    return len;
   }
   if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(payload).byteLength;
+    const encoder = new TextEncoder();
+    const chunk = new Uint8Array(4096);
+    let total = 0;
+    let offset = 0;
+    while (offset < len) {
+      const { read, written } = encoder.encodeInto(payload.slice(offset, offset + 1024), chunk);
+      total += written;
+      if (read <= 0) break;
+      offset += read;
+    }
+    return total;
   }
-  return payload.length * 2;
+  return len * 2;
 }
 
 /**
@@ -69,7 +84,7 @@ export async function downloadBlobDirect(filename: string, blob: Blob): Promise<
     }
     setTimeout(() => {
       URL.revokeObjectURL(url);
-    }, 2000);
+    }, 4000);
   }
 }
 
@@ -132,7 +147,7 @@ async function triggerBlobDownloadWithOpfsScratchpad(
           void removeTempOpfsFile(activeTempFile);
         }
       }
-    }, 2000);
+    }, 4000);
   } finally {
     if (!downloadDispatched) {
       if (url) {
