@@ -45,10 +45,10 @@ import {
 import { BarnDatabaseSnapshot } from '../core/models';
 import {
   buildErrorLogsJson,
-  buildSupportBundleZipArchive,
   buildSupportMailtoHref,
   formatSupportReportText,
 } from '../core/supportBundle';
+import { buildSupportBundleZipOffThread } from '../storage/offThreadWorkerClient';
 import { formatTimestampedBackupSlug } from '../core/syncAndExports';
 import {
   clearAllDiagnosticLogs,
@@ -82,6 +82,10 @@ interface DiagnosticsAndSupportPanelProps {
     backupFilename: string | null;
   }>;
   onLocateConflicts?: () => void;
+  onHydrateSnapshotForExport?: (
+    targetSnapshot?: BarnDatabaseSnapshot,
+    filterSpecies?: string
+  ) => Promise<BarnDatabaseSnapshot>;
 }
 
 type LogFilterTab = 'all' | 'errors' | 'memory';
@@ -93,6 +97,7 @@ export function DiagnosticsAndSupportPanel({
   onResetDatabaseConnection,
   onPurgeCorruptedCaches,
   onLocateConflicts,
+  onHydrateSnapshotForExport,
 }: DiagnosticsAndSupportPanelProps) {
   const [config, setConfig] = useState(() => getDiagnosticConfig());
   const [entries, setEntries] = useState<DiagnosticLogEntry[]>([]);
@@ -231,10 +236,14 @@ export function DiagnosticsAndSupportPanel({
     try {
       const list = await listDiagnosticLogs();
       const sum = await getDiagnosticSummary(list);
-      const built = buildSupportBundleZipArchive({
+      const bundleSnapshot =
+        includeDataInBundle && includePhotosInBundle && onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport(snapshot)
+          : snapshot;
+      const built = await buildSupportBundleZipOffThread({
         entries: list,
         summary: sum,
-        snapshot,
+        snapshot: bundleSnapshot,
         includeData: includeDataInBundle,
         includePhotos: includePhotosInBundle,
       });

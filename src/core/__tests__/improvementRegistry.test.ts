@@ -62,11 +62,16 @@ describe('improvementRegistry — anti-wipeout tracking & drift verification', (
     expect(md).toContain('npm run verify:improvements');
     expect(md).toContain('IMP-001');
     expect(md).toContain('IMP-011');
+    expect(md).toContain('IMP-014');
+    expect(md).toContain('IMP-015');
+    expect(md).toContain('IMP-016');
+    expect(md).toContain('IMP-017');
 
     const jsonText = buildImprovementsRecoveryJson();
     const parsed = JSON.parse(jsonText);
     expect(parsed.format).toBe('community-pedigree-improvements-log');
     expect(parsed.totalEntries).toBe(IMPROVEMENTS_REGISTRY.length);
     expect(Array.isArray(parsed.entries)).toBe(true);
+    expect(parsed.entries.some((e: { id: string }) => e.id === 'IMP-017')).toBe(true);
   });
 });

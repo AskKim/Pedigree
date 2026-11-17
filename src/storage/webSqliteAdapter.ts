@@ -41,7 +41,8 @@ import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
-import { StorageAdapter } from './storageAdapter';
+import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
+import { SnapshotLoadOptions, StorageAdapter } from './storageAdapter';
 import {
   isQuotaExceededError,
   listRollingSnapshotBackups,
@@ -545,7 +546,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  async initialize(): Promise<BarnDatabaseSnapshot> {
+  async initialize(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
+    const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
+      options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
+
     try {
       this.SQL = await initSqlJs({
         locateFile: () => sqlWasmUrl,
@@ -564,7 +568,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         }
         this.db = new this.SQL.Database(savedBytes);
         applySchemaMigrations(this.db);
-        const snap = await this.loadSnapshot();
+        const snap = await this.loadSnapshot(options);
         if (snap.speciesProfiles.length === 0 && snap.animals.length === 0) {
           const recovered = await this.findRecoveredBackupSnapshot();
           if (recovered) {
@@ -574,7 +578,7 @@ export class WebSqliteAdapter implements StorageAdapter {
               category: 'storage',
               message: `Corrective action: Recovered ${recovered.snapshot.animals.length} animals from ${recovered.source} after empty SQLite database`,
             });
-            return recovered.snapshot;
+            return finalizeSnapshot(recovered.snapshot);
           }
           const seeded = buildFullPredefinedSampleSnapshot();
           await this.replaceSnapshot(seeded);
@@ -583,7 +587,7 @@ export class WebSqliteAdapter implements StorageAdapter {
             category: 'storage',
             message: `Corrective action: Empty SQLite store with no backups initialized with starter sample data (${seeded.animals.length} animals)`,
           });
-          return seeded;
+          return finalizeSnapshot(seeded);
         }
         return snap;
       } else {
@@ -597,11 +601,11 @@ export class WebSqliteAdapter implements StorageAdapter {
             category: 'storage',
             message: `Corrective action: Restored ${recovered.snapshot.animals.length} animals from ${recovered.source} when primary SQLite blob was missing`,
           });
-          return recovered.snapshot;
+          return finalizeSnapshot(recovered.snapshot);
         }
         const seeded = buildFullPredefinedSampleSnapshot();
         await this.replaceSnapshot(seeded);
-        return seeded;
+        return finalizeSnapshot(seeded);
       }
     } catch (err) {
       console.warn('WASM SQLite fallback to IndexedDB JSON / Rolling Snapshot:', err);
@@ -623,7 +627,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           category: 'storage',
           message: `Corrective action: Auto-recovered ${recovered.snapshot.animals.length} animals from ${recovered.source}${rebuiltSqlite ? ' and rebuilt clean SQLite DB' : ''}`,
         });
-        return recovered.snapshot;
+        return finalizeSnapshot(recovered.snapshot);
       }
 
       const seeded = buildFullPredefinedSampleSnapshot();
@@ -638,7 +642,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       } catch {
         // Keep in-memory fallback even if quota is full
       }
-      return seeded;
+      return finalizeSnapshot(seeded);
     }
   }
 
@@ -705,9 +709,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  async loadSnapshot(): Promise<BarnDatabaseSnapshot> {
+  async loadSnapshot(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     if (!this.db) {
-      return this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
+      const base = this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
+      return options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(base) : base;
     }
 
     let sanitizedNumericCount = 0;
@@ -947,9 +952,15 @@ export class WebSqliteAdapter implements StorageAdapter {
       }
     );
 
-    const animalPhotos: AnimalPhoto[] = this.queryObjects(
-      'SELECT * FROM animal_photos ORDER BY is_primary DESC, sort_order ASC, created_at ASC'
-    ).map((r) => ({
+    const photoQuerySql = options?.lightweightPhotos
+      ? `SELECT id, species, animal_id, is_primary, sort_order, caption, original_file_name, mime_type,
+                width, height, original_bytes, stored_bytes,
+                CASE WHEN length(thumbnail_data_url) > 0 THEN thumbnail_data_url ELSE data_url END AS thumbnail_data_url,
+                '' AS data_url, created_at, updated_at
+         FROM animal_photos ORDER BY is_primary DESC, sort_order ASC, created_at ASC`
+      : 'SELECT * FROM animal_photos ORDER BY is_primary DESC, sort_order ASC, created_at ASC';
+
+    const animalPhotos: AnimalPhoto[] = this.queryObjects(photoQuerySql).map((r) => ({
       id: String(r.id),
       species: String(r.species),
       animalId: String(r.animal_id),
@@ -963,7 +974,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       originalBytes: finiteNonNeg(r.original_bytes, 0),
       storedBytes: finiteNonNeg(r.stored_bytes, 0),
       thumbnailDataUrl: String(r.thumbnail_data_url || r.data_url || ''),
-      dataUrl: String(r.data_url || ''),
+      dataUrl: options?.lightweightPhotos ? '' : String(r.data_url || ''),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     }));
@@ -1097,11 +1108,93 @@ export class WebSqliteAdapter implements StorageAdapter {
     };
   }
 
+  async loadAnimalPhotoDataUrl(photoId: string): Promise<string | null> {
+    if (!photoId) return null;
+    if (!this.db) {
+      const found = (this.fallbackSnapshot?.animalPhotos ?? []).find((p) => p.id === photoId);
+      return found?.dataUrl || found?.thumbnailDataUrl || null;
+    }
+    const stmt = this.db.prepare('SELECT data_url, thumbnail_data_url FROM animal_photos WHERE id = ? LIMIT 1');
+    try {
+      stmt.bind([photoId]);
+      if (!stmt.step()) return null;
+      const row = stmt.getAsObject() as { data_url?: unknown; thumbnail_data_url?: unknown };
+      const resolved = String(row.data_url || row.thumbnail_data_url || '');
+      return resolved || null;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async loadAnimalPhotoDataUrlsBatch(photoIds?: string[]): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    if (photoIds && photoIds.length === 0) return out;
+
+    if (!this.db) {
+      const wanted = photoIds ? new Set(photoIds) : null;
+      for (const p of this.fallbackSnapshot?.animalPhotos ?? []) {
+        if (wanted && !wanted.has(p.id)) continue;
+        const val = p.dataUrl || p.thumbnailDataUrl || '';
+        if (val) out[p.id] = val;
+      }
+      return out;
+    }
+
+    if (!photoIds) {
+      const rows = this.queryObjects('SELECT id, data_url, thumbnail_data_url FROM animal_photos');
+      for (const r of rows) {
+        const id = String(r.id || '');
+        const val = String(r.data_url || r.thumbnail_data_url || '');
+        if (id && val) out[id] = val;
+      }
+      return out;
+    }
+
+    // Query in chunks of 200 to stay comfortably within SQLite parameter limits
+    for (let i = 0; i < photoIds.length; i += 200) {
+      const chunk = photoIds.slice(i, i + 200);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const stmt = this.db.prepare(
+        `SELECT id, data_url, thumbnail_data_url FROM animal_photos WHERE id IN (${placeholders})`
+      );
+      try {
+        stmt.bind(chunk);
+        while (stmt.step()) {
+          const r = stmt.getAsObject() as { id?: unknown; data_url?: unknown; thumbnail_data_url?: unknown };
+          const id = String(r.id || '');
+          const val = String(r.data_url || r.thumbnail_data_url || '');
+          if (id && val) out[id] = val;
+        }
+      } finally {
+        stmt.free();
+      }
+    }
+    return out;
+  }
+
   async replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void> {
     if (!this.db) {
-      this.fallbackSnapshot = snapshot;
-      await this.persistToDisk(snapshot);
+      const existingById = new Map<string, string>();
+      for (const prev of this.fallbackSnapshot?.animalPhotos ?? []) {
+        if (prev.dataUrl) existingById.set(prev.id, prev.dataUrl);
+      }
+      const nextPhotos = (snapshot.animalPhotos ?? []).map((p) =>
+        p.dataUrl ? p : { ...p, dataUrl: existingById.get(p.id) || p.thumbnailDataUrl || '' }
+      );
+      const nextSnap: BarnDatabaseSnapshot = { ...snapshot, animalPhotos: nextPhotos };
+      this.fallbackSnapshot = nextSnap;
+      await this.persistToDisk(nextSnap);
       return;
+    }
+
+    const existingPhotoDataUrls = new Map<string, string>();
+    const hasDehydratedPhoto = (snapshot.animalPhotos ?? []).some((p) => !p.dataUrl);
+    if (hasDehydratedPhoto) {
+      for (const row of this.queryObjects('SELECT id, data_url FROM animal_photos')) {
+        const id = String(row.id || '');
+        const dataUrl = String(row.data_url || '');
+        if (id && dataUrl) existingPhotoDataUrls.set(id, dataUrl);
+      }
     }
 
     this.db.run('BEGIN TRANSACTION;');
@@ -1119,7 +1212,12 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.upsertSettingsRow(snapshot.settings);
       for (const sp of snapshot.speciesProfiles) this.upsertSpeciesRow(sp);
       for (const a of snapshot.animals) this.upsertAnimalRow(a);
-      for (const p of snapshot.animalPhotos ?? []) this.upsertAnimalPhotoRow(p);
+      for (const p of snapshot.animalPhotos ?? []) {
+        const preservedDataUrl = p.dataUrl || existingPhotoDataUrls.get(p.id) || '';
+        this.upsertAnimalPhotoRow(
+          preservedDataUrl === p.dataUrl ? p : { ...p, dataUrl: preservedDataUrl }
+        );
+      }
       for (const c of snapshot.cages) this.upsertCageRow(c);
       for (const b of snapshot.breedings) this.upsertBreedingRow(b);
       for (const t of snapshot.tasks) this.upsertTaskRow(t);
@@ -1136,7 +1234,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       throw e;
     }
 
-    await this.persistToDisk(snapshot);
+    await this.persistToDisk(hasDehydratedPhoto ? undefined : snapshot);
   }
 
   private upsertSettingsRow(s: BarnSettings): void {
@@ -1259,6 +1357,19 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   private upsertAnimalPhotoRow(p: AnimalPhoto): void {
+    let resolvedDataUrl = p.dataUrl;
+    if (!resolvedDataUrl && this.db) {
+      const stmt = this.db.prepare('SELECT data_url FROM animal_photos WHERE id = ? LIMIT 1');
+      try {
+        stmt.bind([p.id]);
+        if (stmt.step()) {
+          const existing = stmt.getAsObject() as { data_url?: unknown };
+          resolvedDataUrl = String(existing.data_url || '');
+        }
+      } finally {
+        stmt.free();
+      }
+    }
     this.db?.run(
       `INSERT OR REPLACE INTO animal_photos
        (id, species, animal_id, is_primary, sort_order, caption, original_file_name, mime_type, width, height, original_bytes, stored_bytes, thumbnail_data_url, data_url, created_at, updated_at)
@@ -1277,7 +1388,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         p.originalBytes,
         p.storedBytes,
         p.thumbnailDataUrl,
-        p.dataUrl,
+        resolvedDataUrl,
         p.createdAt,
         p.updatedAt,
       ]
@@ -1559,8 +1670,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     } else if (this.fallbackSnapshot) {
       const list = this.fallbackSnapshot.animalPhotos || [];
       const idx = list.findIndex((p) => p.id === photo.id);
-      if (idx >= 0) list[idx] = photo;
-      else list.push(photo);
+      const preserved =
+        !photo.dataUrl && idx >= 0 ? { ...photo, dataUrl: list[idx].dataUrl } : photo;
+      if (idx >= 0) list[idx] = preserved;
+      else list.push(preserved);
       this.fallbackSnapshot.animalPhotos = list;
     }
     await this.persistToDisk();
@@ -1585,8 +1698,10 @@ export class WebSqliteAdapter implements StorageAdapter {
       const list = this.fallbackSnapshot.animalPhotos || [];
       for (const p of photos) {
         const idx = list.findIndex((x) => x.id === p.id);
-        if (idx >= 0) list[idx] = p;
-        else list.push(p);
+        const preserved =
+          !p.dataUrl && idx >= 0 ? { ...p, dataUrl: list[idx].dataUrl } : p;
+        if (idx >= 0) list[idx] = preserved;
+        else list.push(preserved);
       }
       this.fallbackSnapshot.animalPhotos = list;
     }
@@ -1762,7 +1877,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     return this.db.export();
   }
 
-  async importRawSqliteBytes(bytes: Uint8Array): Promise<BarnDatabaseSnapshot> {
+  async importRawSqliteBytes(
+    bytes: Uint8Array,
+    options?: SnapshotLoadOptions
+  ): Promise<BarnDatabaseSnapshot> {
     if (!this.SQL) {
       throw new Error('SQLite WebAssembly engine is not available in this browser.');
     }
@@ -1777,10 +1895,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
     this.db = importedDb;
     await this.persistToDisk();
-    return this.loadSnapshot();
+    return this.loadSnapshot(options);
   }
 
-  async resetConnection(): Promise<BarnDatabaseSnapshot> {
+  async resetConnection(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     if (this.db) {
       try {
         this.db.close();
@@ -1796,10 +1914,10 @@ export class WebSqliteAdapter implements StorageAdapter {
     } catch {
       // Ignore fallback delete failure
     }
-    return this.initialize();
+    return this.initialize(options);
   }
 
-  async rebuildCleanDatabase(): Promise<BarnDatabaseSnapshot> {
+  async rebuildCleanDatabase(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     if (this.db) {
       try {
         this.db.close();
@@ -1812,6 +1930,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     this.fallbackSnapshot = null;
     await idbDelete(IDB_PRIMARY_KEY);
     await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-    return this.initialize();
+    return this.initialize(options);
   }
 }

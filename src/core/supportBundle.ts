@@ -175,13 +175,17 @@ export function buildErrorLogsJson(
   );
 }
 
-export function buildSupportBundleZipArchive(params: {
+export interface SupportBundleBuildParams {
   entries: DiagnosticLogEntry[];
   summary: DiagnosticSummary;
   snapshot?: BarnDatabaseSnapshot | null;
   includeData: boolean;
   includePhotos: boolean;
-}): SupportBundleBuildResult {
+}
+
+export function buildSupportBundleZipArchive(
+  params: SupportBundleBuildParams
+): SupportBundleBuildResult {
   const { entries, summary, snapshot, includeData, includePhotos } = params;
   const stamp = formatTimestampedBackupSlug();
   let zipFiles: Zippable = {};

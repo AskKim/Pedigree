@@ -41,6 +41,7 @@ interface AnimalPhotoGalleryProps {
   animal: Animal;
   photos: AnimalPhoto[];
   optimizationPresetId?: ImageOptimizationPresetId;
+  onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
   onAddPhotos: (
     payloads: Array<OptimizedImagePayload & { caption?: string }>
   ) => Promise<void> | void;
@@ -53,6 +54,7 @@ export function AnimalPhotoGallery({
   animal,
   photos,
   optimizationPresetId,
+  onLoadFullPhoto,
   onAddPhotos,
   onSetPrimary,
   onUpdateCaption,
@@ -69,17 +71,53 @@ export function AnimalPhotoGallery({
   const [captionDraft, setCaptionDraft] = useState<string>('');
   const [captionSavedPulse, setCaptionSavedPulse] = useState<boolean>(false);
   const [showPrimaryPrompt, setShowPrimaryPrompt] = useState<boolean>(false);
+  const [hydratedUrls, setHydratedUrls] = useState<Record<string, string>>({});
+  const [loadingPhotoId, setLoadingPhotoId] = useState<string | null>(null);
 
   const preset = resolveImageOptimizationPreset(optimizationPresetId);
 
   const activePhoto: AnimalPhoto | null =
     photos.find((p) => p.id === selectedPhotoId) || photos[0] || null;
   const activeIndex = activePhoto ? photos.findIndex((p) => p.id === activePhoto.id) : -1;
+  const activePhotoSrc = activePhoto
+    ? activePhoto.dataUrl || hydratedUrls[activePhoto.id] || activePhoto.thumbnailDataUrl
+    : '';
 
   const lightboxDialogRef = useAccessibleDialog({
     isOpen: Boolean(lightboxOpen && activePhoto),
     onClose: () => setLightboxOpen(false),
   });
+
+  // Clear per-animal resolved full-res image URLs when switching animals
+  useEffect(() => {
+    setHydratedUrls({});
+    setLoadingPhotoId(null);
+  }, [animal.id]);
+
+  // Lazily fetch full-resolution dataUrl from SQLite when viewing a dehydrated photo
+  useEffect(() => {
+    if (!activePhoto || activePhoto.dataUrl || hydratedUrls[activePhoto.id] || !onLoadFullPhoto) {
+      return;
+    }
+    let cancelled = false;
+    const targetId = activePhoto.id;
+    setLoadingPhotoId(targetId);
+    void onLoadFullPhoto(targetId)
+      .then((resolved) => {
+        if (cancelled || !resolved) return;
+        setHydratedUrls((prev) =>
+          prev[targetId] === resolved ? prev : { ...prev, [targetId]: resolved }
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingPhotoId((curr) => (curr === targetId ? null : curr));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePhoto, hydratedUrls, onLoadFullPhoto]);
 
   // Reset active selection and caption draft when switching animals or active photo
   useEffect(() => {
@@ -288,11 +326,19 @@ export function AnimalPhotoGallery({
             <div className="rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden">
               <div className="relative bg-black/20 flex items-center justify-center max-h-72 overflow-hidden group">
                 <img
-                  src={activePhoto.dataUrl}
+                  src={activePhotoSrc}
                   alt={activePhoto.caption || `${animal.name} photo`}
                   onClick={() => setLightboxOpen(true)}
                   className="max-h-72 w-auto object-contain cursor-zoom-in select-none"
                 />
+                {loadingPhotoId === activePhoto.id && !activePhoto.dataUrl && !hydratedUrls[activePhoto.id] && (
+                  <span
+                    role="status"
+                    className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-black/70 text-white text-[10px] font-medium"
+                  >
+                    Loading full photo...
+                  </span>
+                )}
 
                 {/* Top-Left Cover Status / Set Primary Action */}
                 <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
@@ -546,7 +592,7 @@ export function AnimalPhotoGallery({
 
             <div className="relative w-full flex items-center justify-center">
               <img
-                src={activePhoto.dataUrl}
+                src={activePhotoSrc}
                 alt={activePhoto.caption || animal.name}
                 className="max-h-[78vh] max-w-full rounded-xl object-contain"
               />

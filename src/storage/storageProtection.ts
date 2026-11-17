@@ -24,7 +24,9 @@ function estimateSnapshotByteSize(snapshot: BarnDatabaseSnapshot): number {
   bytes += (snapshot.careLogs?.length || 0) * 300;
   bytes += (snapshot.shows?.length || 0) * 280;
   for (const photo of snapshot.animalPhotos ?? []) {
-    bytes += 220 + (photo.dataUrl?.length || 0) + (photo.thumbnailDataUrl?.length || 0);
+    const estimatedDataUrlBytes =
+      photo.dataUrl?.length || (photo.storedBytes ? Math.ceil(photo.storedBytes * 1.37) : 0);
+    bytes += 220 + estimatedDataUrlBytes + (photo.thumbnailDataUrl?.length || 0);
   }
   return bytes;
 }

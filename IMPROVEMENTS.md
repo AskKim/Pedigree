@@ -22,7 +22,7 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 
 ---
 
-## Logged Improvements (13)
+## Logged Improvements (17)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -106,7 +106,7 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Fix repeated Chrome Android tab crashes before/during app startup and keep pedigree/bulk operations fast under tight mobile RAM.
-- **Summary:** Disables Workbox SW in dev + adds self-unregistering `/dev-sw.js` middleware, scopes eager COI computation off home/settings boot, guards `PedigreeIndex.inbreeding` recursion cycles, and batches SQLite/IndexedDB mutations (`React.lazy` route splitting deferred).
+- **Summary:** Disables Workbox SW in dev + adds self-unregistering `/dev-sw.js` middleware, scopes eager COI computation off home/settings boot, guards `PedigreeIndex.inbreeding` recursion cycles, batches SQLite/IndexedDB mutations, and code-splits secondary routes with `React.lazy`.
 - **Tracked Files:** `vite.config.ts`, `src/main.tsx`, `src/core/pedigreeCalculator.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`
 
 **Restoration Playbook if Overwritten:**
@@ -187,5 +187,55 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 1. Restore `UniversalPedigreeImporter` and register it in `src/core/importers/registry.ts`.
 2. Keep `decodeTextBytes` UTF-16/Windows-1252 decoding and `validateAndFormatYmd` in `src/core/importers/archiveAndCsvUtils.ts`.
 3. Preserve `visitedPath` cycle guard on `countDirectAncestors` in `src/core/pedigreeCalculator.ts` and accessibility attributes across modal/form components.
+
+### IMP-014: Species Tattoo/Sex Conflict Guardrails, Override & Import Conflict Alerts
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Catch duplicate within-species IDs and parent sex mismatches, discourage accidental duplicate tattoos with an explicit override, never hard-block imports on conflicts, and let breeders locate or ignore soft warnings.
+- **Summary:** Enforces same-species duplicate tattoo/ID checks and parent sex checks in DB health scans, requires typing `override` before reusing a same-sex duplicate tattoo on animal/litter creation, flags imported conflicts non-blockingly via `importConflictAlert` + `Conflicts First` sorting, and supports persistent per-animal soft-warning ignore toggles.
+- **Tracked Files:** `src/core/animalConflicts.ts`, `src/core/dataHealthCheck.ts`, `src/components/AnimalEditorModal.tsx`, `src/components/BreedingScreen.tsx`, `src/components/HerdScreen.tsx`, `src/hooks/useBarnStore.ts`, `src/App.tsx`, `src/core/__tests__/animalConflictsAndHealth.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `findSameSexDuplicateTattooCollisions`, `isOverrideConfirmationValid`, and `analyzeBarnAnimalConflicts` in `src/core/animalConflicts.ts`.
+2. Preserve duplicate tattoo and parent sex mismatch checks in `src/core/dataHealthCheck.ts`.
+3. Keep `"override"` guards in `AnimalEditorModal.tsx` and `BreedingScreen.tsx`, `conflicts_first` sorting/ignore controls in `HerdScreen.tsx`, and `importConflictAlert` wiring in `useBarnStore.ts` / `App.tsx`.
+
+### IMP-015: 5-Tier Device Capability Detection & Adaptive Memory Cautions
+
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Detect constrained mobile devices early, warn users appropriately by hardware tier, and keep Tier 1–2 cautions impossible to accidentally hide permanently.
+- **Summary:** Classifies host hardware into 5 memory/CPU tiers, surfaces hardware guidance in Home onboarding and Settings with tier-locked dismissal rules (Tier 1 locked in both; Tier 2 closable on Home, persistent in Settings; Tiers 3–5 closable and reopenable), and applies workload cautions in the External Importer.
+- **Tracked Files:** `src/core/deviceCapability.ts`, `src/storage/deviceCapabilityDetector.ts`, `src/components/DeviceCapabilityCard.tsx`, `src/components/HomeSpeciesScreen.tsx`, `src/components/SettingsAndSyncScreen.tsx`, `src/components/ExternalImporterPanel.tsx`, `src/App.tsx`, `src/core/__tests__/deviceCapability.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Preserve `DEVICE_CAPABILITY_TIERS`, `classifyDeviceCapability`, and `evaluateBarnWorkloadForTier` in `src/core/deviceCapability.ts`.
+2. Keep `useDeviceCapability` in `src/storage/deviceCapabilityDetector.ts` and `<DeviceCapabilityCard>` mounts in `HomeSpeciesScreen.tsx` and `SettingsAndSyncScreen.tsx`.
+
+### IMP-016: Route-Level Code Splitting with Retry & Chunk Error Boundary
+
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Reduce startup JS bundle size and memory pressure by lazy-loading secondary screens without breaking offline or stale-chunk recovery.
+- **Summary:** Code-splits secondary screens and calendar modal via `lazyNamedRoute` (`React.lazy`) with automatic single retry, `RouteLoadingFallback` skeleton, and `RouteErrorBoundary` recovery UI.
+- **Tracked Files:** `src/utils/lazyRoute.tsx`, `src/App.tsx`, `src/utils/__tests__/lazyRoute.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `lazyNamedRoute`, `loadWithSingleRetry`, `RouteLoadingFallback`, and `RouteErrorBoundary` in `src/utils/lazyRoute.tsx`.
+2. Keep `React.lazy` declarations and `<RouteErrorBoundary><Suspense>` wrapping secondary routes in `src/App.tsx`.
+
+### IMP-017: On-Demand Full-Resolution Photo Hydration & Off-Thread `.ZIP`/Import Worker
+
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Eliminate heavy base64 photo retention and UI-thread freezes during large `.ZIP` backups and external pedigree imports on mobile devices.
+- **Summary:** Keeps only lightweight thumbnails in reactive snapshot RAM, lazily hydrates full-resolution photo `dataUrl`s via `BoundedPhotoDataCache` and SQLite fetchers on gallery/lightbox/print/export demand while protecting stored `data_url` rows on write, and runs `.ZIP` builds/extractions and external archive parsing in a dedicated Web Worker with async fallback.
+- **Tracked Files:** `src/storage/photoHydration.ts`, `src/storage/webSqliteAdapter.ts`, `src/storage/archiveAndImport.worker.ts`, `src/storage/offThreadWorkerClient.ts`, `src/hooks/useBarnStore.ts`, `src/components/AnimalPhotoGallery.tsx`, `src/components/ExternalImporterPanel.tsx`, `src/components/SettingsAndSyncScreen.tsx`, `src/storage/__tests__/photoHydrationAndWorker.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `BoundedPhotoDataCache` and `hydrateSnapshotWithPhotoDataUrls` in `src/storage/photoHydration.ts` plus `lightweightPhotos` guards in `src/storage/webSqliteAdapter.ts`.
+2. Keep `archiveAndImport.worker.ts` and `offThreadWorkerClient.ts` wired into `useBarnStore.ts`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `ExternalImporterPanel.tsx`.
+3. Keep `onLoadFullPhoto` / `onHydrateSnapshotForExport` props wired from `App.tsx` to galleries, pedigree print modals, Barn Binders, and backup exports.
 
 

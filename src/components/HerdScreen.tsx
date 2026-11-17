@@ -124,6 +124,7 @@ interface HerdScreenProps {
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   requestedConflictFocusNonce?: number;
+  onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
 }
 
 type HerdFilterTab =
@@ -162,6 +163,7 @@ export function HerdScreen({
   onIgnoreConflicts,
   onRestoreConflictAlert,
   requestedConflictFocusNonce,
+  onLoadFullPhoto,
 }: HerdScreenProps) {
   const {
     speciesProfile,
@@ -231,6 +233,34 @@ export function HerdScreen({
     hasGenetics?: boolean;
     pedigreeSubject?: Animal;
   } | null>(null);
+  const [hydratedPedigreePhoto, setHydratedPedigreePhoto] = useState<{
+    photoId: string;
+    dataUrl: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!previewDoc?.isPedigree || !previewDoc.pedigreeSubject || !settings.includePhotoOnPedigree) {
+      return;
+    }
+    const primary = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
+    if (!primary || primary.dataUrl || !onLoadFullPhoto) return;
+    if (hydratedPedigreePhoto?.photoId === primary.id) return;
+    let cancelled = false;
+    void onLoadFullPhoto(primary.id).then((resolved) => {
+      if (!cancelled && resolved) {
+        setHydratedPedigreePhoto({ photoId: primary.id, dataUrl: resolved });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    previewDoc,
+    settings.includePhotoOnPedigree,
+    primaryPhotoByAnimalId,
+    onLoadFullPhoto,
+    hydratedPedigreePhoto,
+  ]);
 
   // Quick Cage-Side Care/Weight Log state
   const [showLogForm, setShowLogForm] = useState(false);
@@ -508,8 +538,14 @@ export function HerdScreen({
   };
 
   const openFormalPedigreePreview = (subject: Animal) => {
-    const primaryPhoto = settings.includePhotoOnPedigree
-      ? primaryPhotoByAnimalId.get(subject.id)?.dataUrl
+    const primaryPhotoRecord = settings.includePhotoOnPedigree
+      ? primaryPhotoByAnimalId.get(subject.id)
+      : undefined;
+    const primaryPhoto = primaryPhotoRecord
+      ? primaryPhotoRecord.dataUrl ||
+        (hydratedPedigreePhoto?.photoId === primaryPhotoRecord.id
+          ? hydratedPedigreePhoto.dataUrl
+          : primaryPhotoRecord.thumbnailDataUrl)
       : undefined;
     setPreviewDoc({
       title: `Formal Pedigree (.HTM / PDF) — ${subject.name}`,
@@ -920,6 +956,7 @@ export function HerdScreen({
               animal={activeAnimal}
               photos={photosByAnimalId.get(activeAnimal.id) || []}
               optimizationPresetId={settings.imageOptimizationPreset}
+              onLoadFullPhoto={onLoadFullPhoto}
               onAddPhotos={async (payloads) => {
                 await onAddAnimalPhotos(activeAnimal, payloads);
               }}
@@ -1993,9 +2030,17 @@ export function HerdScreen({
                   speciesProfiles,
                   settings,
                   settings.defaultGenerations,
-                  settings.includePhotoOnPedigree
-                    ? primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id)?.dataUrl
-                    : undefined,
+                  (() => {
+                    if (!settings.includePhotoOnPedigree) return undefined;
+                    const primaryRec = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
+                    if (!primaryRec) return undefined;
+                    return (
+                      primaryRec.dataUrl ||
+                      (hydratedPedigreePhoto?.photoId === primaryRec.id
+                        ? hydratedPedigreePhoto.dataUrl
+                        : primaryRec.thumbnailDataUrl)
+                    );
+                  })(),
                   pedigreePrintOptions
                 )
               : previewDoc.html

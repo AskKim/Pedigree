@@ -90,7 +90,7 @@ interface SpeciesDashboardScreenProps {
   onDownloadTimestampedSpeciesBackup: (
     speciesName: string,
     reason?: SpeciesBackupReason
-  ) => void;
+  ) => Promise<void> | void;
   onMigrateAnimalsSpecies: (
     animalIds: string[],
     targetSpecies: string,
@@ -105,6 +105,10 @@ interface SpeciesDashboardScreenProps {
   onHideSummaryGrid?: () => void;
   onLocateConflicts?: () => void;
   onOpenSettings: () => void;
+  onHydrateSnapshotForExport?: (
+    targetSnapshot?: BarnDatabaseSnapshot,
+    filterSpecies?: string
+  ) => Promise<BarnDatabaseSnapshot>;
 }
 
 export function SpeciesDashboardScreen({
@@ -140,6 +144,7 @@ export function SpeciesDashboardScreen({
   onHideSummaryGrid,
   onLocateConflicts,
   onOpenSettings,
+  onHydrateSnapshotForExport,
 }: SpeciesDashboardScreenProps) {
   const {
     speciesProfile,
@@ -185,6 +190,8 @@ export function SpeciesDashboardScreen({
   const [binderOptions, setBinderOptions] = useState<BarnBinderOptions>(() =>
     buildDefaultBarnBinderOptions(settings)
   );
+  const [hydratedBinderSnapshot, setHydratedBinderSnapshot] =
+    useState<BarnDatabaseSnapshot | null>(null);
   const [hubDeleteConfirm, setHubDeleteConfirm] = useState<
     'testing' | 'non-testing' | 'all' | 'remove-species' | null
   >(null);
@@ -194,10 +201,29 @@ export function SpeciesDashboardScreen({
     setShowBinderPreview(true);
   };
 
+  useEffect(() => {
+    if (!showBinderPreview || !binderOptions.includePhotos || !onHydrateSnapshotForExport) {
+      setHydratedBinderSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    void onHydrateSnapshotForExport(snapshot, speciesProfile.name).then((hydrated) => {
+      if (!cancelled) {
+        setHydratedBinderSnapshot(hydrated);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [showBinderPreview, binderOptions.includePhotos, snapshot, speciesProfile.name, onHydrateSnapshotForExport]);
+
   const binderPreviewHtml = useMemo(() => {
     if (!showBinderPreview) return '';
-    return generateSpeciesBarnBinderHtml(snapshot, speciesProfile.name, binderOptions);
-  }, [showBinderPreview, snapshot, speciesProfile.name, binderOptions]);
+    const effectiveSnapshot = binderOptions.includePhotos
+      ? hydratedBinderSnapshot ?? snapshot
+      : snapshot;
+    return generateSpeciesBarnBinderHtml(effectiveSnapshot, speciesProfile.name, binderOptions);
+  }, [showBinderPreview, snapshot, hydratedBinderSnapshot, speciesProfile.name, binderOptions]);
 
   const binderFileName = useMemo(
     () => buildBarnBinderFileName(settings.barnName, speciesProfile.name),

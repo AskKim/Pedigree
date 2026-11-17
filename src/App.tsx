@@ -34,22 +34,62 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { BreedingScreen } from './components/BreedingScreen';
-import { CalendarSyncConfirmModal } from './components/CalendarIntegrationModals';
-import { HerdScreen } from './components/HerdScreen';
+import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
-import { PedigreeScreen } from './components/PedigreeScreen';
-import { ReportsScreen } from './components/ReportsScreen';
-import { SettingsAndSyncScreen } from './components/SettingsAndSyncScreen';
-import { SpeciesDashboardScreen } from './components/SpeciesDashboardScreen';
-import { SpeciesMemoScreen } from './components/SpeciesMemoScreen';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { useDeviceCapability } from './storage/deviceCapabilityDetector';
 import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
+import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './utils/lazyRoute';
 import { useAccessibleDialog } from './utils/useAccessibleDialog';
+
+const SpeciesDashboardScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/SpeciesDashboardScreen')['SpeciesDashboardScreen']>
+>(() => import('./components/SpeciesDashboardScreen'), 'SpeciesDashboardScreen', 'Species Dashboard');
+
+const HerdScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/HerdScreen')['HerdScreen']>
+>(() => import('./components/HerdScreen'), 'HerdScreen', 'Herd Registry');
+
+const BreedingScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/BreedingScreen')['BreedingScreen']>
+>(() => import('./components/BreedingScreen'), 'BreedingScreen', 'Breeding Lab');
+
+const PedigreeScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/PedigreeScreen')['PedigreeScreen']>
+>(() => import('./components/PedigreeScreen'), 'PedigreeScreen', 'Pedigree Explorer');
+
+const ReportsScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/ReportsScreen')['ReportsScreen']>
+>(() => import('./components/ReportsScreen'), 'ReportsScreen', 'Reports');
+
+const SpeciesMemoScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/SpeciesMemoScreen')['SpeciesMemoScreen']>
+>(() => import('./components/SpeciesMemoScreen'), 'SpeciesMemoScreen', 'Species Memo');
+
+const SettingsAndSyncScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/SettingsAndSyncScreen')['SettingsAndSyncScreen']>
+>(() => import('./components/SettingsAndSyncScreen'), 'SettingsAndSyncScreen', 'Import & Settings');
+
+const CalendarSyncConfirmModal = lazyNamedRoute<
+  ComponentProps<typeof import('./components/CalendarIntegrationModals')['CalendarSyncConfirmModal']>
+>(
+  () => import('./components/CalendarIntegrationModals'),
+  'CalendarSyncConfirmModal',
+  'Calendar Sync'
+);
+
+const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
+  home: 'All Species',
+  dashboard: 'Species Dashboard',
+  herd: 'Herd Registry',
+  breeding: 'Breeding Lab',
+  pedigree: 'Pedigree Explorer',
+  reports: 'Reports',
+  memo: 'Species Memo',
+  settings: 'Import & Settings',
+};
 
 export default function App() {
   const store = useBarnStore();
@@ -625,12 +665,19 @@ export default function App() {
           />
         )}
 
-        {route === 'dashboard' && (
-          <SpeciesDashboardScreen
-            snapshot={snapshot}
-            activeData={activeSpeciesData}
-            settings={snapshot.settings}
-            isPinned={isActivePinned}
+        {route !== 'home' && (
+          <RouteErrorBoundary
+            routeKey={`${route}:${activeSpeciesName}`}
+            routeLabel={ROUTE_LABELS[route]}
+            onNavigateHome={() => setRoute('home')}
+          >
+            <Suspense fallback={<RouteLoadingFallback label={ROUTE_LABELS[route]} />}>
+              {route === 'dashboard' && (
+                <SpeciesDashboardScreen
+                  snapshot={snapshot}
+                  activeData={activeSpeciesData}
+                  settings={snapshot.settings}
+                  isPinned={isActivePinned}
             existingSpeciesNames={snapshot.speciesProfiles.map((sp) => sp.name)}
             onNavigate={setRoute}
             onOpenAnimal={(animalId) => {
@@ -692,6 +739,7 @@ export default function App() {
             }}
             onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             onOpenSettings={() => setRoute('settings')}
+            onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
           />
         )}
 
@@ -743,6 +791,7 @@ export default function App() {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
             requestedConflictFocusNonce={store.requestedHerdConflictNonce}
+            onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
           />
         )}
 
@@ -788,6 +837,7 @@ export default function App() {
             onRestoreConflictAlert={(animalId, kinds) => {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
+            onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
           />
         )}
 
@@ -869,7 +919,11 @@ export default function App() {
             onRefreshGoogleCalendars={store.refreshGoogleCalendars}
             onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             deviceCapability={deviceCapability}
+            onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
           />
+              )}
+            </Suspense>
+          </RouteErrorBoundary>
         )}
 
         {/* Quiet Desktop Keyboard Shortcuts Hint Footer */}
@@ -895,28 +949,32 @@ export default function App() {
       </main>
 
       {/* Online Google Calendar Confirmation + Automatic Offline .ICS Fallback */}
-      <CalendarSyncConfirmModal
-        pending={store.pendingCalendarSync}
-        config={normalizeCalendarSyncSettings(snapshot.settings.calendarSync)}
-        barnName={snapshot.settings.barnName}
-        context={{
-          animals: snapshot.animals,
-          breedings: snapshot.breedings,
-          speciesProfiles: snapshot.speciesProfiles,
-          appBaseUrl:
-            typeof window !== 'undefined'
-              ? `${window.location.origin}${window.location.pathname}`
-              : '',
-        }}
-        isSignedIn={store.googleAuthConnected}
-        userEmail={store.googleUserEmail}
-        isBusy={store.googleSyncBusy}
-        isOnline={isOnline}
-        onSignIn={store.connectGoogleCalendar}
-        onConfirmGoogleSync={store.confirmGoogleCalendarSync}
-        onFallbackOfflineIcs={store.fallbackPendingCalendarSyncToIcs}
-        onCancel={store.cancelPendingCalendarSync}
-      />
+      {store.pendingCalendarSync && (
+        <Suspense fallback={null}>
+          <CalendarSyncConfirmModal
+            pending={store.pendingCalendarSync}
+            config={normalizeCalendarSyncSettings(snapshot.settings.calendarSync)}
+            barnName={snapshot.settings.barnName}
+            context={{
+              animals: snapshot.animals,
+              breedings: snapshot.breedings,
+              speciesProfiles: snapshot.speciesProfiles,
+              appBaseUrl:
+                typeof window !== 'undefined'
+                  ? `${window.location.origin}${window.location.pathname}`
+                  : '',
+            }}
+            isSignedIn={store.googleAuthConnected}
+            userEmail={store.googleUserEmail}
+            isBusy={store.googleSyncBusy}
+            isOnline={isOnline}
+            onSignIn={store.connectGoogleCalendar}
+            onConfirmGoogleSync={store.confirmGoogleCalendarSync}
+            onFallbackOfflineIcs={store.fallbackPendingCalendarSyncToIcs}
+            onCancel={store.cancelPendingCalendarSync}
+          />
+        </Suspense>
+      )}
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (

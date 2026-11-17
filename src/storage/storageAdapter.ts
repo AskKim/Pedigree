@@ -23,15 +23,30 @@ import {
   SpeciesProfile,
 } from '../core/models';
 
+export interface SnapshotLoadOptions {
+  /**
+   * When true, omits heavy full-resolution `dataUrl` image payloads from the returned
+   * snapshot (retaining `thumbnailDataUrl` previews and `storedBytes`) so list/grid views
+   * stay lightweight in JS memory. Full-resolution images are loaded on demand.
+   */
+  lightweightPhotos?: boolean;
+}
+
 export interface StorageAdapter {
   /** Human-readable description of the active local storage engine (e.g., `"SQLite WASM + IndexedDB"`). */
   readonly engineName: string;
 
   /** Initializes tables and seeds starter multi-species sample data on first launch if empty. */
-  initialize(): Promise<BarnDatabaseSnapshot>;
+  initialize(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 
   /** Reads the complete current database snapshot from local storage. */
-  loadSnapshot(): Promise<BarnDatabaseSnapshot>;
+  loadSnapshot(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
+
+  /** Loads the full-resolution base64 `dataUrl` for a single photo on demand. */
+  loadAnimalPhotoDataUrl?(photoId: string): Promise<string | null>;
+
+  /** Loads full-resolution `dataUrl` strings for specific photo IDs (or all photos if omitted). */
+  loadAnimalPhotoDataUrlsBatch?(photoIds?: string[]): Promise<Record<string, string>>;
 
   /** Replaces the entire local database with a new snapshot (used for Backup Import / Merge / Seed). */
   replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void>;
@@ -81,11 +96,11 @@ export interface StorageAdapter {
   exportRawSqliteBytes(): Promise<Uint8Array | null>;
 
   /** Imports a raw unencrypted `.sqlite` binary database file and persists it locally. */
-  importRawSqliteBytes(bytes: Uint8Array): Promise<BarnDatabaseSnapshot>;
+  importRawSqliteBytes(bytes: Uint8Array, options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 
   /** Closes and cleanly re-opens the local database connection without losing saved records. */
-  resetConnection?(): Promise<BarnDatabaseSnapshot>;
+  resetConnection?(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 
   /** Purges and rebuilds a corrupted primary IndexedDB/SQLite store cleanly from starter schema. */
-  rebuildCleanDatabase?(): Promise<BarnDatabaseSnapshot>;
+  rebuildCleanDatabase?(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 }

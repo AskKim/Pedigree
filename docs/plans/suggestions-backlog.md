@@ -9,7 +9,7 @@
 
 ---
 
-## Current App Suggestions List (5 Remaining)
+## Current App Suggestions List (14 Remaining)
 
 1. **Structured Show Placements, Wins & Points (`ShowEvent`)**
    - Expand `ShowEvent` entries to capture class placements, awards (`BOB`, `BOS`, `BIS`, `GCH`), and earned points/legs per entered animal so show summaries feed automatically into pedigrees and Male/Female reports.
@@ -25,3 +25,30 @@
 
 5. **Breeding Lab & Master Task List Refinements (`masterTaskList.ts`)**
    - **Recalculate Post-Birth Tasks on Actual Birth:** When a breeding is logged as `Bred`, `AFTER_BIRTH` tasks (weaning, rebreed readiness) are scheduled from `expectedDueDateIso`. If the birth happens a couple of days early or late and `actualBirthDateIso` is entered later, offering a one-tap option to shift uncompleted post-birth tasks to the actual birth date prevents stale weaning/rebreed reminders.
+
+6. **Tier 1 / Tier 2 Memory Cautions on Raw Backup Restores (`.JSON` / `.ZIP` / `.SQLITE`)**
+   - Surface the same pre-flight device capability & payload-size cautions shown in the external importer whenever users restore or merge raw `.JSON`, `.ZIP`, or `.SQLITE` backup files in Settings.
+
+7. **"Barn Bench" Fast Sequential Batch Entry Mode**
+   - Provide a rapid, tap-friendly barn chore sheet filtered by cage row or species—allowing breeders to log weights, body condition scores, nail trims, or cage moves down the row with auto-advance and minimal modal switching.
+
+8. **Batch Cage Card & Pedigree Printing from Herd Multi-Select**
+   - Allow breeders to multi-select animals in `HerdScreen` and generate a single printable sheet of kennel/cage cards or stacked pedigrees in one pass for shows, auctions, or transport.
+
+9. **Active Medication Withdrawal Countdown & Safety Alerts (`withdrawalClearDateIso`)**
+   - Surface active care-log withdrawal period badges on Herd cards and Home alerts—and trigger a soft confirmation warning before marking an animal under active withdrawal for sale, meat/processing, or exhibition.
+
+10. **Side-by-Side Multi-Candidate Pairing Comparison Matrix (Breeding Lab)**
+    - Let breeders compare one dam against multiple candidate sires (or vice versa) in a single table showing COI %, shared bottleneck ancestors, carrier risk flags, and predicted coat varieties side by side.
+
+11. **Litter Growth & Survival Curves**
+    - Track kit/offspring survival rate per dam/sire and chart litter weight-gain milestones (e.g., 3-week, 6-week, 8-week weaning weights) to evaluate maternal performance across seasons.
+
+12. **Genetic Variety / Coat Explorer Sandbox**
+    - Add a "What-If" genotype playground inside Breeding Lab so breeders can experiment with hypothetical loci combinations and see predicted varieties without creating temporary animal records first.
+
+13. **Pre-Restore Archive Inspector**
+    - Display a compact summary preview (species breakdown, animal count, photo payload size, and detected tattoo/sex conflicts) before committing a full `.ZIP` or `.JSON` overwrite in Settings.
+
+14. **Stale Photo / Orphan Attachment Pruner**
+    - Add a storage cleanup utility in Diagnostics/Settings to inspect total photo bytes by species, downscale legacy oversized images created before current compression targets, or selectively prune full-res payloads when nearing browser storage quota limits.

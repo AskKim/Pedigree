@@ -66,6 +66,7 @@ import {
   BatchImportPhotoProgress,
   optimizeStagedImporterPhotos,
 } from '../storage/webImageOptimizer';
+import { parseExternalImportOffThread } from '../storage/offThreadWorkerClient';
 import {
   formatReadableByteLimit,
   MAX_CSV_TEXT_BYTES,
@@ -267,29 +268,51 @@ export function ExternalImporterPanel({
     }
   };
 
-  const { preview, parseError: previewParseError } = useMemo<{
-    preview: PlatformImportPreview | null;
-    parseError: string | null;
-  }>(() => {
-    if (stagedArchives.length === 0) return { preview: null, parseError: null };
-    try {
-      return {
-        preview: importer.parse(stagedArchives, snapshot, {
-          fallbackSpeciesName: fallbackSpecies.trim() || 'Rabbit',
-          customSpeciesOverrides,
-          appendDeferredImageFilenamesToNotes: notePhotoFilenames,
-        }),
-        parseError: null,
-      };
-    } catch (err: any) {
-      return {
-        preview: null,
-        parseError: err?.message || 'Failed to unpack or parse archive.',
-      };
+  const [preview, setPreview] = useState<PlatformImportPreview | null>(null);
+  const [previewParseError, setPreviewParseError] = useState<string | null>(null);
+  const [isParsingArchive, setIsParsingArchive] = useState(false);
+  const parseRequestSeqRef = useRef(0);
+
+  useEffect(() => {
+    const reqId = ++parseRequestSeqRef.current;
+    if (stagedArchives.length === 0) {
+      setPreview(null);
+      setPreviewParseError(null);
+      setIsParsingArchive(false);
+      return;
     }
+
+    let cancelled = false;
+    setIsParsingArchive(true);
+    setPreviewParseError(null);
+
+    void parseExternalImportOffThread(importer.id, stagedArchives, snapshot, {
+      fallbackSpeciesName: fallbackSpecies.trim() || 'Rabbit',
+      customSpeciesOverrides,
+      appendDeferredImageFilenamesToNotes: notePhotoFilenames,
+    })
+      .then((parsed) => {
+        if (cancelled || parseRequestSeqRef.current !== reqId) return;
+        setPreview(parsed);
+        setPreviewParseError(null);
+      })
+      .catch((err: any) => {
+        if (cancelled || parseRequestSeqRef.current !== reqId) return;
+        setPreview(null);
+        setPreviewParseError(err?.message || 'Failed to unpack or parse archive.');
+      })
+      .finally(() => {
+        if (!cancelled && parseRequestSeqRef.current === reqId) {
+          setIsParsingArchive(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     stagedArchives,
-    importer,
+    importer.id,
     snapshot,
     fallbackSpecies,
     customSpeciesOverrides,
@@ -757,6 +780,15 @@ export function ExternalImporterPanel({
           </div>
         )}
       </div>
+
+      {isParsingArchive && (
+        <div
+          role="status"
+          className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs font-medium"
+        >
+          Unpacking and scanning archive in background worker...
+        </div>
+      )}
 
       {effectiveParseError && (
         <div

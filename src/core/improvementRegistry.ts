@@ -328,7 +328,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     category: 'stability-pwa',
     source: 'session',
     summary:
-      'Eliminates Chrome Android Aw Snap renderer crashes by disabling Workbox SW in dev + adding self-unregistering `/dev-sw.js` middleware, scoping eager COI computation off home/settings boot, guarding `PedigreeIndex.inbreeding` recursion cycles, and batching SQLite/IndexedDB mutations (React.lazy route splitting deferred).',
+      'Eliminates Chrome Android Aw Snap renderer crashes by disabling Workbox SW in dev + adding self-unregistering `/dev-sw.js` middleware, scoping eager COI computation off home/settings boot, guarding `PedigreeIndex.inbreeding` recursion cycles, batching SQLite/IndexedDB mutations, and code-splitting secondary routes with `React.lazy`.',
     userIntent:
       'Fix repeated Chrome Android tab crashes before/during app startup and keep pedigree/bulk operations fast under tight mobile RAM.',
     files: [
@@ -610,6 +610,261 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Restore `UniversalPedigreeImporter` and register it in `src/core/importers/registry.ts`.',
       'Keep `decodeTextBytes` UTF-16/Windows-1252 decoding and `validateAndFormatYmd` in `src/core/importers/archiveAndCsvUtils.ts`.',
       'Preserve `visitedPath` cycle guard on `countDirectAncestors` in `src/core/pedigreeCalculator.ts` and accessibility attributes across modal/form components.',
+    ],
+  },
+  {
+    id: 'IMP-014',
+    title: 'Species Tattoo/Sex Conflict Guardrails, Override & Import Conflict Alerts',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Enforces same-species duplicate tattoo/ID checks and parent sex checks in DB health scans, discourages same-sex duplicate tattoo reuse during animal & litter creation unless the user types "override", allows non-blocking imports while flagging conflicted pedigrees/profiles, and supports Conflicts First sorting/filtering plus persistent soft-warning ignore controls.',
+    userIntent:
+      'Catch duplicate within-species IDs and parent sex mismatches, discourage accidental duplicate tattoos with an explicit override, never hard-block imports on conflicts, and let breeders locate or ignore soft warnings.',
+    files: [
+      'src/core/animalConflicts.ts',
+      'src/core/dataHealthCheck.ts',
+      'src/components/AnimalEditorModal.tsx',
+      'src/components/BreedingScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+      'src/core/__tests__/animalConflictsAndHealth.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/animalConflicts.ts',
+        requiredSubstrings: [
+          'findSameSexDuplicateTattooCollisions',
+          'isOverrideConfirmationValid',
+          'analyzeBarnAnimalConflicts',
+        ],
+        rationale: 'Core conflict detection, override confirmation, and summary logic must remain intact.',
+      },
+      {
+        filePath: 'src/core/dataHealthCheck.ts',
+        requiredSubstrings: ['duplicateTattooAnimalsCount', 'parentSexMismatchCount'],
+        rationale: 'Database health checks must report duplicate within-species tattoos and parent sex mismatches.',
+      },
+      {
+        filePath: 'src/components/AnimalEditorModal.tsx',
+        requiredSubstrings: ['findSameSexDuplicateTattooCollisions', 'isOverrideConfirmationValid'],
+        rationale: 'Single-animal editor must warn on same-sex duplicate tattoos and require explicit override typing.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: ['isOverrideConfirmationValid', 'isLitterOverrideConfirmed'],
+        rationale: 'Bulk litter creation must enforce the same duplicate tattoo override guardrail.',
+      },
+      {
+        filePath: 'src/components/HerdScreen.tsx',
+        requiredSubstrings: ['conflicts_first', 'duplicateTattooPeers'],
+        rationale: 'Herd screen must allow sorting/filtering conflicted animals and ignoring/restoring soft warnings.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'ignoreAnimalConflicts',
+          'restoreAnimalConflictAlert',
+          'importConflictAlert',
+        ],
+        rationale: 'Store must emit post-import conflict alerts and persist per-animal ignored conflict flags.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['store.importConflictAlert', 'locateConflictsInHerd'],
+        rationale: 'Root shell renders non-blocking import conflict banners with direct Locate Conflicted Animals action.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `findSameSexDuplicateTattooCollisions`, `isOverrideConfirmationValid`, and `analyzeBarnAnimalConflicts` in `src/core/animalConflicts.ts`.',
+      'Preserve duplicate tattoo and parent sex mismatch checks in `src/core/dataHealthCheck.ts`.',
+      'Keep `"override"` guards in `AnimalEditorModal.tsx` and `BreedingScreen.tsx`, `conflicts_first` sorting/ignore controls in `HerdScreen.tsx`, and `importConflictAlert` wiring in `useBarnStore.ts` / `App.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-015',
+    title: '5-Tier Device Capability Detection & Adaptive Memory Cautions',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Classifies host hardware into 5 memory/CPU tiers, surfaces hardware guidance in Home onboarding & Settings with tier-locked dismissal rules (Tier 1 locked in both locations; Tier 2 closable on Home but persistent in Settings; Tiers 3–5 closable and reopenable), and applies workload cautions in the External Importer.',
+    userIntent:
+      'Detect constrained mobile devices early, warn users appropriately by hardware tier, and keep Tier 1–2 cautions impossible to accidentally hide permanently.',
+    files: [
+      'src/core/deviceCapability.ts',
+      'src/storage/deviceCapabilityDetector.ts',
+      'src/components/DeviceCapabilityCard.tsx',
+      'src/components/HomeSpeciesScreen.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/ExternalImporterPanel.tsx',
+      'src/App.tsx',
+      'src/core/__tests__/deviceCapability.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/deviceCapability.ts',
+        requiredSubstrings: [
+          'DEVICE_CAPABILITY_TIERS',
+          'classifyDeviceCapability',
+          'evaluateBarnWorkloadForTier',
+        ],
+        rationale: 'Pure 5-tier classification, dismissal rules, and workload evaluator must remain intact.',
+      },
+      {
+        filePath: 'src/storage/deviceCapabilityDetector.ts',
+        requiredSubstrings: ['useDeviceCapability', 'readBrowserHardwareSignals'],
+        rationale: 'Per-device hardware signal collector and localStorage dismissal hook isolate device state from portable backups.',
+      },
+      {
+        filePath: 'src/components/DeviceCapabilityCard.tsx',
+        requiredSubstrings: ['DeviceCapabilityCard', 'evaluateBarnWorkloadForTier'],
+        rationale: 'Shared tier banner respects Home vs Settings tier-specific close/reopen rules.',
+      },
+      {
+        filePath: 'src/components/HomeSpeciesScreen.tsx',
+        requiredSubstrings: ['DeviceCapabilityCard'],
+        rationale: 'Home onboarding displays device capability card on startup.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['DeviceCapabilityCard'],
+        rationale: 'Settings exposes upper Device Capability section with persistent Tier 1–2 status and reopen control.',
+      },
+      {
+        filePath: 'src/components/ExternalImporterPanel.tsx',
+        requiredSubstrings: ['evaluateBarnWorkloadForTier'],
+        rationale: 'Importer evaluates incoming record counts against host device capability tier.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['useDeviceCapability'],
+        rationale: 'Root shell runs `useDeviceCapability()` and passes controller to Home and Settings.',
+      },
+    ],
+    restorePlaybook: [
+      'Preserve `DEVICE_CAPABILITY_TIERS`, `classifyDeviceCapability`, and `evaluateBarnWorkloadForTier` in `src/core/deviceCapability.ts`.',
+      'Keep `useDeviceCapability` in `src/storage/deviceCapabilityDetector.ts` and `<DeviceCapabilityCard>` mounts in `HomeSpeciesScreen.tsx` and `SettingsAndSyncScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-016',
+    title: 'Route-Level Code Splitting with Retry & Chunk Error Boundary',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Code-splits secondary screens and calendar modal via `lazyNamedRoute` (`React.lazy`) with automatic single retry, `RouteLoadingFallback` skeleton, and `RouteErrorBoundary` recovery UI to slash initial JS parse/compile memory on mobile devices.',
+    userIntent:
+      'Reduce startup JS bundle size and memory pressure by lazy-loading secondary screens without breaking offline or stale-chunk recovery.',
+    files: [
+      'src/utils/lazyRoute.tsx',
+      'src/App.tsx',
+      'src/utils/__tests__/lazyRoute.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/utils/lazyRoute.tsx',
+        requiredSubstrings: [
+          'lazyNamedRoute',
+          'loadWithSingleRetry',
+          'RouteErrorBoundary',
+          'RouteLoadingFallback',
+        ],
+        rationale: 'Named-export lazy wrapper, single chunk retry, and route error boundary prevent blank-screen crashes.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['lazyNamedRoute', 'RouteErrorBoundary', 'RouteLoadingFallback'],
+        rationale: 'Secondary routes in `App.tsx` must stay lazily loaded inside `RouteErrorBoundary` + `Suspense`.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `lazyNamedRoute`, `loadWithSingleRetry`, `RouteLoadingFallback`, and `RouteErrorBoundary` in `src/utils/lazyRoute.tsx`.',
+      'Keep `React.lazy` declarations and `<RouteErrorBoundary><Suspense>` wrapping secondary routes in `src/App.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-017',
+    title: 'On-Demand Full-Resolution Photo Hydration & Off-Thread `.ZIP`/Import Worker',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Keeps only lightweight thumbnails in reactive snapshot RAM, lazily hydrates full-resolution photo `dataUrl`s via a bounded LRU cache (`BoundedPhotoDataCache`) and SQLite fetchers on gallery/lightbox/pedigree-print/binder/export demand while guarding writes against wiping stored `data_url` rows, and moves `.ZIP` compression/extraction and external archive parsing into a dedicated Web Worker with async fallback.',
+    userIntent:
+      'Eliminate heavy base64 photo retention and UI-thread freezes during large `.ZIP` backups and external pedigree imports on mobile devices.',
+    files: [
+      'src/storage/photoHydration.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/storage/archiveAndImport.worker.ts',
+      'src/storage/offThreadWorkerClient.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/AnimalPhotoGallery.tsx',
+      'src/components/ExternalImporterPanel.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/storage/__tests__/photoHydrationAndWorker.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/storage/photoHydration.ts',
+        requiredSubstrings: [
+          'BoundedPhotoDataCache',
+          'stripPhotoDataUrlsFromSnapshot',
+          'hydrateSnapshotWithPhotoDataUrls',
+        ],
+        rationale: 'Bounded LRU cache and batch hydration helpers keep full-res base64 strings out of steady-state RAM.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: [
+          'lightweightPhotos',
+          'loadAnimalPhotoDataUrl',
+          'loadAnimalPhotoDataUrlsBatch',
+        ],
+        rationale: 'SQLite adapter supports thumbnail-only snapshot loads, on-demand photo reads, and non-destructive dehydrated writes.',
+      },
+      {
+        filePath: 'src/storage/archiveAndImport.worker.ts',
+        requiredSubstrings: [
+          'buildCompleteBackupZipArchive',
+          'buildPhotosOnlyZipArchive',
+          'parseBackupArchiveInput',
+        ],
+        rationale: 'Dedicated module worker runs heavy ZIP builds/extractions and importer parsing off the UI thread.',
+      },
+      {
+        filePath: 'src/storage/offThreadWorkerClient.ts',
+        requiredSubstrings: [
+          'buildCompleteBackupZipOffThread',
+          'parseExternalImportOffThread',
+          'buildImporterWorkerSnapshot',
+        ],
+        rationale: 'Worker client strips base64 images before cloning snapshots and falls back gracefully when `Worker` is unavailable.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'BoundedPhotoDataCache',
+          'loadAnimalPhotoDataUrl',
+          'hydrateSnapshotForExport',
+          'buildCompleteBackupZipOffThread',
+        ],
+        rationale: 'Store loads lightweight snapshots, caches hydrated photos, hydrates rolling/export snapshots, and uses off-thread ZIP calls.',
+      },
+      {
+        filePath: 'src/components/AnimalPhotoGallery.tsx',
+        requiredSubstrings: ['onLoadFullPhoto', 'activePhotoSrc'],
+        rationale: 'Photo gallery and lightbox fetch full-resolution images lazily while displaying thumbnails immediately.',
+      },
+      {
+        filePath: 'src/components/ExternalImporterPanel.tsx',
+        requiredSubstrings: ['parseExternalImportOffThread', 'isParsingArchive'],
+        rationale: 'External importer unpacks and parses staged archives asynchronously off-thread with request sequencing.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `BoundedPhotoDataCache` and `hydrateSnapshotWithPhotoDataUrls` in `src/storage/photoHydration.ts` plus `lightweightPhotos` guards in `src/storage/webSqliteAdapter.ts`.',
+      'Keep `archiveAndImport.worker.ts` and `offThreadWorkerClient.ts` wired into `useBarnStore.ts`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `ExternalImporterPanel.tsx`.',
+      'Keep `onLoadFullPhoto` / `onHydrateSnapshotForExport` props wired from `App.tsx` to galleries, pedigree print modals, Barn Binders, and backup exports.',
     ],
   },
 ];

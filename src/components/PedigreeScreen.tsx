@@ -71,6 +71,7 @@ interface PedigreeScreenProps {
   ) => void;
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
+  onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
 }
 
 const MIN_TREE_ZOOM = 0.2;
@@ -94,6 +95,7 @@ export function PedigreeScreen({
   onSaveAnimal,
   onIgnoreConflicts,
   onRestoreConflictAlert,
+  onLoadFullPhoto,
 }: PedigreeScreenProps) {
   const {
     speciesProfile,
@@ -111,6 +113,10 @@ export function PedigreeScreen({
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [hydratedSubjectPhoto, setHydratedSubjectPhoto] = useState<{
+    photoId: string;
+    dataUrl: string;
+  } | null>(null);
   const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
     showWeights: true,
     showGenotypes: false,
@@ -146,6 +152,36 @@ export function PedigreeScreen({
     }
     return animals[0] ?? null;
   }, [selectedSubjectId, herdById, animals]);
+
+  const subjectPrimaryPhoto = subject ? primaryPhotoByAnimalId.get(subject.id) : undefined;
+
+  useEffect(() => {
+    if (
+      !showPrintModal ||
+      !settings.includePhotoOnPedigree ||
+      !subjectPrimaryPhoto ||
+      subjectPrimaryPhoto.dataUrl ||
+      !onLoadFullPhoto
+    ) {
+      return;
+    }
+    if (hydratedSubjectPhoto?.photoId === subjectPrimaryPhoto.id) return;
+    let cancelled = false;
+    void onLoadFullPhoto(subjectPrimaryPhoto.id).then((resolved) => {
+      if (!cancelled && resolved) {
+        setHydratedSubjectPhoto({ photoId: subjectPrimaryPhoto.id, dataUrl: resolved });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showPrintModal,
+    settings.includePhotoOnPedigree,
+    subjectPrimaryPhoto,
+    onLoadFullPhoto,
+    hydratedSubjectPhoto,
+  ]);
 
   const [historyIds, setHistoryIds] = useState<string[]>(() =>
     selectedSubjectId ? [selectedSubjectId] : []
@@ -593,8 +629,6 @@ export function PedigreeScreen({
       </div>
     );
   }
-
-  const subjectPrimaryPhoto = primaryPhotoByAnimalId.get(subject.id);
 
   return (
     <div className="space-y-4">
@@ -1307,7 +1341,13 @@ export function PedigreeScreen({
             speciesProfiles,
             settings,
             generations,
-            settings.includePhotoOnPedigree ? subjectPrimaryPhoto?.dataUrl : undefined,
+            settings.includePhotoOnPedigree
+              ? subjectPrimaryPhoto?.dataUrl ||
+                  (hydratedSubjectPhoto &&
+                  hydratedSubjectPhoto.photoId === subjectPrimaryPhoto?.id
+                    ? hydratedSubjectPhoto.dataUrl
+                    : subjectPrimaryPhoto?.thumbnailDataUrl)
+              : undefined,
             pedigreePrintOptions
           )}
           includePrimaryPhoto={settings.includePhotoOnPedigree}

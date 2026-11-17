@@ -33,9 +33,9 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import {
-  buildCompleteBackupZipArchive,
-  buildPhotosOnlyZipArchive,
-} from '../core/backupArchive';
+  buildCompleteBackupZipOffThread,
+  buildPhotosOnlyZipOffThread,
+} from '../storage/offThreadWorkerClient';
 import { BackupStatusEvaluation } from '../core/backupStatus';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
 import {
@@ -125,7 +125,7 @@ interface SettingsAndSyncScreenProps {
   onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
   onSaveSpecies: (profile: SpeciesProfile) => void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
-  onDownloadTimestampedSpeciesBackup: (speciesName: string) => void;
+  onDownloadTimestampedSpeciesBackup: (speciesName: string) => Promise<void> | void;
   onApplyPlatformImport: (
     preview: PlatformImportPreview,
     optimizedPhotos?: AnimalPhoto[],
@@ -168,6 +168,10 @@ interface SettingsAndSyncScreenProps {
   onRefreshGoogleCalendars?: () => Promise<void>;
   onLocateConflicts?: () => void;
   deviceCapability?: DeviceCapabilityController;
+  onHydrateSnapshotForExport?: (
+    targetSnapshot?: BarnDatabaseSnapshot,
+    filterSpecies?: string
+  ) => Promise<BarnDatabaseSnapshot>;
 }
 
 export function SettingsAndSyncScreen({
@@ -214,6 +218,7 @@ export function SettingsAndSyncScreen({
   onRefreshGoogleCalendars,
   onLocateConflicts,
   deviceCapability,
+  onHydrateSnapshotForExport,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -255,6 +260,7 @@ export function SettingsAndSyncScreen({
   const [showCustomSpeciesModal, setShowCustomSpeciesModal] = useState(false);
   const [rollingBackups, setRollingBackups] = useState<RollingBackupMeta[]>([]);
   const [folderSyncBusy, setFolderSyncBusy] = useState(false);
+  const [zipExportBusy, setZipExportBusy] = useState<'complete' | 'photos' | 'json' | null>(null);
 
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
 
@@ -357,14 +363,25 @@ export function SettingsAndSyncScreen({
     });
   };
 
-  const handleDownloadTimestampedFullBackup = () => {
-    const stampSlug = formatTimestampedBackupSlug();
-    const filename = `community-pedigree-full-backup-${stampSlug}.json`;
-    downloadTextFile(filename, exportBarnBackupJson(snapshot), 'application/json');
-    void recordBackupExport('json', filename);
-    setPortabilityFeedback(
-      `Downloaded JSON backup (${snapshot.animals.length} animals, ${allPhotos.length} embedded photos).`
-    );
+  const handleDownloadTimestampedFullBackup = async () => {
+    setImportError(null);
+    setZipExportBusy('json');
+    try {
+      const exportSnapshot = onHydrateSnapshotForExport
+        ? await onHydrateSnapshotForExport(snapshot)
+        : snapshot;
+      const stampSlug = formatTimestampedBackupSlug();
+      const filename = `community-pedigree-full-backup-${stampSlug}.json`;
+      downloadTextFile(filename, exportBarnBackupJson(exportSnapshot), 'application/json');
+      void recordBackupExport('json', filename);
+      setPortabilityFeedback(
+        `Downloaded JSON backup (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
+      );
+    } catch (err: any) {
+      setImportError(err?.message || 'Could not prepare full JSON backup.');
+    } finally {
+      setZipExportBusy(null);
+    }
   };
 
   const handleExportCsv = () => {
@@ -383,31 +400,51 @@ export function SettingsAndSyncScreen({
     );
   };
 
-  const handleDownloadCompleteZip = () => {
+  const handleDownloadCompleteZip = async () => {
     setImportError(null);
-    const stampSlug = formatTimestampedBackupSlug();
-    const archive = buildCompleteBackupZipArchive(snapshot);
-    const filename = `community-pedigree-archive-${stampSlug}.zip`;
-    downloadBinaryFile(filename, archive.bytes, 'application/zip');
-    void recordBackupExport('zip', filename);
-    setPortabilityFeedback(
-      `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(archive.bytes.byteLength)}).`
-    );
+    setZipExportBusy('complete');
+    try {
+      const exportSnapshot = onHydrateSnapshotForExport
+        ? await onHydrateSnapshotForExport(snapshot)
+        : snapshot;
+      const stampSlug = formatTimestampedBackupSlug();
+      const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
+      const filename = `community-pedigree-archive-${stampSlug}.zip`;
+      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      void recordBackupExport('zip', filename);
+      setPortabilityFeedback(
+        `Saved ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(archive.bytes.byteLength)}).`
+      );
+    } catch (err: any) {
+      setImportError(err?.message || 'Could not build Complete Archive (.ZIP).');
+    } finally {
+      setZipExportBusy(null);
+    }
   };
 
-  const handleDownloadPhotosOnlyZip = () => {
+  const handleDownloadPhotosOnlyZip = async () => {
     setImportError(null);
     if (allPhotos.length === 0) {
       setImportError('No animal photos stored yet to archive.');
       return;
     }
-    const stampSlug = formatTimestampedBackupSlug();
-    const archive = buildPhotosOnlyZipArchive(snapshot);
-    const filename = `community-pedigree-photos-${stampSlug}.zip`;
-    downloadBinaryFile(filename, archive.bytes, 'application/zip');
-    setPortabilityFeedback(
-      `Saved ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(archive.bytes.byteLength)}).`
-    );
+    setZipExportBusy('photos');
+    try {
+      const exportSnapshot = onHydrateSnapshotForExport
+        ? await onHydrateSnapshotForExport(snapshot)
+        : snapshot;
+      const stampSlug = formatTimestampedBackupSlug();
+      const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
+      const filename = `community-pedigree-photos-${stampSlug}.zip`;
+      downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      setPortabilityFeedback(
+        `Saved ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(archive.bytes.byteLength)}).`
+      );
+    } catch (err: any) {
+      setImportError(err?.message || 'Could not build Photos-Only (.ZIP) archive.');
+    } finally {
+      setZipExportBusy(null);
+    }
   };
 
   const handleBackupArchiveUpload = async (
@@ -520,10 +557,13 @@ export function SettingsAndSyncScreen({
     setSyncFeedback(null);
     setFolderSyncBusy(true);
     try {
+      const exportSnapshot = onHydrateSnapshotForExport
+        ? await onHydrateSnapshotForExport(snapshot)
+        : snapshot;
       const res = await syncWithPickedDirectory({
         deviceId,
         localOperations: syncOperations,
-        masterBackupJson: exportBarnBackupJson(snapshot),
+        masterBackupJson: exportBarnBackupJson(exportSnapshot),
       });
       if (res.incomingOps.length > 0) {
         await onImportDeltaOperations(res.incomingOps);
@@ -1835,18 +1875,21 @@ export function SettingsAndSyncScreen({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button
                   type="button"
-                  onClick={handleDownloadCompleteZip}
+                  disabled={zipExportBusy !== null}
+                  onClick={() => void handleDownloadCompleteZip()}
                   title="Includes database JSON, organized animal photos, and printable Barn Binder .HTM per species"
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Archive className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Complete Archive + Binders (.ZIP)
+                  {zipExportBusy === 'complete'
+                    ? 'Building Archive (.ZIP)...'
+                    : 'Complete Archive + Binders (.ZIP)'}
                 </button>
 
                 <button
                   type="button"
-                  disabled={allPhotos.length === 0}
-                  onClick={handleDownloadPhotosOnlyZip}
+                  disabled={allPhotos.length === 0 || zipExportBusy !== null}
+                  onClick={() => void handleDownloadPhotosOnlyZip()}
                   title={
                     allPhotos.length === 0
                       ? 'Add photos to any animal first to export a photo folder archive'
@@ -1855,7 +1898,9 @@ export function SettingsAndSyncScreen({
                   className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:pointer-events-none inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Images className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  Export Photos Folder ({allPhotos.length}) (.ZIP)
+                  {zipExportBusy === 'photos'
+                    ? 'Packaging Photos (.ZIP)...'
+                    : `Export Photos Folder (${allPhotos.length}) (.ZIP)`}
                 </button>
 
                 <button
@@ -1869,11 +1914,14 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  onClick={handleDownloadTimestampedFullBackup}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  disabled={zipExportBusy !== null}
+                  onClick={() => void handleDownloadTimestampedFullBackup()}
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  Timestamped Backup (.JSON)
+                  {zipExportBusy === 'json'
+                    ? 'Preparing Backup (.JSON)...'
+                    : 'Timestamped Backup (.JSON)'}
                 </button>
 
                 <button
@@ -1979,6 +2027,7 @@ export function SettingsAndSyncScreen({
             onResetDatabaseConnection={onResetDatabaseConnection}
             onPurgeCorruptedCaches={onPurgeCorruptedCaches}
             onLocateConflicts={onLocateConflicts}
+            onHydrateSnapshotForExport={onHydrateSnapshotForExport}
           />
 
           {/* Global Data Deletion & Factory Settings Restore */}
