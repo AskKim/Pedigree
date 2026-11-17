@@ -15,6 +15,7 @@ import {
   formatExternalCalendarTaskSummary,
 } from '../core/calendarExport';
 import { BarnTask, CalendarSyncSettings, formatReadableDate } from '../core/models';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 export function SignInWithGoogleButton({
   onClick,
@@ -97,10 +98,20 @@ export function CalendarSyncConfirmModal({
   onFallbackOfflineIcs,
   onCancel,
 }: CalendarSyncConfirmModalProps) {
-  if (!pending || pending.tasks.length === 0) return null;
+  const datedTasks =
+    pending && pending.tasks.length > 0
+      ? pending.tasks.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''))
+      : [];
+  const isModalOpen = datedTasks.length > 0;
+  const dialogRef = useAccessibleDialog({
+    isOpen: isModalOpen,
+    onClose: () => {
+      if (!isBusy) onCancel();
+    },
+    closeOnEscape: !isBusy,
+  });
 
-  const datedTasks = pending.tasks.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.dueDateIso || ''));
-  if (datedTasks.length === 0) return null;
+  if (!isModalOpen) return null;
 
   const singleTaskUrls =
     datedTasks.length === 1 && isOnline
@@ -109,6 +120,8 @@ export function CalendarSyncConfirmModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label="Confirm Online Calendar Sync"

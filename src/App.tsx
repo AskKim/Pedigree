@@ -47,10 +47,13 @@ import { SpeciesMemoScreen } from './components/SpeciesMemoScreen';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
+import { useDeviceCapability } from './storage/deviceCapabilityDetector';
 import { useOnlineStatus, usePWAInstall } from './storage/storageProtection';
+import { useAccessibleDialog } from './utils/useAccessibleDialog';
 
 export default function App() {
   const store = useBarnStore();
+  const deviceCapability = useDeviceCapability();
   const isOnline = useOnlineStatus();
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
 
@@ -60,11 +63,14 @@ export default function App() {
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
 
   const shortcutToastTimerRef = useRef<number | null>(null);
-  const herdPickerModalRef = useRef<HTMLDivElement | null>(null);
-  const lastFocusedBeforePickerRef = useRef<HTMLElement | null>(null);
-  const navigatedFromPickerRef = useRef(false);
-  const shortcutsModalRef = useRef<HTMLDivElement | null>(null);
-  const lastFocusedBeforeHelpRef = useRef<HTMLElement | null>(null);
+  const herdPickerModalRef = useAccessibleDialog({
+    isOpen: showHerdSpeciesPicker,
+    onClose: () => setShowHerdSpeciesPicker(false),
+  });
+  const shortcutsModalRef = useAccessibleDialog({
+    isOpen: showShortcutsHelp,
+    onClose: () => setShowShortcutsHelp(false),
+  });
 
   const triggerShortcutToast = useCallback((key: string, label: string) => {
     if (shortcutToastTimerRef.current !== null) {
@@ -84,142 +90,6 @@ export default function App() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!showHerdSpeciesPicker) return;
-
-    navigatedFromPickerRef.current = false;
-    lastFocusedBeforePickerRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    const getFocusableElements = (): HTMLElement[] => {
-      const container = herdPickerModalRef.current;
-      if (!container) return [];
-      const selector =
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-      return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(
-        (el) => el.getClientRects().length > 0
-      );
-    };
-
-    const rafId = window.requestAnimationFrame(() => {
-      const focusables = getFocusableElements();
-      if (focusables.length > 0) {
-        focusables[0].focus();
-      } else {
-        herdPickerModalRef.current?.focus();
-      }
-    });
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowHerdSpeciesPicker(false);
-        return;
-      }
-
-      if (e.key !== 'Tab') return;
-
-      const focusables = getFocusableElements();
-      if (focusables.length === 0) {
-        e.preventDefault();
-        return;
-      }
-
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const activeEl = document.activeElement as HTMLElement | null;
-
-      if (!herdPickerModalRef.current?.contains(activeEl)) {
-        e.preventDefault();
-        (e.shiftKey ? last : first).focus();
-        return;
-      }
-
-      if (e.shiftKey && activeEl === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && activeEl === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.cancelAnimationFrame(rafId);
-      window.removeEventListener('keydown', onKey);
-      if (
-        !navigatedFromPickerRef.current &&
-        lastFocusedBeforePickerRef.current &&
-        lastFocusedBeforePickerRef.current.isConnected
-      ) {
-        lastFocusedBeforePickerRef.current.focus();
-      }
-    };
-  }, [showHerdSpeciesPicker]);
-
-  useEffect(() => {
-    if (!showShortcutsHelp) return;
-
-    lastFocusedBeforeHelpRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    const getFocusableElements = (): HTMLElement[] => {
-      const container = shortcutsModalRef.current;
-      if (!container) return [];
-      const selector =
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-      return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(
-        (el) => el.getClientRects().length > 0
-      );
-    };
-
-    const rafId = window.requestAnimationFrame(() => {
-      const focusables = getFocusableElements();
-      if (focusables.length > 0) {
-        focusables[0].focus();
-      }
-    });
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowShortcutsHelp(false);
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const focusables = getFocusableElements();
-      if (focusables.length === 0) {
-        e.preventDefault();
-        return;
-      }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const activeEl = document.activeElement as HTMLElement | null;
-      if (!shortcutsModalRef.current?.contains(activeEl)) {
-        e.preventDefault();
-        (e.shiftKey ? last : first).focus();
-        return;
-      }
-      if (e.shiftKey && activeEl === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && activeEl === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.cancelAnimationFrame(rafId);
-      window.removeEventListener('keydown', onKey);
-      if (lastFocusedBeforeHelpRef.current && lastFocusedBeforeHelpRef.current.isConnected) {
-        lastFocusedBeforeHelpRef.current.focus();
-      }
-    };
-  }, [showShortcutsHelp]);
 
   useEffect(() => {
     const onGlobalShortcut = (e: KeyboardEvent) => {
@@ -619,6 +489,51 @@ export default function App() {
           </div>
         )}
 
+        {/* Post-Import Conflict Alert Banner (Non-Blocking Import With Locate Action) */}
+        {store.importConflictAlert && (
+          <div
+            role="alert"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="space-y-0.5 min-w-0">
+                <div className="font-semibold">
+                  Import Conflict Alert ({store.importConflictAlert.conflictedCount} flagged record
+                  {store.importConflictAlert.conflictedCount === 1 ? '' : 's'})
+                </div>
+                <div className="text-[11px] text-[var(--barn-muted)] break-words">
+                  {store.importConflictAlert.message}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const targetSpecies =
+                    store.importConflictAlert?.speciesNames[0] || activeSpeciesName;
+                  store.locateConflictsInHerd(targetSpecies);
+                  store.dismissImportConflictAlert();
+                }}
+                className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+              >
+                Locate Conflicted Animals
+              </button>
+              <button
+                type="button"
+                onClick={store.dismissImportConflictAlert}
+                className="min-h-[32px] px-2 text-[11px] underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Contextual Species Switcher Bar inside any Species Workspace */}
         {route !== 'home' && route !== 'settings' && (
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
@@ -702,6 +617,11 @@ export default function App() {
               store.setOpenAddSpeciesInSettings(true);
               setRoute('settings');
             }}
+            deviceCapability={deviceCapability}
+            onApplyLowMemorySettings={(patch) => {
+              void store.updateSettings(patch);
+            }}
+            onOpenSettings={() => setRoute('settings')}
           />
         )}
 
@@ -770,6 +690,7 @@ export default function App() {
                 { silent: true }
               );
             }}
+            onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             onOpenSettings={() => setRoute('settings')}
           />
         )}
@@ -815,6 +736,13 @@ export default function App() {
             onDeleteCareLog={(id) => {
               void store.deleteCareLog(id);
             }}
+            onIgnoreConflicts={(animalId, kinds) => {
+              void store.ignoreAnimalConflicts(animalId, kinds);
+            }}
+            onRestoreConflictAlert={(animalId, kinds) => {
+              void store.restoreAnimalConflictAlert(animalId, kinds);
+            }}
+            requestedConflictFocusNonce={store.requestedHerdConflictNonce}
           />
         )}
 
@@ -853,6 +781,12 @@ export default function App() {
             }}
             onSaveAnimal={(draft, linkTarget, pendingPhotos) => {
               void store.saveAnimal(draft, linkTarget, pendingPhotos);
+            }}
+            onIgnoreConflicts={(animalId, kinds) => {
+              void store.ignoreAnimalConflicts(animalId, kinds);
+            }}
+            onRestoreConflictAlert={(animalId, kinds) => {
+              void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
           />
         )}
@@ -933,6 +867,8 @@ export default function App() {
             onConnectGoogleCalendar={store.connectGoogleCalendar}
             onDisconnectGoogleCalendar={store.disconnectGoogleCalendar}
             onRefreshGoogleCalendars={store.refreshGoogleCalendars}
+            onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
+            deviceCapability={deviceCapability}
           />
         )}
 
@@ -985,6 +921,8 @@ export default function App() {
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (
         <div
+          ref={herdPickerModalRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-labelledby="herd-species-picker-title"
@@ -993,11 +931,7 @@ export default function App() {
           }}
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
         >
-          <div
-            ref={herdPickerModalRef}
-            tabIndex={-1}
-            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4 focus:outline-none"
-          >
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-4 focus:outline-none">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 id="herd-species-picker-title" className="font-display text-xl font-semibold">
@@ -1023,7 +957,6 @@ export default function App() {
                   key={sp.id}
                   type="button"
                   onClick={() => {
-                    navigatedFromPickerRef.current = true;
                     setShowHerdSpeciesPicker(false);
                     store.selectSpeciesWorkspace(sp.name, 'herd');
                   }}
@@ -1046,6 +979,8 @@ export default function App() {
       {/* Keyboard Shortcuts Quick-Reference Modal */}
       {showShortcutsHelp && (
         <div
+          ref={shortcutsModalRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-labelledby="keyboard-shortcuts-title"
@@ -1054,11 +989,7 @@ export default function App() {
           }}
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
         >
-          <div
-            ref={shortcutsModalRef}
-            tabIndex={-1}
-            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-md p-6 space-y-4 focus:outline-none"
-          >
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-md p-6 space-y-4 focus:outline-none">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 id="keyboard-shortcuts-title" className="font-display text-xl font-semibold">

@@ -4,6 +4,10 @@
  *
  * Multi-Species Coat Color Genetics, Allele Inference & Test-Breeding Punnett Engine.
  *
+ * @status UNDER DEVELOPMENT / INCOMPLETE — All UI and export surfaces rendering coat color
+ * genotypes, Rufus intensity, allele inference, or Punnett predictions must display an
+ * under-development / unverified notice until each species ruleset is verified by a domain expert.
+ *
  * CROSS-PLATFORM MIGRATION GUARDRAIL:
  * 100% pure TypeScript with ZERO browser DOM (`window`, `document`) dependencies so the exact
  * same genetics logic runs offline in Web PWAs and native mobile apps.

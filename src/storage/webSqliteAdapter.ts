@@ -27,6 +27,7 @@ import {
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeIgnoredConflicts,
   normalizeOwnershipType,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
@@ -106,6 +107,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     status TEXT NOT NULL,
     archived INTEGER NOT NULL DEFAULT 0,
     needs_attention INTEGER NOT NULL DEFAULT 0,
+    ignored_conflicts_json TEXT NOT NULL DEFAULT '[]',
     birth_date_iso TEXT NOT NULL,
     weight_grams INTEGER NOT NULL,
     genotype_json TEXT NOT NULL,
@@ -251,17 +253,54 @@ export const PEDIGREE_SQLITE_SCHEMA = `
   );
 `;
 
+const IDB_OPEN_TIMEOUT_MS = 8000;
+
 function openIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
-        db.createObjectStore(IDB_STORE_NAME);
-      }
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is unavailable in this browser context.'));
+      return;
+    }
+    let settled = false;
+    const finish = (cb: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cb();
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    const timer = setTimeout(() => {
+      finish(() => {
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message:
+            'Corrective action: Primary IndexedDB open timed out after 8s — falling back to non-destructive recovery',
+        });
+        reject(new Error('Timed out opening local IndexedDB storage.'));
+      });
+    }, IDB_OPEN_TIMEOUT_MS);
+
+    try {
+      const req = indexedDB.open(IDB_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+          db.createObjectStore(IDB_STORE_NAME);
+        }
+      };
+      req.onblocked = () => {
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message:
+            'Corrective action: Primary IndexedDB connection blocked by another tab or worker',
+        });
+      };
+      req.onsuccess = () => finish(() => resolve(req.result));
+      req.onerror = () => finish(() => reject(req.error || new Error('IndexedDB open failed.')));
+    } catch (err) {
+      finish(() => reject(err));
+    }
   });
 }
 
@@ -382,6 +421,7 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE species_profiles ADD COLUMN maturity_days INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE animals ADD COLUMN ignored_conflicts_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN suspected_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN confirmed_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE animals ADD COLUMN cleared_carrier_of_json TEXT NOT NULL DEFAULT '[]';",
@@ -432,6 +472,79 @@ export class WebSqliteAdapter implements StorageAdapter {
     return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
   }
 
+  private async findRecoveredBackupSnapshot(): Promise<{
+    snapshot: BarnDatabaseSnapshot;
+    source: string;
+  } | null> {
+    const saved = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY).catch(() => undefined);
+    if (
+      saved &&
+      typeof saved === 'object' &&
+      Array.isArray(saved.animals) &&
+      Array.isArray(saved.speciesProfiles) &&
+      (saved.animals.length > 0 || saved.speciesProfiles.length > 0)
+    ) {
+      return {
+        snapshot: saved,
+        source: 'IndexedDB JSON fallback mirror',
+      };
+    }
+
+    try {
+      const rollingList = await listRollingSnapshotBackups();
+      for (const item of rollingList) {
+        const recovered = await loadRollingSnapshotBackup(item.key);
+        if (
+          recovered &&
+          (recovered.animals.length > 0 || recovered.speciesProfiles.length > 0)
+        ) {
+          return {
+            snapshot: recovered,
+            source: `rolling backup "${item.key}" (${item.savedAtIso})`,
+          };
+        }
+      }
+    } catch (rollingErr) {
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: 'Rolling backup scan failed while attempting non-destructive DB recovery',
+        error: rollingErr,
+      });
+    }
+    return null;
+  }
+
+  private async tryRestoreIntoFreshSqliteDb(snapshot: BarnDatabaseSnapshot): Promise<boolean> {
+    if (!this.SQL) return false;
+    try {
+      const freshDb = new this.SQL.Database();
+      applySchemaMigrations(freshDb);
+      if (this.db) {
+        try {
+          this.db.close();
+        } catch {
+          // Ignore close failure on previous handle
+        }
+      }
+      this.db = freshDb;
+      this.fallbackSnapshot = null;
+      await this.replaceSnapshot(snapshot);
+      return true;
+    } catch (rebuildErr) {
+      this.db = null;
+      this.fallbackSnapshot = snapshot;
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message:
+          'Corrective action: Fresh SQLite rebuild failed during recovery — continuing safely in IndexedDB JSON mode',
+        error: rebuildErr,
+      });
+      return false;
+    }
+  }
+
   async initialize(): Promise<BarnDatabaseSnapshot> {
     try {
       this.SQL = await initSqlJs({
@@ -440,18 +553,52 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       const savedBytes = await idbGet<Uint8Array>(IDB_PRIMARY_KEY);
       if (savedBytes && savedBytes.byteLength > 0) {
+        const headerCheck = validateSqliteFileHeader(savedBytes, IDB_PRIMARY_KEY);
+        if (!headerCheck.ok) {
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message: `Corrective action: Rejected corrupted primary SQLite header (${headerCheck.error}) — triggering non-destructive recovery`,
+          });
+          throw new Error(headerCheck.error);
+        }
         this.db = new this.SQL.Database(savedBytes);
         applySchemaMigrations(this.db);
         const snap = await this.loadSnapshot();
         if (snap.speciesProfiles.length === 0 && snap.animals.length === 0) {
+          const recovered = await this.findRecoveredBackupSnapshot();
+          if (recovered) {
+            await this.replaceSnapshot(recovered.snapshot);
+            logDiagnosticEvent({
+              level: 'warn',
+              category: 'storage',
+              message: `Corrective action: Recovered ${recovered.snapshot.animals.length} animals from ${recovered.source} after empty SQLite database`,
+            });
+            return recovered.snapshot;
+          }
           const seeded = buildFullPredefinedSampleSnapshot();
           await this.replaceSnapshot(seeded);
+          logDiagnosticEvent({
+            level: 'info',
+            category: 'storage',
+            message: `Corrective action: Empty SQLite store with no backups initialized with starter sample data (${seeded.animals.length} animals)`,
+          });
           return seeded;
         }
         return snap;
       } else {
+        const recovered = await this.findRecoveredBackupSnapshot();
         this.db = new this.SQL.Database();
         applySchemaMigrations(this.db);
+        if (recovered) {
+          await this.replaceSnapshot(recovered.snapshot);
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message: `Corrective action: Restored ${recovered.snapshot.animals.length} animals from ${recovered.source} when primary SQLite blob was missing`,
+          });
+          return recovered.snapshot;
+        }
         const seeded = buildFullPredefinedSampleSnapshot();
         await this.replaceSnapshot(seeded);
         return seeded;
@@ -465,36 +612,18 @@ export class WebSqliteAdapter implements StorageAdapter {
         error: err,
       });
 
-      const saved = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY).catch(
-        () => undefined
-      );
-      if (saved && (saved.animals.length > 0 || saved.speciesProfiles.length > 0)) {
-        this.fallbackSnapshot = saved;
+      const recovered = await this.findRecoveredBackupSnapshot();
+      if (recovered) {
+        const rebuiltSqlite = await this.tryRestoreIntoFreshSqliteDb(recovered.snapshot);
+        if (!rebuiltSqlite) {
+          this.fallbackSnapshot = recovered.snapshot;
+        }
         logDiagnosticEvent({
           level: 'warn',
           category: 'storage',
-          message: `Corrective action: Auto-recovered ${saved.animals.length} animals from IndexedDB JSON fallback mirror`,
+          message: `Corrective action: Auto-recovered ${recovered.snapshot.animals.length} animals from ${recovered.source}${rebuiltSqlite ? ' and rebuilt clean SQLite DB' : ''}`,
         });
-        return saved;
-      }
-
-      // Recover from newest local rolling snapshot before ever resetting to starter data
-      try {
-        const rollingList = await listRollingSnapshotBackups();
-        for (const item of rollingList) {
-          const recovered = await loadRollingSnapshotBackup(item.key);
-          if (recovered) {
-            this.fallbackSnapshot = recovered;
-            logDiagnosticEvent({
-              level: 'warn',
-              category: 'storage',
-              message: `Corrective action: Auto-recovered ${recovered.animals.length} animals from rolling backup "${item.key}" (${item.savedAtIso})`,
-            });
-            return recovered;
-          }
-        }
-      } catch {
-        // Ignore rolling recovery error and fall through safely
+        return recovered.snapshot;
       }
 
       const seeded = buildFullPredefinedSampleSnapshot();
@@ -513,7 +642,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  private async persistToDisk(): Promise<void> {
+  private async persistToDisk(preloadedSnapshot?: BarnDatabaseSnapshot): Promise<void> {
     try {
       if (this.db) {
         const bytes = this.db.export();
@@ -537,10 +666,14 @@ export class WebSqliteAdapter implements StorageAdapter {
     const nowMs = Date.now();
     if (nowMs - this.lastRollingSaveMs > 15_000) {
       this.lastRollingSaveMs = nowMs;
-      const snap = await this.loadSnapshot();
-      void saveRollingSnapshotBackup(snap);
-      if (this.db) {
-        void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
+      try {
+        const snap = preloadedSnapshot ?? (await this.loadSnapshot());
+        void saveRollingSnapshotBackup(snap).catch(() => {});
+        if (this.db) {
+          void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
+        }
+      } catch {
+        // Non-fatal background mirror error
       }
     }
   }
@@ -576,6 +709,26 @@ export class WebSqliteAdapter implements StorageAdapter {
     if (!this.db) {
       return this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
     }
+
+    let sanitizedNumericCount = 0;
+    const finiteNum = (raw: unknown, fallback: number): number => {
+      if (raw === null || raw === undefined || raw === '') return fallback;
+      const num = Number(raw);
+      if (!Number.isFinite(num)) {
+        sanitizedNumericCount++;
+        return fallback;
+      }
+      return num;
+    };
+    const finiteNonNeg = (raw: unknown, fallback = 0): number => {
+      const n = finiteNum(raw, fallback);
+      if (n < 0) {
+        sanitizedNumericCount++;
+        return fallback;
+      }
+      return n;
+    };
+    const safeArray = <T>(val: unknown): T[] => (Array.isArray(val) ? (val as T[]) : []);
 
     const settingsRows = this.queryObjects('SELECT * FROM barn_settings LIMIT 1');
     const sRow = settingsRows[0];
@@ -622,9 +775,7 @@ export class WebSqliteAdapter implements StorageAdapter {
             typeof extraSettings.barnNameOnboarded === 'boolean'
               ? extraSettings.barnNameOnboarded
               : false,
-          ignoredTaskIds: Array.isArray(extraSettings.ignoredTaskIds)
-            ? extraSettings.ignoredTaskIds
-            : [],
+          ignoredTaskIds: safeArray<string>(extraSettings.ignoredTaskIds),
           dismissedTaskGroupKeys:
             extraSettings.dismissedTaskGroupKeys &&
             typeof extraSettings.dismissedTaskGroupKeys === 'object'
@@ -647,7 +798,8 @@ export class WebSqliteAdapter implements StorageAdapter {
               ? extraSettings.lastBackupMeta
               : undefined,
           backupReminderSnoozedUntilMs:
-            typeof extraSettings.backupReminderSnoozedUntilMs === 'number'
+            typeof extraSettings.backupReminderSnoozedUntilMs === 'number' &&
+            Number.isFinite(extraSettings.backupReminderSnoozedUntilMs)
               ? extraSettings.backupReminderSnoozedUntilMs
               : undefined,
           updatedAt: String(sRow.updated_at || nowIsoUtc()),
@@ -676,41 +828,48 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     const speciesProfiles: SpeciesProfile[] = this.queryObjects(
       'SELECT * FROM species_profiles ORDER BY sort_order ASC, name ASC'
-    ).map((r, idx) => ({
-      id: String(r.id),
-      name: String(r.name),
-      sortOrder: typeof r.sort_order === 'number' ? Number(r.sort_order) : idx,
-      defaultAnimalPrefix: String(r.default_animal_prefix || ''),
-      preferredUnit:
-        r.preferred_unit === 'lbs_oz' ||
-        r.preferred_unit === 'lbs' ||
-        r.preferred_unit === 'grams' ||
-        r.preferred_unit === 'kg'
-          ? r.preferred_unit
-          : undefined,
-      memoText: sanitizeSpeciesMemo(r.memo_text ?? ''),
-      memoUpdatedAt: String(r.memo_updated_at || ''),
-      gestationDays: Number(r.gestation_days),
-      rebreedDaysAfterBirth: Number(r.rebreed_days_after_birth),
-      weanDaysAfterBirth: Number(r.wean_days_after_birth),
-      maturityDays: Number(r.maturity_days) > 0 ? Number(r.maturity_days) : undefined,
-      birthEventLabel: String(r.birth_event_label),
-      maleLabel: String(r.male_label),
-      femaleLabel: String(r.female_label),
-      offspringLabel: String(r.offspring_label),
-      exampleBreeds: this.safeParseJson<string[]>(
-        r.example_breeds_json || '[]',
-        [],
-        `species_profiles(${String(r.name)}).example_breeds_json`
-      ),
-      milestones: this.safeParseJson(
-        r.milestones_json || '[]',
-        [],
-        `species_profiles(${String(r.name)}).milestones_json`
-      ),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    ).map((r, idx) => {
+      const maturity = finiteNonNeg(r.maturity_days, 0);
+      return {
+        id: String(r.id),
+        name: String(r.name),
+        sortOrder: finiteNum(r.sort_order, idx),
+        defaultAnimalPrefix: String(r.default_animal_prefix || ''),
+        preferredUnit:
+          r.preferred_unit === 'lbs_oz' ||
+          r.preferred_unit === 'lbs' ||
+          r.preferred_unit === 'grams' ||
+          r.preferred_unit === 'kg'
+            ? r.preferred_unit
+            : undefined,
+        memoText: sanitizeSpeciesMemo(r.memo_text ?? ''),
+        memoUpdatedAt: String(r.memo_updated_at || ''),
+        gestationDays: finiteNonNeg(r.gestation_days, 31),
+        rebreedDaysAfterBirth: finiteNonNeg(r.rebreed_days_after_birth, 28),
+        weanDaysAfterBirth: finiteNonNeg(r.wean_days_after_birth, 42),
+        maturityDays: maturity > 0 ? maturity : undefined,
+        birthEventLabel: String(r.birth_event_label),
+        maleLabel: String(r.male_label),
+        femaleLabel: String(r.female_label),
+        offspringLabel: String(r.offspring_label),
+        exampleBreeds: safeArray<string>(
+          this.safeParseJson<string[]>(
+            r.example_breeds_json || '[]',
+            [],
+            `species_profiles(${String(r.name)}).example_breeds_json`
+          )
+        ),
+        milestones: safeArray(
+          this.safeParseJson(
+            r.milestones_json || '[]',
+            [],
+            `species_profiles(${String(r.name)}).milestones_json`
+          )
+        ),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
 
     const animals: Animal[] = this.queryObjects('SELECT * FROM animals ORDER BY name ASC').map(
       (r) => {
@@ -742,12 +901,21 @@ export class WebSqliteAdapter implements StorageAdapter {
           status: (r.status as any) || 'Active',
           archived: Number(r.archived) === 1,
           needsAttention: Number(r.needs_attention) === 1,
+          ignoredConflicts: normalizeIgnoredConflicts(
+            this.safeParseJson(
+              r.ignored_conflicts_json || '[]',
+              [],
+              `animals(${animalLabel}).ignored_conflicts_json`
+            )
+          ),
           birthDateIso: String(r.birth_date_iso),
-          weightGrams: Number(r.weight_grams),
-          genotype: this.safeParseJson(
-            r.genotype_json || '[]',
-            [],
-            `animals(${animalLabel}).genotype_json`
+          weightGrams: finiteNonNeg(r.weight_grams, 0),
+          genotype: safeArray(
+            this.safeParseJson(
+              r.genotype_json || '[]',
+              [],
+              `animals(${animalLabel}).genotype_json`
+            )
           ),
           genotypeRaw: String(r.genotype_raw),
           rufusLevel: normalizeRufusLevel(r.rufus_level),
@@ -756,7 +924,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           clearedCarrierOf: carriers.clearedCarrierOf,
           registrationNumber: String(r.registration_number),
           grandChampionNumber: String(r.grand_champion_number),
-          legsCount: Number(r.legs_count),
+          legsCount: finiteNonNeg(r.legs_count, 0),
           cageLocation: String(r.cage_location),
           breederName: String(r.breeder_name),
           ownerName: String(r.owner_name),
@@ -767,8 +935,8 @@ export class WebSqliteAdapter implements StorageAdapter {
           deceasedDateIso: String(r.deceased_date_iso || ''),
           deathCause: String(r.death_cause || ''),
           soldDateIso: String(r.sold_date_iso || ''),
-          salePriceCents: Number(r.sale_price_cents) || 0,
-          purchaseCostCents: Number(r.purchase_cost_cents) || 0,
+          salePriceCents: finiteNonNeg(r.sale_price_cents, 0),
+          purchaseCostCents: finiteNonNeg(r.purchase_cost_cents, 0),
           buyerName: String(r.buyer_name || ''),
           sireId: String(r.sire_id),
           damId: String(r.dam_id),
@@ -786,14 +954,14 @@ export class WebSqliteAdapter implements StorageAdapter {
       species: String(r.species),
       animalId: String(r.animal_id),
       isPrimary: Number(r.is_primary) === 1,
-      sortOrder: Number(r.sort_order) || 0,
+      sortOrder: finiteNum(r.sort_order, 0),
       caption: String(r.caption || ''),
       originalFileName: String(r.original_file_name || ''),
       mimeType: String(r.mime_type || 'image/webp'),
-      width: Number(r.width) || 0,
-      height: Number(r.height) || 0,
-      originalBytes: Number(r.original_bytes) || 0,
-      storedBytes: Number(r.stored_bytes) || 0,
+      width: finiteNonNeg(r.width, 0),
+      height: finiteNonNeg(r.height, 0),
+      originalBytes: finiteNonNeg(r.original_bytes, 0),
+      storedBytes: finiteNonNeg(r.stored_bytes, 0),
       thumbnailDataUrl: String(r.thumbnail_data_url || r.data_url || ''),
       dataUrl: String(r.data_url || ''),
       createdAt: String(r.created_at),
@@ -806,7 +974,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         species: String(r.species),
         label: String(r.label),
         section: String(r.section),
-        capacity: Number(r.capacity),
+        capacity: Math.max(1, finiteNonNeg(r.capacity, 1)),
         notes: String(r.notes),
         createdAt: String(r.created_at),
         updatedAt: String(r.updated_at),
@@ -825,18 +993,18 @@ export class WebSqliteAdapter implements StorageAdapter {
       bredDateIso: String(r.bred_date_iso),
       expectedDueDateIso: String(r.expected_due_date_iso),
       actualBirthDateIso: String(r.actual_birth_date_iso),
-      projectedCoiPercent: Number(r.projected_coi_percent),
-      liveCount: Number(r.live_count),
-      stillbornCount: Number(r.stillborn_count),
-      fosteredCount: Number(r.fostered_count),
-      weanedCount: Number(r.weaned_count),
+      projectedCoiPercent: finiteNonNeg(r.projected_coi_percent, 0),
+      liveCount: finiteNonNeg(r.live_count, 0),
+      stillbornCount: finiteNonNeg(r.stillborn_count, 0),
+      fosteredCount: finiteNonNeg(r.fostered_count, 0),
+      weanedCount: finiteNonNeg(r.weaned_count, 0),
       offspringCreated: Number(r.offspring_created) === 1,
       status: (r.status as any) || 'Bred',
-      serviceFeeCents: Number(r.service_fee_cents) || 0,
+      serviceFeeCents: finiteNonNeg(r.service_fee_cents, 0),
       serviceFeeDirection: normalizeServiceFeeDirection(r.service_fee_direction),
       ultrasoundDateIso: String(r.ultrasound_date_iso || ''),
       ultrasoundResult: normalizeUltrasoundResult(r.ultrasound_result),
-      ultrasoundFetalCount: Number(r.ultrasound_fetal_count) || 0,
+      ultrasoundFetalCount: finiteNonNeg(r.ultrasound_fetal_count, 0),
       ultrasoundProjectedDueIso: String(r.ultrasound_projected_due_iso || ''),
       notes: String(r.notes),
       createdAt: String(r.created_at),
@@ -869,18 +1037,18 @@ export class WebSqliteAdapter implements StorageAdapter {
       dateIso: String(r.date_iso),
       type: (r.type as any) || 'Weight Check',
       title: String(r.title),
-      weightGrams: Number(r.weight_grams),
+      weightGrams: finiteNonNeg(r.weight_grams, 0),
       showLegEarned: Number(r.show_leg_earned) === 1,
       medicationName: String(r.medication_name || ''),
       dosage: String(r.dosage || ''),
       administrationRoute: String(r.administration_route || ''),
-      withdrawalDays: Number(r.withdrawal_days) || 0,
+      withdrawalDays: finiteNonNeg(r.withdrawal_days, 0),
       withdrawalClearDateIso: String(r.withdrawal_clear_date_iso || ''),
-      bodyConditionScore: Number(r.body_condition_score) || 0,
-      famachaScore: Number(r.famacha_score) || 0,
-      fecalEggCount: Number(r.fecal_egg_count) || 0,
+      bodyConditionScore: finiteNonNeg(r.body_condition_score, 0),
+      famachaScore: finiteNonNeg(r.famacha_score, 0),
+      fecalEggCount: finiteNonNeg(r.fecal_egg_count, 0),
       ultrasoundResult: normalizeUltrasoundResult(r.ultrasound_result),
-      ultrasoundFetalCount: Number(r.ultrasound_fetal_count) || 0,
+      ultrasoundFetalCount: finiteNonNeg(r.ultrasound_fetal_count, 0),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
@@ -896,15 +1064,25 @@ export class WebSqliteAdapter implements StorageAdapter {
       sanctioningBody: String(r.sanctioning_body),
       eventDateIso: String(r.event_date_iso),
       entryDeadlineIso: String(r.entry_deadline_iso),
-      enteredAnimalIds: this.safeParseJson<string[]>(
-        r.entered_animal_ids_json || '[]',
-        [],
-        `shows(${String(r.name || r.id)}).entered_animal_ids_json`
+      enteredAnimalIds: safeArray<string>(
+        this.safeParseJson<string[]>(
+          r.entered_animal_ids_json || '[]',
+          [],
+          `shows(${String(r.name || r.id)}).entered_animal_ids_json`
+        )
       ),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     }));
+
+    if (sanitizedNumericCount > 0) {
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: `Corrective action: Sanitized ${sanitizedNumericCount} non-finite or negative SQLite numeric field(s) during loadSnapshot`,
+      });
+    }
 
     return {
       settings,
@@ -922,7 +1100,7 @@ export class WebSqliteAdapter implements StorageAdapter {
   async replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void> {
     if (!this.db) {
       this.fallbackSnapshot = snapshot;
-      await this.persistToDisk();
+      await this.persistToDisk(snapshot);
       return;
     }
 
@@ -950,11 +1128,15 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       this.db.run('COMMIT;');
     } catch (e) {
-      this.db.run('ROLLBACK;');
+      try {
+        this.db.run('ROLLBACK;');
+      } catch {
+        // Ignore rollback error so root exception surfaces cleanly
+      }
       throw e;
     }
 
-    await this.persistToDisk();
+    await this.persistToDisk(snapshot);
   }
 
   private upsertSettingsRow(s: BarnSettings): void {
@@ -1029,8 +1211,8 @@ export class WebSqliteAdapter implements StorageAdapter {
     );
     this.db?.run(
       `INSERT OR REPLACE INTO animals
-       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, ownership_type, culled, cull_date_iso, cull_reason, deceased_date_iso, death_cause, sold_date_iso, sale_price_cents, purchase_cost_cents, buyer_name, sire_id, dam_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, ignored_conflicts_json, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, ownership_type, culled, cull_date_iso, cull_reason, deceased_date_iso, death_cause, sold_date_iso, sale_price_cents, purchase_cost_cents, buyer_name, sire_id, dam_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         a.id,
         a.tattoo,
@@ -1042,6 +1224,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         a.status,
         a.archived ? 1 : 0,
         a.needsAttention ? 1 : 0,
+        JSON.stringify(normalizeIgnoredConflicts(a.ignoredConflicts)),
         a.birthDateIso,
         a.weightGrams,
         JSON.stringify(a.genotype),
@@ -1254,7 +1437,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         for (const sp of profiles) this.upsertSpeciesRow(sp);
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {
@@ -1300,7 +1487,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         for (const a of animals) this.upsertAnimalRow(a);
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {
@@ -1343,7 +1534,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         }
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {
@@ -1379,7 +1574,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         for (const p of photos) this.upsertAnimalPhotoRow(p);
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {
@@ -1468,7 +1667,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         for (const t of tasks) this.upsertTaskRow(t);
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {
@@ -1501,7 +1704,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         }
         this.db.run('COMMIT;');
       } catch (e) {
-        this.db.run('ROLLBACK;');
+        try {
+          this.db.run('ROLLBACK;');
+        } catch {
+          // Ignore rollback error so root exception surfaces cleanly
+        }
         throw e;
       }
     } else if (this.fallbackSnapshot) {

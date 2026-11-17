@@ -68,7 +68,11 @@ interface CrashErrorBoundaryState {
 async function loadBestAvailableSnapshotForSupport(): Promise<BarnDatabaseSnapshot | null> {
   try {
     const adapter = new WebSqliteAdapter();
-    return await adapter.loadSnapshot();
+    const initPromise = adapter.initialize();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Support snapshot adapter init timeout')), 8000)
+    );
+    return await Promise.race([initPromise, timeoutPromise]);
   } catch {
     try {
       const rolling = await listRollingSnapshotBackups();
@@ -386,7 +390,11 @@ export class CrashErrorBoundary extends React.Component<
             </div>
 
             {feedback && (
-              <div className="p-2.5 rounded-xl bg-[var(--barn-sage-tint,#dcebd9)] border border-[var(--barn-sage,#2d5e3f)] text-xs space-y-2">
+              <div
+                role="status"
+                aria-live="polite"
+                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint,#dcebd9)] border border-[var(--barn-sage,#2d5e3f)] text-xs space-y-2"
+              >
                 <div>{feedback}</div>
                 {mailtoHref && (
                   <a

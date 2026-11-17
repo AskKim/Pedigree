@@ -560,6 +560,58 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep startup `Promise.allSettled`, `repairBarnDataHealth`, emergency recovery, and `Corrective action:` `logDiagnosticEvent` calls in `src/hooks/useBarnStore.ts`.',
     ],
   },
+  {
+    id: 'IMP-013',
+    title: 'Mobile Memory Hardening, Accessibility & Universal Pedigree Importer',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Adds UniversalPedigreeImporter for Evans .HTM rowspan trees, multi-gen CSV/TSV/pipe spreadsheets (UTF-8/UTF-16/Windows-1252, Excel serial dates), and nested JSON trees; hardens mobile memory/recursion bounds; and enforces dialog focus traps, label bindings, live regions, and keyboard accessibility across screens.',
+    userIntent:
+      'Optimize memory for mobile-first usage, improve cross-device accessibility, and import heterogeneous pedigree files gracefully without crashing.',
+    files: [
+      'src/core/importers/universalPedigreeImporter.ts',
+      'src/core/importers/archiveAndCsvUtils.ts',
+      'src/core/importers/registry.ts',
+      'src/core/pedigreeCalculator.ts',
+      'src/core/dataHealthCheck.ts',
+      'src/components/ExternalImporterPanel.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/core/__tests__/resilienceAndUniversalImport.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/importers/universalPedigreeImporter.ts',
+        requiredSubstrings: ['UniversalPedigreeImporter', 'parseEvansHtmlEntry', 'MULTI_GEN_COLUMN_SPECS'],
+        rationale: 'Universal importer handles Evans HTML, multi-generation spreadsheets, nested JSON, and unsupported binary warnings.',
+      },
+      {
+        filePath: 'src/core/importers/archiveAndCsvUtils.ts',
+        requiredSubstrings: ['decodeTextBytes', 'detectUnbommedUtf16', 'validateAndFormatYmd'],
+        rationale: 'Handles UTF-16LE/BE, Windows-1252, Excel serial dates, and calendar validation without crashing.',
+      },
+      {
+        filePath: 'src/core/importers/registry.ts',
+        requiredSubstrings: ['UniversalPedigreeImporter'],
+        rationale: 'Registers the Universal Pedigree importer alongside HerdBoss.',
+      },
+      {
+        filePath: 'src/core/pedigreeCalculator.ts',
+        requiredSubstrings: ['visitedPath: Set<string> = new Set()'],
+        rationale: 'Direct ancestor counting guards against circular ancestry loops.',
+      },
+      {
+        filePath: 'src/components/ExternalImporterPanel.tsx',
+        requiredSubstrings: ['effectiveParseError', 'role="progressbar"'],
+        rationale: 'Keeps parse error calculation pure and exposes accessible alert/progress semantics.',
+      },
+    ],
+    restorePlaybook: [
+      'Restore `UniversalPedigreeImporter` and register it in `src/core/importers/registry.ts`.',
+      'Keep `decodeTextBytes` UTF-16/Windows-1252 decoding and `validateAndFormatYmd` in `src/core/importers/archiveAndCsvUtils.ts`.',
+      'Preserve `visitedPath` cycle guard on `countDirectAncestors` in `src/core/pedigreeCalculator.ts` and accessibility attributes across modal/form components.',
+    ],
+  },
 ];
 
 /**

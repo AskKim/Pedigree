@@ -17,6 +17,19 @@ import type { CustomThemeColors } from './themePalette';
 
 export type BiologicalSex = 'Male' | 'Female' | 'Unknown';
 
+export type AnimalConflictKind = 'duplicate_tattoo' | 'parent_sex_mismatch';
+
+export function normalizeIgnoredConflicts(raw: unknown): AnimalConflictKind[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<AnimalConflictKind>();
+  for (const item of raw) {
+    if (item === 'duplicate_tattoo' || item === 'parent_sex_mismatch') {
+      seen.add(item);
+    }
+  }
+  return Array.from(seen);
+}
+
 export type AnimalStatus = 'Active' | 'Junior' | 'Retired' | 'Archived' | 'Sold' | 'Deceased';
 
 export type BreedingStatus =
@@ -407,6 +420,7 @@ export interface Animal {
   status: AnimalStatus;
   archived?: boolean;
   needsAttention?: boolean;
+  ignoredConflicts?: AnimalConflictKind[];
   birthDateIso: string; // YYYY-MM-DD or ""
   weightGrams: number;
   genotype: GenotypeAllelePair[];

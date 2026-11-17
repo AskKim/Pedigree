@@ -455,6 +455,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'status',
     'archived',
     'needsAttention',
+    'ignoredConflicts',
     'birthDateIso',
     'weightGrams',
     'genotype',

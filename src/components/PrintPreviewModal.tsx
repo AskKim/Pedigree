@@ -14,7 +14,9 @@ import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'luci
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { downloadTextFile } from '../utils/webFileActions';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 const MIN_PREVIEW_ZOOM = 0.2;
 const MAX_PREVIEW_ZOOM = 2.5;
@@ -74,17 +76,7 @@ export function PrintPreviewModal({
   const printSafetyTimerRef = useRef<number | null>(null);
   const cleanupPrintStageRef = useRef<(() => void) | null>(null);
   const cleanupDocListenersRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
 
   useEffect(() => {
     return () => {
@@ -597,6 +589,8 @@ export function PrintPreviewModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -719,7 +713,7 @@ export function PrintPreviewModal({
                 }
                 className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
               />
-              <span>Include Coat Genotypes (Unverified)</span>
+              <span>Include Coat Genotypes (Unverified · Under Dev)</span>
             </label>
 
             <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
@@ -766,6 +760,7 @@ export function PrintPreviewModal({
               >
                 <button
                   type="button"
+                  aria-pressed={binderPrintOptions.colorMode === 'color'}
                   onClick={() =>
                     onChangeBinderPrintOptions({ ...binderPrintOptions, colorMode: 'color' })
                   }
@@ -779,6 +774,7 @@ export function PrintPreviewModal({
                 </button>
                 <button
                   type="button"
+                  aria-pressed={binderPrintOptions.colorMode === 'ink_saver'}
                   onClick={() =>
                     onChangeBinderPrintOptions({ ...binderPrintOptions, colorMode: 'ink_saver' })
                   }
@@ -822,6 +818,7 @@ export function PrintPreviewModal({
                   <button
                     key={g}
                     type="button"
+                    aria-pressed={binderPrintOptions.generations === g}
                     onClick={() =>
                       onChangeBinderPrintOptions({ ...binderPrintOptions, generations: g })
                     }
@@ -932,9 +929,12 @@ export function PrintPreviewModal({
           </div>
         )}
 
-        {headerNotice && (
-          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60">
+        {(headerNotice || pedigreePrintOptions?.showGenotypes || binderPrintOptions) && (
+          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60 flex flex-wrap items-center gap-2">
             {headerNotice}
+            {(pedigreePrintOptions?.showGenotypes || binderPrintOptions) && (
+              <ColorGeneticsNotice compact />
+            )}
           </div>
         )}
 

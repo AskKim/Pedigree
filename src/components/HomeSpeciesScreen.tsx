@@ -27,7 +27,7 @@ import {
   StickyNote,
   X,
 } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import {
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
@@ -37,11 +37,14 @@ import {
 import { buildMultiSpeciesAgenda, formatSystemTaskTitle } from '../core/calendarExport';
 import {
   BarnDatabaseSnapshot,
+  BarnSettings,
   BarnTask,
   isAnimalArchived,
   todayDateIso,
 } from '../core/models';
 import { WorkspaceRoute } from '../hooks/useBarnStore';
+import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
+import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 
 interface HomeSpeciesScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -56,6 +59,9 @@ interface HomeSpeciesScreenProps {
   onToggleTaskCompleted?: (task: BarnTask) => void;
   onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => void;
   onNavigateToAddSpecies: () => void;
+  deviceCapability?: DeviceCapabilityController;
+  onApplyLowMemorySettings?: (patch: Partial<BarnSettings>) => void;
+  onOpenSettings?: () => void;
 }
 
 export function HomeSpeciesScreen({
@@ -71,6 +77,9 @@ export function HomeSpeciesScreen({
   onToggleTaskCompleted,
   onExportTasksToCalendar,
   onNavigateToAddSpecies,
+  deviceCapability,
+  onApplyLowMemorySettings,
+  onOpenSettings,
 }: HomeSpeciesScreenProps) {
   const [draggedSpeciesId, setDraggedSpeciesId] = useState<string | null>(null);
   const [dragOverSpeciesId, setDragOverSpeciesId] = useState<string | null>(null);
@@ -81,24 +90,94 @@ export function HomeSpeciesScreen({
     snapshot.settings.barnName === 'My Barn' ? '' : snapshot.settings.barnName
   );
 
+  const onboardingInputId = useId();
   const today = todayDateIso();
   const pinnedName = snapshot.settings.pinnedLandingSpecies;
   const showOnboarding = !snapshot.settings.barnNameOnboarded;
   const showSummaryGrid = snapshot.settings.showHomeSummaryGrid !== false;
 
-  const archivedIdSet = new Set(
-    snapshot.animals.filter((a) => isAnimalArchived(a)).map((a) => a.id)
+  const archivedIdSet = useMemo(
+    () => new Set(snapshot.animals.filter((a) => isAnimalArchived(a)).map((a) => a.id)),
+    [snapshot.animals]
   );
-  const ignoredTaskIdSet = new Set(snapshot.settings.ignoredTaskIds || []);
-
-  const activeTasks = snapshot.tasks.filter(
-    (t) => !t.linkedAnimalId || !archivedIdSet.has(t.linkedAnimalId)
+  const ignoredTaskIdSet = useMemo(
+    () => new Set(snapshot.settings.ignoredTaskIds || []),
+    [snapshot.settings.ignoredTaskIds]
   );
 
-  const activeGestations = snapshot.breedings.filter((b) =>
-    ['Planned', 'Bred', 'Palpated Positive'].includes(b.status)
-  ).length;
-  const openTasks = activeTasks.filter((t) => !t.completed).length;
+  const activeTasks = useMemo(
+    () => snapshot.tasks.filter((t) => !t.linkedAnimalId || !archivedIdSet.has(t.linkedAnimalId)),
+    [snapshot.tasks, archivedIdSet]
+  );
+
+  const activeGestations = useMemo(
+    () =>
+      snapshot.breedings.filter((b) =>
+        ['Planned', 'Bred', 'Palpated Positive'].includes(b.status)
+      ).length,
+    [snapshot.breedings]
+  );
+  const openTasks = useMemo(
+    () => activeTasks.filter((t) => !t.completed).length,
+    [activeTasks]
+  );
+
+  const totalBarnRecords =
+    snapshot.animals.length +
+    (snapshot.animalPhotos?.length ?? 0) +
+    snapshot.breedings.length +
+    snapshot.cages.length +
+    snapshot.tasks.length +
+    snapshot.careLogs.length +
+    snapshot.shows.length;
+
+  const speciesAlertRows = useMemo(
+    () =>
+      snapshot.speciesProfiles.map((sp) => {
+        const spKey = sp.name.trim().toLowerCase();
+        const rawCleared = snapshot.settings.dismissedTaskGroupKeys?.[spKey];
+        const dueAlert = evaluateSpeciesDueTasksAlert(activeTasks, sp.name, {
+          todayIso: today,
+          ignoredTaskIds: ignoredTaskIdSet,
+          clearedGroupSignature: typeof rawCleared === 'string' ? rawCleared : undefined,
+        });
+        const dueTasks = dueAlert.tasks;
+        const dueTaskIds = dueTasks.map((t) => t.id);
+        const legacyDismissed = Array.isArray(rawCleared) ? new Set(rawCleared) : null;
+        const showDueTaskAlert =
+          dueAlert.shouldShow &&
+          (!legacyDismissed || dueTaskIds.some((id) => !legacyDismissed.has(id)));
+
+        const arrivingAlert = evaluateSpeciesArrivingBabiesAlert(snapshot.breedings, sp, {
+          todayIso: today,
+        });
+        const attentionAlert = evaluateSpeciesNeedsAttentionAlert(snapshot.animals, sp.name);
+        const memoAlert = evaluateSpeciesMemoReminderAlert(sp, {
+          dismissedSignature: snapshot.settings.dismissedMemoAlertSignatures?.[spKey],
+        });
+
+        return {
+          sp,
+          dueAlert,
+          dueTasks,
+          dueTaskIds,
+          showDueTaskAlert,
+          arrivingAlert,
+          attentionAlert,
+          memoAlert,
+        };
+      }),
+    [
+      snapshot.speciesProfiles,
+      snapshot.settings.dismissedTaskGroupKeys,
+      snapshot.settings.dismissedMemoAlertSignatures,
+      snapshot.breedings,
+      snapshot.animals,
+      activeTasks,
+      today,
+      ignoredTaskIdSet,
+    ]
+  );
 
   const agenda = useMemo(
     () =>
@@ -167,7 +246,11 @@ export function HomeSpeciesScreen({
             }}
             className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5"
           >
+            <label htmlFor={onboardingInputId} className="sr-only">
+              Barn, Rabbitry, or Farm Name
+            </label>
             <input
+              id={onboardingInputId}
               type="text"
               placeholder="e.g. Copper Creek Rabbitry or Maple Hill Homestead"
               value={onboardingBarnName}
@@ -192,6 +275,19 @@ export function HomeSpeciesScreen({
             </div>
           </form>
         </section>
+      )}
+
+      {/* Device Capability Onboarding & Low-Memory Protection Box */}
+      {deviceCapability && (
+        <DeviceCapabilityCard
+          location="home"
+          controller={deviceCapability}
+          settings={snapshot.settings}
+          totalBarnRecords={totalBarnRecords}
+          isOnboardingActive={showOnboarding}
+          onApplyLowMemorySettings={onApplyLowMemorySettings}
+          onOpenSettings={onOpenSettings}
+        />
       )}
 
       {/* Barn Hero Header */}
@@ -450,34 +546,20 @@ export function HomeSpeciesScreen({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {snapshot.speciesProfiles.map((sp, index) => {
-            const spKey = sp.name.trim().toLowerCase();
-            const rawCleared = snapshot.settings.dismissedTaskGroupKeys?.[spKey];
-            const dueAlert = evaluateSpeciesDueTasksAlert(activeTasks, sp.name, {
-              todayIso: today,
-              ignoredTaskIds: ignoredTaskIdSet,
-              clearedGroupSignature: typeof rawCleared === 'string' ? rawCleared : undefined,
-            });
-            const dueTasks = dueAlert.tasks;
-            const dueTaskIds = dueTasks.map((t) => t.id);
-            const legacyDismissed = Array.isArray(rawCleared) ? new Set(rawCleared) : null;
-            const showDueTaskAlert =
-              dueAlert.shouldShow &&
-              (!legacyDismissed || dueTaskIds.some((id) => !legacyDismissed.has(id)));
-
-            const arrivingAlert = evaluateSpeciesArrivingBabiesAlert(
-              snapshot.breedings,
-              sp,
-              { todayIso: today }
-            );
-            const attentionAlert = evaluateSpeciesNeedsAttentionAlert(
-              snapshot.animals,
-              sp.name
-            );
-            const memoAlert = evaluateSpeciesMemoReminderAlert(sp, {
-              dismissedSignature: snapshot.settings.dismissedMemoAlertSignatures?.[spKey],
-            });
-
+          {speciesAlertRows.map(
+            (
+              {
+                sp,
+                dueAlert,
+                dueTasks,
+                dueTaskIds,
+                showDueTaskAlert,
+                arrivingAlert,
+                attentionAlert,
+                memoAlert,
+              },
+              index
+            ) => {
             const isFirst = index === 0;
             const isLast = index === snapshot.speciesProfiles.length - 1;
             const isDragTarget =

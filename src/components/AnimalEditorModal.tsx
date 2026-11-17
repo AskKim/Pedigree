@@ -9,8 +9,14 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { AlertCircle, Camera, Trash2, X } from 'lucide-react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, AlertTriangle, Camera, Trash2, X } from 'lucide-react';
+import React, { useId, useMemo, useRef, useState } from 'react';
+import {
+  findAllSpeciesDuplicateTattooPeers,
+  findOffspringRequiringParentSex,
+  findSameSexDuplicateTattooCollisions,
+  isOverrideConfirmationValid,
+} from '../core/animalConflicts';
 import {
   extractHomozygousCoatClearances,
   getAnimalCarrierDisclosures,
@@ -43,6 +49,7 @@ import {
   ClearedCarrierProofType,
   ClearedCarrierRecord,
   doesAnimalNeedAttention,
+  formatSexForSpecies,
   formatWeightInputValue,
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
@@ -66,7 +73,13 @@ import {
   getPedigreeCompletenessSummary,
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
+import {
+  MAX_PHOTO_BATCH_COUNT,
+  MAX_PHOTO_UPLOAD_BYTES,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { CarrierTraitCombobox } from './CarrierTraitCombobox';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
@@ -199,22 +212,17 @@ export function AnimalEditorModal({
   const [damId, setDamId] = useState(initialAnimal?.damId || '');
   const [notes, setNotes] = useState(initialAnimal?.notes || '');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [duplicateOverrideInput, setDuplicateOverrideInput] = useState('');
+  const [submitGuardError, setSubmitGuardError] = useState<string | null>(null);
+  const overrideInputRef = useRef<HTMLInputElement | null>(null);
 
   const [stagedPhotos, setStagedPhotos] = useState<OptimizedImagePayload[]>([]);
   const [isOptimizingPhotos, setIsOptimizingPhotos] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const activePreset = resolveImageOptimizationPreset(optimizationPresetId);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  const baseId = useId();
+  const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
 
   const handleSelectModalPhotos = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -223,13 +231,30 @@ export function AnimalEditorModal({
     try {
       const next: OptimizedImagePayload[] = [];
       const failures: string[] = [];
-      for (let i = 0; i < files.length; i++) {
+      const countToProcess = Math.min(files.length, MAX_PHOTO_BATCH_COUNT);
+      if (files.length > MAX_PHOTO_BATCH_COUNT) {
+        failures.push(
+          `Selected ${files.length} photos; processing the first ${MAX_PHOTO_BATCH_COUNT} per batch.`
+        );
+      }
+      for (let i = 0; i < countToProcess; i++) {
+        const file = files[i];
+        const sizeCheck = validateUploadFileSize(
+          file.name,
+          file.size,
+          MAX_PHOTO_UPLOAD_BYTES,
+          'an animal photo'
+        );
+        if (!sizeCheck.ok) {
+          failures.push(sizeCheck.error);
+          continue;
+        }
         try {
-          const opt = await optimizeImageFile(files[i], activePreset.id);
+          const opt = await optimizeImageFile(file, activePreset.id);
           next.push(opt);
         } catch (err) {
           failures.push(
-            err instanceof Error ? err.message : `Could not decode "${files[i].name}"`
+            err instanceof Error ? err.message : `Could not decode "${file.name}"`
           );
         }
       }
@@ -260,13 +285,13 @@ export function AnimalEditorModal({
     [speciesAnimals, speciesProfile.name, initialAnimal?.id]
   );
 
-  // Strictly species-isolated, sex-appropriate, cycle-safe parent options (Active by default, Archived optional)
+  // Strictly species-isolated, sex-appropriate, cycle-safe parent options (Male only for Sire, Female only for Dam)
   const sireCandidates = useMemo(
     () =>
       speciesAnimals.filter(
         (c) =>
           isSameSpecies(c.species, speciesProfile.name) &&
-          (c.sex === 'Male' || c.sex === 'Unknown') &&
+          c.sex === 'Male' &&
           c.id !== initialAnimal?.id &&
           (!isAnimalArchived(c) || includeArchivedParents || c.id === sireId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
@@ -279,13 +304,86 @@ export function AnimalEditorModal({
       speciesAnimals.filter(
         (c) =>
           isSameSpecies(c.species, speciesProfile.name) &&
-          (c.sex === 'Female' || c.sex === 'Unknown') &&
+          c.sex === 'Female' &&
           c.id !== initialAnimal?.id &&
           (!isAnimalArchived(c) || includeArchivedParents || c.id === damId) &&
           (!initialAnimal?.id || !wouldCreateCycle(initialAnimal.id, c.id, herdById))
       ),
     [speciesAnimals, speciesProfile.name, initialAnimal?.id, includeArchivedParents, damId, herdById]
   );
+
+  const currentSireObj = useMemo(
+    () => (sireId ? speciesAnimals.find((a) => a.id === sireId) : undefined),
+    [sireId, speciesAnimals]
+  );
+  const currentDamObj = useMemo(
+    () => (damId ? speciesAnimals.find((a) => a.id === damId) : undefined),
+    [damId, speciesAnimals]
+  );
+  const hasMismatchedCurrentSire = Boolean(currentSireObj && currentSireObj.sex !== 'Male');
+  const hasMismatchedCurrentDam = Boolean(currentDamObj && currentDamObj.sex !== 'Female');
+
+  const offspringParentConstraints = useMemo(
+    () =>
+      initialAnimal?.id
+        ? findOffspringRequiringParentSex(initialAnimal.id, speciesProfile.name, speciesAnimals)
+        : { asSireOf: [], asDamOf: [] },
+    [initialAnimal?.id, speciesProfile.name, speciesAnimals]
+  );
+
+  const sexChangeMismatchError = useMemo(() => {
+    if (offspringParentConstraints.asSireOf.length > 0 && sex !== 'Male') {
+      const sample = offspringParentConstraints.asSireOf
+        .slice(0, 3)
+        .map((k) => k.name)
+        .join(', ');
+      return `Cannot change sex to ${sex}: ${offspringParentConstraints.asSireOf.length} offspring (${sample}${
+        offspringParentConstraints.asSireOf.length > 3 ? ', ...' : ''
+      }) link this animal as Sire (${speciesProfile.maleLabel}). Unlink them first or keep Male.`;
+    }
+    if (offspringParentConstraints.asDamOf.length > 0 && sex !== 'Female') {
+      const sample = offspringParentConstraints.asDamOf
+        .slice(0, 3)
+        .map((k) => k.name)
+        .join(', ');
+      return `Cannot change sex to ${sex}: ${offspringParentConstraints.asDamOf.length} offspring (${sample}${
+        offspringParentConstraints.asDamOf.length > 3 ? ', ...' : ''
+      }) link this animal as Dam (${speciesProfile.femaleLabel}). Unlink them first or keep Female.`;
+    }
+    return null;
+  }, [offspringParentConstraints, sex, speciesProfile.maleLabel, speciesProfile.femaleLabel]);
+
+  const excludeSelfIds = useMemo(
+    () => (initialAnimal?.id ? [initialAnimal.id] : []),
+    [initialAnimal?.id]
+  );
+
+  const sameSexTattooCollisions = useMemo(
+    () =>
+      findSameSexDuplicateTattooCollisions({
+        tattoo,
+        sex,
+        species: speciesProfile.name,
+        animals: speciesAnimals,
+        excludeAnimalIds: excludeSelfIds,
+      }),
+    [tattoo, sex, speciesProfile.name, speciesAnimals, excludeSelfIds]
+  );
+
+  const allSameSpeciesTattooPeers = useMemo(
+    () =>
+      findAllSpeciesDuplicateTattooPeers({
+        tattoo,
+        species: speciesProfile.name,
+        animals: speciesAnimals,
+        excludeAnimalIds: excludeSelfIds,
+      }),
+    [tattoo, speciesProfile.name, speciesAnimals, excludeSelfIds]
+  );
+
+  const requiresDuplicateOverrideOnCreate =
+    !isEditing && sameSexTattooCollisions.length > 0;
+  const overrideConfirmed = isOverrideConfirmationValid(duplicateOverrideInput);
 
   const projectedCoi = useMemo(() => {
     if (!sireId || !damId) return null;
@@ -409,6 +507,21 @@ export function AnimalEditorModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (sexChangeMismatchError) {
+      setSubmitGuardError(sexChangeMismatchError);
+      return;
+    }
+    if (requiresDuplicateOverrideOnCreate && !overrideConfirmed) {
+      setSubmitGuardError(
+        `This ${idLabels.shortLabel.toLowerCase()} already belongs to another ${formatSexForSpecies(
+          sex,
+          speciesProfile
+        ).toLowerCase()} in your ${speciesProfile.name} herd. Use a unique ${idLabels.shortLabel.toLowerCase()} or type "override" below to save anyway.`
+      );
+      overrideInputRef.current?.focus();
+      return;
+    }
+    setSubmitGuardError(null);
     const reconciled = reconcileCarrierTraitLists(
       suspectedCarrierOf,
       confirmedCarrierOf,
@@ -462,6 +575,8 @@ export function AnimalEditorModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={isEditing ? `Edit ${initialAnimal?.name}` : `Register ${speciesProfile.name}`}
@@ -490,10 +605,14 @@ export function AnimalEditorModal({
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-name`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Animal Name *
               </label>
               <input
+                id={`${baseId}-name`}
                 type="text"
                 required
                 placeholder="e.g. Copper Creek Ruby Rose"
@@ -504,51 +623,160 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-tattoo`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 {idLabels.fieldLabel}
               </label>
               <input
+                id={`${baseId}-tattoo`}
                 type="text"
                 placeholder={idLabels.placeholder}
                 value={tattoo}
-                onChange={(e) => setTattoo(e.target.value)}
+                onChange={(e) => {
+                  setTattoo(e.target.value);
+                  setSubmitGuardError(null);
+                }}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
               />
             </div>
           </div>
 
+          {requiresDuplicateOverrideOnCreate && (
+            <div
+              role="alert"
+              className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2.5 text-xs"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                  aria-hidden="true"
+                />
+                <div className="space-y-1">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Duplicate {idLabels.shortLabel} for Same-Sex {speciesProfile.name}
+                  </div>
+                  <p className="text-[var(--barn-ink)]/90">
+                    <span className="font-mono font-semibold">{tattoo.trim()}</span> is already used by{' '}
+                    {sameSexTattooCollisions
+                      .slice(0, 3)
+                      .map((c) => `${c.name}${isAnimalArchived(c) ? ' [Archived]' : ''}`)
+                      .join(', ')}
+                    {sameSexTattooCollisions.length > 3
+                      ? ` (+${sameSexTattooCollisions.length - 3} more)`
+                      : ''}{' '}
+                    ({formatSexForSpecies(sex, speciesProfile)}). Please enter a unique{' '}
+                    {idLabels.shortLabel.toLowerCase()} to avoid pedigree &amp; show mix-ups.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-0.5">
+                <label
+                  htmlFor={`${baseId}-dup-override`}
+                  className="text-[11px] font-medium text-[var(--barn-ink)] shrink-0"
+                >
+                  To reuse anyway, type <code className="font-mono font-semibold">override</code>:
+                </label>
+                <input
+                  id={`${baseId}-dup-override`}
+                  ref={overrideInputRef}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Type override"
+                  value={duplicateOverrideInput}
+                  onChange={(e) => {
+                    setDuplicateOverrideInput(e.target.value);
+                    setSubmitGuardError(null);
+                  }}
+                  className="w-full sm:w-44 min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono"
+                />
+                {overrideConfirmed && (
+                  <span className="text-[11px] font-semibold text-[var(--barn-sage)]">
+                    Override confirmed
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!requiresDuplicateOverrideOnCreate && allSameSpeciesTattooPeers.length > 0 && (
+            <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)]/50 text-xs text-[var(--barn-muted)] flex items-start gap-2">
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <span>
+                Note: <span className="font-mono text-[var(--barn-ink)]">{tattoo.trim()}</span> also
+                appears on {allSameSpeciesTattooPeers.length} other {speciesProfile.name.toLowerCase()}{' '}
+                record(s):{' '}
+                {allSameSpeciesTattooPeers
+                  .slice(0, 3)
+                  .map((p) => `${p.name} (${formatSexForSpecies(p.sex, speciesProfile)})`)
+                  .join(', ')}
+                .
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">Sex</label>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+              <span className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                Sex{forcedSex ? ` (Locked to ${forcedSex} for pedigree slot)` : ''}
+              </span>
+              <div
+                role="group"
+                aria-label="Sex"
+                className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+              >
                 {(
                   [
                     ['Male', speciesProfile.maleLabel],
                     ['Female', speciesProfile.femaleLabel],
                     ['Unknown', 'Unknown'],
                   ] as const
-                ).map(([val, label]) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => setSex(val)}
-                    className={`min-h-[36px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
-                      sex === val
-                        ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
-                        : 'hover:bg-[var(--barn-subtle)]'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+                ).map(([val, label]) => {
+                  const lockedOut = Boolean(forcedSex && forcedSex !== val);
+                  return (
+                    <button
+                      key={val}
+                      type="button"
+                      disabled={lockedOut}
+                      aria-pressed={sex === val}
+                      onClick={() => {
+                        setSex(val);
+                        setSubmitGuardError(null);
+                      }}
+                      className={`min-h-[36px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                        sex === val
+                          ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                          : lockedOut
+                          ? 'opacity-40 cursor-not-allowed'
+                          : 'hover:bg-[var(--barn-subtle)]'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
+              {sexChangeMismatchError && (
+                <p role="alert" className="text-[11px] text-[var(--barn-danger)] font-medium mt-1">
+                  {sexChangeMismatchError}
+                </p>
+              )}
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-status`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Herd Status
               </label>
               <select
+                id={`${baseId}-status`}
                 value={status}
                 onChange={(e) => {
                   const next = e.target.value as AnimalStatus;
@@ -576,14 +804,19 @@ export function AnimalEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <span className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
                 Ownership Classification
-              </label>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+              </span>
+              <div
+                role="group"
+                aria-label="Ownership Classification"
+                className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+              >
                 {OWNERSHIP_TYPES.map((opt) => (
                   <button
                     key={opt.value}
                     type="button"
+                    aria-pressed={ownershipType === opt.value}
                     onClick={() => setOwnershipType(opt.value)}
                     className={`min-h-[36px] px-2 py-1 rounded-md text-xs font-medium transition-colors truncate ${
                       ownershipType === opt.value
@@ -602,10 +835,14 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-purchase-cost`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Acquisition Cost ({resolvedCurrency}, opt.)
               </label>
               <input
+                id={`${baseId}-purchase-cost`}
                 type="number"
                 step="0.01"
                 min="0"
@@ -622,10 +859,14 @@ export function AnimalEditorModal({
               <div className="text-xs font-semibold text-[var(--barn-ink)]">Sold Stock Details</div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-sold-date`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Sold Date
                   </label>
                   <input
+                    id={`${baseId}-sold-date`}
                     type="date"
                     value={soldDateIso}
                     onChange={(e) => setSoldDateIso(e.target.value)}
@@ -633,10 +874,14 @@ export function AnimalEditorModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-sale-price`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Sale Price ({resolvedCurrency})
                   </label>
                   <input
+                    id={`${baseId}-sale-price`}
                     type="number"
                     step="0.01"
                     min="0"
@@ -647,10 +892,14 @@ export function AnimalEditorModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-buyer-name`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Buyer Name
                   </label>
                   <input
+                    id={`${baseId}-buyer-name`}
                     type="text"
                     placeholder="Buyer / Farm name"
                     value={buyerName}
@@ -669,10 +918,14 @@ export function AnimalEditorModal({
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-deceased-date`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Date Deceased
                   </label>
                   <input
+                    id={`${baseId}-deceased-date`}
                     type="date"
                     value={deceasedDateIso}
                     onChange={(e) => setDeceasedDateIso(e.target.value)}
@@ -680,10 +933,14 @@ export function AnimalEditorModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-death-cause`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Cause / Category
                   </label>
                   <input
+                    id={`${baseId}-death-cause`}
                     type="text"
                     list="death-cause-suggestions"
                     placeholder="e.g. Illness, Predator, Birth Complication"
@@ -777,10 +1034,14 @@ export function AnimalEditorModal({
             {culled && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-cull-date`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Cull / Decision Date
                   </label>
                   <input
+                    id={`${baseId}-cull-date`}
                     type="date"
                     value={cullDateIso}
                     onChange={(e) => setCullDateIso(e.target.value)}
@@ -788,10 +1049,14 @@ export function AnimalEditorModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-cull-reason`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Cull Reason
                   </label>
                   <input
+                    id={`${baseId}-cull-reason`}
                     type="text"
                     list="cull-reason-suggestions"
                     placeholder="e.g. Conformation, Low Production, Disposition"
@@ -814,10 +1079,14 @@ export function AnimalEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-breed`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Breed
               </label>
               <input
+                id={`${baseId}-breed`}
                 type="text"
                 list="breed-suggestions"
                 value={breed}
@@ -832,10 +1101,14 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-variety`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Variety / Color
               </label>
               <input
+                id={`${baseId}-variety`}
                 type="text"
                 placeholder="e.g. Red"
                 value={variety}
@@ -845,10 +1118,14 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-cage`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Cage / Pen Location
               </label>
               <input
+                id={`${baseId}-cage`}
                 type="text"
                 list="cage-suggestions"
                 placeholder="e.g. Hutch R-07"
@@ -866,10 +1143,14 @@ export function AnimalEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-birth-date`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Birth Date
               </label>
               <input
+                id={`${baseId}-birth-date`}
                 type="date"
                 value={birthDateIso}
                 onChange={(e) => setBirthDateIso(e.target.value)}
@@ -878,10 +1159,14 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-weight`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Weight ({weightMeta.unitLabel})
               </label>
               <input
+                id={`${baseId}-weight`}
                 type="number"
                 step="0.01"
                 min="0"
@@ -893,10 +1178,14 @@ export function AnimalEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-legs`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Show Legs Won
               </label>
               <input
+                id={`${baseId}-legs`}
                 type="number"
                 min="0"
                 max="99"
@@ -910,7 +1199,10 @@ export function AnimalEditorModal({
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <label className="text-xs font-medium text-[var(--barn-muted)]">
+                <label
+                  htmlFor={`${baseId}-genotype`}
+                  className="text-xs font-medium text-[var(--barn-muted)]"
+                >
                   {speciesGeneticsSpec
                     ? `${speciesProfile.name} Coat Color Genotype Loci (${speciesGeneticsSpec.loci.map((l) => l.locus).join(', ')})`
                     : `${speciesProfile.name} Color / DNA Genotype Notes`}
@@ -919,6 +1211,7 @@ export function AnimalEditorModal({
               </div>
               {speciesVarietyPresets.length > 0 && (
                 <select
+                  aria-label={`Apply ${speciesProfile.name} variety genotype preset`}
                   value=""
                   onChange={(e) => handleSelectVarietyPreset(e.target.value)}
                   className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
@@ -1007,6 +1300,7 @@ export function AnimalEditorModal({
 
             <div className="flex flex-col sm:flex-row gap-2">
               <input
+                id={`${baseId}-genotype`}
                 type="text"
                 placeholder={
                   speciesGeneticsSpec
@@ -1277,6 +1571,7 @@ export function AnimalEditorModal({
                               <span>Matings:</span>
                               <input
                                 type="number"
+                                aria-label={`Test breedings count for ${rec.trait}`}
                                 min="1"
                                 max="99"
                                 value={rec.testBreedingCount ?? 2}
@@ -1339,11 +1634,15 @@ export function AnimalEditorModal({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-sire`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Sire ({speciesProfile.maleLabel})
                 </label>
                 {includeArchivedParents ? (
                   <SearchableParentPicker
+                    id={`${baseId}-sire`}
                     label={`Sire (${speciesProfile.maleLabel})`}
                     value={sireId}
                     candidates={sireCandidates}
@@ -1353,6 +1652,7 @@ export function AnimalEditorModal({
                   />
                 ) : (
                   <select
+                    id={`${baseId}-sire`}
                     value={sireId}
                     onChange={(e) => setSireId(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -1360,7 +1660,9 @@ export function AnimalEditorModal({
                     <option value="">Unknown / Foundation {speciesProfile.maleLabel}</option>
                     {sireId && !sireCandidates.some((c) => c.id === sireId) && (
                       <option value={sireId}>
-                        [Unlisted / Missing Sire ID: {sireId.slice(0, 8)} — select Unknown to unlink]
+                        {currentSireObj
+                          ? `[Sex Mismatch: ${currentSireObj.name} (${currentSireObj.sex}) — unlink or change parent sex]`
+                          : `[Unlisted / Missing Sire ID: ${sireId.slice(0, 8)} — select Unknown to unlink]`}
                       </option>
                     )}
                     {sireCandidates.map((c) => (
@@ -1371,14 +1673,24 @@ export function AnimalEditorModal({
                     ))}
                   </select>
                 )}
+                {hasMismatchedCurrentSire && currentSireObj && (
+                  <p className="text-[11px] text-[var(--barn-terracotta)] font-medium mt-1">
+                    Warning: Linked sire &ldquo;{currentSireObj.name}&rdquo; is recorded as{' '}
+                    {currentSireObj.sex}. Select a {speciesProfile.maleLabel} or Unknown to resolve.
+                  </p>
+                )}
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-dam`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Dam ({speciesProfile.femaleLabel})
                 </label>
                 {includeArchivedParents ? (
                   <SearchableParentPicker
+                    id={`${baseId}-dam`}
                     label={`Dam (${speciesProfile.femaleLabel})`}
                     value={damId}
                     candidates={damCandidates}
@@ -1388,6 +1700,7 @@ export function AnimalEditorModal({
                   />
                 ) : (
                   <select
+                    id={`${baseId}-dam`}
                     value={damId}
                     onChange={(e) => setDamId(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -1395,7 +1708,9 @@ export function AnimalEditorModal({
                     <option value="">Unknown / Foundation {speciesProfile.femaleLabel}</option>
                     {damId && !damCandidates.some((c) => c.id === damId) && (
                       <option value={damId}>
-                        [Unlisted / Missing Dam ID: {damId.slice(0, 8)} — select Unknown to unlink]
+                        {currentDamObj
+                          ? `[Sex Mismatch: ${currentDamObj.name} (${currentDamObj.sex}) — unlink or change parent sex]`
+                          : `[Unlisted / Missing Dam ID: ${damId.slice(0, 8)} — select Unknown to unlink]`}
                       </option>
                     )}
                     {damCandidates.map((c) => (
@@ -1406,16 +1721,26 @@ export function AnimalEditorModal({
                     ))}
                   </select>
                 )}
+                {hasMismatchedCurrentDam && currentDamObj && (
+                  <p className="text-[11px] text-[var(--barn-terracotta)] font-medium mt-1">
+                    Warning: Linked dam &ldquo;{currentDamObj.name}&rdquo; is recorded as{' '}
+                    {currentDamObj.sex}. Select a {speciesProfile.femaleLabel} or Unknown to resolve.
+                  </p>
+                )}
               </div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-reg`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Registration #
               </label>
               <input
+                id={`${baseId}-reg`}
                 type="text"
                 value={registrationNumber}
                 onChange={(e) => setRegistrationNumber(e.target.value)}
@@ -1423,10 +1748,14 @@ export function AnimalEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-gc`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Grand Champion #
               </label>
               <input
+                id={`${baseId}-gc`}
                 type="text"
                 value={grandChampionNumber}
                 onChange={(e) => setGrandChampionNumber(e.target.value)}
@@ -1434,10 +1763,14 @@ export function AnimalEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-breeder`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Breeder
               </label>
               <input
+                id={`${baseId}-breeder`}
                 type="text"
                 value={breederName}
                 onChange={(e) => setBreederName(e.target.value)}
@@ -1445,10 +1778,14 @@ export function AnimalEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-owner`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Owner
               </label>
               <input
+                id={`${baseId}-owner`}
                 type="text"
                 value={ownerName}
                 onChange={(e) => setOwnerName(e.target.value)}
@@ -1458,10 +1795,14 @@ export function AnimalEditorModal({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+            <label
+              htmlFor={`${baseId}-notes`}
+              className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+            >
               Barn Notes
             </label>
             <textarea
+              id={`${baseId}-notes`}
               rows={2}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -1514,7 +1855,10 @@ export function AnimalEditorModal({
             </div>
 
             {photoError && (
-              <div className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs">
+              <div
+                role="alert"
+                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs"
+              >
                 {photoError}
               </div>
             )}
@@ -1546,6 +1890,15 @@ export function AnimalEditorModal({
               </div>
             )}
           </div>
+
+          {submitGuardError && (
+            <div
+              role="alert"
+              className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)]"
+            >
+              {submitGuardError}
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[var(--barn-border)]">
             {isEditing && onDelete ? (

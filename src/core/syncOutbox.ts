@@ -320,7 +320,7 @@ export function mergeDeltaOperations(
     const applyToMap = <T extends { id: string; updatedAt: string }>(map: Map<string, T>) => {
       if (op.field_name === '__create__' && op.new_value && typeof op.new_value === 'object') {
         if (!map.has(op.entity_uuid)) {
-          const clone = { ...(op.new_value as Record<string, unknown>), id: op.entity_uuid };
+          const clone: Record<string, unknown> = { ...(op.new_value as Record<string, unknown>), id: op.entity_uuid };
           if (op.entity_type === 'photo') {
             const safeData = sanitizeSafeRasterImageDataUrl(clone.dataUrl);
             if (!safeData) return;

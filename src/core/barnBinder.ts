@@ -479,6 +479,7 @@ function renderPedigreeTableHtml(
   }
   const compactMode = generations >= 5;
 
+  let anyAncestorGeno = false;
   const renderAncestorCell = (gen: number, idx: number, rowspan: number): string => {
     const slot = slotMap.get(`${gen}:${idx}`);
     const a = slot?.animal;
@@ -489,6 +490,9 @@ function renderPedigreeTableHtml(
       </td>`;
     }
     const geno = a.genotypeRaw || formatGenotypeArray(a.genotype);
+    if (!compactMode && geno) {
+      anyAncestorGeno = true;
+    }
     const carrierSummary = formatCompactCarrierDisclosure(a, {
       herdById,
       includeCleared: true,
@@ -614,6 +618,12 @@ function renderPedigreeTableHtml(
       <thead><tr>${genHeaders.join('')}</tr></thead>
       <tbody>${rows.join('')}</tbody>
     </table>
+
+    ${
+      subjectGeno || anyAncestorGeno || subject.rufusLevel
+        ? `<p class="small muted" style="margin-top:6px;">Notice: Color genetics, Rufus intensity &amp; genotype calculation is under development and incomplete (unverified).</p>`
+        : ''
+    }
 
     ${sharedAncestorsHtml}
   </div>`;
@@ -1095,7 +1105,7 @@ export function generateSpeciesBarnBinderHtml(
                   </table>`
                 : ''
             }
-            <p class="small muted" style="margin-top:8px;">Note: Coat genotypes represent breeder-entered expectations or pedigree inference unless DNA-verified.</p>
+            <p class="small muted" style="margin-top:8px;">Notice: Color genetics, Rufus intensity &amp; genotype calculation is under development and incomplete (unverified &mdash; recorded values reflect breeder notes rather than verified formulas).</p>
           </div>
         </div>
 

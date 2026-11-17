@@ -18,9 +18,14 @@ export function usePWAInstall() {
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    let isStandalone = (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    try {
+      if (typeof window.matchMedia === 'function') {
+        isStandalone = isStandalone || window.matchMedia('(display-mode: standalone)').matches;
+      }
+    } catch {
+      // Ignore unsupported matchMedia query on legacy mobile WebViews
+    }
     setIsInstalled(isStandalone);
 
     const userAgent = window.navigator.userAgent.toLowerCase();

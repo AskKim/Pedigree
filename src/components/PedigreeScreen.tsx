@@ -11,13 +11,25 @@
  * - Optional primary animal photo embedding in exported Evans `.HTM` / PDF pedigrees
  */
 
-import { ArrowLeft, ChevronRight, FileText, Plus, Search, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ChevronRight,
+  FileText,
+  Plus,
+  RotateCcw,
+  Search,
+  ShieldAlert,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCompactCarrierDisclosure } from '../core/carrierGenetics';
 import { formatGenotypeArray } from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   Animal,
+  AnimalConflictKind,
   BarnSettings,
   doesAnimalNeedAttention,
   formatSexForSpecies,
@@ -35,7 +47,9 @@ import {
 } from '../core/pedigreeCalculator';
 import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { AnimalEditorModal } from './AnimalEditorModal';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 
@@ -55,6 +69,8 @@ interface PedigreeScreenProps {
     linkParentTarget?: { childId: string; asSire: boolean },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
   ) => void;
+  onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
+  onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
 }
 
 const MIN_TREE_ZOOM = 0.2;
@@ -76,9 +92,18 @@ export function PedigreeScreen({
   onOpenAnimalInHerd,
   onToggleIncludePhotoOnPedigree,
   onSaveAnimal,
+  onIgnoreConflicts,
+  onRestoreConflictAlert,
 }: PedigreeScreenProps) {
-  const { speciesProfile, animals, primaryPhotoByAnimalId, herdById, coiByAnimalId, cages } =
-    activeData;
+  const {
+    speciesProfile,
+    animals,
+    primaryPhotoByAnimalId,
+    herdById,
+    conflictsByAnimalId,
+    coiByAnimalId,
+    cages,
+  } = activeData;
 
   const [zoom, setZoom] = useState<number>(1);
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
@@ -93,14 +118,11 @@ export function PedigreeScreen({
     breederContactLine: '',
   });
 
-  useEffect(() => {
-    if (!linkingSlot) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLinkingSlot(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [linkingSlot]);
+  const closeLinkingDialog = useCallback(() => setLinkingSlot(null), []);
+  const linkingDialogRef = useAccessibleDialog({
+    isOpen: Boolean(linkingSlot),
+    onClose: closeLinkingDialog,
+  });
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const sizerRef = useRef<HTMLDivElement | null>(null);
@@ -204,15 +226,13 @@ export function PedigreeScreen({
     [animals, subject]
   );
 
-  // Strictly species-isolated candidate parents when filling an empty slot
+  // Strictly species-isolated and sex-matching candidate parents when filling an empty slot
   const allSafeLinkCandidates = useMemo(() => {
     if (!linkingSlot || !linkingSlot.childAnimalId) return [];
     const childId = linkingSlot.childAnimalId;
     const wantMale = linkingSlot.expectedSex === 'Male';
     return animals.filter((c) => {
-      const sexOk = wantMale
-        ? c.sex === 'Male' || c.sex === 'Unknown'
-        : c.sex === 'Female' || c.sex === 'Unknown';
+      const sexOk = wantMale ? c.sex === 'Male' : c.sex === 'Female';
       return sexOk && c.id !== childId && !wouldCreateCycle(childId, c.id, herdById);
     });
   }, [linkingSlot, animals, herdById]);
@@ -464,24 +484,18 @@ export function PedigreeScreen({
     setZoom(Math.round(fit * 1000) / 1000);
   };
 
-  if (!subject) {
-    return (
-      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)]">
-        Add a {speciesProfile.name.toLowerCase()} in the Herd tab to explore multi-generation
-        pedigree charts.
-      </div>
-    );
-  }
-
-  // Dynamic card dimensions across 3, 4, 5, and 6 generations
-  const layoutConfig =
-    generations === 6
-      ? { colWidth: 174, cardWidth: 150, cardHeight: 44, rowPitch: 50, compact: true }
-      : generations === 5
-      ? { colWidth: 198, cardWidth: 170, cardHeight: 56, rowPitch: 64, compact: true }
-      : generations === 4
-      ? { colWidth: 235, cardWidth: 198, cardHeight: 78, rowPitch: 88, compact: false }
-      : { colWidth: 265, cardWidth: 222, cardHeight: 90, rowPitch: 108, compact: false };
+  // Dynamic card dimensions across 3, 4, 5, and 6 generations (memoized before early return)
+  const layoutConfig = useMemo(
+    () =>
+      generations === 6
+        ? { colWidth: 174, cardWidth: 150, cardHeight: 44, rowPitch: 50, compact: true }
+        : generations === 5
+        ? { colWidth: 198, cardWidth: 170, cardHeight: 56, rowPitch: 64, compact: true }
+        : generations === 4
+        ? { colWidth: 235, cardWidth: 198, cardHeight: 78, rowPitch: 88, compact: false }
+        : { colWidth: 265, cardWidth: 222, cardHeight: 90, rowPitch: 108, compact: false },
+    [generations]
+  );
 
   const { colWidth, cardWidth, cardHeight, rowPitch, compact } = layoutConfig;
   const leafCount = 1 << generations;
@@ -489,41 +503,95 @@ export function PedigreeScreen({
   const canvasWidth = (generations + 1) * colWidth + 24;
   canvasDimsRef.current = { width: canvasWidth, height: canvasHeight };
 
-  const nodeCoords = new Map<string, { x: number; y: number; slot: PedigreeSlot }>();
-  for (const sl of slots) {
-    const slotsInGen = 1 << sl.generation;
-    const x = 16 + sl.generation * colWidth;
-    const bandHeight = (canvasHeight - 32) / slotsInGen;
-    const y = 16 + bandHeight * (sl.slotIndex + 0.5) - cardHeight / 2;
-    nodeCoords.set(`${sl.generation}:${sl.slotIndex}`, { x, y, slot: sl });
-  }
+  const { nodeCoords, connectorPaths } = useMemo(() => {
+    const coords = new Map<string, { x: number; y: number; slot: PedigreeSlot }>();
+    const paths: Array<{ d: string; isSire: boolean; isKnown: boolean }> = [];
+    if (slots.length === 0) {
+      return { nodeCoords: coords, connectorPaths: paths };
+    }
 
-  const connectorPaths: Array<{ d: string; isSire: boolean; isKnown: boolean }> = [];
-  for (let g = 0; g < generations; g++) {
-    const count = 1 << g;
-    for (let idx = 0; idx < count; idx++) {
-      const parentBox = nodeCoords.get(`${g}:${idx}`);
-      const sireBox = nodeCoords.get(`${g + 1}:${idx * 2}`);
-      const damBox = nodeCoords.get(`${g + 1}:${idx * 2 + 1}`);
-      if (!parentBox || !sireBox || !damBox) continue;
+    for (const sl of slots) {
+      const slotsInGen = 1 << sl.generation;
+      const x = 16 + sl.generation * colWidth;
+      const bandHeight = (canvasHeight - 32) / slotsInGen;
+      const y = 16 + bandHeight * (sl.slotIndex + 0.5) - cardHeight / 2;
+      coords.set(`${sl.generation}:${sl.slotIndex}`, { x, y, slot: sl });
+    }
 
-      const x1 = parentBox.x + cardWidth;
-      const y1 = parentBox.y + cardHeight / 2;
+    for (let g = 0; g < generations; g++) {
+      const count = 1 << g;
+      for (let idx = 0; idx < count; idx++) {
+        const parentBox = coords.get(`${g}:${idx}`);
+        const sireBox = coords.get(`${g + 1}:${idx * 2}`);
+        const damBox = coords.get(`${g + 1}:${idx * 2 + 1}`);
+        if (!parentBox || !sireBox || !damBox) continue;
 
-      for (const [target, isSire] of [
-        [sireBox, true],
-        [damBox, false],
-      ] as const) {
-        const x2 = target.x;
-        const y2 = target.y + cardHeight / 2;
-        const cx = (x1 + x2) / 2;
-        connectorPaths.push({
-          d: `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`,
-          isSire,
-          isKnown: Boolean(target.slot.animal),
-        });
+        const x1 = parentBox.x + cardWidth;
+        const y1 = parentBox.y + cardHeight / 2;
+
+        for (const [target, isSire] of [
+          [sireBox, true],
+          [damBox, false],
+        ] as const) {
+          const x2 = target.x;
+          const y2 = target.y + cardHeight / 2;
+          const cx = (x1 + x2) / 2;
+          paths.push({
+            d: `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`,
+            isSire,
+            isKnown: Boolean(target.slot.animal),
+          });
+        }
       }
     }
+
+    return { nodeCoords: coords, connectorPaths: paths };
+  }, [slots, colWidth, cardWidth, cardHeight, canvasHeight, generations]);
+
+  const handleViewportKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLTextAreaElement ||
+      e.target instanceof HTMLSelectElement
+    ) {
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const panStep = 64;
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      vp.scrollLeft += panStep;
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      vp.scrollLeft = Math.max(0, vp.scrollLeft - panStep);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      vp.scrollTop += panStep;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      vp.scrollTop = Math.max(0, vp.scrollTop - panStep);
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      applyZoomCentered(zoomRef.current + 0.15);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      applyZoomCentered(zoomRef.current - 0.15);
+    } else if (e.key === '0') {
+      e.preventDefault();
+      applyZoomCentered(1);
+    }
+  };
+
+  if (!subject) {
+    return (
+      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)]">
+        Add a {speciesProfile.name.toLowerCase()} in the Herd tab to explore multi-generation
+        pedigree charts.
+      </div>
+    );
   }
 
   const subjectPrimaryPhoto = primaryPhotoByAnimalId.get(subject.id);
@@ -598,6 +666,7 @@ export function PedigreeScreen({
                 <button
                   key={g}
                   type="button"
+                  aria-pressed={generations === g}
                   onClick={() => onChangeGenerations(g)}
                   className={`min-h-[34px] px-2.5 sm:px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap ${
                     generations === g
@@ -619,8 +688,106 @@ export function PedigreeScreen({
               Export .HTM / Print PDF
             </button>
             <PedigreePrintNotice compact />
+            <ColorGeneticsNotice compact />
           </div>
         </div>
+
+        {/* Pedigree Subject / Tree Conflict Alert or Retained Soft Warning */}
+        {(() => {
+          const subjectConflict = conflictsByAnimalId.get(subject.id);
+          const treeUniqueConflicts = Array.from(
+            new Map(
+              slots
+                .map((sl) => sl.animal)
+                .filter((an): an is Animal => Boolean(an))
+                .map((an) => [an.id, conflictsByAnimalId.get(an.id)] as const)
+                .filter(([, sum]) => Boolean(sum?.hasAnyConflict))
+            ).entries()
+          );
+
+          if (!subjectConflict?.hasAnyConflict && treeUniqueConflicts.length === 0) {
+            return null;
+          }
+
+          const hasUrgent =
+            Boolean(subjectConflict?.hasActiveConflict) ||
+            treeUniqueConflicts.some(([, sum]) => Boolean(sum?.hasActiveConflict));
+
+          return (
+            <div
+              role={hasUrgent ? 'alert' : 'status'}
+              className={`rounded-xl border px-3.5 py-2.5 text-xs flex flex-wrap items-start justify-between gap-2.5 ${
+                hasUrgent
+                  ? 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)] text-[var(--barn-ink)]'
+                  : 'bg-[var(--barn-canvas)] border-[var(--barn-terracotta)]/55 text-[var(--barn-ink)]'
+              }`}
+            >
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                {hasUrgent ? (
+                  <ShieldAlert
+                    className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <AlertTriangle
+                    className="w-4 h-4 text-[var(--barn-terracotta)]/85 shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                )}
+                <div className="space-y-0.5 min-w-0">
+                  <div className="font-semibold">
+                    {subjectConflict?.hasActiveConflict
+                      ? `Pedigree Conflict Alert for ${subject.name}`
+                      : subjectConflict?.isIgnoredWithSoftWarning
+                      ? `Soft Warning (Conflict Ignored) — ${subject.name}`
+                      : `Pedigree Tree Notices (${treeUniqueConflicts.length} conflicted ancestor${treeUniqueConflicts.length === 1 ? '' : 's'})`}
+                  </div>
+                  {subjectConflict?.hasAnyConflict ? (
+                    <div className="text-[11px] text-[var(--barn-muted)]">
+                      {subjectConflict.headlineReasons.join(' · ')}
+                      {subjectConflict.isIgnoredWithSoftWarning
+                        ? ' (Alert ignored; soft warning stays visible until resolved.)'
+                        : ''}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-[var(--barn-muted)]">
+                      Highlighted cards in this chart have duplicate IDs/tattoos or parent sex mismatches.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onOpenAnimalInHerd(subject.id)}
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+                >
+                  Open Profile in Herd
+                </button>
+                {subjectConflict?.hasActiveConflict && onIgnoreConflicts && (
+                  <button
+                    type="button"
+                    onClick={() => onIgnoreConflicts(subject.id, subjectConflict.activeKinds)}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)]"
+                  >
+                    Ignore Conflict
+                  </button>
+                )}
+                {subjectConflict?.isIgnoredWithSoftWarning && onRestoreConflictAlert && (
+                  <button
+                    type="button"
+                    onClick={() => onRestoreConflictAlert(subject.id)}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                    Re-enable Alert
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--barn-muted)] border-t border-[var(--barn-border)] pt-2.5">
           <span>
@@ -688,7 +855,8 @@ export function PedigreeScreen({
           ref={viewportRef}
           tabIndex={0}
           role="region"
-          aria-label={`${subject.name} ${generations}-generation pedigree chart`}
+          aria-label={`${subject.name} ${generations}-generation pedigree chart (use arrow keys to pan, +/- to zoom, 0 to reset)`}
+          onKeyDown={handleViewportKeyDown}
           style={{
             touchAction: 'pan-x pan-y',
             overscrollBehavior: 'auto',
@@ -748,6 +916,9 @@ export function PedigreeScreen({
               const isLinebred = slot.occurrenceCount > 1;
               const isMaleSlot = slot.expectedSex === 'Male';
               const canLinkMissing = !a && Boolean(slot.childAnimalId);
+              const nodeConflict = a ? conflictsByAnimalId.get(a.id) : undefined;
+              const hasUrgentConflict = Boolean(nodeConflict?.hasActiveConflict);
+              const hasSoftConflict = Boolean(nodeConflict?.isIgnoredWithSoftWarning);
 
               return (
                 <div
@@ -762,7 +933,11 @@ export function PedigreeScreen({
                     compact ? 'px-2 py-1' : 'px-3 py-2'
                   } flex flex-col justify-between transition-colors ${
                     a
-                      ? isSubject || isLinebred
+                      ? hasUrgentConflict
+                        ? 'bg-[var(--barn-terracotta-tint)]/75 border-[var(--barn-terracotta)] border-[1.5px]'
+                        : hasSoftConflict
+                        ? 'bg-[var(--barn-canvas)] border-[var(--barn-terracotta)]/70 border-dashed border-[1.5px]'
+                        : isSubject || isLinebred
                         ? 'bg-[var(--barn-sage-tint)]/75 border-[var(--barn-sage)] border-[1.5px]'
                         : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
                       : 'bg-[var(--barn-canvas)]/65 dark:bg-[var(--barn-subtle)]/75 border-dashed border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60'
@@ -792,15 +967,30 @@ export function PedigreeScreen({
                             className={`font-semibold text-left truncate hover:underline ${
                               compact ? 'text-[10.5px] leading-tight' : 'text-xs'
                             }`}
-                            title={`${a.name} — click to focus`}
+                            title={
+                              nodeConflict?.hasAnyConflict
+                                ? `${a.name} — ${nodeConflict.headlineReasons.join('; ')}`
+                                : `${a.name} — click to focus`
+                            }
                           >
                             {a.name}
                           </button>
-                          {isLinebred && (
-                            <span className="font-mono text-[9.5px] font-semibold text-[var(--barn-sage)] shrink-0">
-                              {slot.occurrenceCount}×
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1 shrink-0">
+                            {nodeConflict?.hasAnyConflict && (
+                              <span
+                                title={nodeConflict.headlineReasons.join('; ')}
+                                className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-[var(--barn-terracotta)]"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5" aria-hidden="true" />
+                                {!compact && (hasUrgentConflict ? 'Conflict' : 'Soft Warn')}
+                              </span>
+                            )}
+                            {isLinebred && (
+                              <span className="font-mono text-[9.5px] font-semibold text-[var(--barn-sage)]">
+                                {slot.occurrenceCount}×
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         {!compact ? (
@@ -963,6 +1153,8 @@ export function PedigreeScreen({
       {/* Link Existing or Create New Parent Modal */}
       {linkingSlot && (
         <div
+          ref={linkingDialogRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-label="Assign Parent"
@@ -1000,6 +1192,7 @@ export function PedigreeScreen({
                 />
                 <input
                   type="search"
+                  aria-label="Search parents"
                   autoFocus
                   placeholder={`Search ${speciesProfile.name} parents by name, ${getSpeciesIdentifierLabels(speciesProfile.name).shortLabel.toLowerCase()}, or breed...`}
                   value={linkSearchQuery}

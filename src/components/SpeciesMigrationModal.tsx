@@ -27,6 +27,7 @@ import {
   migrateAnimalsToSpecies,
   SpeciesMigrationOptions,
 } from '../core/speciesMigration';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface SpeciesMigrationModalProps {
   snapshot: BarnDatabaseSnapshot;
@@ -128,6 +129,14 @@ export function SpeciesMigrationModal({
   const [isMigrating, setIsMigrating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const dialogRef = useAccessibleDialog({
+    isOpen: true,
+    onClose: () => {
+      if (!isMigrating) onClose();
+    },
+    closeOnEscape: !isMigrating,
+  });
+
   const effectiveTarget = (useCustomInput ? customTarget : selectedTarget).trim();
   const isSameAsSource = effectiveTarget ? isSameSpecies(effectiveTarget, sourceSpecies) : false;
 
@@ -187,6 +196,8 @@ export function SpeciesMigrationModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={heading}
@@ -523,7 +534,10 @@ export function SpeciesMigrationModal({
             )}
 
             {errorMsg && (
-              <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium">
+              <div
+                role="alert"
+                className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium"
+              >
                 {errorMsg}
               </div>
             )}

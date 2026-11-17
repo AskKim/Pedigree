@@ -27,12 +27,14 @@ import {
   SyncOperation,
 } from '../core/syncOutbox';
 import { downloadTextFile } from '../utils/webFileActions';
+import { logDiagnosticEvent } from './crashLogger';
 
 const SYNC_IDB_NAME = 'community_pedigree_sync_v1';
 const STORE_OUTBOX = 'sync_outbox';
 const STORE_CONFLICTS = 'sync_conflicts';
 const DEVICE_ID_LS_KEY = 'pedigree_device_id_v1';
 const LOGICAL_COUNTER_LS_KEY = 'pedigree_logical_counter_v1';
+const SYNC_IDB_TIMEOUT_MS = 7000;
 
 export function getOrCreateLocalDeviceId(): string {
   try {
@@ -59,18 +61,60 @@ export function allocateNextLogicalCounter(): number {
 
 function openSyncIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(SYNC_IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_OUTBOX)) {
-        db.createObjectStore(STORE_OUTBOX, { keyPath: 'op_id' });
-      }
-      if (!db.objectStoreNames.contains(STORE_CONFLICTS)) {
-        db.createObjectStore(STORE_CONFLICTS, { keyPath: 'conflict_id' });
-      }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      logDiagnosticEvent({
+        level: 'warn',
+        category: 'storage',
+        message: `Corrective action: Sync outbox IndexedDB open timed out after ${SYNC_IDB_TIMEOUT_MS}ms — bypassing sync channel I/O`,
+      });
+      reject(new Error('Sync IndexedDB open timeout'));
+    }, SYNC_IDB_TIMEOUT_MS);
+
+    const finishReject = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err instanceof Error ? err : new Error(String(err ?? 'Sync IndexedDB error')));
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+
+    try {
+      const req = indexedDB.open(SYNC_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_OUTBOX)) {
+          db.createObjectStore(STORE_OUTBOX, { keyPath: 'op_id' });
+        }
+        if (!db.objectStoreNames.contains(STORE_CONFLICTS)) {
+          db.createObjectStore(STORE_CONFLICTS, { keyPath: 'conflict_id' });
+        }
+      };
+      req.onblocked = () => {
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message: 'Corrective action: Sync outbox IndexedDB upgrade blocked by another tab — skipping sync write',
+        });
+      };
+      req.onsuccess = () => {
+        if (settled) {
+          try {
+            req.result.close();
+          } catch {
+            // Ignore
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(req.result);
+      };
+      req.onerror = () => finishReject(req.error);
+    } catch (err) {
+      finishReject(err);
+    }
   });
 }
 

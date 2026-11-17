@@ -312,16 +312,54 @@ function openLogsIdb(): Promise<IDBDatabase> {
       reject(new Error('IndexedDB unavailable'));
       return;
     }
-    const req = indexedDB.open(LOG_IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(LOG_STORE_NAME)) {
-        const store = db.createObjectStore(LOG_STORE_NAME, { keyPath: 'id' });
-        store.createIndex('timestampMs', 'timestampMs', { unique: false });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Diagnostics IndexedDB open timeout'));
+    }, 6000);
+
+    try {
+      const req = indexedDB.open(LOG_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(LOG_STORE_NAME)) {
+          const store = db.createObjectStore(LOG_STORE_NAME, { keyPath: 'id' });
+          store.createIndex('timestampMs', 'timestampMs', { unique: false });
+        }
+      };
+      req.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('Diagnostics IndexedDB open blocked'));
+      };
+      req.onsuccess = () => {
+        if (settled) {
+          try {
+            req.result.close();
+          } catch {
+            // Ignore
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(req.result);
+      };
+      req.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(req.error);
+      };
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
       }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    }
   });
 }
 

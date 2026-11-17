@@ -28,8 +28,14 @@ import {
   OptimizedImagePayload,
   resolveImageOptimizationPreset,
 } from '../core/imageOptimizationSpec';
+import {
+  MAX_PHOTO_BATCH_COUNT,
+  MAX_PHOTO_UPLOAD_BYTES,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
 import { Animal, AnimalPhoto } from '../core/models';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface AnimalPhotoGalleryProps {
   animal: Animal;
@@ -70,6 +76,11 @@ export function AnimalPhotoGallery({
     photos.find((p) => p.id === selectedPhotoId) || photos[0] || null;
   const activeIndex = activePhoto ? photos.findIndex((p) => p.id === activePhoto.id) : -1;
 
+  const lightboxDialogRef = useAccessibleDialog({
+    isOpen: Boolean(lightboxOpen && activePhoto),
+    onClose: () => setLightboxOpen(false),
+  });
+
   // Reset active selection and caption draft when switching animals or active photo
   useEffect(() => {
     setConfirmDeleteId(null);
@@ -85,16 +96,14 @@ export function AnimalPhotoGallery({
     setCaptionDraft(activePhoto?.caption || '');
   }, [activePhoto?.id, activePhoto?.caption]);
 
-  // Keyboard navigation when Lightbox is open
+  // Arrow-key navigation when Lightbox is open (Escape + focus trap handled by useAccessibleDialog)
   useEffect(() => {
-    if (!lightboxOpen || photos.length === 0) return;
+    if (!lightboxOpen || photos.length <= 1) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setLightboxOpen(false);
-      } else if (e.key === 'ArrowRight' && photos.length > 1) {
+      if (e.key === 'ArrowRight') {
         const next = photos[(activeIndex + 1) % photos.length];
         if (next) setSelectedPhotoId(next.id);
-      } else if (e.key === 'ArrowLeft' && photos.length > 1) {
+      } else if (e.key === 'ArrowLeft') {
         const prev = photos[(activeIndex - 1 + photos.length) % photos.length];
         if (prev) setSelectedPhotoId(prev.id);
       }
@@ -114,6 +123,25 @@ export function AnimalPhotoGallery({
     if (files.length === 0) {
       setUploadError('Please choose one or more image files (JPG, PNG, WebP, AVIF, GIF).');
       return;
+    }
+    if (files.length > MAX_PHOTO_BATCH_COUNT) {
+      setUploadError(
+        `Selected ${files.length} images. To protect mobile browser memory, please add up to ${MAX_PHOTO_BATCH_COUNT} photos per batch.`
+      );
+      return;
+    }
+
+    for (const file of files) {
+      const sizeCheck = validateUploadFileSize(
+        file.name,
+        file.size,
+        MAX_PHOTO_UPLOAD_BYTES,
+        'a photo upload'
+      );
+      if (!sizeCheck.ok) {
+        setUploadError(sizeCheck.error);
+        return;
+      }
     }
 
     setUploadError(null);
@@ -223,7 +251,10 @@ export function AnimalPhotoGallery({
       </div>
 
       {uploadError && (
-        <div className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs">
+        <div
+          role="alert"
+          className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs"
+        >
           {uploadError}
         </div>
       )}
@@ -326,6 +357,7 @@ export function AnimalPhotoGallery({
                 <div className="flex items-center gap-1.5 flex-1 min-w-0">
                   <input
                     type="text"
+                    aria-label="Photo caption"
                     placeholder="Add photo caption (e.g. Side profile, Left ear tattoo)..."
                     value={captionDraft}
                     onChange={(e) => setCaptionDraft(e.target.value)}
@@ -481,6 +513,8 @@ export function AnimalPhotoGallery({
       {/* Full-Screen Lightbox Modal */}
       {lightboxOpen && activePhoto && (
         <div
+          ref={lightboxDialogRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-label={`${animal.name} photo viewer`}

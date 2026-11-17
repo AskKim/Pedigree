@@ -11,6 +11,7 @@
  */
 
 import { parseGenotypeString } from '../geneticsEngine';
+import { isSafeRecordKey } from '../inputSanitization';
 import {
   addDaysIso,
   Animal,
@@ -495,12 +496,13 @@ function buildNormalizedTablesFromEntry(entry: VirtualArchiveEntry): NormalizedT
         for (const item of validObjs) {
           for (const k of Object.keys(item)) headerSet.add(k);
         }
-        const headers = Array.from(headerSet);
+        const headers = Array.from(headerSet).filter((h) => isSafeRecordKey(h));
         const normHeaderMap = new Map<string, string>();
         for (const h of headers) normHeaderMap.set(normalizeColumnKey(h), h);
         const rows = validObjs.map((item) => {
-          const r: Record<string, string> = {};
+          const r: Record<string, string> = Object.create(null);
           for (const h of headers) {
+            if (!isSafeRecordKey(h)) continue;
             const v = item[h];
             r[h] =
               v === null || v === undefined
@@ -2465,13 +2467,17 @@ export const HerdBossImporter: PlatformImporter = {
     }
 
     if (animalsById.size === 0 && breedings.length === 0 && careLogs.length === 0 && stagedPhotos.length === 0) {
-      if (imageArchiveEntries.length > 0 || deferredMediaCount > 0 || deferredManifestRowCount > 0) {
+      if (deferredMediaSampleNames.some((n) => /\.(?:xlsx?|docx?|pdf|sqlite3?|db)$/i.test(n))) {
+        warnings.push(
+          'Detected binary spreadsheet, document, or database files (.xlsx, .xls, .pdf, .docx, or .sqlite) with no CSV/JSON animal tables. Export your herd as CSV/UTF-8 CSV or switch to the "Universal Pedigree / Evans .HTM / Spreadsheets" importer.'
+        );
+      } else if (imageArchiveEntries.length > 0 || deferredMediaCount > 0 || deferredManifestRowCount > 0) {
         warnings.push(
           `Found ${imageArchiveEntries.length + deferredMediaCount} photo/media files in the staged archive(s), but the animal CSV spreadsheet hasn't been staged yet. Click "+ Add Companion .ZIP" above to add the HerdBoss data .ZIP so photos can link to each animal!`
         );
       } else {
         warnings.push(
-          'No animal, breeding, or care rows matched yet. Expand "Inspect ZIP Manifest & Columns" below and copy the schema report if your HerdBoss export uses custom filenames.'
+          'No animal, breeding, or care rows matched yet. Expand "Inspect ZIP Manifest & Columns" below and copy the schema report if your HerdBoss export uses custom filenames or try "Universal Pedigree / Evans .HTM / Spreadsheets".'
         );
       }
     } else if (missingPhotoZipRefsCount > 0 && imageArchiveEntries.length === 0) {

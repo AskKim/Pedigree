@@ -37,6 +37,8 @@ export function CarrierTraitCombobox({
   onChange,
 }: CarrierTraitComboboxProps) {
   const inputId = useId();
+  const listboxId = useId();
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
@@ -108,7 +110,15 @@ export function CarrierTraitCombobox({
       : 'border-[var(--barn-terracotta)]/70 bg-[var(--barn-terracotta-tint)]/75 text-[var(--barn-ink)]';
 
   return (
-    <div className="relative space-y-1.5">
+    <div
+      ref={containerRef}
+      onBlur={(e) => {
+        if (!containerRef.current?.contains(e.relatedTarget as Node | null)) {
+          setIsOpen(false);
+        }
+      }}
+      className="relative space-y-1.5"
+    >
       <div className="flex items-baseline justify-between gap-2">
         <label htmlFor={inputId} className="block text-xs font-medium text-[var(--barn-muted)]">
           {label}
@@ -150,17 +160,19 @@ export function CarrierTraitCombobox({
           type="text"
           role="combobox"
           aria-expanded={isOpen}
+          aria-controls={isOpen ? listboxId : undefined}
           aria-autocomplete="list"
           placeholder={placeholder}
           value={query}
           onFocus={() => setIsOpen(true)}
-          onBlur={() => setIsOpen(false)}
           onChange={(e) => {
             setQuery(e.target.value);
             if (!isOpen) setIsOpen(true);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
+            if (e.key === 'Escape' && isOpen) {
+              e.preventDefault();
+              e.stopPropagation();
               setIsOpen(false);
             } else if (e.key === 'Enter' && trimmedQuery) {
               e.preventDefault();
@@ -198,6 +210,7 @@ export function CarrierTraitCombobox({
       {/* Dropdown List */}
       {isOpen && (
         <div
+          id={listboxId}
           role="listbox"
           aria-multiselectable="true"
           aria-label={`${label} options`}

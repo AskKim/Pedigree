@@ -35,6 +35,7 @@ import {
   validateUploadFileSize,
 } from '../core/inputSanitization';
 import { AnimalPhoto, nowIsoUtc } from '../core/models';
+import { logDiagnosticEvent } from './crashLogger';
 
 interface DecodedCanvasSource {
   source: CanvasImageSource;
@@ -98,39 +99,46 @@ function renderToDataUrl(
   quality: number
 ): { dataUrl: string; mimeType: string } {
   const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('2D Canvas context unavailable for image optimization.');
-  }
+  let jpegCanvas: HTMLCanvasElement | null = null;
+  try {
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('2D Canvas context unavailable for image optimization.');
+    }
 
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
 
-  // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
-  const webpUrl = canvas.toDataURL('image/webp', quality);
-  if (webpUrl.startsWith('data:image/webp')) {
+    // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
+    const webpUrl = canvas.toDataURL('image/webp', quality);
+    if (webpUrl.startsWith('data:image/webp')) {
+      return { dataUrl: webpUrl, mimeType: 'image/webp' };
+    }
+
+    // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
+    jpegCanvas = document.createElement('canvas');
+    jpegCanvas.width = targetWidth;
+    jpegCanvas.height = targetHeight;
+    const jCtx = jpegCanvas.getContext('2d');
+    if (!jCtx) {
+      throw new Error('2D Canvas JPEG fallback context unavailable.');
+    }
+    jCtx.fillStyle = '#F7F2E7';
+    jCtx.fillRect(0, 0, targetWidth, targetHeight);
+    jCtx.drawImage(canvas, 0, 0);
+    const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
+    return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
+  } finally {
     canvas.width = 0;
     canvas.height = 0;
-    return { dataUrl: webpUrl, mimeType: 'image/webp' };
+    if (jpegCanvas) {
+      jpegCanvas.width = 0;
+      jpegCanvas.height = 0;
+    }
   }
-
-  // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
-  const jpegCanvas = document.createElement('canvas');
-  jpegCanvas.width = targetWidth;
-  jpegCanvas.height = targetHeight;
-  const jCtx = jpegCanvas.getContext('2d')!;
-  jCtx.fillStyle = '#F7F2E7';
-  jCtx.fillRect(0, 0, targetWidth, targetHeight);
-  jCtx.drawImage(canvas, 0, 0);
-  const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
-  canvas.width = 0;
-  canvas.height = 0;
-  jpegCanvas.width = 0;
-  jpegCanvas.height = 0;
-  return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -201,6 +209,12 @@ export async function optimizeImageBlob(
     } catch (renderErr) {
       // Automatic low-memory self-recovery: step down to Compact (960px) before failing
       if (activePreset.maxDimension > 960) {
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'media',
+          message: `Corrective action: Image canvas encode for "${originalFileName || 'photo'}" fell back to Compact 960px preset`,
+          error: renderErr,
+        });
         activePreset = resolveImageOptimizationPreset('compact');
         mainDims = computeScaledDimensions(
           decoded.width,

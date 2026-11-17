@@ -37,6 +37,7 @@ import {
   normalizeBiologicalSex,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeIgnoredConflicts,
   normalizeOwnershipType,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
@@ -56,11 +57,13 @@ import {
   buildPedigreeSlots,
   buildSpeciesHerdMap,
   calculateAnimalCoi,
+  createSpeciesCoiEvaluator,
   PedigreeSlot,
 } from './pedigreeCalculator';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
   escapeSafeHtml,
+  isSafeRecordKey,
   MAX_JSON_BACKUP_BYTES,
   sanitizeCustomColors,
   sanitizePlainDictionary,
@@ -395,8 +398,24 @@ export function parseBarnBackupJson(
   }
 
   const ts = nowIsoUtc();
+  const isObj = (v: unknown): v is Record<string, any> =>
+    Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+  const finiteNum = (v: unknown, fb = 0): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fb;
+  };
+  const finiteNonNeg = (v: unknown, fb = 0): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : fb;
+  };
+  const safeId = (v: unknown): string => {
+    if (typeof v !== 'string') return generateUuid();
+    const clean = sanitizeSingleLineText(v, 140);
+    return clean && isSafeRecordKey(clean) ? clean : generateUuid();
+  };
 
-  const rawSettings = raw.settings || raw.profile || {};
+  const rawSettingsCand = raw.settings ?? raw.profile;
+  const rawSettings = isObj(rawSettingsCand) ? rawSettingsCand : {};
   const settings: BarnSettings = {
     id: 'barn_settings',
     barnName:
@@ -484,50 +503,59 @@ export function parseBarnBackupJson(
     updatedAt: sanitizeSingleLineText(rawSettings.updatedAt || ts, 64) || ts,
   };
 
-  const rawSpeciesList: unknown[] = Array.isArray(raw.speciesProfiles)
+  const rawSpeciesList: Record<string, any>[] = (Array.isArray(raw.speciesProfiles)
     ? raw.speciesProfiles
     : Array.isArray(raw.speciesConfigs)
     ? raw.speciesConfigs
-    : [];
+    : []
+  ).filter(isObj);
 
   const speciesProfiles: SpeciesProfile[] =
     rawSpeciesList.length > 0
       ? rawSpeciesList
-          .map((item: any, idx: number) => ({
-            id: item.id || generateUuid(),
-            name: item.name || 'Rabbit',
-            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
-            defaultAnimalPrefix: String(item.defaultAnimalPrefix || ''),
-            preferredUnit:
-              item.preferredUnit === 'lbs_oz' ||
-              item.preferredUnit === 'lbs' ||
-              item.preferredUnit === 'grams' ||
-              item.preferredUnit === 'kg'
-                ? item.preferredUnit
-                : undefined,
-            memoText: sanitizeSpeciesMemo(item.memoText),
-            memoUpdatedAt: typeof item.memoUpdatedAt === 'string' ? item.memoUpdatedAt : '',
-            gestationDays: Number(item.gestationDays) || 31,
-            rebreedDaysAfterBirth: Number(item.rebreedDaysAfterBirth) || 28,
-            weanDaysAfterBirth: Number(item.weanDaysAfterBirth) || 42,
-            maturityDays: Number(item.maturityDays) > 0 ? Number(item.maturityDays) : undefined,
-            birthEventLabel: item.birthEventLabel || 'Kindling',
-            maleLabel: item.maleLabel || 'Buck',
-            femaleLabel: item.femaleLabel || 'Doe',
-            offspringLabel: item.offspringLabel || 'Kit',
-            exampleBreeds: Array.isArray(item.exampleBreeds) ? item.exampleBreeds : [],
-            milestones: Array.isArray(item.milestones)
-              ? item.milestones.map((m: any) => ({
-                  label: m.label || 'Care Check',
-                  relativeTo: m.relativeTo || 'BEFORE_BIRTH',
-                  daysOffset: Number(m.daysOffset) || 0,
-                  category: (m.category as TaskCategory) || 'Care',
-                  priority: (m.priority as TaskPriority) || 'Normal',
-                }))
-              : [],
-            createdAt: item.createdAt || ts,
-            updatedAt: item.updatedAt || ts,
-          }))
+          .map((item: any, idx: number) => {
+            const maturity = finiteNonNeg(item.maturityDays, 0);
+            return {
+              id: safeId(item.id),
+              name: sanitizeSingleLineText(item.name, 100) || 'Rabbit',
+              sortOrder: finiteNum(item.sortOrder, idx),
+              defaultAnimalPrefix: sanitizeSingleLineText(item.defaultAnimalPrefix || '', 40),
+              preferredUnit:
+                item.preferredUnit === 'lbs_oz' ||
+                item.preferredUnit === 'lbs' ||
+                item.preferredUnit === 'grams' ||
+                item.preferredUnit === 'kg'
+                  ? item.preferredUnit
+                  : undefined,
+              memoText: sanitizeSpeciesMemo(item.memoText),
+              memoUpdatedAt: typeof item.memoUpdatedAt === 'string' ? item.memoUpdatedAt : '',
+              gestationDays: finiteNonNeg(item.gestationDays, 31) || 31,
+              rebreedDaysAfterBirth: finiteNonNeg(item.rebreedDaysAfterBirth, 28),
+              weanDaysAfterBirth: finiteNonNeg(item.weanDaysAfterBirth, 42),
+              maturityDays: maturity > 0 ? maturity : undefined,
+              birthEventLabel: sanitizeSingleLineText(item.birthEventLabel, 80) || 'Kindling',
+              maleLabel: sanitizeSingleLineText(item.maleLabel, 80) || 'Buck',
+              femaleLabel: sanitizeSingleLineText(item.femaleLabel, 80) || 'Doe',
+              offspringLabel: sanitizeSingleLineText(item.offspringLabel, 80) || 'Kit',
+              exampleBreeds: Array.isArray(item.exampleBreeds)
+                ? item.exampleBreeds
+                    .filter((b: unknown): b is string => typeof b === 'string')
+                    .map((b: string) => sanitizeSingleLineText(b, 120))
+                    .filter(Boolean)
+                : [],
+              milestones: Array.isArray(item.milestones)
+                ? item.milestones.filter(isObj).map((m: any) => ({
+                    label: sanitizeSingleLineText(m.label, 120) || 'Care Check',
+                    relativeTo: m.relativeTo || 'BEFORE_BIRTH',
+                    daysOffset: finiteNum(m.daysOffset, 0),
+                    category: (m.category as TaskCategory) || 'Care',
+                    priority: (m.priority as TaskPriority) || 'Normal',
+                  }))
+                : [],
+              createdAt: typeof item.createdAt === 'string' && item.createdAt ? item.createdAt : ts,
+              updatedAt: typeof item.updatedAt === 'string' && item.updatedAt ? item.updatedAt : ts,
+            };
+          })
           .sort(
             (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
           )
@@ -538,86 +566,94 @@ export function parseBarnBackupJson(
           updatedAt: ts,
         }));
 
-  const animals: Animal[] = (Array.isArray(raw.animals) ? raw.animals : []).map((a: any) => {
-    const speciesName = a.species || 'Rabbit';
-    const genoArray = Array.isArray(a.genotype)
-      ? a.genotype
-      : parseGenotypeString(
-          typeof a.genotype === 'string' ? a.genotype : a.genotypeRaw || '',
-          speciesName
-        );
-    const genoStr =
-      typeof a.genotypeRaw === 'string' && a.genotypeRaw
-        ? a.genotypeRaw
-        : typeof a.genotype === 'string'
-        ? a.genotype
-        : formatGenotypeArray(genoArray);
+  const animals: Animal[] = (Array.isArray(raw.animals) ? raw.animals : [])
+    .filter(isObj)
+    .map((a: any) => {
+      const speciesName = sanitizeSingleLineText(a.species, 100) || 'Rabbit';
+      const genoArray = Array.isArray(a.genotype)
+        ? a.genotype.filter(isObj)
+        : parseGenotypeString(
+            typeof a.genotype === 'string' ? a.genotype : typeof a.genotypeRaw === 'string' ? a.genotypeRaw : '',
+            speciesName
+          );
+      const genoStr =
+        typeof a.genotypeRaw === 'string' && a.genotypeRaw
+          ? sanitizeSingleLineText(a.genotypeRaw, 200)
+          : typeof a.genotype === 'string'
+          ? sanitizeSingleLineText(a.genotype, 200)
+          : formatGenotypeArray(genoArray);
 
-    const carriers = reconcileCarrierTraitLists(
-      a.suspectedCarrierOf,
-      a.confirmedCarrierOf,
-      a.clearedCarrierOf
-    );
+      const carriers = reconcileCarrierTraitLists(
+        a.suspectedCarrierOf,
+        a.confirmedCarrierOf,
+        a.clearedCarrierOf
+      );
 
-    return {
-      id: a.id || generateUuid(),
-      tattoo: a.tattoo ?? a.earTag ?? '',
-      name: a.name || 'Unnamed',
-      species: speciesName,
-      breed: a.breed || '',
-      variety: a.variety || '',
-      sex: normalizeBiologicalSex(a.sex || 'Unknown'),
-      status: normalizeAnimalStatus(a.status, a.archived),
-      archived:
-        typeof a.archived === 'boolean'
-          ? a.archived
-          : isAnimalArchived({ status: normalizeAnimalStatus(a.status, a.archived) }),
-      needsAttention: Boolean(a.needsAttention),
-      birthDateIso: a.birthDateIso || millisToDateIso(Number(a.birthDateMillis) || 0),
-      weightGrams: Number(a.weightGrams) || 0,
-      genotype: genoArray,
-      genotypeRaw: genoStr,
-      rufusLevel: normalizeRufusLevel(a.rufusLevel),
-      suspectedCarrierOf: carriers.suspectedCarrierOf,
-      confirmedCarrierOf: carriers.confirmedCarrierOf,
-      clearedCarrierOf: carriers.clearedCarrierOf,
-      registrationNumber: a.registrationNumber || '',
-      grandChampionNumber: a.grandChampionNumber || '',
-      legsCount: Number(a.legsCount) || 0,
-      cageLocation: a.cageLocation || '',
-      breederName: a.breederName || '',
-      ownerName: a.ownerName || '',
-      ownershipType: normalizeOwnershipType(a.ownershipType, 'Owned'),
-      culled: Boolean(a.culled),
-      cullDateIso: String(a.cullDateIso || ''),
-      cullReason: String(a.cullReason || ''),
-      deceasedDateIso: String(a.deceasedDateIso || ''),
-      deathCause: String(a.deathCause || ''),
-      soldDateIso: String(a.soldDateIso || ''),
-      salePriceCents: Number(a.salePriceCents) > 0 ? Math.round(Number(a.salePriceCents)) : 0,
-      purchaseCostCents:
-        Number(a.purchaseCostCents) > 0 ? Math.round(Number(a.purchaseCostCents)) : 0,
-      buyerName: String(a.buyerName || ''),
-      sireId: a.sireId || '',
-      damId: a.damId || '',
-      notes: a.notes || '',
-      createdAt: a.createdAt || ts,
-      updatedAt: a.updatedAt || ts,
-    };
-  });
+      const status = normalizeAnimalStatus(a.status, a.archived);
+      const birthMillis = finiteNonNeg(a.birthDateMillis, 0);
+
+      return {
+        id: safeId(a.id),
+        tattoo: sanitizeSingleLineText(a.tattoo ?? a.earTag ?? '', 80),
+        name: sanitizeSingleLineText(a.name, 140) || 'Unnamed',
+        species: speciesName,
+        breed: sanitizeSingleLineText(a.breed || '', 120),
+        variety: sanitizeSingleLineText(a.variety || '', 120),
+        sex: normalizeBiologicalSex(a.sex || 'Unknown'),
+        status,
+        archived:
+          typeof a.archived === 'boolean' ? a.archived : isAnimalArchived({ status }),
+        needsAttention: Boolean(a.needsAttention),
+        ignoredConflicts: normalizeIgnoredConflicts(a.ignoredConflicts),
+        birthDateIso:
+          typeof a.birthDateIso === 'string' && a.birthDateIso
+            ? a.birthDateIso
+            : millisToDateIso(birthMillis),
+        weightGrams: finiteNonNeg(a.weightGrams, 0),
+        genotype: genoArray,
+        genotypeRaw: genoStr,
+        rufusLevel: normalizeRufusLevel(a.rufusLevel),
+        suspectedCarrierOf: carriers.suspectedCarrierOf,
+        confirmedCarrierOf: carriers.confirmedCarrierOf,
+        clearedCarrierOf: carriers.clearedCarrierOf,
+        registrationNumber: sanitizeSingleLineText(a.registrationNumber || '', 100),
+        grandChampionNumber: sanitizeSingleLineText(a.grandChampionNumber || '', 100),
+        legsCount: Math.round(finiteNonNeg(a.legsCount, 0)),
+        cageLocation: sanitizeSingleLineText(a.cageLocation || '', 120),
+        breederName: sanitizeSingleLineText(a.breederName || '', 140),
+        ownerName: sanitizeSingleLineText(a.ownerName || '', 140),
+        ownershipType: normalizeOwnershipType(a.ownershipType, 'Owned'),
+        culled: Boolean(a.culled),
+        cullDateIso: sanitizeSingleLineText(a.cullDateIso || '', 32),
+        cullReason: sanitizeSingleLineText(a.cullReason || '', 300),
+        deceasedDateIso: sanitizeSingleLineText(a.deceasedDateIso || '', 32),
+        deathCause: sanitizeSingleLineText(a.deathCause || '', 300),
+        soldDateIso: sanitizeSingleLineText(a.soldDateIso || '', 32),
+        salePriceCents: Math.round(finiteNonNeg(a.salePriceCents, 0)),
+        purchaseCostCents: Math.round(finiteNonNeg(a.purchaseCostCents, 0)),
+        buyerName: sanitizeSingleLineText(a.buyerName || '', 140),
+        sireId: typeof a.sireId === 'string' && isSafeRecordKey(a.sireId) ? a.sireId : '',
+        damId: typeof a.damId === 'string' && isSafeRecordKey(a.damId) ? a.damId : '',
+        notes: sanitizePlainText(a.notes || '', 20_000),
+        createdAt: typeof a.createdAt === 'string' && a.createdAt ? a.createdAt : ts,
+        updatedAt: typeof a.updatedAt === 'string' && a.updatedAt ? a.updatedAt : ts,
+      };
+    });
 
   const animalById = new Map(animals.map((a) => [a.id, a]));
 
-  const cages: CageLocation[] = (Array.isArray(raw.cages) ? raw.cages : []).map((c: any) => ({
-    id: c.id || generateUuid(),
-    species: c.species || 'Rabbit',
-    label: c.label || '',
-    section: c.section || '',
-    capacity: Number(c.capacity) || 1,
-    notes: c.notes || '',
-    createdAt: c.createdAt || ts,
-    updatedAt: c.updatedAt || ts,
-  }));
+  const cages: CageLocation[] = (Array.isArray(raw.cages) ? raw.cages : [])
+    .filter(isObj)
+    .map((c: any) => ({
+      id: safeId(c.id),
+      species: sanitizeSingleLineText(c.species, 100) || 'Rabbit',
+      label: sanitizeSingleLineText(c.label || '', 120),
+      section: sanitizeSingleLineText(c.section || '', 120),
+      capacity: Math.max(1, Math.round(finiteNonNeg(c.capacity, 1))),
+      notes: sanitizePlainText(c.notes || '', 10_000),
+      createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : ts,
+      updatedAt: typeof c.updatedAt === 'string' && c.updatedAt ? c.updatedAt : ts,
+    }));
 
   const mapLegacyBreedingStatus = (st: string): BreedingStatus => {
     if (st === 'Confirmed Pregnant' || st === 'Palpated Positive') return 'Palpated Positive';
@@ -626,106 +662,148 @@ export function parseBarnBackupJson(
     return 'Bred';
   };
 
-  const breedings: BreedingRecord[] = (Array.isArray(raw.breedings) ? raw.breedings : []).map(
-    (b: any) => {
+  const breedings: BreedingRecord[] = (Array.isArray(raw.breedings) ? raw.breedings : [])
+    .filter(isObj)
+    .map((b: any) => {
+      const sireId = typeof b.sireId === 'string' && isSafeRecordKey(b.sireId) ? b.sireId : '';
+      const damId = typeof b.damId === 'string' && isSafeRecordKey(b.damId) ? b.damId : '';
       const inferredSpecies =
-        b.species ||
-        animalById.get(b.damId)?.species ||
-        animalById.get(b.sireId)?.species ||
+        sanitizeSingleLineText(b.species, 100) ||
+        animalById.get(damId)?.species ||
+        animalById.get(sireId)?.species ||
         'Rabbit';
       return {
-        id: b.id || generateUuid(),
+        id: safeId(b.id),
         species: inferredSpecies,
-        sireId: b.sireId || '',
-        damId: b.damId || '',
-        sireName: b.sireName || animalById.get(b.sireId)?.name || '',
-        damName: b.damName || animalById.get(b.damId)?.name || '',
-        bredDateIso: b.bredDateIso || millisToDateIso(Number(b.bredDateMillis) || 0),
+        sireId,
+        damId,
+        sireName: sanitizeSingleLineText(b.sireName, 140) || animalById.get(sireId)?.name || '',
+        damName: sanitizeSingleLineText(b.damName, 140) || animalById.get(damId)?.name || '',
+        bredDateIso:
+          (typeof b.bredDateIso === 'string' && b.bredDateIso) ||
+          millisToDateIso(finiteNonNeg(b.bredDateMillis, 0)),
         expectedDueDateIso:
-          b.expectedDueDateIso || millisToDateIso(Number(b.expectedDueDateMillis) || 0),
+          (typeof b.expectedDueDateIso === 'string' && b.expectedDueDateIso) ||
+          millisToDateIso(finiteNonNeg(b.expectedDueDateMillis, 0)),
         actualBirthDateIso:
-          b.actualBirthDateIso || millisToDateIso(Number(b.actualKindleDateMillis) || 0),
-        projectedCoiPercent: Number(b.projectedCoiPercent) || 0,
-        liveCount: Number(b.liveCount) || 0,
-        stillbornCount: Number(b.stillbornCount) || 0,
-        fosteredCount: Number(b.fosteredCount) || 0,
-        weanedCount: Number(b.weanedCount) || 0,
+          (typeof b.actualBirthDateIso === 'string' && b.actualBirthDateIso) ||
+          millisToDateIso(finiteNonNeg(b.actualKindleDateMillis, 0)),
+        projectedCoiPercent: finiteNonNeg(b.projectedCoiPercent, 0),
+        liveCount: Math.round(finiteNonNeg(b.liveCount, 0)),
+        stillbornCount: Math.round(finiteNonNeg(b.stillbornCount, 0)),
+        fosteredCount: Math.round(finiteNonNeg(b.fosteredCount, 0)),
+        weanedCount: Math.round(finiteNonNeg(b.weanedCount, 0)),
         offspringCreated: Boolean(b.offspringCreated),
-        status: mapLegacyBreedingStatus(b.status || 'Bred'),
-        serviceFeeCents: Number(b.serviceFeeCents) > 0 ? Math.round(Number(b.serviceFeeCents)) : 0,
+        status: mapLegacyBreedingStatus(String(b.status || 'Bred')),
+        serviceFeeCents: Math.round(finiteNonNeg(b.serviceFeeCents, 0)),
         serviceFeeDirection: normalizeServiceFeeDirection(b.serviceFeeDirection),
-        ultrasoundDateIso: String(b.ultrasoundDateIso || ''),
+        ultrasoundDateIso: sanitizeSingleLineText(b.ultrasoundDateIso || '', 32),
         ultrasoundResult: normalizeUltrasoundResult(b.ultrasoundResult),
-        ultrasoundFetalCount:
-          Number(b.ultrasoundFetalCount) > 0 ? Math.round(Number(b.ultrasoundFetalCount)) : 0,
-        ultrasoundProjectedDueIso: String(b.ultrasoundProjectedDueIso || ''),
-        notes: b.notes || '',
-        createdAt: b.createdAt || ts,
-        updatedAt: b.updatedAt || ts,
+        ultrasoundFetalCount: Math.round(finiteNonNeg(b.ultrasoundFetalCount, 0)),
+        ultrasoundProjectedDueIso: sanitizeSingleLineText(b.ultrasoundProjectedDueIso || '', 32),
+        notes: sanitizePlainText(b.notes || '', 20_000),
+        createdAt: typeof b.createdAt === 'string' && b.createdAt ? b.createdAt : ts,
+        updatedAt: typeof b.updatedAt === 'string' && b.updatedAt ? b.updatedAt : ts,
       };
-    }
-  );
+    });
 
-  const tasks: BarnTask[] = (Array.isArray(raw.tasks) ? raw.tasks : []).map((t: any) => {
-    const inferredSpecies =
-      t.species || animalById.get(t.linkedAnimalId)?.species || settings.defaultSpecies || 'Rabbit';
-    return {
-      id: t.id || generateUuid(),
-      species: inferredSpecies,
-      title: t.title || 'Barn Chore',
-      category: (t.category as TaskCategory) || 'Care',
-      priority: (t.priority as TaskPriority) || 'Normal',
-      dueDateIso: t.dueDateIso || millisToDateIso(Number(t.dueDateMillis) || 0),
-      linkedAnimalId: t.linkedAnimalId || '',
-      linkedAnimalName: t.linkedAnimalName || '',
-      linkedBreedingId: t.linkedBreedingId || '',
-      completed: Boolean(t.completed),
-      createdAt: t.createdAt || ts,
-      updatedAt: t.updatedAt || ts,
-    };
-  });
+  const tasks: BarnTask[] = (Array.isArray(raw.tasks) ? raw.tasks : [])
+    .filter(isObj)
+    .map((t: any) => {
+      const linkedAnimalId =
+        typeof t.linkedAnimalId === 'string' && isSafeRecordKey(t.linkedAnimalId)
+          ? t.linkedAnimalId
+          : '';
+      const inferredSpecies =
+        sanitizeSingleLineText(t.species, 100) ||
+        animalById.get(linkedAnimalId)?.species ||
+        settings.defaultSpecies ||
+        'Rabbit';
+      return {
+        id: safeId(t.id),
+        species: inferredSpecies,
+        title: sanitizeSingleLineText(t.title, 200) || 'Barn Chore',
+        category: (t.category as TaskCategory) || 'Care',
+        priority: (t.priority as TaskPriority) || 'Normal',
+        dueDateIso:
+          (typeof t.dueDateIso === 'string' && t.dueDateIso) ||
+          millisToDateIso(finiteNonNeg(t.dueDateMillis, 0)),
+        linkedAnimalId,
+        linkedAnimalName: sanitizeSingleLineText(t.linkedAnimalName || '', 140),
+        linkedBreedingId:
+          typeof t.linkedBreedingId === 'string' && isSafeRecordKey(t.linkedBreedingId)
+            ? t.linkedBreedingId
+            : '',
+        completed: Boolean(t.completed),
+        createdAt: typeof t.createdAt === 'string' && t.createdAt ? t.createdAt : ts,
+        updatedAt: typeof t.updatedAt === 'string' && t.updatedAt ? t.updatedAt : ts,
+      };
+    });
 
-  const careLogs: CareLog[] = (Array.isArray(raw.careLogs) ? raw.careLogs : []).map((l: any) => ({
-    id: l.id || generateUuid(),
-    species: l.species || animalById.get(l.animalId)?.species || 'Rabbit',
-    animalId: l.animalId || '',
-    dateIso: l.dateIso || millisToDateIso(Number(l.dateMillis) || 0),
-    type: (l.type as CareLogType) || 'Weight Check',
-    title: l.title || '',
-    weightGrams: Number(l.weightGrams) || 0,
-    showLegEarned: Boolean(l.showLegEarned),
-    medicationName: String(l.medicationName || ''),
-    dosage: String(l.dosage || ''),
-    administrationRoute: String(l.administrationRoute || ''),
-    withdrawalDays: Number(l.withdrawalDays) > 0 ? Math.round(Number(l.withdrawalDays)) : 0,
-    withdrawalClearDateIso: String(l.withdrawalClearDateIso || ''),
-    bodyConditionScore: Number(l.bodyConditionScore) > 0 ? Number(l.bodyConditionScore) : 0,
-    famachaScore: Number(l.famachaScore) > 0 ? Math.round(Number(l.famachaScore)) : 0,
-    fecalEggCount: Number(l.fecalEggCount) > 0 ? Math.round(Number(l.fecalEggCount)) : 0,
-    ultrasoundResult: normalizeUltrasoundResult(l.ultrasoundResult),
-    ultrasoundFetalCount:
-      Number(l.ultrasoundFetalCount) > 0 ? Math.round(Number(l.ultrasoundFetalCount)) : 0,
-    notes: l.notes || '',
-    createdAt: l.createdAt || ts,
-    updatedAt: l.updatedAt || ts,
-  }));
+  const careLogs: CareLog[] = (Array.isArray(raw.careLogs) ? raw.careLogs : [])
+    .filter(isObj)
+    .map((l: any) => {
+      const animalId =
+        typeof l.animalId === 'string' && isSafeRecordKey(l.animalId) ? l.animalId : '';
+      return {
+        id: safeId(l.id),
+        species:
+          sanitizeSingleLineText(l.species, 100) || animalById.get(animalId)?.species || 'Rabbit',
+        animalId,
+        dateIso:
+          (typeof l.dateIso === 'string' && l.dateIso) ||
+          millisToDateIso(finiteNonNeg(l.dateMillis, 0)),
+        type: (l.type as CareLogType) || 'Weight Check',
+        title: sanitizeSingleLineText(l.title || '', 160),
+        weightGrams: Math.round(finiteNonNeg(l.weightGrams, 0)),
+        showLegEarned: Boolean(l.showLegEarned),
+        medicationName: sanitizeSingleLineText(l.medicationName || '', 140),
+        dosage: sanitizeSingleLineText(l.dosage || '', 100),
+        administrationRoute: sanitizeSingleLineText(l.administrationRoute || '', 100),
+        withdrawalDays: Math.round(finiteNonNeg(l.withdrawalDays, 0)),
+        withdrawalClearDateIso: sanitizeSingleLineText(l.withdrawalClearDateIso || '', 32),
+        bodyConditionScore: finiteNonNeg(l.bodyConditionScore, 0),
+        famachaScore: Math.round(finiteNonNeg(l.famachaScore, 0)),
+        fecalEggCount: Math.round(finiteNonNeg(l.fecalEggCount, 0)),
+        ultrasoundResult: normalizeUltrasoundResult(l.ultrasoundResult),
+        ultrasoundFetalCount: Math.round(finiteNonNeg(l.ultrasoundFetalCount, 0)),
+        notes: sanitizePlainText(l.notes || '', 20_000),
+        createdAt: typeof l.createdAt === 'string' && l.createdAt ? l.createdAt : ts,
+        updatedAt: typeof l.updatedAt === 'string' && l.updatedAt ? l.updatedAt : ts,
+      };
+    });
 
-  const shows: ShowEvent[] = (Array.isArray(raw.shows) ? raw.shows : []).map((s: any) => {
-    const firstEntered = Array.isArray(s.enteredAnimalIds) ? s.enteredAnimalIds[0] : undefined;
-    return {
-      id: s.id || generateUuid(),
-      species: s.species || (firstEntered ? animalById.get(firstEntered)?.species : '') || 'Rabbit',
-      name: s.name || 'Show Event',
-      location: s.location || '',
-      sanctioningBody: s.sanctioningBody || 'ARBA',
-      eventDateIso: s.eventDateIso || millisToDateIso(Number(s.eventDateMillis) || 0),
-      entryDeadlineIso: s.entryDeadlineIso || millisToDateIso(Number(s.entryDeadlineMillis) || 0),
-      enteredAnimalIds: Array.isArray(s.enteredAnimalIds) ? s.enteredAnimalIds : [],
-      notes: s.notes || '',
-      createdAt: s.createdAt || ts,
-      updatedAt: s.updatedAt || ts,
-    };
-  });
+  const shows: ShowEvent[] = (Array.isArray(raw.shows) ? raw.shows : [])
+    .filter(isObj)
+    .map((s: any) => {
+      const enteredIds = Array.isArray(s.enteredAnimalIds)
+        ? s.enteredAnimalIds
+            .filter((x: unknown): x is string => typeof x === 'string' && isSafeRecordKey(x))
+            .map((x: string) => sanitizeSingleLineText(x, 140))
+            .filter(Boolean)
+        : [];
+      const firstEntered = enteredIds[0];
+      return {
+        id: safeId(s.id),
+        species:
+          sanitizeSingleLineText(s.species, 100) ||
+          (firstEntered ? animalById.get(firstEntered)?.species : '') ||
+          'Rabbit',
+        name: sanitizeSingleLineText(s.name, 160) || 'Show Event',
+        location: sanitizeSingleLineText(s.location || '', 160),
+        sanctioningBody: sanitizeSingleLineText(s.sanctioningBody || 'ARBA', 80) || 'ARBA',
+        eventDateIso:
+          (typeof s.eventDateIso === 'string' && s.eventDateIso) ||
+          millisToDateIso(finiteNonNeg(s.eventDateMillis, 0)),
+        entryDeadlineIso:
+          (typeof s.entryDeadlineIso === 'string' && s.entryDeadlineIso) ||
+          millisToDateIso(finiteNonNeg(s.entryDeadlineMillis, 0)),
+        enteredAnimalIds: enteredIds,
+        notes: sanitizePlainText(s.notes || '', 20_000),
+        createdAt: typeof s.createdAt === 'string' && s.createdAt ? s.createdAt : ts,
+        updatedAt: typeof s.updatedAt === 'string' && s.updatedAt ? s.updatedAt : ts,
+      };
+    });
 
   const animalPhotos: AnimalPhoto[] = (
     Array.isArray(raw.animalPhotos) ? raw.animalPhotos : []
@@ -754,7 +832,7 @@ export function parseBarnBackupJson(
         updatedAt: sanitizeSingleLineText(p.updatedAt || ts, 64) || ts,
       } satisfies AnimalPhoto;
     })
-    .filter((p): p is AnimalPhoto => Boolean(p));
+    .filter((p: AnimalPhoto | null): p is AnimalPhoto => Boolean(p));
 
   return {
     settings,
@@ -839,6 +917,7 @@ export function generateEvansHtmPedigree(
 
   const compactMode = generations >= 5;
 
+  let anyAncestorGeno = false;
   const renderAncestorCell = (gen: number, idx: number, rowspan: number): string => {
     const slot = slotMap.get(`${gen}:${idx}`);
     const a = slot?.animal;
@@ -849,6 +928,9 @@ export function generateEvansHtmPedigree(
       </td>`;
     }
     const geno = showGenotypes ? a.genotypeRaw || formatGenotypeArray(a.genotype) : '';
+    if (showGenotypes && !compactMode && geno) {
+      anyAncestorGeno = true;
+    }
     const fullCarrierText = formatCompactCarrierDisclosure(a, {
       herdById,
       includeCleared: true,
@@ -943,10 +1025,11 @@ export function generateEvansHtmPedigree(
   .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
   .geno { color: #1e3f2a; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
   .carrier { color: #6e3b1b; font-family: Arial, Helvetica, sans-serif; font-size: ${compactMode ? '8px' : '9.5px'}; font-weight: 600; margin-top: 2px; line-height: 1.2; }
+  .genetics-notice { margin-top: 8px; font-size: 10px; color: #434d42; font-family: Arial, Helvetica, sans-serif; background: #ffffff; }
   .footer { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #333; border-top: 1px solid #ccc; padding-top: 8px; }
   .footer-contact { width: 100%; font-size: 10.5px; color: #1e3f2a; font-weight: bold; }
   @media print {
-    :root, html, body, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .footer {
+    :root, html, body, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .genetics-notice, .footer {
       color-scheme: light only !important;
       background: #ffffff !important;
       background-color: #ffffff !important;
@@ -996,6 +1079,12 @@ export function generateEvansHtmPedigree(
       ${tableRowsHtml.join('\n      ')}
     </tbody>
   </table>
+
+  ${
+    (showGenotypes && (Boolean(subjectGeno) || anyAncestorGeno)) || Boolean(subject.rufusLevel)
+      ? `<div class="genetics-notice"><strong>Notice:</strong> Color genetics, Rufus intensity &amp; genotype calculation is under development and incomplete (unverified).</div>`
+      : ''
+  }
 
   ${
     showBreederFooter
@@ -1128,7 +1217,7 @@ export function generateThermalCageCardHtml(
     <div class="mono">
       Wt: ${escapeHtml(formatWeight(animal.weightGrams, resolveSpeciesWeightUnit(sp, settings)))}
       ${animal.registrationNumber ? ` | Reg: ${escapeHtml(animal.registrationNumber)}` : ''}
-      ${geno ? ` | ${escapeHtml(geno)}` : ''}
+      ${geno ? ` | ${escapeHtml(geno)} (genetics in dev)` : ''}
     </div>
   </div>
 </body>
@@ -1185,6 +1274,27 @@ export function buildPdfReadyBarnSnapshot(
     ? snapshot.breedings.filter((b) => isSameSpecies(b.species, filterSpecies))
     : snapshot.breedings;
 
+  const speciesCache = new Map<
+    string,
+    {
+      sp: SpeciesProfile;
+      herdMap: Map<string, Animal>;
+      evalCoi: ReturnType<typeof createSpeciesCoiEvaluator>;
+    }
+  >();
+  const getSpeciesCtx = (speciesName: string) => {
+    const key = (speciesName || '').trim().toLowerCase();
+    let cached = speciesCache.get(key);
+    if (!cached) {
+      const sp = resolveSpeciesProfile(speciesName, snapshot.speciesProfiles);
+      const herdMap = buildSpeciesHerdMap(snapshot.animals, speciesName);
+      const evalCoi = createSpeciesCoiEvaluator(herdMap);
+      cached = { sp, herdMap, evalCoi };
+      speciesCache.set(key, cached);
+    }
+    return cached;
+  };
+
   return {
     barnName: snapshot.settings.barnName,
     breederName: snapshot.settings.breederName,
@@ -1196,9 +1306,8 @@ export function buildPdfReadyBarnSnapshot(
       ['Planned', 'Bred', 'Palpated Positive', 'Born'].includes(b.status)
     ).length,
     animals: scopedAnimals.map((a) => {
-      const sp = resolveSpeciesProfile(a.species, snapshot.speciesProfiles);
-      const herdMap = buildSpeciesHerdMap(snapshot.animals, a.species);
-      const coi = calculateAnimalCoi(a, herdMap);
+      const { sp, herdMap, evalCoi } = getSpeciesCtx(a.species);
+      const coi = evalCoi.calculateAnimalCoi(a);
       const sire = a.sireId ? herdMap.get(a.sireId) : undefined;
       const dam = a.damId ? herdMap.get(a.damId) : undefined;
       return {

@@ -28,7 +28,12 @@ import {
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { analyzeBarnAnimalConflicts } from '../core/animalConflicts';
+import {
+  DeviceCapabilityAssessment,
+  evaluateBarnWorkloadForTier,
+} from '../core/deviceCapability';
 import {
   formatByteSizePure,
   IMAGE_OPTIMIZATION_PRESETS,
@@ -61,11 +66,21 @@ import {
   BatchImportPhotoProgress,
   optimizeStagedImporterPhotos,
 } from '../storage/webImageOptimizer';
+import {
+  formatReadableByteLimit,
+  MAX_CSV_TEXT_BYTES,
+  MAX_EXTERNAL_IMPORT_FILES,
+  MAX_EXTERNAL_IMPORT_TOTAL_BYTES,
+  MAX_ZIP_ARCHIVE_BYTES,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
+import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 
 interface ExternalImporterPanelProps {
   snapshot: BarnDatabaseSnapshot;
   activeSpeciesName: string;
+  deviceCapabilityAssessment?: DeviceCapabilityAssessment;
   onCommitImport: (
     preview: PlatformImportPreview,
     optimizedPhotos: AnimalPhoto[],
@@ -76,8 +91,10 @@ interface ExternalImporterPanelProps {
 export function ExternalImporterPanel({
   snapshot,
   activeSpeciesName,
+  deviceCapabilityAssessment,
   onCommitImport,
 }: ExternalImporterPanelProps) {
+  const baseId = useId();
   const [selectedPlatformId, setSelectedPlatformId] = useState<string>(
     PLATFORM_IMPORTERS[0].id
   );
@@ -196,6 +213,37 @@ export function ExternalImporterPanel({
     if (!fileList || fileList.length === 0) return;
     setParseError(null);
     try {
+      const stagedCount = stagedArchives.length;
+      if (stagedCount + fileList.length > MAX_EXTERNAL_IMPORT_FILES) {
+        setParseError(
+          `You can stage up to ${MAX_EXTERNAL_IMPORT_FILES} import files at once to protect mobile memory.`
+        );
+        return;
+      }
+
+      let cumulativeBytes = stagedArchives.reduce((sum, item) => sum + item.bytes.byteLength, 0);
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const isZip = f.name.toLowerCase().endsWith('.zip');
+        const check = validateUploadFileSize(
+          f.name,
+          f.size,
+          isZip ? MAX_ZIP_ARCHIVE_BYTES : MAX_CSV_TEXT_BYTES,
+          isZip ? 'an import .ZIP archive' : 'an import table / pedigree file'
+        );
+        if (!check.ok) {
+          setParseError(check.error);
+          return;
+        }
+        cumulativeBytes += f.size;
+        if (cumulativeBytes > MAX_EXTERNAL_IMPORT_TOTAL_BYTES) {
+          setParseError(
+            `Combined staged files exceed the ${formatReadableByteLimit(MAX_EXTERNAL_IMPORT_TOTAL_BYTES)} mobile memory limit. Stage fewer or smaller files.`
+          );
+          return;
+        }
+      }
+
       const additions: RawArchiveInput[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const f = fileList[i];
@@ -219,17 +267,25 @@ export function ExternalImporterPanel({
     }
   };
 
-  const preview: PlatformImportPreview | null = useMemo(() => {
-    if (stagedArchives.length === 0) return null;
+  const { preview, parseError: previewParseError } = useMemo<{
+    preview: PlatformImportPreview | null;
+    parseError: string | null;
+  }>(() => {
+    if (stagedArchives.length === 0) return { preview: null, parseError: null };
     try {
-      return importer.parse(stagedArchives, snapshot, {
-        fallbackSpeciesName: fallbackSpecies.trim() || 'Rabbit',
-        customSpeciesOverrides,
-        appendDeferredImageFilenamesToNotes: notePhotoFilenames,
-      });
+      return {
+        preview: importer.parse(stagedArchives, snapshot, {
+          fallbackSpeciesName: fallbackSpecies.trim() || 'Rabbit',
+          customSpeciesOverrides,
+          appendDeferredImageFilenamesToNotes: notePhotoFilenames,
+        }),
+        parseError: null,
+      };
     } catch (err: any) {
-      setParseError(err?.message || 'Failed to unpack or parse archive.');
-      return null;
+      return {
+        preview: null,
+        parseError: err?.message || 'Failed to unpack or parse archive.',
+      };
     }
   }, [
     stagedArchives,
@@ -239,6 +295,8 @@ export function ExternalImporterPanel({
     customSpeciesOverrides,
     notePhotoFilenames,
   ]);
+
+  const effectiveParseError = parseError || previewParseError;
 
   // Seed default choices for any newly detected preexisting animal contradictions without clobbering user picks
   useEffect(() => {
@@ -276,6 +334,31 @@ export function ExternalImporterPanel({
     if (!preview) return 0;
     return preview.conflicts.reduce((acc, c) => acc + c.contradictions.length, 0);
   }, [preview]);
+
+  const previewDataIntegritySummary = useMemo(() => {
+    if (!preview || preview.animals.length === 0) return null;
+    const incomingIds = new Set(preview.animals.map((a) => a.id));
+    const combined = new Map(snapshot.animals.map((a) => [a.id, a]));
+    for (const a of preview.animals) {
+      combined.set(a.id, a);
+    }
+    const summaries = analyzeBarnAnimalConflicts(Array.from(combined.values()));
+    let dupCount = 0;
+    let sexMismatchCount = 0;
+    for (const summary of summaries.values()) {
+      if (!summary.hasActiveConflict) continue;
+      const involvesImport =
+        incomingIds.has(summary.animalId) ||
+        summary.duplicateTattooPeers.some((p) => incomingIds.has(p.peer.id)) ||
+        (summary.sireSexMismatch ? incomingIds.has(summary.sireSexMismatch.parent.id) : false) ||
+        (summary.damSexMismatch ? incomingIds.has(summary.damSexMismatch.parent.id) : false);
+      if (!involvesImport) continue;
+      if (summary.activeKinds.includes('duplicate_tattoo')) dupCount++;
+      if (summary.activeKinds.includes('parent_sex_mismatch')) sexMismatchCount++;
+    }
+    if (dupCount === 0 && sexMismatchCount === 0) return null;
+    return { dupCount, sexMismatchCount };
+  }, [preview, snapshot.animals]);
 
   const updateCustomSpeciesField = (
     speciesName: string,
@@ -418,10 +501,14 @@ export function ExternalImporterPanel({
       {/* Platform Selector + Instant-Open Default Species Combobox */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+          <label
+            htmlFor={`${baseId}-platform`}
+            className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+          >
             Source Platform
           </label>
           <select
+            id={`${baseId}-platform`}
             value={selectedPlatformId}
             onChange={(e) => setSelectedPlatformId(e.target.value)}
             className="w-full min-h-[40px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-semibold"
@@ -671,9 +758,12 @@ export function ExternalImporterPanel({
         )}
       </div>
 
-      {parseError && (
-        <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium">
-          {parseError}
+      {effectiveParseError && (
+        <div
+          role="alert"
+          className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium"
+        >
+          {effectiveParseError}
         </div>
       )}
 
@@ -738,6 +828,94 @@ export function ExternalImporterPanel({
             </div>
           )}
 
+          {previewDataIntegritySummary && (
+            <div
+              role="status"
+              className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs flex items-start gap-2.5"
+            >
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="space-y-0.5">
+                <div className="font-semibold text-[var(--barn-ink)]">
+                  Conflict Review Notice (Import Allowed Without Data Loss)
+                </div>
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Detected{' '}
+                  {[
+                    previewDataIntegritySummary.dupCount > 0
+                      ? `${previewDataIntegritySummary.dupCount} record(s) with duplicate ID/tattoo`
+                      : '',
+                    previewDataIntegritySummary.sexMismatchCount > 0
+                      ? `${previewDataIntegritySummary.sexMismatchCount} record(s) with parent sex mismatch`
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' and ')}
+                  . Importing will succeed and flag these profiles &amp; pedigrees for attention so
+                  you can locate, review, or ignore them in Herd.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Device Capability Memory Caution during Import Preview (Non-Blocking) */}
+          {deviceCapabilityAssessment &&
+            (() => {
+              const projectedPhotos = importAndOptimizePhotos ? preview.stagedPhotos.length : 0;
+              const projectedRecords =
+                snapshot.animals.length +
+                (snapshot.animalPhotos?.length ?? 0) +
+                snapshot.breedings.length +
+                snapshot.cages.length +
+                snapshot.tasks.length +
+                snapshot.careLogs.length +
+                snapshot.shows.length +
+                preview.animals.length +
+                preview.breedings.length +
+                projectedPhotos;
+              const workload = evaluateBarnWorkloadForTier(
+                projectedRecords,
+                deviceCapabilityAssessment
+              );
+              const showTier1Warning =
+                deviceCapabilityAssessment.tier === 1 &&
+                (preview.animals.length > 15 || projectedPhotos > 0);
+              if (!showTier1Warning && workload.status === 'ok') return null;
+
+              return (
+                <div
+                  role="note"
+                  className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs flex items-start gap-2.5"
+                >
+                  <AlertTriangle
+                    className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                  <div className="space-y-1 min-w-0">
+                    <div className="font-semibold text-[var(--barn-ink)]">
+                      {deviceCapabilityAssessment.definition.shortLabel}: Memory Caution
+                    </div>
+                    <p className="text-[11px] text-[var(--barn-ink)]">
+                      {workload.guidance || deviceCapabilityAssessment.definition.cautionNotice}
+                    </p>
+                    {importAndOptimizePhotos &&
+                      preview.stagedPhotos.length > 0 &&
+                      importPreset !== 'compact' && (
+                        <button
+                          type="button"
+                          onClick={() => setImportPreset('compact')}
+                          className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)]"
+                        >
+                          Switch Import Photos to Compact (960px)
+                        </button>
+                      )}
+                  </div>
+                </div>
+              );
+            })()}
+
           {/* Non-Active / Archived Detection & Lifecycle Review */}
           {preview.animals.length > 0 && (() => {
             const effectiveArchived = preview.animals.filter((a) =>
@@ -763,6 +941,7 @@ export function ExternalImporterPanel({
                   </div>
                   <button
                     type="button"
+                    aria-expanded={showImportLifecycleList}
                     onClick={() => setShowImportLifecycleList((v) => !v)}
                     className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                   >
@@ -848,7 +1027,7 @@ export function ExternalImporterPanel({
               </div>
 
               <div className="space-y-3">
-                {preview.newSpeciesProfiles.map((newSp) => (
+                {preview.newSpeciesProfiles.map((newSp, spIdx) => (
                   <div
                     key={newSp.id}
                     className="p-3 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2.5"
@@ -862,10 +1041,14 @@ export function ExternalImporterPanel({
 
                     <div className="grid grid-cols-3 gap-2">
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-gestation`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Gestation (days)
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-gestation`}
                           type="number"
                           min={1}
                           max={700}
@@ -879,10 +1062,14 @@ export function ExternalImporterPanel({
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-wean`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Wean (+days)
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-wean`}
                           type="number"
                           min={1}
                           max={700}
@@ -896,10 +1083,14 @@ export function ExternalImporterPanel({
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-rebreed`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Rebreed (+days)
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-rebreed`}
                           type="number"
                           min={1}
                           max={700}
@@ -916,10 +1107,14 @@ export function ExternalImporterPanel({
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-male`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Male Term
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-male`}
                           type="text"
                           value={newSp.maleLabel}
                           onChange={(e) =>
@@ -929,10 +1124,14 @@ export function ExternalImporterPanel({
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-female`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Female Term
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-female`}
                           type="text"
                           value={newSp.femaleLabel}
                           onChange={(e) =>
@@ -942,10 +1141,14 @@ export function ExternalImporterPanel({
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-offspring`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Offspring Term
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-offspring`}
                           type="text"
                           value={newSp.offspringLabel}
                           onChange={(e) =>
@@ -955,10 +1158,14 @@ export function ExternalImporterPanel({
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-sp-${spIdx}-birth`}
+                          className="block text-[10px] text-[var(--barn-muted)] mb-0.5"
+                        >
                           Birth Event
                         </label>
                         <input
+                          id={`${baseId}-sp-${spIdx}-birth`}
                           type="text"
                           value={newSp.birthEventLabel}
                           onChange={(e) =>
@@ -1041,6 +1248,7 @@ export function ExternalImporterPanel({
                       <div className="px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 bg-[var(--barn-subtle)]/40">
                         <button
                           type="button"
+                          aria-expanded={isExpanded}
                           onClick={() =>
                             setExpandedConflictIds((prev) => ({
                               ...prev,
@@ -1102,8 +1310,11 @@ export function ExternalImporterPanel({
                                 key={item.field}
                                 className="py-2.5 first:pt-0 last:pb-0 space-y-1.5"
                               >
-                                <div className="text-[11px] font-semibold text-[var(--barn-muted)]">
-                                  {item.label}
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-[var(--barn-muted)]">
+                                  <span>{item.label}</span>
+                                  {(item.field === 'genotypeRaw' || item.field === 'rufusLevel') && (
+                                    <ColorGeneticsNotice compact />
+                                  )}
                                 </div>
 
                                 <div
@@ -1297,7 +1508,16 @@ export function ExternalImporterPanel({
                       Saved {formatByteSizePure(photoProgress.savedBytesSoFar)}
                     </span>
                   </div>
-                  <div className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden">
+                  <div
+                    role="progressbar"
+                    aria-label="Optimizing imported animal photos"
+                    aria-valuenow={Math.round(
+                      (photoProgress.completed / Math.max(1, photoProgress.total)) * 100
+                    )}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden"
+                  >
                     <div
                       className="h-full bg-[var(--barn-sage)] transition-all duration-150"
                       style={{
@@ -1358,6 +1578,7 @@ export function ExternalImporterPanel({
           <div className="border border-[var(--barn-border)] rounded-xl bg-[var(--barn-canvas)] overflow-hidden">
             <button
               type="button"
+              aria-expanded={showDiagnostics}
               onClick={() => setShowDiagnostics((v) => !v)}
               className="w-full px-3.5 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-[var(--barn-subtle)] transition-colors"
             >

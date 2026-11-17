@@ -9,7 +9,7 @@
  */
 
 import { Check, Search, X } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useRef, useState } from 'react';
 import { Animal, doesAnimalNeedAttention, isAnimalArchived } from '../core/models';
 
 interface SearchableParentPickerProps {
@@ -31,6 +31,8 @@ export function SearchableParentPicker({
   placeholder,
   onChange,
 }: SearchableParentPickerProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
 
@@ -57,7 +59,15 @@ export function SearchableParentPicker({
   };
 
   return (
-    <div className="relative space-y-1.5">
+    <div
+      ref={containerRef}
+      onBlur={(e) => {
+        if (!containerRef.current?.contains(e.relatedTarget as Node | null)) {
+          setIsOpen(false);
+        }
+      }}
+      className="relative space-y-1.5"
+    >
       <div className="relative">
         <Search
           className="w-4 h-4 text-[var(--barn-muted)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -68,18 +78,23 @@ export function SearchableParentPicker({
           type="search"
           role="combobox"
           aria-expanded={isOpen}
+          aria-controls={isOpen ? listboxId : undefined}
+          aria-autocomplete="list"
           aria-label={`Search ${label}`}
           placeholder={placeholder || `Search ${label} by name, ID, or breed...`}
           value={query}
           onFocus={() => setIsOpen(true)}
-          onBlur={() => setIsOpen(false)}
           onChange={(e) => {
             setQuery(e.target.value);
             if (!isOpen) setIsOpen(true);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
+            if (e.key === 'Escape' && isOpen) {
+              e.preventDefault();
+              e.stopPropagation();
               setIsOpen(false);
+            } else if (e.key === 'ArrowDown' && !isOpen) {
+              setIsOpen(true);
             } else if (e.key === 'Enter' && isOpen && filteredCandidates.length === 1) {
               e.preventDefault();
               handleSelect(filteredCandidates[0].id);
@@ -98,7 +113,7 @@ export function SearchableParentPicker({
             aria-label="Clear search query"
             className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -148,6 +163,7 @@ export function SearchableParentPicker({
       {/* Searchable Results Dropdown List */}
       {isOpen && (
         <div
+          id={listboxId}
           role="listbox"
           aria-label={`${label} search results`}
           className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg divide-y divide-[var(--barn-border)]"
@@ -164,7 +180,9 @@ export function SearchableParentPicker({
               }`}
             >
               <span>{unknownLabel}</span>
-              {value === '' && <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" />}
+              {value === '' && (
+                <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              )}
             </button>
           )}
 

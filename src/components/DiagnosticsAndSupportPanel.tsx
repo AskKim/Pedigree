@@ -81,6 +81,7 @@ interface DiagnosticsAndSupportPanelProps {
     serviceWorkersUnregistered: number;
     backupFilename: string | null;
   }>;
+  onLocateConflicts?: () => void;
 }
 
 type LogFilterTab = 'all' | 'errors' | 'memory';
@@ -91,6 +92,7 @@ export function DiagnosticsAndSupportPanel({
   onRepairDatabaseHealth,
   onResetDatabaseConnection,
   onPurgeCorruptedCaches,
+  onLocateConflicts,
 }: DiagnosticsAndSupportPanelProps) {
   const [config, setConfig] = useState(() => getDiagnosticConfig());
   const [entries, setEntries] = useState<DiagnosticLogEntry[]>([]);
@@ -407,6 +409,7 @@ export function DiagnosticsAndSupportPanel({
               <button
                 key={days}
                 type="button"
+                aria-pressed={config.retentionDays === days}
                 onClick={() => handleRetentionChange(days)}
                 className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold border transition-colors ${
                   config.retentionDays === days
@@ -518,7 +521,10 @@ export function DiagnosticsAndSupportPanel({
         </div>
 
         {feedback && (
-          <div className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs space-y-2">
+          <div
+            role="status"
+            className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs space-y-2"
+          >
             <div>{feedback}</div>
             <div className="flex flex-wrap items-center gap-3">
               {mailtoHref && (
@@ -559,6 +565,7 @@ export function DiagnosticsAndSupportPanel({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
+            aria-expanded={showLogViewer}
             onClick={() => setShowLogViewer((v) => !v)}
             className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
           >
@@ -612,6 +619,7 @@ export function DiagnosticsAndSupportPanel({
                 <button
                   key={key}
                   type="button"
+                  aria-pressed={logFilter === key}
                   onClick={() => setLogFilter(key)}
                   className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
                     logFilter === key
@@ -643,6 +651,7 @@ export function DiagnosticsAndSupportPanel({
                     <div key={entry.id} className="p-2.5 text-[11px] space-y-1">
                       <button
                         type="button"
+                        aria-expanded={isExpanded}
                         onClick={() => setExpandedLogId(isExpanded ? null : entry.id)}
                         className="w-full text-left flex items-start justify-between gap-2"
                       >
@@ -783,10 +792,23 @@ export function DiagnosticsAndSupportPanel({
                 {healthReport.issues.map((issue) => (
                   <li
                     key={issue.code}
-                    className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                    className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] flex flex-wrap items-start justify-between gap-2"
                   >
-                    <div className="font-semibold text-[var(--barn-ink)]">{issue.title}</div>
-                    <div className="text-[var(--barn-muted)]">{issue.detail}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-[var(--barn-ink)]">{issue.title}</div>
+                      <div className="text-[var(--barn-muted)]">{issue.detail}</div>
+                    </div>
+                    {onLocateConflicts &&
+                      (issue.code === 'DUPLICATE_SPECIES_TATTOO' ||
+                        issue.code === 'PARENT_SEX_MISMATCH') && (
+                        <button
+                          type="button"
+                          onClick={onLocateConflicts}
+                          className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap shrink-0"
+                        >
+                          Locate Conflicts in Herd
+                        </button>
+                      )}
                   </li>
                 ))}
               </ul>
@@ -940,7 +962,10 @@ export function DiagnosticsAndSupportPanel({
         </div>
 
         {recoveryFeedback && (
-          <div className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs">
+          <div
+            role="status"
+            className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
+          >
             {recoveryFeedback}
           </div>
         )}
@@ -959,6 +984,7 @@ export function DiagnosticsAndSupportPanel({
           </div>
           <button
             type="button"
+            aria-expanded={showImprovementsLog}
             onClick={() => setShowImprovementsLog((v) => !v)}
             className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
           >
@@ -1023,7 +1049,10 @@ export function DiagnosticsAndSupportPanel({
         </div>
 
         {improvementsFeedback && (
-          <div className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]">
+          <div
+            role="status"
+            className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]"
+          >
             {improvementsFeedback}
           </div>
         )}

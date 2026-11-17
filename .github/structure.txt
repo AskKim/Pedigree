@@ -8,8 +8,6 @@ Pedigree/
 │   └── structure.txt
 ├── docs/
 │   └── plans/
-│       ├── coat-color-genetics-upgrade-plan.md
-│       ├── reports-data-fields-plan.md
 │       └── suggestions-backlog.md
 ├── public/
 ├── scripts/

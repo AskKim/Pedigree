@@ -10,8 +10,12 @@
 
 import { HerdBossImporter } from './herdBossImporter';
 import { PlatformImporter } from './importerTypes';
+import { UniversalPedigreeImporter } from './universalPedigreeImporter';
 
-export const PLATFORM_IMPORTERS: PlatformImporter[] = [HerdBossImporter];
+export const PLATFORM_IMPORTERS: PlatformImporter[] = [
+  HerdBossImporter,
+  UniversalPedigreeImporter,
+];
 
 export function getPlatformImporterById(id: string): PlatformImporter {
   return PLATFORM_IMPORTERS.find((imp) => imp.id === id) || PLATFORM_IMPORTERS[0];

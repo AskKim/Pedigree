@@ -8,21 +8,30 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { Trash2, UserPlus } from 'lucide-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Trash2, UserPlus } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import {
+  findLitterOffspringTattooConflicts,
+  isOverrideConfirmationValid,
+  LitterOffspringDraft,
+} from '../core/animalConflicts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import { analyzePairingCarrierRisks } from '../core/carrierGenetics';
 import { simulatePairingGenetics } from '../core/geneticsEngine';
 import {
   addDaysIso,
   Animal,
+  applyAnimalNamePrefix,
   BarnSettings,
+  BiologicalSex,
   BREEDING_STATUSES,
   BreedingRecord,
   BreedingStatus,
   formatBreedingStatusForSpecies,
   formatCurrencyCents,
   formatReadableDate,
+  formatSexForSpecies,
+  getSpeciesIdentifierLabels,
   isAnimalArchived,
   normalizeCurrencyCode,
   normalizeServiceFeeDirection,
@@ -35,6 +44,7 @@ import {
 import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { generateCascadedTasksForBreeding } from '../core/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -70,6 +80,7 @@ interface BreedingScreenProps {
       ultrasoundProjectedDueIso?: string;
       notes: string;
       registerJuniorCount: number;
+      offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
     }
   ) => void;
   onDeleteBreeding: (id: string) => void;
@@ -83,6 +94,7 @@ export function BreedingScreen({
   onDeleteBreeding,
 }: BreedingScreenProps) {
   const { speciesProfile, animals, herdById, breedings } = activeData;
+  const baseId = useId();
   const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
 
   const archivedCount = useMemo(
@@ -148,6 +160,11 @@ export function BreedingScreen({
 
   // Outcome modal state
   const [editingRecord, setEditingRecord] = useState<BreedingRecord | null>(null);
+  const closeOutcomeModal = useCallback(() => setEditingRecord(null), []);
+  const outcomeDialogRef = useAccessibleDialog({
+    isOpen: Boolean(editingRecord),
+    onClose: closeOutcomeModal,
+  });
   const [outStatus, setOutStatus] = useState<BreedingStatus>('Born');
   const [outBirthIso, setOutBirthIso] = useState('');
   const [outLive, setOutLive] = useState('0');
@@ -162,6 +179,26 @@ export function BreedingScreen({
   const [outUltrasoundFetalCount, setOutUltrasoundFetalCount] = useState('');
   const [outUltrasoundProjectedDueIso, setOutUltrasoundProjectedDueIso] = useState('');
   const [outNotes, setOutNotes] = useState('');
+  const [outOffspringDrafts, setOutOffspringDrafts] = useState<LitterOffspringDraft[]>([]);
+  const [outOverrideInput, setOutOverrideInput] = useState('');
+  const [outConflictError, setOutConflictError] = useState<string | null>(null);
+
+  const idLabels = useMemo(
+    () => getSpeciesIdentifierLabels(speciesProfile.name),
+    [speciesProfile.name]
+  );
+
+  const litterTattooConflicts = useMemo(() => {
+    if (outOffspringDrafts.length === 0) return [];
+    return findLitterOffspringTattooConflicts(
+      outOffspringDrafts,
+      speciesProfile.name,
+      animals
+    );
+  }, [outOffspringDrafts, speciesProfile.name, animals]);
+
+  const hasLitterTattooConflict = litterTattooConflicts.length > 0;
+  const isLitterOverrideConfirmed = isOverrideConfirmationValid(outOverrideInput);
 
   const usingQuickSire = quickAddSire || males.length === 0;
   const usingQuickDam = quickAddDam || females.length === 0;
@@ -346,11 +383,54 @@ export function BreedingScreen({
     );
     setOutUltrasoundProjectedDueIso(rec.ultrasoundProjectedDueIso || '');
     setOutNotes(rec.notes || '');
+    setOutOffspringDrafts([]);
+    setOutOverrideInput('');
+    setOutConflictError(null);
+  };
+
+  const syncOffspringDraftCount = (rawValue: string) => {
+    setOutRegisterCount(rawValue);
+    setOutConflictError(null);
+    const parsed = Math.min(16, Math.max(0, Math.round(Number(rawValue) || 0)));
+    if (!editingRecord || parsed === 0) {
+      setOutOffspringDrafts([]);
+      setOutOverrideInput('');
+      return;
+    }
+    const dam = herdById.get(editingRecord.damId);
+    const tatPrefix = (dam?.tattoo || speciesProfile.name.slice(0, 3).toUpperCase()).slice(0, 6);
+    setOutOffspringDrafts((prev) => {
+      const next: LitterOffspringDraft[] = [];
+      for (let i = 1; i <= parsed; i++) {
+        const existingRow = prev[i - 1];
+        if (existingRow) {
+          next.push({ ...existingRow, index: i - 1 });
+        } else {
+          next.push({
+            index: i - 1,
+            name: applyAnimalNamePrefix(
+              `${editingRecord.damName} ${speciesProfile.offspringLabel} #${i}`,
+              speciesProfile.defaultAnimalPrefix
+            ),
+            tattoo: `${tatPrefix}-K${i}`,
+            sex: i % 2 === 0 ? 'Male' : 'Female',
+          });
+        }
+      }
+      return next;
+    });
   };
 
   const submitOutcome = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingRecord) return;
+    if (hasLitterTattooConflict && !isLitterOverrideConfirmed) {
+      setOutConflictError(
+        `One or more ${speciesProfile.offspringLabel.toLowerCase()} records reuse an existing ${idLabels.shortLabel.toLowerCase()} for the same sex within ${speciesProfile.name}. Type "override" below or change the duplicate ID(s) before saving.`
+      );
+      return;
+    }
+    const regCount = Math.min(16, Math.max(0, Math.round(Number(outRegisterCount) || 0)));
     onUpdateOutcome(editingRecord, {
       status: outStatus,
       actualBirthDateIso:
@@ -368,7 +448,11 @@ export function BreedingScreen({
       ultrasoundFetalCount: Math.max(0, Math.round(Number(outUltrasoundFetalCount) || 0)),
       ultrasoundProjectedDueIso: outUltrasoundProjectedDueIso,
       notes: outNotes,
-      registerJuniorCount: Math.max(0, Number(outRegisterCount) || 0),
+      registerJuniorCount: regCount,
+      offspringDrafts:
+        regCount > 0 && outOffspringDrafts.length > 0
+          ? outOffspringDrafts.map(({ name, tattoo, sex }) => ({ name, tattoo, sex }))
+          : undefined,
     });
     setEditingRecord(null);
   };
@@ -405,7 +489,10 @@ export function BreedingScreen({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <label className="block text-xs font-medium text-[var(--barn-muted)]">
+                  <label
+                    htmlFor={`${baseId}-sire`}
+                    className="block text-xs font-medium text-[var(--barn-muted)]"
+                  >
                     Sire ({speciesProfile.maleLabel})
                   </label>
                   {males.length > 0 && (
@@ -423,6 +510,7 @@ export function BreedingScreen({
                 {usingQuickSire ? (
                   <div className="space-y-1">
                     <input
+                      id={`${baseId}-sire`}
                       type="text"
                       required
                       placeholder={`Type unlisted ${speciesProfile.maleLabel} name...`}
@@ -437,6 +525,7 @@ export function BreedingScreen({
                   </div>
                 ) : includeArchivedParents ? (
                   <SearchableParentPicker
+                    id={`${baseId}-sire`}
                     label={`Sire (${speciesProfile.maleLabel})`}
                     value={sireId}
                     candidates={males}
@@ -445,6 +534,7 @@ export function BreedingScreen({
                   />
                 ) : (
                   <select
+                    id={`${baseId}-sire`}
                     value={sireId}
                     onChange={(e) => setSireId(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -461,7 +551,10 @@ export function BreedingScreen({
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <label className="block text-xs font-medium text-[var(--barn-muted)]">
+                  <label
+                    htmlFor={`${baseId}-dam`}
+                    className="block text-xs font-medium text-[var(--barn-muted)]"
+                  >
                     Dam ({speciesProfile.femaleLabel})
                   </label>
                   {females.length > 0 && (
@@ -479,6 +572,7 @@ export function BreedingScreen({
                 {usingQuickDam ? (
                   <div className="space-y-1">
                     <input
+                      id={`${baseId}-dam`}
                       type="text"
                       required
                       placeholder={`Type unlisted ${speciesProfile.femaleLabel} name...`}
@@ -493,6 +587,7 @@ export function BreedingScreen({
                   </div>
                 ) : includeArchivedParents ? (
                   <SearchableParentPicker
+                    id={`${baseId}-dam`}
                     label={`Dam (${speciesProfile.femaleLabel})`}
                     value={damId}
                     candidates={females}
@@ -501,6 +596,7 @@ export function BreedingScreen({
                   />
                 ) : (
                   <select
+                    id={`${baseId}-dam`}
                     value={damId}
                     onChange={(e) => setDamId(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -518,10 +614,14 @@ export function BreedingScreen({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-bred-date`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Breeding Date
                 </label>
                 <input
+                  id={`${baseId}-bred-date`}
                   type="date"
                   required
                   value={bredDateIso}
@@ -531,10 +631,14 @@ export function BreedingScreen({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-status`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Initial Status
                 </label>
                 <select
+                  id={`${baseId}-status`}
                   value={status}
                   onChange={(e) => setStatus(e.target.value as BreedingStatus)}
                   className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -548,10 +652,14 @@ export function BreedingScreen({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-fee-direction`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Stud / Service Fee (Optional)
                 </label>
                 <select
+                  id={`${baseId}-fee-direction`}
                   aria-label="Stud or service fee direction"
                   value={serviceFeeDirection}
                   onChange={(e) => setServiceFeeDirection(e.target.value as ServiceFeeDirection)}
@@ -565,10 +673,14 @@ export function BreedingScreen({
 
               {serviceFeeDirection !== 'none' && (
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-fee-amount`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Fee Amount ({resolvedCurrency})
                   </label>
                   <input
+                    id={`${baseId}-fee-amount`}
                     type="number"
                     step="0.01"
                     min="0"
@@ -583,6 +695,7 @@ export function BreedingScreen({
 
             <input
               type="text"
+              aria-label="Cage-side breeding notes"
               placeholder="Cage-side notes (e.g. 2 fall-offs at 7:15 AM)"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -1002,6 +1115,8 @@ export function BreedingScreen({
       {/* Litter / Birth Outcome Modal */}
       {editingRecord && (
         <div
+          ref={outcomeDialogRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-label="Update Litter Outcome"
@@ -1018,8 +1133,14 @@ export function BreedingScreen({
 
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Status</label>
+                <label
+                  htmlFor={`${baseId}-out-status`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Status
+                </label>
                 <select
+                  id={`${baseId}-out-status`}
                   value={outStatus}
                   onChange={(e) => {
                     const next = e.target.value as BreedingStatus;
@@ -1042,10 +1163,14 @@ export function BreedingScreen({
                 </select>
               </div>
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-out-birth`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
                   Actual {speciesProfile.birthEventLabel} Date
                 </label>
                 <input
+                  id={`${baseId}-out-birth`}
                   type="date"
                   value={outBirthIso}
                   onChange={(e) => setOutBirthIso(e.target.value)}
@@ -1056,8 +1181,14 @@ export function BreedingScreen({
 
             <div className="grid grid-cols-4 gap-2 text-xs">
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Live Born</label>
+                <label
+                  htmlFor={`${baseId}-out-live`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Live Born
+                </label>
                 <input
+                  id={`${baseId}-out-live`}
                   type="number"
                   min={0}
                   value={outLive}
@@ -1066,8 +1197,14 @@ export function BreedingScreen({
                 />
               </div>
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Stillborn</label>
+                <label
+                  htmlFor={`${baseId}-out-stillborn`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Stillborn
+                </label>
                 <input
+                  id={`${baseId}-out-stillborn`}
                   type="number"
                   min={0}
                   value={outStillborn}
@@ -1076,8 +1213,14 @@ export function BreedingScreen({
                 />
               </div>
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Fostered +/-</label>
+                <label
+                  htmlFor={`${baseId}-out-fostered`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Fostered +/-
+                </label>
                 <input
+                  id={`${baseId}-out-fostered`}
                   type="number"
                   value={outFostered}
                   onChange={(e) => setOutFostered(e.target.value)}
@@ -1085,8 +1228,14 @@ export function BreedingScreen({
                 />
               </div>
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Weaned</label>
+                <label
+                  htmlFor={`${baseId}-out-weaned`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Weaned
+                </label>
                 <input
+                  id={`${baseId}-out-weaned`}
                   type="number"
                   min={0}
                   value={outWeaned}
@@ -1102,8 +1251,14 @@ export function BreedingScreen({
               </div>
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-[var(--barn-muted)] mb-1">Scan Date</label>
+                  <label
+                    htmlFor={`${baseId}-out-us-date`}
+                    className="block text-[var(--barn-muted)] mb-1"
+                  >
+                    Scan Date
+                  </label>
                   <input
+                    id={`${baseId}-out-us-date`}
                     type="date"
                     value={outUltrasoundDateIso}
                     onChange={(e) => setOutUltrasoundDateIso(e.target.value)}
@@ -1111,8 +1266,14 @@ export function BreedingScreen({
                   />
                 </div>
                 <div>
-                  <label className="block text-[var(--barn-muted)] mb-1">Scan Result</label>
+                  <label
+                    htmlFor={`${baseId}-out-us-result`}
+                    className="block text-[var(--barn-muted)] mb-1"
+                  >
+                    Scan Result
+                  </label>
                   <select
+                    id={`${baseId}-out-us-result`}
                     value={outUltrasoundResult}
                     onChange={(e) => setOutUltrasoundResult(e.target.value as UltrasoundResult)}
                     className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
@@ -1125,8 +1286,14 @@ export function BreedingScreen({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[var(--barn-muted)] mb-1">Est. Fetal Count</label>
+                  <label
+                    htmlFor={`${baseId}-out-us-fetal`}
+                    className="block text-[var(--barn-muted)] mb-1"
+                  >
+                    Est. Fetal Count
+                  </label>
                   <input
+                    id={`${baseId}-out-us-fetal`}
                     type="number"
                     min={0}
                     max={30}
@@ -1137,10 +1304,14 @@ export function BreedingScreen({
                   />
                 </div>
                 <div>
-                  <label className="block text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-out-us-due`}
+                    className="block text-[var(--barn-muted)] mb-1"
+                  >
                     Ultrasound Due Date Override
                   </label>
                   <input
+                    id={`${baseId}-out-us-due`}
                     type="date"
                     value={outUltrasoundProjectedDueIso}
                     onChange={(e) => setOutUltrasoundProjectedDueIso(e.target.value)}
@@ -1152,8 +1323,14 @@ export function BreedingScreen({
 
             <div className="grid grid-cols-2 gap-2.5 text-xs">
               <div>
-                <label className="block text-[var(--barn-muted)] mb-1">Stud / Service Fee</label>
+                <label
+                  htmlFor={`${baseId}-out-fee-dir`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Stud / Service Fee
+                </label>
                 <select
+                  id={`${baseId}-out-fee-dir`}
                   value={outFeeDirection}
                   onChange={(e) => setOutFeeDirection(e.target.value as ServiceFeeDirection)}
                   className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
@@ -1165,10 +1342,14 @@ export function BreedingScreen({
               </div>
               {outFeeDirection !== 'none' && (
                 <div>
-                  <label className="block text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-out-fee-amount`}
+                    className="block text-[var(--barn-muted)] mb-1"
+                  >
                     Amount ({resolvedCurrency})
                   </label>
                   <input
+                    id={`${baseId}-out-fee-amount`}
                     type="number"
                     step="0.01"
                     min="0"
@@ -1181,22 +1362,174 @@ export function BreedingScreen({
               )}
             </div>
 
-            <div className="text-xs">
-              <label className="block text-[var(--barn-muted)] mb-1">
-                Auto-Create Junior {speciesProfile.offspringLabel} Records in Herd (0 – 16)
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={16}
-                value={outRegisterCount}
-                onChange={(e) => setOutRegisterCount(e.target.value)}
-                className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
-              />
+            <div className="space-y-2.5 text-xs">
+              <div>
+                <label
+                  htmlFor={`${baseId}-out-register-count`}
+                  className="block text-[var(--barn-muted)] mb-1"
+                >
+                  Auto-Create Junior {speciesProfile.offspringLabel} Records in Herd (0 – 16)
+                </label>
+                <input
+                  id={`${baseId}-out-register-count`}
+                  type="number"
+                  min={0}
+                  max={16}
+                  value={outRegisterCount}
+                  onChange={(e) => syncOffspringDraftCount(e.target.value)}
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                />
+              </div>
+
+              {outOffspringDrafts.length > 0 && (
+                <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Review {speciesProfile.offspringLabel} Names, {idLabels.shortLabel}s &amp; Sex
+                  </div>
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+                    {outOffspringDrafts.map((row, idx) => {
+                      const rowConflict = litterTattooConflicts.find((c) => c.rowIndex === idx);
+                      return (
+                        <div
+                          key={idx}
+                          className={`grid grid-cols-1 sm:grid-cols-12 gap-1.5 items-center p-2 rounded-lg border ${
+                            rowConflict
+                              ? 'bg-[var(--barn-terracotta-tint)]/70 border-[var(--barn-terracotta)]'
+                              : 'bg-[var(--barn-surface)] border-[var(--barn-border)]'
+                          }`}
+                        >
+                          <input
+                            type="text"
+                            aria-label={`${speciesProfile.offspringLabel} #${idx + 1} name`}
+                            placeholder="Name"
+                            value={row.name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutOffspringDrafts((prev) =>
+                                prev.map((r, rIdx) => (rIdx === idx ? { ...r, name: val } : r))
+                              );
+                            }}
+                            className="sm:col-span-5 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                          />
+                          <input
+                            type="text"
+                            aria-label={`${speciesProfile.offspringLabel} #${idx + 1} ${idLabels.shortLabel}`}
+                            placeholder={idLabels.shortLabel}
+                            value={row.tattoo}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutConflictError(null);
+                              setOutOffspringDrafts((prev) =>
+                                prev.map((r, rIdx) => (rIdx === idx ? { ...r, tattoo: val } : r))
+                              );
+                            }}
+                            className={`sm:col-span-4 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border font-mono text-xs ${
+                              rowConflict
+                                ? 'border-[var(--barn-terracotta)]'
+                                : 'border-[var(--barn-border)]'
+                            }`}
+                          />
+                          <select
+                            aria-label={`${speciesProfile.offspringLabel} #${idx + 1} sex`}
+                            value={row.sex}
+                            onChange={(e) => {
+                              const val = e.target.value as BiologicalSex;
+                              setOutConflictError(null);
+                              setOutOffspringDrafts((prev) =>
+                                prev.map((r, rIdx) => (rIdx === idx ? { ...r, sex: val } : r))
+                              );
+                            }}
+                            className="sm:col-span-3 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                          >
+                            <option value="Female">
+                              {formatSexForSpecies('Female', speciesProfile)}
+                            </option>
+                            <option value="Male">
+                              {formatSexForSpecies('Male', speciesProfile)}
+                            </option>
+                            <option value="Unknown">Unknown</option>
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {hasLitterTattooConflict && (
+                    <div
+                      role="alert"
+                      className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2"
+                    >
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle
+                          className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                          aria-hidden="true"
+                        />
+                        <div className="space-y-1 text-[11px]">
+                          <div className="font-semibold text-[var(--barn-ink)]">
+                            Duplicate {idLabels.shortLabel} detected for same sex within{' '}
+                            {speciesProfile.name}
+                          </div>
+                          <ul className="list-disc pl-4 space-y-0.5 text-[var(--barn-muted)]">
+                            {litterTattooConflicts.map((c) => {
+                              const existingNames = c.existingMatches
+                                .map((m) => `${m.name} (${m.tattoo})`)
+                                .join(', ');
+                              const peerNums = c.batchPeerIndices.map((pi) => `#${pi + 1}`).join(', ');
+                              return (
+                                <li key={c.rowIndex}>
+                                  Row #{c.rowIndex + 1} (
+                                  <span className="font-mono font-semibold text-[var(--barn-ink)]">
+                                    {c.tattoo}
+                                  </span>
+                                  , {formatSexForSpecies(c.sex, speciesProfile)}):
+                                  {existingNames ? ` matches existing ${existingNames}` : ''}
+                                  {existingNames && peerNums ? ' and' : ''}
+                                  {peerNums ? ` duplicates litter row ${peerNums}` : ''}.
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 pt-1">
+                        <label
+                          htmlFor={`${baseId}-litter-override`}
+                          className="block text-[11px] font-medium text-[var(--barn-ink)]"
+                        >
+                          Type <span className="font-mono font-bold">override</span> to allow
+                          duplicate {idLabels.shortLabel}(s), or change the IDs above:
+                        </label>
+                        <input
+                          id={`${baseId}-litter-override`}
+                          type="text"
+                          value={outOverrideInput}
+                          onChange={(e) => {
+                            setOutOverrideInput(e.target.value);
+                            setOutConflictError(null);
+                          }}
+                          placeholder="Type override to confirm"
+                          className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {outConflictError && (
+                    <div
+                      role="alert"
+                      className="text-[11px] font-semibold text-[var(--barn-danger)]"
+                    >
+                      {outConflictError}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <input
               type="text"
+              aria-label="Litter outcome notes"
               placeholder="Litter notes (fostering details, nest quality, weights)"
               value={outNotes}
               onChange={(e) => setOutNotes(e.target.value)}

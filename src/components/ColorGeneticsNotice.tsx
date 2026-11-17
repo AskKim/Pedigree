@@ -26,7 +26,7 @@ export function ColorGeneticsNotice({
           className="w-3 h-3 text-[var(--barn-terracotta)] shrink-0"
           aria-hidden="true"
         />
-        <span>Color genetics is not yet working.</span>
+        <span>Color genetics is under development (incomplete).</span>
       </div>
     );
   }
@@ -41,7 +41,8 @@ export function ColorGeneticsNotice({
         aria-hidden="true"
       />
       <span>
-        <strong>Notice:</strong> Color genetics &amp; genotype calculation is not yet working.
+        <strong>Notice:</strong> Color genetics &amp; genotype calculation is under development and
+        incomplete.
       </span>
     </div>
   );

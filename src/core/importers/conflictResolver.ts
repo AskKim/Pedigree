@@ -534,6 +534,8 @@ export function resolveAnimalsWithConflictChoices(
       sex: resolvedSex,
       status: resolvedStatus,
       archived: resolvedArchived,
+      needsAttention: Boolean(ex.needsAttention || inc.needsAttention),
+      ignoredConflicts: ex.ignoredConflicts || inc.ignoredConflicts,
       birthDateIso: pickNonEmptyText(ex.id, 'birthDateIso', ex.birthDateIso, inc.birthDateIso),
       breed: pickNonEmptyText(ex.id, 'breed', ex.breed, inc.breed),
       variety: pickNonEmptyText(ex.id, 'variety', ex.variety, inc.variety),

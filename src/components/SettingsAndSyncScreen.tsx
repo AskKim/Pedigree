@@ -31,7 +31,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
@@ -68,6 +68,16 @@ import {
   exportBarnBackupJson,
   formatTimestampedBackupSlug,
 } from '../core/syncAndExports';
+import {
+  formatReadableByteLimit,
+  MAX_DELTA_BATCH_FILES,
+  MAX_DELTA_BATCH_TOTAL_BYTES,
+  MAX_DELTA_JSON_BYTES,
+  MAX_JSON_BACKUP_BYTES,
+  MAX_SQLITE_DB_BYTES,
+  MAX_ZIP_ARCHIVE_BYTES,
+  validateUploadFileSize,
+} from '../core/inputSanitization';
 import { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
 import {
   CustomThemeColors,
@@ -89,6 +99,8 @@ import {
 import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
+import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
+import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
@@ -154,6 +166,8 @@ interface SettingsAndSyncScreenProps {
   onConnectGoogleCalendar?: () => Promise<boolean>;
   onDisconnectGoogleCalendar?: () => Promise<void>;
   onRefreshGoogleCalendars?: () => Promise<void>;
+  onLocateConflicts?: () => void;
+  deviceCapability?: DeviceCapabilityController;
 }
 
 export function SettingsAndSyncScreen({
@@ -198,7 +212,10 @@ export function SettingsAndSyncScreen({
   onConnectGoogleCalendar,
   onDisconnectGoogleCalendar,
   onRefreshGoogleCalendars,
+  onLocateConflicts,
+  deviceCapability,
 }: SettingsAndSyncScreenProps) {
+  const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
   const calendarSync = normalizeCalendarSyncSettings(settings.calendarSync);
   const updateCalendarSync = (patch: Partial<CalendarSyncSettings>) => {
@@ -402,7 +419,18 @@ export function SettingsAndSyncScreen({
     setPortabilityFeedback(null);
     try {
       const lower = file.name.toLowerCase();
-      if (lower.endsWith('.json') && !lower.endsWith('.zip')) {
+      const isJson = lower.endsWith('.json') && !lower.endsWith('.zip');
+      const sizeCheck = validateUploadFileSize(
+        file.name,
+        file.size,
+        isJson ? MAX_JSON_BACKUP_BYTES : MAX_ZIP_ARCHIVE_BYTES,
+        isJson ? 'a JSON backup file' : 'a backup .ZIP archive'
+      );
+      if (!sizeCheck.ok) {
+        setImportError(sizeCheck.error);
+        return;
+      }
+      if (isJson) {
         const text = await file.text();
         await onImportJson(text, mode);
         setPortabilityFeedback(
@@ -424,6 +452,16 @@ export function SettingsAndSyncScreen({
     if (!file) return;
     setImportError(null);
     try {
+      const sizeCheck = validateUploadFileSize(
+        file.name,
+        file.size,
+        MAX_SQLITE_DB_BYTES,
+        'a SQLite database'
+      );
+      if (!sizeCheck.ok) {
+        setImportError(sizeCheck.error);
+        return;
+      }
       const buf = await file.arrayBuffer();
       await onImportSqliteBytes(new Uint8Array(buf));
     } catch (err: any) {
@@ -436,14 +474,41 @@ export function SettingsAndSyncScreen({
     setImportError(null);
     setSyncFeedback(null);
     try {
+      const list = Array.from(files);
+      if (list.length > MAX_DELTA_BATCH_FILES) {
+        setImportError(
+          `Selected ${list.length} delta files; upload at most ${MAX_DELTA_BATCH_FILES} per batch to protect mobile memory.`
+        );
+        return;
+      }
+      let totalBytes = 0;
+      for (const file of list) {
+        const check = validateUploadFileSize(
+          file.name,
+          file.size,
+          MAX_DELTA_JSON_BYTES,
+          'a delta sync JSON file'
+        );
+        if (!check.ok) {
+          setImportError(check.error);
+          return;
+        }
+        totalBytes += file.size;
+        if (totalBytes > MAX_DELTA_BATCH_TOTAL_BYTES) {
+          setImportError(
+            `Combined delta batch exceeds ${formatReadableByteLimit(MAX_DELTA_BATCH_TOTAL_BYTES)}.`
+          );
+          return;
+        }
+      }
       const combinedOps: SyncOperation[] = [];
-      for (const file of Array.from(files)) {
+      for (const file of list) {
         const text = await file.text();
         combinedOps.push(...parseDeltaFileJson(text));
       }
       await onImportDeltaOperations(combinedOps);
       setSyncFeedback(
-        `Processed ${combinedOps.length} operation(s) across ${files.length} delta file(s).`
+        `Processed ${combinedOps.length} operation(s) across ${list.length} delta file(s).`
       );
     } catch (err: any) {
       setImportError(err?.message || 'Could not parse delta sync JSON file.');
@@ -561,6 +626,17 @@ export function SettingsAndSyncScreen({
 
   return (
     <div className="space-y-6">
+      {/* Upper Settings Section: Device Capability & Memory Handling */}
+      {deviceCapability && (
+        <DeviceCapabilityCard
+          location="settings"
+          controller={deviceCapability}
+          settings={settings}
+          totalBarnRecords={totalBarnRecords}
+          onApplyLowMemorySettings={(patch) => onUpdateSettings(patch)}
+        />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left 6 Columns: Preferences, Theme Studio & Offline PWA Protection */}
         <div className="lg:col-span-6 space-y-6">
@@ -591,10 +667,14 @@ export function SettingsAndSyncScreen({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-barnName`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Barn / Rabbitry / Farm Name
                 </label>
                 <input
+                  id={`${baseId}-barnName`}
                   type="text"
                   value={barnName}
                   onChange={(e) => setBarnName(e.target.value)}
@@ -603,10 +683,14 @@ export function SettingsAndSyncScreen({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                <label
+                  htmlFor={`${baseId}-breederName`}
+                  className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                >
                   Breeder Name (for Pedigrees)
                 </label>
                 <input
+                  id={`${baseId}-breederName`}
                   type="text"
                   value={breederName}
                   onChange={(e) => setBreederName(e.target.value)}
@@ -691,6 +775,7 @@ export function SettingsAndSyncScreen({
                     <button
                       key={preset.id}
                       type="button"
+                      aria-pressed={active}
                       onClick={() => setImageOptimizationPreset(preset.id)}
                       className={`text-left p-2.5 rounded-xl border transition-colors space-y-1 ${
                         active
@@ -714,10 +799,14 @@ export function SettingsAndSyncScreen({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-pinnedLandingSpecies`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Pinned Startup Landing Page
               </label>
               <select
+                id={`${baseId}-pinnedLandingSpecies`}
                 value={pinnedLandingSpecies}
                 onChange={(e) => setPinnedLandingSpecies(e.target.value)}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -748,6 +837,7 @@ export function SettingsAndSyncScreen({
                     <button
                       key={val}
                       type="button"
+                      aria-pressed={preferredUnit === val}
                       onClick={() => setPreferredUnit(val)}
                       className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
                         preferredUnit === val
@@ -766,10 +856,14 @@ export function SettingsAndSyncScreen({
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-defaultSpecies`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Default Species
                   </label>
                   <select
+                    id={`${baseId}-defaultSpecies`}
                     value={defaultSpecies}
                     onChange={(e) => setDefaultSpecies(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -783,10 +877,14 @@ export function SettingsAndSyncScreen({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+                  <label
+                    htmlFor={`${baseId}-currencyCode`}
+                    className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                  >
                     Report Currency
                   </label>
                   <select
+                    id={`${baseId}-currencyCode`}
                     value={currencyCode}
                     onChange={(e) => setCurrencyCode(e.target.value)}
                     className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
@@ -809,6 +907,7 @@ export function SettingsAndSyncScreen({
                       <button
                         key={g}
                         type="button"
+                        aria-pressed={defaultGenerations === g}
                         onClick={() => setDefaultGenerations(g)}
                         className={`min-h-[42px] px-2 py-2 rounded-xl text-xs font-semibold border transition-colors whitespace-nowrap ${
                           defaultGenerations === g
@@ -1289,7 +1388,14 @@ export function SettingsAndSyncScreen({
                       {storageStatus.percentUsed}%)
                     </span>
                   </div>
-                  <div className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden">
+                  <div
+                    role="progressbar"
+                    aria-label="Local browser storage used"
+                    aria-valuenow={Math.round(storageStatus.percentUsed)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden"
+                  >
                     <div
                       style={{ width: `${Math.max(1, storageStatus.percentUsed)}%` }}
                       className="h-full bg-[var(--barn-sage)] rounded-full"
@@ -1392,6 +1498,7 @@ export function SettingsAndSyncScreen({
               <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
                 <button
                   type="button"
+                  aria-pressed={!isDark}
                   onClick={() => onUpdateSettings({ themeMode: 'light' })}
                   className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold transition-colors inline-flex items-center justify-center gap-1.5 ${
                     !isDark
@@ -1404,6 +1511,7 @@ export function SettingsAndSyncScreen({
                 </button>
                 <button
                   type="button"
+                  aria-pressed={isDark}
                   onClick={() => onUpdateSettings({ themeMode: 'dark' })}
                   className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold transition-colors inline-flex items-center justify-center gap-1.5 ${
                     isDark
@@ -1509,6 +1617,7 @@ export function SettingsAndSyncScreen({
           <ExternalImporterPanel
             snapshot={snapshot}
             activeSpeciesName={activeSpeciesName}
+            deviceCapabilityAssessment={deviceCapability?.assessment}
             onCommitImport={onApplyPlatformImport}
           />
 
@@ -1527,7 +1636,10 @@ export function SettingsAndSyncScreen({
             </div>
 
             {syncFeedback && (
-              <div className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs">
+              <div
+                role="status"
+                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
+              >
                 {syncFeedback}
               </div>
             )}
@@ -1699,13 +1811,19 @@ export function SettingsAndSyncScreen({
             )}
 
             {importError && (
-              <div className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium">
+              <div
+                role="alert"
+                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium"
+              >
                 {importError}
               </div>
             )}
 
             {portabilityFeedback && !importError && (
-              <div className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs">
+              <div
+                role="status"
+                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
+              >
                 {portabilityFeedback}
               </div>
             )}
@@ -1860,6 +1978,7 @@ export function SettingsAndSyncScreen({
             onRepairDatabaseHealth={onRepairDatabaseHealth}
             onResetDatabaseConnection={onResetDatabaseConnection}
             onPurgeCorruptedCaches={onPurgeCorruptedCaches}
+            onLocateConflicts={onLocateConflicts}
           />
 
           {/* Global Data Deletion & Factory Settings Restore */}

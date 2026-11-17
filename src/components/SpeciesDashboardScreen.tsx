@@ -30,7 +30,7 @@ import {
   StickyNote,
   Trash2,
 } from 'lucide-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import { evaluateSpeciesNeedsAttentionAlert } from '../core/barnAlerts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import {
@@ -103,6 +103,7 @@ interface SpeciesDashboardScreenProps {
   highlightedTaskId?: string | null;
   onClearHighlightedTask?: () => void;
   onHideSummaryGrid?: () => void;
+  onLocateConflicts?: () => void;
   onOpenSettings: () => void;
 }
 
@@ -137,6 +138,7 @@ export function SpeciesDashboardScreen({
   highlightedTaskId,
   onClearHighlightedTask,
   onHideSummaryGrid,
+  onLocateConflicts,
   onOpenSettings,
 }: SpeciesDashboardScreenProps) {
   const {
@@ -147,10 +149,13 @@ export function SpeciesDashboardScreen({
     cages,
     shows,
     herdById,
+    conflictedAnimalCount,
+    activeConflictAnimalCount,
     testingRecordCount,
     totalRecordCount,
   } = activeData;
   const today = todayDateIso();
+  const baseId = useId();
   const showSummaryGrid = settings.showHomeSummaryGrid !== false;
 
   const [taskFilter, setTaskFilter] = useState<'open' | 'completed'>('open');
@@ -338,6 +343,7 @@ export function SpeciesDashboardScreen({
       <div className="flex flex-wrap items-center gap-2.5">
         <button
           type="button"
+          aria-pressed={isPinned}
           onClick={() => onTogglePinSpecies(speciesProfile.name)}
           className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
             isPinned
@@ -767,7 +773,7 @@ export function SpeciesDashboardScreen({
       )}
 
       {/* Needs Attention Animals Notice */}
-      {attentionAlert.shouldShow && (
+      {(attentionAlert.shouldShow || conflictedAnimalCount > 0) && (
         <section
           aria-label={`${speciesProfile.name} records needing attention`}
           className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] rounded-2xl p-4 sm:p-5 space-y-3"
@@ -780,48 +786,79 @@ export function SpeciesDashboardScreen({
               />
               <div className="space-y-0.5">
                 <h2 className="text-sm font-semibold text-[var(--barn-ink)]">
-                  {attentionAlert.animals.length} {speciesProfile.name}{' '}
-                  {attentionAlert.animals.length === 1 ? 'Record Needs' : 'Records Need'} Attention
+                  {attentionAlert.shouldShow ? (
+                    <>
+                      {attentionAlert.animals.length} {speciesProfile.name}{' '}
+                      {attentionAlert.animals.length === 1 ? 'Record Needs' : 'Records Need'}{' '}
+                      Attention
+                    </>
+                  ) : (
+                    <>
+                      {conflictedAnimalCount} {speciesProfile.name}{' '}
+                      {conflictedAnimalCount === 1 ? 'Record Has' : 'Records Have'} ID / Sex
+                      Conflicts
+                    </>
+                  )}
                 </h2>
                 <p className="text-xs text-[var(--barn-muted)]">
-                  Review and complete details (such as ID/tag, breed, or pedigree) or clear the
-                  flag once finished.
+                  {attentionAlert.shouldShow
+                    ? 'Review and complete details (such as ID/tag, breed, or pedigree) or clear the flag once finished.'
+                    : 'Soft conflict warnings remain active until duplicate tattoos or parent sex mismatches are resolved.'}
+                  {attentionAlert.shouldShow && conflictedAnimalCount > 0
+                    ? ` (${activeConflictAnimalCount} active conflict${
+                        activeConflictAnimalCount === 1 ? '' : 's'
+                      }, ${conflictedAnimalCount} total conflicted)`
+                    : ''}
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('herd')}
-              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              Open {speciesProfile.name} Herd
-              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {conflictedAnimalCount > 0 && onLocateConflicts && (
+                <button
+                  type="button"
+                  onClick={onLocateConflicts}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  Locate Conflicts ({conflictedAnimalCount})
+                  <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onNavigate('herd')}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                Open {speciesProfile.name} Herd
+                <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {attentionAlert.animals.slice(0, 8).map((flagged) => (
-              <button
-                key={flagged.id}
-                type="button"
-                onClick={() => onOpenAnimal(flagged.id)}
-                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)] inline-flex items-center gap-1.5"
-              >
-                <span>{flagged.name}</span>
-                {flagged.tattoo && (
-                  <span className="font-mono text-[11px] text-[var(--barn-muted)]">
-                    ({flagged.tattoo})
-                  </span>
-                )}
-                <ArrowRight className="w-3 h-3 text-[var(--barn-terracotta)]" aria-hidden="true" />
-              </button>
-            ))}
-            {attentionAlert.animals.length > 8 && (
-              <span className="text-xs text-[var(--barn-muted)] px-1">
-                +{attentionAlert.animals.length - 8} more in Herd
-              </span>
-            )}
-          </div>
+          {attentionAlert.animals.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {attentionAlert.animals.slice(0, 8).map((flagged) => (
+                <button
+                  key={flagged.id}
+                  type="button"
+                  onClick={() => onOpenAnimal(flagged.id)}
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)] inline-flex items-center gap-1.5"
+                >
+                  <span>{flagged.name}</span>
+                  {flagged.tattoo && (
+                    <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+                      ({flagged.tattoo})
+                    </span>
+                  )}
+                  <ArrowRight className="w-3 h-3 text-[var(--barn-terracotta)]" aria-hidden="true" />
+                </button>
+              ))}
+              {attentionAlert.animals.length > 8 && (
+                <span className="text-xs text-[var(--barn-muted)] px-1">
+                  +{attentionAlert.animals.length - 8} more in Herd
+                </span>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -957,6 +994,7 @@ export function SpeciesDashboardScreen({
                       <div className="flex items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
                         <button
                           type="button"
+                          aria-pressed={taskFilter === 'open'}
                           onClick={() => setTaskFilter('open')}
                           className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
                             taskFilter === 'open'
@@ -968,6 +1006,7 @@ export function SpeciesDashboardScreen({
                         </button>
                         <button
                           type="button"
+                          aria-pressed={taskFilter === 'completed'}
                           onClick={() => setTaskFilter('completed')}
                           className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
                             taskFilter === 'completed'
@@ -981,6 +1020,7 @@ export function SpeciesDashboardScreen({
 
                       <button
                         type="button"
+                        aria-expanded={showNewTaskForm}
                         onClick={() => setShowNewTaskForm((v) => !v)}
                         className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap"
                       >
@@ -999,6 +1039,7 @@ export function SpeciesDashboardScreen({
                         <input
                           type="text"
                           required
+                          aria-label="Chore title"
                           placeholder={`e.g. Check water line or ${speciesProfile.femaleLabel.toLowerCase()} condition`}
                           value={taskTitle}
                           onChange={(e) => setTaskTitle(e.target.value)}
@@ -1006,6 +1047,7 @@ export function SpeciesDashboardScreen({
                         />
                         <input
                           type="date"
+                          aria-label="Chore due date"
                           value={taskDueIso}
                           onChange={(e) => setTaskDueIso(e.target.value)}
                           className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono"
@@ -1013,6 +1055,7 @@ export function SpeciesDashboardScreen({
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <select
+                          aria-label="Chore category"
                           value={taskCategory}
                           onChange={(e) => setTaskCategory(e.target.value as TaskCategory)}
                           className="min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
@@ -1024,6 +1067,7 @@ export function SpeciesDashboardScreen({
                           ))}
                         </select>
                         <select
+                          aria-label="Chore priority"
                           value={taskPriority}
                           onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}
                           className="min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
@@ -1035,6 +1079,7 @@ export function SpeciesDashboardScreen({
                           ))}
                         </select>
                         <select
+                          aria-label="Linked animal"
                           value={taskAnimalId}
                           onChange={(e) => setTaskAnimalId(e.target.value)}
                           className="min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
@@ -1318,6 +1363,7 @@ export function SpeciesDashboardScreen({
                       {renderReorderControls()}
                       <button
                         type="button"
+                        aria-expanded={showNewCageForm}
                         onClick={() => setShowNewCageForm((v) => !v)}
                         className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                       >
@@ -1336,6 +1382,7 @@ export function SpeciesDashboardScreen({
                         <input
                           type="text"
                           required
+                          aria-label="Cage or pen label"
                           placeholder="Label (Hutch R-09)"
                           value={cageLabel}
                           onChange={(e) => setCageLabel(e.target.value)}
@@ -1353,6 +1400,7 @@ export function SpeciesDashboardScreen({
                       </div>
                       <input
                         type="text"
+                        aria-label="Row or barn section"
                         placeholder="Row / Barn Section"
                         value={cageSection}
                         onChange={(e) => setCageSection(e.target.value)}
@@ -1450,6 +1498,7 @@ export function SpeciesDashboardScreen({
                     {renderReorderControls()}
                     <button
                       type="button"
+                      aria-expanded={showNewShowForm}
                       onClick={() => setShowNewShowForm((v) => !v)}
                       className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                     >
@@ -1467,6 +1516,7 @@ export function SpeciesDashboardScreen({
                     <input
                       type="text"
                       required
+                      aria-label="Show name"
                       placeholder="Show Name *"
                       value={showName}
                       onChange={(e) => setShowName(e.target.value)}
@@ -1475,12 +1525,14 @@ export function SpeciesDashboardScreen({
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="text"
+                        aria-label="Show location"
                         placeholder="Location"
                         value={showLocation}
                         onChange={(e) => setShowLocation(e.target.value)}
                         className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
                       />
                       <select
+                        aria-label="Sanctioning body"
                         value={showSanction}
                         onChange={(e) => setShowSanction(e.target.value)}
                         className="min-h-[38px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
@@ -1494,8 +1546,14 @@ export function SpeciesDashboardScreen({
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <span className="block text-[var(--barn-muted)] mb-0.5">Event Date *</span>
+                        <label
+                          htmlFor={`${baseId}-show-date`}
+                          className="block text-[var(--barn-muted)] mb-0.5"
+                        >
+                          Event Date *
+                        </label>
                         <input
+                          id={`${baseId}-show-date`}
                           type="date"
                           required
                           value={showDateIso}
@@ -1504,10 +1562,14 @@ export function SpeciesDashboardScreen({
                         />
                       </div>
                       <div>
-                        <span className="block text-[var(--barn-muted)] mb-0.5">
+                        <label
+                          htmlFor={`${baseId}-show-deadline`}
+                          className="block text-[var(--barn-muted)] mb-0.5"
+                        >
                           Entry Deadline
-                        </span>
+                        </label>
                         <input
+                          id={`${baseId}-show-deadline`}
                           type="date"
                           value={showDeadlineIso}
                           onChange={(e) => setShowDeadlineIso(e.target.value)}

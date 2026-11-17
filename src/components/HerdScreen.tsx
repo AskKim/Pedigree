@@ -14,6 +14,7 @@
 
 import {
   AlertCircle,
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowLeft,
@@ -24,11 +25,14 @@ import {
   GitFork,
   Plus,
   Printer,
+  RotateCcw,
   Search,
+  ShieldAlert,
   Trash2,
   X,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
+import { getConflictSortPriority } from '../core/animalConflicts';
 import {
   analyzeAnimalCarrierLineage,
   AnimalCarrierLineageAnalysis,
@@ -47,6 +51,7 @@ import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   addDaysIso,
   Animal,
+  AnimalConflictKind,
   BarnDatabaseSnapshot,
   BarnSettings,
   CARE_LOG_TYPES,
@@ -116,6 +121,9 @@ interface HerdScreenProps {
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
   onAddCareLog: (draft: Omit<CareLog, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onDeleteCareLog: (id: string) => void;
+  onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
+  onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
+  requestedConflictFocusNonce?: number;
 }
 
 type HerdFilterTab =
@@ -125,7 +133,10 @@ type HerdFilterTab =
   | 'Junior'
   | 'Active'
   | 'Archived'
-  | 'NeedsAttention';
+  | 'NeedsAttention'
+  | 'Conflicts';
+
+type HerdSortOption = 'default' | 'conflicts_first' | 'name' | 'tattoo' | 'newest_dob';
 
 export function HerdScreen({
   snapshot,
@@ -148,6 +159,9 @@ export function HerdScreen({
   onToggleIncludePhotoOnPedigree,
   onAddCareLog,
   onDeleteCareLog,
+  onIgnoreConflicts,
+  onRestoreConflictAlert,
+  requestedConflictFocusNonce,
 }: HerdScreenProps) {
   const {
     speciesProfile,
@@ -155,6 +169,8 @@ export function HerdScreen({
     photosByAnimalId,
     primaryPhotoByAnimalId,
     herdById,
+    conflictsByAnimalId,
+    conflictedAnimalCount,
     coiByAnimalId,
     cages,
     careLogs,
@@ -166,6 +182,7 @@ export function HerdScreen({
 
   const [query, setQuery] = useState('');
   const [filterKey, setFilterKey] = useState<HerdFilterTab>('all');
+  const [sortBy, setSortBy] = useState<HerdSortOption>('default');
   const [carrierFilterMode, setCarrierFilterMode] = useState<HerdCarrierFilterMode>('all');
   const [carrierTraitQuery, setCarrierTraitQuery] = useState('');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
@@ -186,8 +203,15 @@ export function HerdScreen({
   }, [speciesProfile.name]);
 
   useEffect(() => {
+    if (requestedConflictFocusNonce && requestedConflictFocusNonce > 0) {
+      setFilterKey('Conflicts');
+      setSortBy('conflicts_first');
+    }
+  }, [requestedConflictFocusNonce]);
+
+  useEffect(() => {
     setVisibleLimit(HERD_PAGE_SIZE);
-  }, [filterKey, query, carrierFilterMode, carrierTraitQuery]);
+  }, [filterKey, sortBy, query, carrierFilterMode, carrierTraitQuery]);
 
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
@@ -204,6 +228,7 @@ export function HerdScreen({
     filename: string;
     html: string;
     isPedigree?: boolean;
+    hasGenetics?: boolean;
     pedigreeSubject?: Animal;
   } | null>(null);
 
@@ -225,22 +250,38 @@ export function HerdScreen({
   const [logUltrasoundResult, setLogUltrasoundResult] = useState<UltrasoundResult>('');
   const [logUltrasoundFetalCount, setLogUltrasoundFetalCount] = useState('');
 
-  // Live filter tab counts
-  const maleCount = useMemo(() => animals.filter((a) => a.sex === 'Male').length, [animals]);
-  const femaleCount = useMemo(() => animals.filter((a) => a.sex === 'Female').length, [animals]);
-  const juniorCount = useMemo(() => animals.filter((a) => a.status === 'Junior').length, [animals]);
-  const activeCount = useMemo(
-    () => animals.filter((a) => !isAnimalArchived(a)).length,
-    [animals]
-  );
-  const archivedCount = useMemo(
-    () => animals.filter((a) => isAnimalArchived(a)).length,
-    [animals]
-  );
-  const needsAttentionCount = useMemo(
-    () => animals.filter((a) => doesAnimalNeedAttention(a)).length,
-    [animals]
-  );
+  // Live filter tab counts (single O(n) pass)
+  const {
+    maleCount,
+    femaleCount,
+    juniorCount,
+    activeCount,
+    archivedCount,
+    needsAttentionCount,
+  } = useMemo(() => {
+    let male = 0;
+    let female = 0;
+    let junior = 0;
+    let active = 0;
+    let archived = 0;
+    let needsAttention = 0;
+    for (const a of animals) {
+      if (a.sex === 'Male') male++;
+      else if (a.sex === 'Female') female++;
+      if (a.status === 'Junior') junior++;
+      if (isAnimalArchived(a)) archived++;
+      else active++;
+      if (doesAnimalNeedAttention(a)) needsAttention++;
+    }
+    return {
+      maleCount: male,
+      femaleCount: female,
+      juniorCount: junior,
+      activeCount: active,
+      archivedCount: archived,
+      needsAttentionCount: needsAttention,
+    };
+  }, [animals]);
 
   const speciesGeneticsSpec = useMemo(
     () => getGeneticsSpecForSpecies(speciesProfile.name),
@@ -263,7 +304,7 @@ export function HerdScreen({
   const filteredAnimals = useMemo(() => {
     const q = query.trim().toLowerCase();
     const hasCarrierFilter = carrierFilterMode !== 'all' || carrierTraitQuery.trim().length > 0;
-    return animals.filter((a) => {
+    const filtered = animals.filter((a) => {
       const archived = isAnimalArchived(a);
       if (filterKey === 'Male' && a.sex !== 'Male') return false;
       if (filterKey === 'Female' && a.sex !== 'Female') return false;
@@ -271,6 +312,9 @@ export function HerdScreen({
       if (filterKey === 'Active' && archived) return false;
       if (filterKey === 'Archived' && !archived) return false;
       if (filterKey === 'NeedsAttention' && !doesAnimalNeedAttention(a)) return false;
+      if (filterKey === 'Conflicts' && !conflictsByAnimalId.get(a.id)?.hasAnyConflict) {
+        return false;
+      }
 
       if (hasCarrierFilter) {
         const analysis = carrierAnalysisById.get(a.id);
@@ -291,7 +335,37 @@ export function HerdScreen({
         a.cageLocation.toLowerCase().includes(q)
       );
     });
-  }, [animals, query, filterKey, carrierFilterMode, carrierTraitQuery, carrierAnalysisById]);
+
+    if (sortBy === 'default') return filtered;
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === 'conflicts_first') {
+        const pa = getConflictSortPriority(conflictsByAnimalId.get(a.id));
+        const pb = getConflictSortPriority(conflictsByAnimalId.get(b.id));
+        if (pa !== pb) return pa - pb;
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'name') {
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'tattoo') {
+        return (a.tattoo || '').localeCompare(b.tattoo || '') || a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'newest_dob') {
+        return (b.birthDateIso || '').localeCompare(a.birthDateIso || '') || a.name.localeCompare(b.name);
+      }
+      return 0;
+    });
+  }, [
+    animals,
+    query,
+    filterKey,
+    sortBy,
+    carrierFilterMode,
+    carrierTraitQuery,
+    carrierAnalysisById,
+    conflictsByAnimalId,
+  ]);
 
   // Only show dedicated Animal Page when user explicitly opened an animal (`selectedAnimalId`)
   const activeAnimal = useMemo(() => {
@@ -345,9 +419,11 @@ export function HerdScreen({
     [filteredAnimals, visibleLimit]
   );
 
-  const filteredIds = filteredAnimals.map((a) => a.id);
+  const checkedIdSet = useMemo(() => new Set(checkedIds), [checkedIds]);
+  const filteredIds = useMemo(() => filteredAnimals.map((a) => a.id), [filteredAnimals]);
+  const filteredIdSet = useMemo(() => new Set(filteredIds), [filteredIds]);
   const allShownChecked =
-    filteredIds.length > 0 && filteredIds.every((id) => checkedIds.includes(id));
+    filteredIds.length > 0 && filteredIds.every((id) => checkedIdSet.has(id));
 
   const toggleChecked = (id: string) => {
     setConfirmBatchDelete(false);
@@ -359,8 +435,7 @@ export function HerdScreen({
   const toggleSelectAllShown = () => {
     setConfirmBatchDelete(false);
     if (allShownChecked) {
-      const shownSet = new Set(filteredIds);
-      setCheckedIds((prev) => prev.filter((id) => !shownSet.has(id)));
+      setCheckedIds((prev) => prev.filter((id) => !filteredIdSet.has(id)));
     } else {
       setCheckedIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
     }
@@ -545,6 +620,140 @@ export function HerdScreen({
             </div>
           )}
 
+          {/* Profile Conflict Alert OR Ignored Soft Warning */}
+          {(() => {
+            const conflictSummary = conflictsByAnimalId.get(activeAnimal.id);
+            if (!conflictSummary || !conflictSummary.hasAnyConflict) return null;
+            const urgent = conflictSummary.hasActiveConflict;
+            return (
+              <div
+                role={urgent ? 'alert' : 'status'}
+                className={`rounded-2xl border p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 ${
+                  urgent
+                    ? 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)]'
+                    : 'bg-[var(--barn-surface)] border-[var(--barn-terracotta)]/65 border-dashed'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  {urgent ? (
+                    <ShieldAlert
+                      className="w-5 h-5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <AlertTriangle
+                      className="w-5 h-5 text-[var(--barn-terracotta)]/85 mt-0.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <div className="text-xs space-y-1.5 min-w-0">
+                    <div className="font-semibold text-[var(--barn-ink)]">
+                      {urgent
+                        ? 'Profile Data Conflict Detected'
+                        : 'Soft Warning — Conflict Alert Ignored'}
+                    </div>
+                    <ul className="space-y-1 text-[var(--barn-muted)]">
+                      {conflictSummary.duplicateTattooPeers.length > 0 && (
+                        <li>
+                          Same {speciesProfile.name} {idLabels.shortLabel.toLowerCase()} &ldquo;
+                          <span className="font-mono font-semibold text-[var(--barn-ink)]">
+                            {activeAnimal.tattoo}
+                          </span>
+                          &rdquo; matches:{' '}
+                          {conflictSummary.duplicateTattooPeers.map((dp, idx) => (
+                            <React.Fragment key={dp.peer.id}>
+                              {idx > 0 && ', '}
+                              <button
+                                type="button"
+                                onClick={() => onSelectAnimal(dp.peer.id)}
+                                className="underline font-medium text-[var(--barn-ink)] hover:text-[var(--barn-sage)]"
+                              >
+                                {dp.peer.name} ({formatSexForSpecies(dp.peer.sex, speciesProfile)})
+                              </button>
+                            </React.Fragment>
+                          ))}
+                        </li>
+                      )}
+                      {conflictSummary.sireSexMismatch && (
+                        <li>
+                          Linked Sire{' '}
+                          <button
+                            type="button"
+                            onClick={() => onSelectAnimal(conflictSummary.sireSexMismatch!.parent.id)}
+                            className="underline font-medium text-[var(--barn-ink)] hover:text-[var(--barn-sage)]"
+                          >
+                            {conflictSummary.sireSexMismatch.parent.name}
+                          </button>{' '}
+                          is recorded as{' '}
+                          <strong>
+                            {formatSexForSpecies(conflictSummary.sireSexMismatch.actualSex, speciesProfile)}
+                          </strong>{' '}
+                          instead of {speciesProfile.maleLabel}.
+                        </li>
+                      )}
+                      {conflictSummary.damSexMismatch && (
+                        <li>
+                          Linked Dam{' '}
+                          <button
+                            type="button"
+                            onClick={() => onSelectAnimal(conflictSummary.damSexMismatch!.parent.id)}
+                            className="underline font-medium text-[var(--barn-ink)] hover:text-[var(--barn-sage)]"
+                          >
+                            {conflictSummary.damSexMismatch.parent.name}
+                          </button>{' '}
+                          is recorded as{' '}
+                          <strong>
+                            {formatSexForSpecies(conflictSummary.damSexMismatch.actualSex, speciesProfile)}
+                          </strong>{' '}
+                          instead of {speciesProfile.femaleLabel}.
+                        </li>
+                      )}
+                    </ul>
+                    {conflictSummary.isIgnoredWithSoftWarning && (
+                      <p className="text-[11px] text-[var(--barn-muted)]">
+                        Active alert is ignored, but this soft warning stays visible until the
+                        underlying duplicate {idLabels.shortLabel.toLowerCase()} or parent sex mismatch is fixed.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingAnimal(activeAnimal);
+                      setShowAnimalModal(true);
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                    Edit Details
+                  </button>
+                  {urgent && onIgnoreConflicts && (
+                    <button
+                      type="button"
+                      onClick={() => onIgnoreConflicts(activeAnimal.id, conflictSummary.activeKinds)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                    >
+                      Ignore Conflict (Keep Soft Warning)
+                    </button>
+                  )}
+                  {!urgent && onRestoreConflictAlert && (
+                    <button
+                      type="button"
+                      onClick={() => onRestoreConflictAlert(activeAnimal.id)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                      Re-enable Alert
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-6">
             {/* Header & Cage-Side Print/Tree Actions */}
             <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 border-b border-[var(--barn-border)] pb-5">
@@ -612,6 +821,9 @@ export function HerdScreen({
                           allAnimals,
                           speciesProfiles,
                           settings
+                        ),
+                        hasGenetics: Boolean(
+                          activeAnimal.genotypeRaw || activeAnimal.genotype.length > 0
                         ),
                       })
                     }
@@ -725,10 +937,18 @@ export function HerdScreen({
                 {(['sireId', 'damId'] as const).map((field) => {
                   const isSire = field === 'sireId';
                   const parent = activeAnimal[field] ? herdById.get(activeAnimal[field]) : null;
+                  const activeConflict = conflictsByAnimalId.get(activeAnimal.id);
+                  const sexMismatch = isSire
+                    ? activeConflict?.sireSexMismatch
+                    : activeConflict?.damSexMismatch;
                   return (
                     <div
                       key={field}
-                      className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] flex items-center justify-between gap-2"
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                        sexMismatch
+                          ? 'bg-[var(--barn-terracotta-tint)]/55 border-[var(--barn-terracotta)]'
+                          : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+                      }`}
                     >
                       <div className="min-w-0">
                         <div className="text-[var(--barn-muted)]">
@@ -737,14 +957,23 @@ export function HerdScreen({
                             : `Dam (${speciesProfile.femaleLabel})`}
                         </div>
                         {parent ? (
-                          <button
-                            type="button"
-                            onClick={() => onSelectAnimal(parent.id)}
-                            className="font-medium text-sm underline hover:text-[var(--barn-sage)] truncate block mt-0.5"
-                          >
-                            {parent.name} ({parent.tattoo || 'No ID'})
-                            {isAnimalArchived(parent) ? ' [Archived]' : ''}
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onSelectAnimal(parent.id)}
+                              className="font-medium text-sm underline hover:text-[var(--barn-sage)] truncate block mt-0.5"
+                            >
+                              {parent.name} ({parent.tattoo || 'No ID'})
+                              {isAnimalArchived(parent) ? ' [Archived]' : ''}
+                            </button>
+                            {sexMismatch && (
+                              <div className="text-[11px] font-medium text-[var(--barn-terracotta)] mt-0.5 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                Sex mismatch: recorded as{' '}
+                                {formatSexForSpecies(sexMismatch.actualSex, speciesProfile)}
+                              </div>
+                            )}
+                          </>
                         ) : (
                           <div className="text-sm text-[var(--barn-muted)] italic mt-0.5">
                             Unknown / Foundation
@@ -945,6 +1174,7 @@ export function HerdScreen({
 
                 <button
                   type="button"
+                  aria-expanded={showLogForm}
                   onClick={() => setShowLogForm((v) => !v)}
                   className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                 >
@@ -964,6 +1194,7 @@ export function HerdScreen({
                 >
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <select
+                      aria-label="Care or weight log entry type"
                       value={logType}
                       onChange={(e) => setLogType(e.target.value as CareLogType)}
                       className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
@@ -976,12 +1207,14 @@ export function HerdScreen({
                     </select>
                     <input
                       type="date"
+                      aria-label="Entry date"
                       value={logDateIso}
                       onChange={(e) => setLogDateIso(e.target.value)}
                       className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
                     />
                     <input
                       type="number"
+                      aria-label={`Weight (${weightMeta.shortUnit})`}
                       step="0.01"
                       min="0"
                       placeholder={`Weight (${weightMeta.shortUnit})`}
@@ -993,6 +1226,7 @@ export function HerdScreen({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <input
                       type="text"
+                      aria-label="Short summary"
                       placeholder="Short summary (e.g. 12-week cage weight)"
                       value={logTitle}
                       onChange={(e) => setLogTitle(e.target.value)}
@@ -1009,6 +1243,7 @@ export function HerdScreen({
                   </div>
                   <input
                     type="text"
+                    aria-label="Optional notes"
                     placeholder="Optional notes"
                     value={logNotes}
                     onChange={(e) => setLogNotes(e.target.value)}
@@ -1023,6 +1258,7 @@ export function HerdScreen({
                       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                         <input
                           type="text"
+                          aria-label="Medication or vaccine name"
                           placeholder="Medication / vaccine name"
                           value={logMedicationName}
                           onChange={(e) => setLogMedicationName(e.target.value)}
@@ -1030,6 +1266,7 @@ export function HerdScreen({
                         />
                         <input
                           type="text"
+                          aria-label="Dosage"
                           placeholder="Dosage (e.g. 0.5 mL)"
                           value={logDosage}
                           onChange={(e) => setLogDosage(e.target.value)}
@@ -1038,6 +1275,7 @@ export function HerdScreen({
                         <div>
                           <input
                             type="text"
+                            aria-label="Administration route"
                             list="care-admin-route-suggestions"
                             placeholder="Route (e.g. Oral, SubQ)"
                             value={logAdministrationRoute}
@@ -1054,6 +1292,7 @@ export function HerdScreen({
                         </div>
                         <input
                           type="number"
+                          aria-label="Withdrawal days"
                           min="0"
                           max="365"
                           placeholder="Withdrawal days"
@@ -1084,6 +1323,7 @@ export function HerdScreen({
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                         <input
                           type="number"
+                          aria-label="Body condition score"
                           step="0.5"
                           min="0"
                           max="9"
@@ -1094,6 +1334,7 @@ export function HerdScreen({
                         />
                         <input
                           type="number"
+                          aria-label="FAMACHA eye score"
                           step="1"
                           min="0"
                           max="5"
@@ -1104,6 +1345,7 @@ export function HerdScreen({
                         />
                         <input
                           type="number"
+                          aria-label="Fecal egg count (EPG)"
                           step="1"
                           min="0"
                           placeholder="Fecal Egg Count (EPG)"
@@ -1137,6 +1379,7 @@ export function HerdScreen({
                         </select>
                         <input
                           type="number"
+                          aria-label="Estimated offspring count"
                           min="0"
                           max="30"
                           placeholder="Estimated offspring count (optional)"
@@ -1280,16 +1523,20 @@ export function HerdScreen({
                     ...(needsAttentionCount > 0 || filterKey === 'NeedsAttention'
                       ? ([['NeedsAttention', `Needs Attention (${needsAttentionCount})`]] as const)
                       : []),
+                    ...(conflictedAnimalCount > 0 || filterKey === 'Conflicts'
+                      ? ([['Conflicts', `Conflicts (${conflictedAnimalCount})`]] as const)
+                      : []),
                   ] as const
                 ).map(([key, label]) => (
                   <button
                     key={key}
                     type="button"
+                    aria-pressed={filterKey === key}
                     onClick={() => setFilterKey(key)}
                     className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 tabular-nums ${
                       filterKey === key
                         ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
-                        : key === 'NeedsAttention'
+                        : key === 'NeedsAttention' || key === 'Conflicts'
                         ? 'text-[var(--barn-terracotta)] hover:bg-[var(--barn-terracotta-tint)]'
                         : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
                     }`}
@@ -1300,17 +1547,36 @@ export function HerdScreen({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setEditingAnimal(null);
-                setShowAnimalModal(true);
-              }}
-              className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              <Plus className="w-4 h-4" aria-hidden="true" />
-              Add {speciesProfile.name}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <label htmlFor="herd-sort-select" className="sr-only">
+                Sort Herd Records
+              </label>
+              <select
+                id="herd-sort-select"
+                aria-label="Sort herd list"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as HerdSortOption)}
+                className="min-h-[42px] px-3 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium"
+              >
+                <option value="default">Sort: Default Order</option>
+                <option value="conflicts_first">Sort: Conflicts First</option>
+                <option value="name">Sort: Name (A–Z)</option>
+                <option value="tattoo">Sort: {idLabels.shortLabel}</option>
+                <option value="newest_dob">Sort: Newest DOB</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingAnimal(null);
+                  setShowAnimalModal(true);
+                }}
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-4 h-4" aria-hidden="true" />
+                Add {speciesProfile.name}
+              </button>
+            </div>
           </div>
 
           {/* Carrier Trait Screening & Finder Strip */}
@@ -1504,7 +1770,7 @@ export function HerdScreen({
 
                 <div className="divide-y divide-[var(--barn-border)]">
                   {visibleAnimals.map((a) => {
-                    const isChecked = checkedIds.includes(a.id);
+                    const isChecked = checkedIdSet.has(a.id);
                     const isArch = isAnimalArchived(a);
                     const coi = coiByAnimalId.get(a.id);
                     const coverPhoto = primaryPhotoByAnimalId.get(a.id);
@@ -1564,7 +1830,7 @@ export function HerdScreen({
                             </div>
 
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                                 <span className="font-medium text-sm truncate">{a.name}</span>
                                 {a.tattoo && (
                                   <span className="font-mono text-xs text-[var(--barn-muted)] shrink-0">
@@ -1581,6 +1847,30 @@ export function HerdScreen({
                                     · Needs Attention
                                   </span>
                                 )}
+                                {(() => {
+                                  const rowConflict = conflictsByAnimalId.get(a.id);
+                                  if (!rowConflict?.hasAnyConflict) return null;
+                                  if (rowConflict.hasActiveConflict) {
+                                    return (
+                                      <span
+                                        title={rowConflict.headlineReasons.join('; ')}
+                                        className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0"
+                                      >
+                                        · <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                                        Conflict Alert
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span
+                                      title={rowConflict.headlineReasons.join('; ')}
+                                      className="text-[11px] font-medium text-[var(--barn-terracotta)]/80 inline-flex items-center gap-1 shrink-0"
+                                    >
+                                      · <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                                      Soft Warning (Ignored)
+                                    </span>
+                                  );
+                                })()}
                               </div>
                               <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
                                 <span className={`font-medium ${sexColor}`}>
@@ -1596,7 +1886,7 @@ export function HerdScreen({
                               {(() => {
                                 const rowAnalysis = carrierAnalysisById.get(a.id);
                                 const parts: string[] = [];
-                                if (a.rufusLevel) parts.push(`Rufus: ${a.rufusLevel}`);
+                                if (a.rufusLevel) parts.push(`Rufus: ${a.rufusLevel} (in dev)`);
                                 if (rowAnalysis?.confirmed.length) {
                                   parts.push(`Conf: ${rowAnalysis.confirmed.join(', ')}`);
                                 }
@@ -1720,7 +2010,13 @@ export function HerdScreen({
           onChangePedigreePrintOptions={
             previewDoc.isPedigree ? setPedigreePrintOptions : undefined
           }
-          headerNotice={previewDoc.isPedigree ? <PedigreePrintNotice /> : undefined}
+          headerNotice={
+            previewDoc.isPedigree ? (
+              <PedigreePrintNotice />
+            ) : previewDoc.hasGenetics ? (
+              <ColorGeneticsNotice compact />
+            ) : undefined
+          }
           onClose={() => setPreviewDoc(null)}
         />
       )}

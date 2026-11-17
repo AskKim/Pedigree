@@ -1,0 +1,252 @@
+/**
+ * @license
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Browser Hardware Signal Collector, Per-Device Dismissal State & React Hook
+ * (`src/storage/deviceCapabilityDetector.ts`).
+ *
+ * Dismissal state is stored strictly in per-device `localStorage` (not inside the
+ * portable BarnSettings JSON/SQLite snapshot) so restoring a desktop Tier 5 backup onto
+ * a low-memory mobile device never suppresses critical Tier 1 / Tier 2 warnings.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  classifyDeviceCapability,
+  DeviceCapabilityAssessment,
+  DeviceHardwareSignals,
+} from '../core/deviceCapability';
+import { logDiagnosticEvent } from './crashLogger';
+
+const HOME_DISMISSED_KEY = 'pedigree.deviceCapability.homeDismissed.v1';
+const SETTINGS_DISMISSED_KEY = 'pedigree.deviceCapability.settingsDismissed.v1';
+
+interface PerformanceWithMemory extends Performance {
+  memory?: {
+    usedJSHeapSize?: number;
+    totalJSHeapSize?: number;
+    jsHeapSizeLimit?: number;
+  };
+}
+
+interface NavigatorWithDeviceMemory extends Navigator {
+  deviceMemory?: number;
+}
+
+export function readBrowserHardwareSignals(): DeviceHardwareSignals {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      deviceMemoryGb: null,
+      hardwareConcurrency: null,
+      jsHeapLimitBytes: null,
+      usedHeapBytes: null,
+      userAgent: '',
+      maxTouchPoints: 0,
+      coarsePointer: false,
+      screenWidthPx: null,
+      screenHeightPx: null,
+      devicePixelRatio: null,
+    };
+  }
+
+  const nav = navigator as NavigatorWithDeviceMemory;
+  const deviceMemoryGb =
+    typeof nav.deviceMemory === 'number' && Number.isFinite(nav.deviceMemory) && nav.deviceMemory > 0
+      ? nav.deviceMemory
+      : null;
+
+  const hardwareConcurrency =
+    typeof navigator.hardwareConcurrency === 'number' &&
+    Number.isFinite(navigator.hardwareConcurrency) &&
+    navigator.hardwareConcurrency > 0
+      ? navigator.hardwareConcurrency
+      : null;
+
+  let jsHeapLimitBytes: number | null = null;
+  let usedHeapBytes: number | null = null;
+  try {
+    const perf = typeof performance !== 'undefined' ? (performance as PerformanceWithMemory) : null;
+    if (perf?.memory) {
+      if (
+        typeof perf.memory.jsHeapSizeLimit === 'number' &&
+        Number.isFinite(perf.memory.jsHeapSizeLimit)
+      ) {
+        jsHeapLimitBytes = perf.memory.jsHeapSizeLimit;
+      }
+      if (
+        typeof perf.memory.usedJSHeapSize === 'number' &&
+        Number.isFinite(perf.memory.usedJSHeapSize)
+      ) {
+        usedHeapBytes = perf.memory.usedJSHeapSize;
+      }
+    }
+  } catch {
+    // Ignore restricted performance.memory access
+  }
+
+  let coarsePointer = false;
+  try {
+    if (typeof window.matchMedia === 'function') {
+      coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+    }
+  } catch {
+    coarsePointer = false;
+  }
+
+  let screenWidthPx: number | null = null;
+  let screenHeightPx: number | null = null;
+  try {
+    if (typeof window.screen !== 'undefined') {
+      if (typeof window.screen.width === 'number' && Number.isFinite(window.screen.width)) {
+        screenWidthPx = window.screen.width;
+      }
+      if (typeof window.screen.height === 'number' && Number.isFinite(window.screen.height)) {
+        screenHeightPx = window.screen.height;
+      }
+    }
+  } catch {
+    // Ignore restricted screen access
+  }
+
+  const devicePixelRatio =
+    typeof window.devicePixelRatio === 'number' && Number.isFinite(window.devicePixelRatio)
+      ? window.devicePixelRatio
+      : null;
+
+  return {
+    deviceMemoryGb,
+    hardwareConcurrency,
+    jsHeapLimitBytes,
+    usedHeapBytes,
+    userAgent: navigator.userAgent || '',
+    maxTouchPoints: typeof navigator.maxTouchPoints === 'number' ? navigator.maxTouchPoints : 0,
+    coarsePointer,
+    screenWidthPx,
+    screenHeightPx,
+    devicePixelRatio,
+  };
+}
+
+export function detectCurrentDeviceCapability(): DeviceCapabilityAssessment {
+  return classifyDeviceCapability(readBrowserHardwareSignals());
+}
+
+function readLocalFlag(key: string): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLocalFlag(key: string, value: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (value) {
+      localStorage.setItem(key, '1');
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore quota or private-browsing storage restrictions
+  }
+}
+
+export interface DeviceCapabilityController {
+  assessment: DeviceCapabilityAssessment;
+  homeDismissed: boolean;
+  settingsDismissed: boolean;
+  homeVisible: boolean;
+  settingsVisible: boolean;
+  canCloseOnHome: boolean;
+  canCloseInSettings: boolean;
+  dismissOnHome: () => void;
+  reopenOnHome: () => void;
+  dismissInSettings: () => void;
+  reopenInSettings: () => void;
+  refreshDetection: () => void;
+}
+
+export function useDeviceCapability(): DeviceCapabilityController {
+  const [assessment, setAssessment] = useState<DeviceCapabilityAssessment>(() =>
+    detectCurrentDeviceCapability()
+  );
+  const [homeDismissedRaw, setHomeDismissedRaw] = useState<boolean>(() =>
+    readLocalFlag(HOME_DISMISSED_KEY)
+  );
+  const [settingsDismissedRaw, setSettingsDismissedRaw] = useState<boolean>(() =>
+    readLocalFlag(SETTINGS_DISMISSED_KEY)
+  );
+
+  const loggedInitialRef = useRef(false);
+
+  useEffect(() => {
+    if (loggedInitialRef.current) return;
+    loggedInitialRef.current = true;
+    logDiagnosticEvent({
+      level: assessment.tier === 1 ? 'warn' : 'info',
+      category: assessment.shouldApplyLowMemoryHandling ? 'memory' : 'lifecycle',
+      message: `Device capability detected: ${assessment.definition.shortLabel} (${assessment.signalSummary})`,
+      details: {
+        tier: assessment.tier,
+        formFactor: assessment.formFactor,
+        confidence: assessment.confidence,
+        deviceMemoryGb: assessment.signals.deviceMemoryGb,
+        hardwareConcurrency: assessment.signals.hardwareConcurrency,
+        jsHeapLimitBytes: assessment.signals.jsHeapLimitBytes,
+      },
+    });
+  }, [assessment]);
+
+  const canCloseOnHome = assessment.definition.homeClosable;
+  const canCloseInSettings = assessment.definition.settingsClosable;
+
+  // Enforce tier visibility rules strictly regardless of any previously saved flags:
+  // - Tier 1: never closable on Home OR Settings
+  // - Tier 2: closable on Home, persistent (never closable) in Settings
+  // - Tier 3–5: closable on Home & Settings, and reopenable from Settings
+  const homeDismissed = canCloseOnHome ? homeDismissedRaw : false;
+  const settingsDismissed = canCloseInSettings ? settingsDismissedRaw : false;
+
+  const dismissOnHome = useCallback(() => {
+    if (!canCloseOnHome) return;
+    writeLocalFlag(HOME_DISMISSED_KEY, true);
+    setHomeDismissedRaw(true);
+  }, [canCloseOnHome]);
+
+  const reopenOnHome = useCallback(() => {
+    writeLocalFlag(HOME_DISMISSED_KEY, false);
+    setHomeDismissedRaw(false);
+  }, []);
+
+  const dismissInSettings = useCallback(() => {
+    if (!canCloseInSettings) return;
+    writeLocalFlag(SETTINGS_DISMISSED_KEY, true);
+    setSettingsDismissedRaw(true);
+  }, [canCloseInSettings]);
+
+  const reopenInSettings = useCallback(() => {
+    writeLocalFlag(SETTINGS_DISMISSED_KEY, false);
+    setSettingsDismissedRaw(false);
+  }, []);
+
+  const refreshDetection = useCallback(() => {
+    setAssessment(detectCurrentDeviceCapability());
+  }, []);
+
+  return {
+    assessment,
+    homeDismissed,
+    settingsDismissed,
+    homeVisible: !homeDismissed,
+    settingsVisible: !settingsDismissed,
+    canCloseOnHome,
+    canCloseInSettings,
+    dismissOnHome,
+    reopenOnHome,
+    dismissInSettings,
+    reopenInSettings,
+    refreshDetection,
+  };
+}

@@ -8,7 +8,7 @@
  */
 
 import { Download, Plus, Sparkles, Trash2, X } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import {
   generateUuid,
   isSameSpecies,
@@ -25,6 +25,7 @@ import {
   WeightUnit,
 } from '../core/models';
 import { describeMilestoneOffset } from '../core/taskMaster';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface SpeciesEditorModalProps {
   initialProfile: SpeciesProfile | null;
@@ -69,6 +70,8 @@ export function SpeciesEditorModal({
   onDownloadTimestampedBackup,
   onClose,
 }: SpeciesEditorModalProps) {
+  const baseId = useId();
+  const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
   const isEditing = Boolean(initialProfile);
   const canDeleteEmptySpecies =
     isEditing && Boolean(onDelete) && recordCount === 0 && existingNames.length > 1;
@@ -229,6 +232,8 @@ export function SpeciesEditorModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={isEditing ? `Configure ${initialProfile?.name}` : 'Add Custom Livestock Species'}
@@ -262,6 +267,7 @@ export function SpeciesEditorModal({
               <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
                 <button
                   type="button"
+                  aria-pressed={creationMode === 'custom'}
                   onClick={resetToCustomBlank}
                   className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors inline-flex items-center justify-center gap-1.5 ${
                     creationMode === 'custom'
@@ -274,6 +280,7 @@ export function SpeciesEditorModal({
                 </button>
                 <button
                   type="button"
+                  aria-pressed={creationMode === 'preset'}
                   onClick={() => setCreationMode('preset')}
                   className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                     creationMode === 'preset'
@@ -313,17 +320,24 @@ export function SpeciesEditorModal({
           )}
 
           {errorMsg && (
-            <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)]">
+            <div
+              role="alert"
+              className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs font-medium text-[var(--barn-ink)]"
+            >
               {errorMsg}
             </div>
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-name`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Livestock / Species Name *
               </label>
               <input
+                id={`${baseId}-name`}
                 type="text"
                 placeholder="e.g. Horse, Quail, Mini Donkey, Yak, Poultry..."
                 value={name}
@@ -338,10 +352,14 @@ export function SpeciesEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-birth-event`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Birth / Hatch Event Term
               </label>
               <input
+                id={`${baseId}-birth-event`}
                 type="text"
                 placeholder="e.g. Foaling, Hatching, Calving, Kindling"
                 value={birthEventLabel}
@@ -353,10 +371,14 @@ export function SpeciesEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-gestation`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Gestation / Incubation (Days)
               </label>
               <input
+                id={`${baseId}-gestation`}
                 type="number"
                 min={1}
                 max={750}
@@ -366,10 +388,14 @@ export function SpeciesEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-wean`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Wean / Separate (+Days)
               </label>
               <input
+                id={`${baseId}-wean`}
                 type="number"
                 min={1}
                 max={600}
@@ -379,10 +405,14 @@ export function SpeciesEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-rebreed`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Rebreed Check (+Days)
               </label>
               <input
+                id={`${baseId}-rebreed`}
                 type="number"
                 min={0}
                 max={600}
@@ -392,10 +422,14 @@ export function SpeciesEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-maturity`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Maturity Cutoff (Days, opt.)
               </label>
               <input
+                id={`${baseId}-maturity`}
                 type="number"
                 min={14}
                 max={1500}
@@ -409,10 +443,14 @@ export function SpeciesEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-male`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Male Term
               </label>
               <input
+                id={`${baseId}-male`}
                 type="text"
                 placeholder="e.g. Stallion, Cock, Buck, Bull"
                 value={maleLabel}
@@ -421,10 +459,14 @@ export function SpeciesEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-female`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Female Term
               </label>
               <input
+                id={`${baseId}-female`}
                 type="text"
                 placeholder="e.g. Mare, Hen, Doe, Cow"
                 value={femaleLabel}
@@ -433,10 +475,14 @@ export function SpeciesEditorModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-offspring`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Offspring Term
               </label>
               <input
+                id={`${baseId}-offspring`}
                 type="text"
                 placeholder="e.g. Foal, Chick, Kid, Calf"
                 value={offspringLabel}
@@ -448,10 +494,14 @@ export function SpeciesEditorModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-breeds`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Common Breeds / Varieties (comma-separated, optional)
               </label>
               <input
+                id={`${baseId}-breeds`}
                 type="text"
                 placeholder="e.g. Quarter Horse, Morgan, Arabian"
                 value={breedsCsv}
@@ -461,10 +511,14 @@ export function SpeciesEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-prefix`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Optional Default Animal Name Prefix
               </label>
               <input
+                id={`${baseId}-prefix`}
                 type="text"
                 placeholder="e.g. Copper Creek or Farm Prefix (editable per animal)"
                 value={defaultAnimalPrefix}
@@ -477,10 +531,14 @@ export function SpeciesEditorModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[var(--barn-muted)] mb-1">
+              <label
+                htmlFor={`${baseId}-unit`}
+                className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+              >
                 Species Weight Unit Override
               </label>
               <select
+                id={`${baseId}-unit`}
                 value={preferredUnit}
                 onChange={(e) => setPreferredUnit(e.target.value as WeightUnit | '')}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
@@ -544,6 +602,7 @@ export function SpeciesEditorModal({
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 pt-1">
               <input
                 type="text"
+                aria-label="New milestone label"
                 placeholder="New milestone (e.g. Candling Eggs / Ultrasound)"
                 value={ruleLabel}
                 onChange={(e) => setRuleLabel(e.target.value)}
@@ -551,6 +610,7 @@ export function SpeciesEditorModal({
               />
               <input
                 type="number"
+                aria-label="Days offset"
                 min={0}
                 max={700}
                 value={ruleDays}
@@ -558,6 +618,7 @@ export function SpeciesEditorModal({
                 className="sm:col-span-2 min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
               />
               <select
+                aria-label="Milestone timing relative to event"
                 value={ruleRelativeTo}
                 onChange={(e) => setRuleRelativeTo(e.target.value as MilestoneRelativeTo)}
                 className="sm:col-span-3 min-h-[40px] px-2.5 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
@@ -567,6 +628,7 @@ export function SpeciesEditorModal({
                 <option value="AFTER_BIRTH">Days After {birthEventLabel || 'Birth'}</option>
               </select>
               <select
+                aria-label="Rule category"
                 value={ruleCategory}
                 onChange={(e) => setRuleCategory(e.target.value as TaskCategory)}
                 className="sm:col-span-2 min-h-[40px] px-2 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"

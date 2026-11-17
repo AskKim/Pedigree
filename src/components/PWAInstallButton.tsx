@@ -8,12 +8,17 @@
 import { Download, Smartphone, WifiOff, X } from 'lucide-react';
 import React, { useState } from 'react';
 import { useOnlineStatus, usePWAInstall } from '../hooks/usePWAInstall';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
   variant = 'header',
 }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
+  const iosDialogRef = useAccessibleDialog({
+    isOpen: showIOSGuide,
+    onClose: () => setShowIOSGuide(false),
+  });
 
   if (isInstalled) {
     return null;
@@ -55,6 +60,8 @@ export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
 
         {showIOSGuide && (
           <div
+            ref={iosDialogRef}
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
             aria-label="Install on iPhone or iPad"

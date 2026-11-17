@@ -14,6 +14,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  analyzeBarnAnimalConflicts,
+  AnimalConflictSummary,
+  applyImportConflictAttentionFlags,
+  LitterOffspringDraft,
+} from '../core/animalConflicts';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { formatGenotypeArray, parseGenotypeString } from '../core/geneticsEngine';
 import {
@@ -24,6 +30,7 @@ import {
 import {
   addDaysIso,
   Animal,
+  AnimalConflictKind,
   AnimalPhoto,
   applyAnimalNamePrefix,
   BarnDatabaseSnapshot,
@@ -36,6 +43,7 @@ import {
   isAnimalArchived,
   isSameSpecies,
   normalizeCalendarSyncSettings,
+  normalizeIgnoredConflicts,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
@@ -177,6 +185,9 @@ export interface ActiveSpeciesData {
   photosByAnimalId: Map<string, AnimalPhoto[]>;
   primaryPhotoByAnimalId: Map<string, AnimalPhoto>;
   herdById: Map<string, Animal>;
+  conflictsByAnimalId: Map<string, AnimalConflictSummary>;
+  conflictedAnimalCount: number;
+  activeConflictAnimalCount: number;
   coiByAnimalId: Map<string, CoiAnalysis>;
   cages: CageLocation[];
   breedings: BreedingRecord[];
@@ -211,6 +222,12 @@ export function useBarnStore() {
     useState<PendingGoogleCalendarSync | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [importConflictAlert, setImportConflictAlert] = useState<{
+    message: string;
+    speciesNames: string[];
+    conflictedCount: number;
+  } | null>(null);
+  const [requestedHerdConflictNonce, setRequestedHerdConflictNonce] = useState<number>(0);
   const [storageStatus, setStorageStatus] = useState<StorageProtectionStatus | null>(null);
   const [syncOperations, setSyncOperations] = useState<SyncOperation[]>([]);
   const [syncConflicts, setSyncConflicts] = useState<SyncConflictEntry[]>([]);
@@ -490,8 +507,13 @@ export function useBarnStore() {
               break;
             }
           }
-        } catch {
-          // Ignore rolling backup lookup failure
+        } catch (rollingErr) {
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message: 'Emergency startup rolling backup scan failed — using clean starter snapshot',
+            error: rollingErr,
+          });
         }
 
         if (!emergencySnapshot) {
@@ -655,6 +677,24 @@ export function useBarnStore() {
     };
   }, [snapshot, activeSpeciesName]);
 
+  const conflictsBySpeciesAnimalId = useMemo(() => {
+    if (!baseSpeciesData) {
+      return {
+        map: new Map<string, AnimalConflictSummary>(),
+        conflictedAnimalCount: 0,
+        activeConflictAnimalCount: 0,
+      };
+    }
+    const map = analyzeBarnAnimalConflicts(baseSpeciesData.animals);
+    let conflictedAnimalCount = 0;
+    let activeConflictAnimalCount = 0;
+    for (const summary of map.values()) {
+      if (summary.hasAnyConflict) conflictedAnimalCount++;
+      if (summary.hasActiveConflict) activeConflictAnimalCount++;
+    }
+    return { map, conflictedAnimalCount, activeConflictAnimalCount };
+  }, [baseSpeciesData]);
+
   const coiByAnimalId = useMemo(() => {
     const map = new Map<string, CoiAnalysis>();
     if (!baseSpeciesData) return map;
@@ -671,9 +711,12 @@ export function useBarnStore() {
     if (!baseSpeciesData) return null;
     return {
       ...baseSpeciesData,
+      conflictsByAnimalId: conflictsBySpeciesAnimalId.map,
+      conflictedAnimalCount: conflictsBySpeciesAnimalId.conflictedAnimalCount,
+      activeConflictAnimalCount: conflictsBySpeciesAnimalId.activeConflictAnimalCount,
       coiByAnimalId,
     };
-  }, [baseSpeciesData, coiByAnimalId]);
+  }, [baseSpeciesData, conflictsBySpeciesAnimalId, coiByAnimalId]);
 
   const effectiveLastBackupMeta: LastBackupMeta | null =
     snapshot?.settings.lastBackupMeta ?? localLastBackupMeta;
@@ -1189,6 +1232,10 @@ export function useBarnStore() {
         draft.clearedCarrierOf
       );
 
+      const resolvedIgnored = normalizeIgnoredConflicts(
+        draft.ignoredConflicts ?? previous?.ignoredConflicts
+      );
+
       const animal: Animal = {
         ...draft,
         id: draft.id || generateUuid(),
@@ -1196,6 +1243,7 @@ export function useBarnStore() {
         name: draft.name.trim(),
         archived: Boolean(draft.archived),
         needsAttention: Boolean(draft.needsAttention),
+        ignoredConflicts: resolvedIgnored,
         genotype: parsedGeno,
         genotypeRaw: normalizedRaw,
         rufusLevel: normalizeRufusLevel(draft.rufusLevel),
@@ -1246,23 +1294,34 @@ export function useBarnStore() {
 
         if (linkParentTarget && snapshot) {
           const child = snapshot.animals.find((a) => a.id === linkParentTarget.childId);
+          const expectedSex = linkParentTarget.asSire ? 'Male' : 'Female';
           if (child && isSameSpecies(child.species, animal.species) && child.id !== animal.id) {
-            const updatedChild: Animal = {
-              ...child,
-              sireId: linkParentTarget.asSire ? animal.id : child.sireId,
-              damId: !linkParentTarget.asSire ? animal.id : child.damId,
-              updatedAt: ts,
-            };
-            await adapterRef.current!.saveAnimal(updatedChild);
-            await recordOutboxOps(
-              diffEntityFieldsToOperations({
-                entityType: 'animal',
-                previous: child,
-                next: updatedChild,
-                deviceId,
-                nextCounter: allocateNextLogicalCounter,
-              })
-            );
+            if (animal.sex !== expectedSex) {
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: `Prevented parent sex mismatch when linking "${animal.name}" (${animal.sex}) as ${
+                  linkParentTarget.asSire ? 'Sire' : 'Dam'
+                } of "${child.name}"`,
+              });
+            } else {
+              const updatedChild: Animal = {
+                ...child,
+                sireId: linkParentTarget.asSire ? animal.id : child.sireId,
+                damId: !linkParentTarget.asSire ? animal.id : child.damId,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveAnimal(updatedChild);
+              await recordOutboxOps(
+                diffEntityFieldsToOperations({
+                  entityType: 'animal',
+                  previous: child,
+                  next: updatedChild,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                })
+              );
+            }
           }
         }
 
@@ -1276,6 +1335,93 @@ export function useBarnStore() {
       } catch (err) {
         reportPersistenceFailure(`save ${animal.name}`, err);
         return animal.id;
+      }
+    },
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const ignoreAnimalConflicts = useCallback(
+    async (animalId: string, kinds: AnimalConflictKind[]) => {
+      if (!snapshot || kinds.length === 0) return;
+      const target = snapshot.animals.find((a) => a.id === animalId);
+      if (!target) return;
+      const ts = nowIsoUtc();
+      const nextIgnored = normalizeIgnoredConflicts([
+        ...(target.ignoredConflicts || []),
+        ...kinds,
+      ]);
+      const summariesAfter = analyzeBarnAnimalConflicts(
+        snapshot.animals.map((a) =>
+          a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
+        )
+      );
+      const stillHasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
+      const updated: Animal = {
+        ...target,
+        ignoredConflicts: nextIgnored,
+        needsAttention: stillHasActive ? target.needsAttention : false,
+        updatedAt: ts,
+      };
+      try {
+        await adapterRef.current!.saveAnimal(updated);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'animal',
+            previous: target,
+            next: updated,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+        notify(
+          `Conflict alert ignored for ${target.name}. A soft warning remains visible until the underlying issue is resolved.`
+        );
+      } catch (err) {
+        reportPersistenceFailure(`ignore conflict for ${target.name}`, err);
+      }
+    },
+    [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const restoreAnimalConflictAlert = useCallback(
+    async (animalId: string, kinds?: AnimalConflictKind[]) => {
+      if (!snapshot) return;
+      const target = snapshot.animals.find((a) => a.id === animalId);
+      if (!target) return;
+      const ts = nowIsoUtc();
+      const currentIgnored = normalizeIgnoredConflicts(target.ignoredConflicts);
+      const nextIgnored =
+        kinds && kinds.length > 0
+          ? currentIgnored.filter((k) => !kinds.includes(k))
+          : [];
+      const summariesAfter = analyzeBarnAnimalConflicts(
+        snapshot.animals.map((a) =>
+          a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
+        )
+      );
+      const hasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
+      const updated: Animal = {
+        ...target,
+        ignoredConflicts: nextIgnored,
+        needsAttention: hasActive ? true : target.needsAttention,
+        updatedAt: ts,
+      };
+      try {
+        await adapterRef.current!.saveAnimal(updated);
+        await recordOutboxOps(
+          diffEntityFieldsToOperations({
+            entityType: 'animal',
+            previous: target,
+            next: updated,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+          })
+        );
+        await reloadFromAdapter();
+        notify(`Conflict alert re-enabled for ${target.name}.`);
+      } catch (err) {
+        reportPersistenceFailure(`restore conflict alert for ${target.name}`, err);
       }
     },
     [snapshot, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
@@ -1851,6 +1997,7 @@ export function useBarnStore() {
         ultrasoundProjectedDueIso?: string;
         notes: string;
         registerJuniorCount: number;
+        offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
       }
     ) => {
       if (!snapshot) return;
@@ -1860,23 +2007,36 @@ export function useBarnStore() {
 
       try {
         let createdAny = existing.offspringCreated;
-        if (patch.registerJuniorCount > 0) {
+        const requestedDrafts = patch.offspringDrafts;
+        const effectiveCount = requestedDrafts
+          ? Math.min(16, requestedDrafts.length)
+          : Math.min(16, Math.max(0, patch.registerJuniorCount));
+        if (effectiveCount > 0) {
           const sire = snapshot.animals.find((a) => a.id === existing.sireId);
           const dam = snapshot.animals.find((a) => a.id === existing.damId);
-          const count = Math.min(16, Math.max(0, patch.registerJuniorCount));
           const createdJuniors: Animal[] = [];
-          for (let i = 1; i <= count; i++) {
+          for (let i = 1; i <= effectiveCount; i++) {
+            const draftItem = requestedDrafts?.[i - 1];
+            const fallbackTattoo = `${(dam?.tattoo || sp.name.slice(0, 3).toUpperCase()).slice(0, 6)}-K${i}`;
+            const fallbackName = applyAnimalNamePrefix(
+              `${existing.damName} ${sp.offspringLabel} #${i}`,
+              sp.defaultAnimalPrefix
+            );
+            const resolvedName =
+              draftItem?.name?.trim() || fallbackName;
+            const resolvedTattoo =
+              draftItem !== undefined ? draftItem.tattoo.trim() : fallbackTattoo;
+            const resolvedSex =
+              draftItem?.sex || (i % 2 === 0 ? 'Male' : 'Female');
+
             const jr: Animal = {
               id: generateUuid(),
-              tattoo: `${(dam?.tattoo || sp.name.slice(0, 3).toUpperCase()).slice(0, 6)}-K${i}`,
-              name: applyAnimalNamePrefix(
-                `${existing.damName} ${sp.offspringLabel} #${i}`,
-                sp.defaultAnimalPrefix
-              ),
+              tattoo: resolvedTattoo,
+              name: resolvedName,
               species: sp.name,
               breed: dam?.breed || sire?.breed || '',
               variety: dam?.variety || sire?.variety || '',
-              sex: i % 2 === 0 ? 'Male' : 'Female',
+              sex: resolvedSex,
               status: 'Junior',
               archived: false,
               birthDateIso: patch.actualBirthDateIso || existing.expectedDueDateIso,
@@ -1961,8 +2121,8 @@ export function useBarnStore() {
         await recordOutboxOps(ops);
         await reloadFromAdapter();
         notify(
-          patch.registerJuniorCount > 0
-            ? `Litter updated & ${patch.registerJuniorCount} ${sp.offspringLabel.toLowerCase()} records created.`
+          effectiveCount > 0
+            ? `Litter updated & ${effectiveCount} ${sp.offspringLabel.toLowerCase()} records created.`
             : 'Litter outcome saved.'
         );
       } catch (err) {
@@ -2658,17 +2818,64 @@ export function useBarnStore() {
       const incoming = parseBarnBackupJson(jsonText, snapshot.settings);
       if (mode === 'replace') {
         await saveRollingSnapshotBackup(snapshot);
-        await adapterRef.current!.replaceSnapshot(incoming);
+        const flagRes = applyImportConflictAttentionFlags(incoming.animals);
+        const nextSnap: BarnDatabaseSnapshot = { ...incoming, animals: flagRes.animals };
+        await adapterRef.current!.replaceSnapshot(nextSnap);
         await reloadFromAdapter();
+        if (flagRes.alertMessage) {
+          const spNames = Array.from(
+            new Set(
+              flagRes.animals
+                .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                .map((a) => a.species)
+            )
+          );
+          setImportConflictAlert({
+            message: flagRes.alertMessage,
+            speciesNames: spNames,
+            conflictedCount: flagRes.conflictedAnimalIds.length,
+          });
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message: flagRes.alertMessage,
+          });
+        }
         notify(
-          `Restored ${incoming.animals.length} animals & ${incoming.animalPhotos.length} photos from JSON backup.`
+          `Restored ${incoming.animals.length} animals & ${incoming.animalPhotos.length} photos from JSON backup.${
+            flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+          }`
         );
       } else {
         const merged = mergeBarnSnapshots(snapshot, incoming);
-        await adapterRef.current!.replaceSnapshot(merged.snapshot);
+        const importedIds = new Set(incoming.animals.map((a) => a.id));
+        const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+        const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
+        await adapterRef.current!.replaceSnapshot(nextSnap);
         await reloadFromAdapter();
+        if (flagRes.alertMessage) {
+          const spNames = Array.from(
+            new Set(
+              flagRes.animals
+                .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                .map((a) => a.species)
+            )
+          );
+          setImportConflictAlert({
+            message: flagRes.alertMessage,
+            speciesNames: spNames,
+            conflictedCount: flagRes.conflictedAnimalIds.length,
+          });
+          logDiagnosticEvent({
+            level: 'warn',
+            category: 'storage',
+            message: flagRes.alertMessage,
+          });
+        }
         notify(
-          `UUID/Timestamp sync complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.`
+          `UUID/Timestamp sync complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
+            flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+          }`
         );
       }
     },
@@ -2711,27 +2918,74 @@ export function useBarnStore() {
 
         if (mode === 'replace') {
           await saveRollingSnapshotBackup(snapshot);
-          await adapterRef.current!.replaceSnapshot(parsed.snapshot);
+          const flagRes = applyImportConflictAttentionFlags(parsed.snapshot.animals);
+          const nextSnap: BarnDatabaseSnapshot = { ...parsed.snapshot, animals: flagRes.animals };
+          await adapterRef.current!.replaceSnapshot(nextSnap);
           await reloadFromAdapter();
+          if (flagRes.alertMessage) {
+            const spNames = Array.from(
+              new Set(
+                flagRes.animals
+                  .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                  .map((a) => a.species)
+              )
+            );
+            setImportConflictAlert({
+              message: flagRes.alertMessage,
+              speciesNames: spNames,
+              conflictedCount: flagRes.conflictedAnimalIds.length,
+            });
+            logDiagnosticEvent({
+              level: 'warn',
+              category: 'storage',
+              message: flagRes.alertMessage,
+            });
+          }
           logDiagnosticEvent({
             level: 'info',
             category: 'storage',
             message: `Restored full archive "${fileName}" (${parsed.snapshot.animals.length} animals, ${parsed.photosReconstructed} photos)`,
           });
           notify(
-            `Restored ${parsed.snapshot.animals.length} animals & ${parsed.photosReconstructed} photos from ${parsed.sourceFormat.toUpperCase()} backup.`
+            `Restored ${parsed.snapshot.animals.length} animals & ${parsed.photosReconstructed} photos from ${parsed.sourceFormat.toUpperCase()} backup.${
+              flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+            }`
           );
         } else {
           const merged = mergeBarnSnapshots(snapshot, parsed.snapshot);
-          await adapterRef.current!.replaceSnapshot(merged.snapshot);
+          const importedIds = new Set(parsed.snapshot.animals.map((a) => a.id));
+          const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+          const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
+          await adapterRef.current!.replaceSnapshot(nextSnap);
           await reloadFromAdapter();
+          if (flagRes.alertMessage) {
+            const spNames = Array.from(
+              new Set(
+                flagRes.animals
+                  .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                  .map((a) => a.species)
+              )
+            );
+            setImportConflictAlert({
+              message: flagRes.alertMessage,
+              speciesNames: spNames,
+              conflictedCount: flagRes.conflictedAnimalIds.length,
+            });
+            logDiagnosticEvent({
+              level: 'warn',
+              category: 'storage',
+              message: flagRes.alertMessage,
+            });
+          }
           logDiagnosticEvent({
             level: 'info',
             category: 'storage',
             message: `Merged archive "${fileName}" (+${merged.animalsAdded} added, ${merged.photosMerged} photos merged)`,
           });
           notify(
-            `Merge complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.`
+            `Merge complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
+              flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+            }`
           );
         }
       } catch (err) {
@@ -2883,8 +3137,33 @@ export function useBarnStore() {
         shows: preview.shows,
       };
       const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
-      await adapterRef.current!.replaceSnapshot(merged.snapshot);
+      const importedIds = new Set(resolvedAnimals.map((a) => a.id));
+      const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+      const finalSnapshot: BarnDatabaseSnapshot = {
+        ...merged.snapshot,
+        animals: flagRes.animals,
+      };
+      await adapterRef.current!.replaceSnapshot(finalSnapshot);
       await reloadFromAdapter();
+      if (flagRes.alertMessage) {
+        const spNames = Array.from(
+          new Set(
+            flagRes.animals
+              .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+              .map((a) => a.species)
+          )
+        );
+        setImportConflictAlert({
+          message: flagRes.alertMessage,
+          speciesNames: spNames,
+          conflictedCount: flagRes.conflictedAnimalIds.length,
+        });
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message: `${preview.platformName} import conflict alert: ${flagRes.alertMessage}`,
+        });
+      }
       if (preview.speciesDetected.length === 1) {
         setActiveSpeciesName(preview.speciesDetected[0]);
       } else if (preview.newSpeciesProfiles.length > 0) {
@@ -2905,7 +3184,9 @@ export function useBarnStore() {
               .join(', ')})`
           : '';
       notify(
-        `${preview.platformName} import complete: ${resolvedAnimals.length} animals (${preview.parentLinksResolved} parent links), ${preview.breedings.length} breedings, ${preview.careLogs.length} logs${photoSummary}${newSpSummary}.`
+        `${preview.platformName} import complete: ${resolvedAnimals.length} animals (${preview.parentLinksResolved} parent links), ${preview.breedings.length} breedings, ${preview.careLogs.length} logs${photoSummary}${newSpSummary}.${
+          flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+        }`
       );
     },
     [snapshot, reloadFromAdapter, notify]
@@ -3069,6 +3350,17 @@ export function useBarnStore() {
     clearStatusMessage: () => setStatusMessage(null),
     errorMessage,
     clearErrorMessage: () => setErrorMessage(null),
+    importConflictAlert,
+    dismissImportConflictAlert: () => setImportConflictAlert(null),
+    requestedHerdConflictNonce,
+    locateConflictsInHerd: (speciesName?: string) => {
+      if (speciesName) {
+        setActiveSpeciesName(speciesName);
+      }
+      setSelectedAnimalId(null);
+      setRequestedHerdConflictNonce((n) => n + 1);
+      setRoute('herd');
+    },
     storageStatus,
     refreshStorageStatus,
     triggerPersistentStorageRequest,
@@ -3095,6 +3387,8 @@ export function useBarnStore() {
     deleteSpeciesProfile,
     exportTimestampedSpeciesBackup,
     saveAnimal,
+    ignoreAnimalConflicts,
+    restoreAnimalConflictAlert,
     archiveAnimals,
     deleteAnimalsBatch,
     migrateAnimalsSpecies,

@@ -250,19 +250,24 @@ function countDirectAncestors(
   animalId: string,
   herdById: Map<string, Animal>,
   depth: number,
-  overrideAnimal?: Animal
+  overrideAnimal?: Animal,
+  visitedPath: Set<string> = new Set()
 ): number {
   if (depth <= 0) return 0;
+  const effectiveId = overrideAnimal?.id || animalId;
+  if (effectiveId && visitedPath.has(effectiveId)) return 0;
   const animal = overrideAnimal ?? herdById.get(animalId);
   if (!animal) return 0;
 
+  if (effectiveId) visitedPath.add(effectiveId);
   let total = 0;
-  if (animal.sireId && herdById.has(animal.sireId)) {
-    total += 1 + countDirectAncestors(animal.sireId, herdById, depth - 1);
+  if (animal.sireId && herdById.has(animal.sireId) && !visitedPath.has(animal.sireId)) {
+    total += 1 + countDirectAncestors(animal.sireId, herdById, depth - 1, undefined, visitedPath);
   }
-  if (animal.damId && herdById.has(animal.damId)) {
-    total += 1 + countDirectAncestors(animal.damId, herdById, depth - 1);
+  if (animal.damId && herdById.has(animal.damId) && !visitedPath.has(animal.damId)) {
+    total += 1 + countDirectAncestors(animal.damId, herdById, depth - 1, undefined, visitedPath);
   }
+  if (effectiveId) visitedPath.delete(effectiveId);
   return total;
 }
 

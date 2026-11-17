@@ -17,6 +17,7 @@
  * - Ensures every animal with photos has exactly one `isPrimary` photo.
  */
 
+import { analyzeBarnAnimalConflicts } from './animalConflicts';
 import {
   Animal,
   AnimalPhoto,
@@ -37,6 +38,8 @@ export type HealthIssueCode =
   | 'DANGLING_PARENT_LINK'
   | 'CROSS_SPECIES_PARENT_LINK'
   | 'CYCLIC_PARENT_LINK'
+  | 'PARENT_SEX_MISMATCH'
+  | 'DUPLICATE_SPECIES_TATTOO'
   | 'PHOTO_PRIMARY_MISMATCH'
   | 'ORPHANED_PHOTO'
   | 'INVALID_SETTINGS_SPECIES'
@@ -66,22 +69,44 @@ export interface BarnHealthRepairResult {
   reportAfter: BarnHealthReport;
 }
 
+function isPlainObject(v: unknown): v is Record<string, any> {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+}
+
+function safeStr(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : v === null || v === undefined ? fallback : String(v);
+}
+
 function collectUsedSpeciesNames(snapshot: BarnDatabaseSnapshot): string[] {
   const seen = new Map<string, string>();
-  const add = (raw?: string) => {
-    const clean = (raw || '').trim();
+  const add = (raw?: unknown) => {
+    const clean = safeStr(raw).trim();
     if (!clean) return;
     const key = clean.toLowerCase();
     if (!seen.has(key)) seen.set(key, clean);
   };
 
-  for (const a of snapshot.animals) add(a.species);
-  for (const b of snapshot.breedings) add(b.species);
-  for (const c of snapshot.cages) add(c.species);
-  for (const t of snapshot.tasks) add(t.species);
-  for (const l of snapshot.careLogs) add(l.species);
-  for (const s of snapshot.shows) add(s.species);
-  for (const p of snapshot.animalPhotos ?? []) add(p.species);
+  for (const a of Array.isArray(snapshot.animals) ? snapshot.animals : []) {
+    if (isPlainObject(a)) add(a.species);
+  }
+  for (const b of Array.isArray(snapshot.breedings) ? snapshot.breedings : []) {
+    if (isPlainObject(b)) add(b.species);
+  }
+  for (const c of Array.isArray(snapshot.cages) ? snapshot.cages : []) {
+    if (isPlainObject(c)) add(c.species);
+  }
+  for (const t of Array.isArray(snapshot.tasks) ? snapshot.tasks : []) {
+    if (isPlainObject(t)) add(t.species);
+  }
+  for (const l of Array.isArray(snapshot.careLogs) ? snapshot.careLogs : []) {
+    if (isPlainObject(l)) add(l.species);
+  }
+  for (const s of Array.isArray(snapshot.shows) ? snapshot.shows : []) {
+    if (isPlainObject(s)) add(s.species);
+  }
+  for (const p of Array.isArray(snapshot.animalPhotos) ? snapshot.animalPhotos : []) {
+    if (isPlainObject(p)) add(p.species);
+  }
 
   return Array.from(seen.values());
 }
@@ -92,11 +117,18 @@ function collectUsedSpeciesNames(snapshot: BarnDatabaseSnapshot): string[] {
  */
 export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealthReport {
   const issues: BarnHealthIssue[] = [];
+  const rawSpeciesProfiles = (Array.isArray(snapshot.speciesProfiles) ? snapshot.speciesProfiles : []).filter(
+    (sp): sp is SpeciesProfile => isPlainObject(sp)
+  );
+  const rawAnimals = (Array.isArray(snapshot.animals) ? snapshot.animals : []).filter(
+    (a): a is Animal => isPlainObject(a) && typeof a.id === 'string' && a.id.trim().length > 0
+  );
 
   // 1. Duplicate species profiles (case-insensitive)
   const seenSpeciesKeys = new Map<string, SpeciesProfile[]>();
-  for (const sp of snapshot.speciesProfiles) {
-    const key = sp.name.trim().toLowerCase();
+  for (const sp of rawSpeciesProfiles) {
+    const key = safeStr(sp.name).trim().toLowerCase();
+    if (!key) continue;
     const arr = seenSpeciesKeys.get(key) || [];
     arr.push(sp);
     seenSpeciesKeys.set(key, arr);
@@ -104,7 +136,7 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
   const duplicateSpeciesNames: string[] = [];
   for (const arr of seenSpeciesKeys.values()) {
     if (arr.length > 1) {
-      duplicateSpeciesNames.push(arr[0].name);
+      duplicateSpeciesNames.push(safeStr(arr[0].name).trim());
     }
   }
   if (duplicateSpeciesNames.length > 0) {
@@ -119,7 +151,9 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
   }
 
   // 2. Records belonging to a species missing from speciesProfiles (hidden from Home / UI)
-  const configuredKeys = new Set(snapshot.speciesProfiles.map((sp) => sp.name.trim().toLowerCase()));
+  const configuredKeys = new Set(
+    rawSpeciesProfiles.map((sp) => safeStr(sp.name).trim().toLowerCase()).filter(Boolean)
+  );
   const usedSpecies = collectUsedSpeciesNames(snapshot);
   const missingSpecies = usedSpecies.filter((name) => !configuredKeys.has(name.toLowerCase()));
   if (missingSpecies.length > 0) {
@@ -133,13 +167,14 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
     });
   }
 
-  // 3. Animal parent links (dangling, cross-species, or cyclic) + negative numeric values
-  const allById = new Map(snapshot.animals.map((a) => [a.id, a]));
+  // 3. Animal parent links (dangling, cross-species, or cyclic) + negative/non-finite numeric values
+  const allById = new Map(rawAnimals.map((a) => [a.id, a]));
   const herdMapsBySpecies = new Map<string, Map<string, Animal>>();
-  for (const a of snapshot.animals) {
-    const key = a.species.trim().toLowerCase();
+  for (const a of rawAnimals) {
+    const spName = safeStr(a.species);
+    const key = spName.trim().toLowerCase();
     if (!herdMapsBySpecies.has(key)) {
-      herdMapsBySpecies.set(key, buildSpeciesHerdMap(snapshot.animals, a.species));
+      herdMapsBySpecies.set(key, buildSpeciesHerdMap(rawAnimals, spName));
     }
   }
 
@@ -148,21 +183,33 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
   let cyclicCount = 0;
   let negativeFieldCount = 0;
 
-  for (const animal of snapshot.animals) {
-    if (animal.weightGrams < 0 || animal.legsCount < 0) {
+  for (const animal of rawAnimals) {
+    const w = Number(animal.weightGrams);
+    const l = Number(animal.legsCount);
+    const s = Number(animal.salePriceCents ?? 0);
+    const p = Number(animal.purchaseCostCents ?? 0);
+    if (
+      !Number.isFinite(w) ||
+      w < 0 ||
+      !Number.isFinite(l) ||
+      l < 0 ||
+      !Number.isFinite(s) ||
+      s < 0 ||
+      !Number.isFinite(p) ||
+      p < 0
+    ) {
       negativeFieldCount++;
     }
-    const herdMap = herdMapsBySpecies.get(animal.species.trim().toLowerCase()) || new Map();
+    const herdMap = herdMapsBySpecies.get(safeStr(animal.species).trim().toLowerCase()) || new Map();
 
     for (const parentId of [animal.sireId, animal.damId]) {
-      if (!parentId) continue;
+      if (!parentId || typeof parentId !== 'string') continue;
       const parent = allById.get(parentId);
       if (!parent) {
         danglingCount++;
-      } else if (!isSameSpecies(parent.species, animal.species)) {
+      } else if (!isSameSpecies(safeStr(parent.species), safeStr(animal.species))) {
         crossSpeciesCount++;
       } else if (parent.id === animal.id || wouldCreateCycle(animal.id, parent.id, herdMap)) {
-        // Wait: wouldCreateCycle checks if assigning parent.id as ancestor of animal.id creates a cycle.
         // Because animal already points to parent, if parent's ancestors reach animal.id, a cycle exists!
         cyclicCount++;
       }
@@ -210,10 +257,86 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
     });
   }
 
+  // 3b. Warning-only checks: Duplicate within-species IDs/tattoos & parent sex mismatches
+  const conflictSummaries = analyzeBarnAnimalConflicts(rawAnimals);
+  const dupGroups = new Map<string, { species: string; tattoo: string; count: number; sameSexCollision: boolean }>();
+  let duplicateTattooAnimalsCount = 0;
+  let parentSexMismatchCount = 0;
+  let femaleSireCount = 0;
+  let maleDamCount = 0;
+  let unknownParentSexCount = 0;
+
+  for (const animal of rawAnimals) {
+    const summary = conflictSummaries.get(animal.id);
+    if (!summary) continue;
+
+    if (summary.duplicateTattooPeers.length > 0) {
+      duplicateTattooAnimalsCount++;
+      const cleanTat = safeStr(animal.tattoo).trim();
+      const groupKey = `${safeStr(animal.species).trim().toLowerCase()}::${cleanTat.toLowerCase()}`;
+      const existingGroup = dupGroups.get(groupKey);
+      const hasSameSex = summary.duplicateTattooPeers.some((p) => p.sameSex);
+      if (existingGroup) {
+        existingGroup.count++;
+        if (hasSameSex) existingGroup.sameSexCollision = true;
+      } else {
+        dupGroups.set(groupKey, {
+          species: safeStr(animal.species).trim() || 'Unknown',
+          tattoo: cleanTat,
+          count: 1,
+          sameSexCollision: hasSameSex,
+        });
+      }
+    }
+
+    if (summary.sireSexMismatch) {
+      parentSexMismatchCount++;
+      if (summary.sireSexMismatch.actualSex === 'Female') femaleSireCount++;
+      else unknownParentSexCount++;
+    }
+    if (summary.damSexMismatch) {
+      parentSexMismatchCount++;
+      if (summary.damSexMismatch.actualSex === 'Male') maleDamCount++;
+      else unknownParentSexCount++;
+    }
+  }
+
+  if (duplicateTattooAnimalsCount > 0) {
+    const sampleGroups = Array.from(dupGroups.values())
+      .slice(0, 3)
+      .map((g) => `${g.species}: "${g.tattoo}" (${g.count}x)`)
+      .join(', ');
+    issues.push({
+      code: 'DUPLICATE_SPECIES_TATTOO',
+      severity: 'warn',
+      autoRepairable: false,
+      count: dupGroups.size,
+      title: `${dupGroups.size} duplicate ID/tattoo group(s) across ${duplicateTattooAnimalsCount} animal(s) within the same species`,
+      detail: `Left untouched for zero data loss (${sampleGroups}${dupGroups.size > 3 ? ', ...' : ''}). Review or filter by Conflicts in Herd to verify or ignore.`,
+    });
+  }
+
+  if (parentSexMismatchCount > 0) {
+    const mismatchParts: string[] = [];
+    if (femaleSireCount > 0) mismatchParts.push(`${femaleSireCount} female recorded as Sire`);
+    if (maleDamCount > 0) mismatchParts.push(`${maleDamCount} male recorded as Dam`);
+    if (unknownParentSexCount > 0) mismatchParts.push(`${unknownParentSexCount} Unknown-sex parent link(s)`);
+    issues.push({
+      code: 'PARENT_SEX_MISMATCH',
+      severity: 'warn',
+      autoRepairable: false,
+      count: parentSexMismatchCount,
+      title: `${parentSexMismatchCount} parent sex mismatch(es) (${mismatchParts.join(', ')})`,
+      detail:
+        'Left untouched so imported pedigrees stay intact. Open Herd -> Conflicts to correct parent sex or unlink mismatched parents.',
+    });
+  }
+
   // 4. Photos primary flag & orphaned photos
   const photosByAnimal = new Map<string, AnimalPhoto[]>();
   let orphanedPhotoCount = 0;
-  for (const photo of snapshot.animalPhotos ?? []) {
+  for (const photo of Array.isArray(snapshot.animalPhotos) ? snapshot.animalPhotos : []) {
+    if (!isPlainObject(photo)) continue;
     if (!allById.has(photo.animalId)) {
       orphanedPhotoCount++;
       continue;
@@ -256,13 +379,13 @@ export function analyzeBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealt
     ...configuredKeys,
     ...missingSpecies.map((s) => s.toLowerCase()),
   ]);
+  const defaultSpeciesNorm = safeStr(snapshot.settings?.defaultSpecies).trim().toLowerCase();
+  const pinnedSpeciesNorm = safeStr(snapshot.settings?.pinnedLandingSpecies).trim().toLowerCase();
   const defaultInvalid =
     effectiveConfigured.size > 0 &&
-    (!snapshot.settings.defaultSpecies ||
-      !effectiveConfigured.has(snapshot.settings.defaultSpecies.trim().toLowerCase()));
+    (!defaultSpeciesNorm || !effectiveConfigured.has(defaultSpeciesNorm));
   const pinnedInvalid =
-    Boolean((snapshot.settings.pinnedLandingSpecies || '').trim()) &&
-    !effectiveConfigured.has(snapshot.settings.pinnedLandingSpecies.trim().toLowerCase());
+    Boolean(pinnedSpeciesNorm) && !effectiveConfigured.has(pinnedSpeciesNorm);
 
   if (defaultInvalid || pinnedInvalid) {
     issues.push({
@@ -306,15 +429,17 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
   // 1. Deduplicate speciesProfiles
   const dedupedSpecies: SpeciesProfile[] = [];
   const speciesByKey = new Map<string, SpeciesProfile>();
-  for (const sp of snapshot.speciesProfiles) {
-    const key = sp.name.trim().toLowerCase();
+  for (const sp of Array.isArray(snapshot.speciesProfiles) ? snapshot.speciesProfiles : []) {
+    if (!isPlainObject(sp)) continue;
+    const cleanName = safeStr(sp.name).trim();
+    const key = cleanName.toLowerCase();
     if (!key) continue;
     if (!speciesByKey.has(key)) {
-      const normalized = { ...sp, name: sp.name.trim() };
+      const normalized = { ...sp, name: cleanName };
       speciesByKey.set(key, normalized);
       dedupedSpecies.push(normalized);
     } else {
-      repairsApplied.push(`Merged duplicate "${sp.name.trim()}" species profile.`);
+      repairsApplied.push(`Merged duplicate "${cleanName}" species profile.`);
     }
   }
 
@@ -334,29 +459,62 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
     }
   }
 
-  // 3. Repair dangling, cross-species, and cyclic parent links + negative values
-  const allById = new Map(snapshot.animals.map((a) => [a.id, a]));
-  const workingAnimals: Animal[] = snapshot.animals.map((a) => ({ ...a }));
+  // 3. Repair dangling, cross-species, and cyclic parent links + negative/non-finite numeric values
+  const workingAnimals: Animal[] = (Array.isArray(snapshot.animals) ? snapshot.animals : [])
+    .filter((a): a is Animal => isPlainObject(a) && typeof a.id === 'string' && a.id.trim().length > 0)
+    .map((a) => ({
+      ...a,
+      name: safeStr(a.name, 'Unnamed'),
+      species: safeStr(a.species, 'Rabbit'),
+      notes: safeStr(a.notes, ''),
+      sireId: typeof a.sireId === 'string' ? a.sireId : '',
+      damId: typeof a.damId === 'string' ? a.damId : '',
+    }));
   const workingById = new Map(workingAnimals.map((a) => [a.id, a]));
+  // Prebuild per-species maps once (O(N)); animal objects mutate in place so maps stay current!
+  const herdMapsBySpecies = new Map<string, Map<string, Animal>>();
+  for (const a of workingAnimals) {
+    const key = a.species.trim().toLowerCase();
+    if (!herdMapsBySpecies.has(key)) {
+      herdMapsBySpecies.set(key, buildSpeciesHerdMap(workingAnimals, a.species));
+    }
+  }
 
   for (const animal of workingAnimals) {
     let changed = false;
 
-    if (animal.weightGrams < 0) {
+    const w = Number(animal.weightGrams);
+    if (!Number.isFinite(w) || w < 0) {
       animal.weightGrams = 0;
       changed = true;
-      repairsApplied.push(`Reset negative weight on "${animal.name}" to 0.`);
+      repairsApplied.push(`Reset invalid/negative weight on "${animal.name}" to 0.`);
     }
-    if (animal.legsCount < 0) {
+    const legs = Number(animal.legsCount);
+    if (!Number.isFinite(legs) || legs < 0) {
       animal.legsCount = 0;
       changed = true;
-      repairsApplied.push(`Reset negative leg count on "${animal.name}" to 0.`);
+      repairsApplied.push(`Reset invalid/negative leg count on "${animal.name}" to 0.`);
     }
+    if (
+      animal.salePriceCents !== undefined &&
+      (!Number.isFinite(Number(animal.salePriceCents)) || Number(animal.salePriceCents) < 0)
+    ) {
+      animal.salePriceCents = 0;
+      changed = true;
+    }
+    if (
+      animal.purchaseCostCents !== undefined &&
+      (!Number.isFinite(Number(animal.purchaseCostCents)) || Number(animal.purchaseCostCents) < 0)
+    ) {
+      animal.purchaseCostCents = 0;
+      changed = true;
+    }
+
+    const herdMap = herdMapsBySpecies.get(animal.species.trim().toLowerCase()) || new Map<string, Animal>();
 
     // Check Sire
     if (animal.sireId) {
       const sire = workingById.get(animal.sireId);
-      const herdMap = buildSpeciesHerdMap(workingAnimals, animal.species);
       if (!sire) {
         animal.notes = appendRepairNote(
           animal.notes,
@@ -387,7 +545,6 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
     // Check Dam
     if (animal.damId) {
       const dam = workingById.get(animal.damId);
-      const herdMap = buildSpeciesHerdMap(workingAnimals, animal.species);
       if (!dam) {
         animal.notes = appendRepairNote(
           animal.notes,
@@ -421,10 +578,12 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
   }
 
   // 4. Repair AnimalPhoto primary flags deterministically
-  const workingPhotos: AnimalPhoto[] = (snapshot.animalPhotos ?? []).map((p) => ({ ...p }));
+  const workingPhotos: AnimalPhoto[] = (Array.isArray(snapshot.animalPhotos) ? snapshot.animalPhotos : [])
+    .filter((p): p is AnimalPhoto => isPlainObject(p) && typeof p.id === 'string')
+    .map((p) => ({ ...p }));
   const photosByAnimal = new Map<string, AnimalPhoto[]>();
   for (const photo of workingPhotos) {
-    if (!allById.has(photo.animalId)) continue;
+    if (!workingById.has(photo.animalId)) continue;
     const list = photosByAnimal.get(photo.animalId) || [];
     list.push(photo);
     photosByAnimal.set(photo.animalId, list);
@@ -441,7 +600,7 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
           p.updatedAt = ts;
         }
       }
-      const ownerName = allById.get(animalId)?.name || animalId;
+      const ownerName = workingById.get(animalId)?.name || animalId;
       repairsApplied.push(`Normalized Cover Photo selection for "${ownerName}".`);
     }
   }
