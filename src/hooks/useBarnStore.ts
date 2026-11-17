@@ -65,8 +65,15 @@ import {
 import {
   BackupStatusEvaluation,
   evaluateBackupStatus,
+  hasNonTestingBarnData,
   LastBackupMeta,
 } from '../core/backupStatus';
+import {
+  ArchivedHerdIndexEntry,
+  buildArchivedAnimalsBundle,
+  mergeRestoredArchiveIntoSnapshot,
+  VaultBackupMetadata,
+} from '../core/backupVault';
 import {
   buildSpeciesHerdMap,
   calculatePairingCoi,
@@ -149,13 +156,35 @@ import {
 } from '../core/dataHealthCheck';
 import {
   checkStorageStatus,
+  deleteRollingSnapshotBackup,
   isQuotaExceededError,
   listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
   requestPersistentStorage,
+  RollingBackupMeta,
   saveRollingSnapshotBackup,
   StorageProtectionStatus,
 } from '../storage/storageProtection';
+import {
+  clearPriorUseSentinel,
+  deleteOpfsHerdArchive,
+  deleteOpfsVaultBackup,
+  isOpfsSupported,
+  listOpfsHerdArchives,
+  listOpfsVaultBackups,
+  loadOpfsHerdArchive,
+  loadOpfsVaultBackup,
+  markPriorUseSentinelFromSnapshot,
+  readOpfsHerdArchiveRawBytes,
+  readOpfsVaultBackupRawJson,
+  runOpfsExportCanary,
+  saveOpfsHerdArchive,
+  saveOpfsVaultBackup,
+  shouldCreateMonthlyOpfsBackup,
+  shouldRunExportCanary,
+  sweepOrphanedOpfsTmpOnBoot,
+  WipedStorageRecoveryContext,
+} from '../storage/opfsStorage';
 import { purgeStaleBrowserCaches, WebSqliteAdapter } from '../storage/webSqliteAdapter';
 import {
   getGoogleCalendarAccessToken,
@@ -256,6 +285,13 @@ export function useBarnStore() {
       return 0;
     }
   });
+  const [opfsSupported] = useState<boolean>(() => isOpfsSupported());
+  const [opfsVaultBackups, setOpfsVaultBackups] = useState<VaultBackupMetadata[]>([]);
+  const [rollingBackups, setRollingBackups] = useState<RollingBackupMeta[]>([]);
+  const [archivedHerdBundles, setArchivedHerdBundles] = useState<ArchivedHerdIndexEntry[]>([]);
+  const [wipedRecoveryContext, setWipedRecoveryContext] =
+    useState<WipedStorageRecoveryContext | null>(null);
+  const [exportCanaryWarning, setExportCanaryWarning] = useState<string | null>(null);
 
   const notify = useCallback((msg: string) => {
     setErrorMessage(null);
@@ -297,6 +333,17 @@ export function useBarnStore() {
     return status;
   }, []);
 
+  const refreshVaultAndArchives = useCallback(async () => {
+    const [opfsRes, rollingRes, archivesRes] = await Promise.allSettled([
+      listOpfsVaultBackups(),
+      listRollingSnapshotBackups(),
+      listOpfsHerdArchives(),
+    ]);
+    if (opfsRes.status === 'fulfilled') setOpfsVaultBackups(opfsRes.value);
+    if (rollingRes.status === 'fulfilled') setRollingBackups(rollingRes.value);
+    if (archivesRes.status === 'fulfilled') setArchivedHerdBundles(archivesRes.value);
+  }, []);
+
   const triggerPersistentStorageRequest = useCallback(async () => {
     const status = await requestPersistentStorage();
     setStorageStatus(status);
@@ -334,6 +381,11 @@ export function useBarnStore() {
       try {
         const adapter = adapterRef.current!;
         let initial = await adapter.initialize({ lightweightPhotos: true });
+        const detectedWiped = adapter.getWipedRecoveryContext?.() ?? null;
+        if (!detectedWiped?.detected) {
+          void sweepOrphanedOpfsTmpOnBoot();
+          markPriorUseSentinelFromSnapshot(initial);
+        }
 
         const [persistedRes, opsRes, conflictsRes] = await Promise.allSettled([
           requestPersistentStorage(),
@@ -422,10 +474,12 @@ export function useBarnStore() {
 
         if (!mounted) return;
         setSnapshot(initial);
+        setWipedRecoveryContext(detectedWiped && detectedWiped.detected ? detectedWiped : null);
         setPedigreeGenerations(initial.settings.defaultGenerations);
         setStorageStatus(persistedStatus);
         setSyncOperations(ops);
         setSyncConflicts(conflicts);
+        void refreshVaultAndArchives();
 
         const urlParams =
           typeof window !== 'undefined'
@@ -783,18 +837,140 @@ export function useBarnStore() {
   );
 
   const saveSafetyRollingBackup = useCallback(
-    async (targetSnapshot: BarnDatabaseSnapshot): Promise<void> => {
+    async (targetSnapshot: BarnDatabaseSnapshot, note?: string): Promise<void> => {
       const hydrated = await hydrateSnapshotForExport(targetSnapshot);
-      await saveRollingSnapshotBackup(hydrated);
+      await Promise.allSettled([
+        saveRollingSnapshotBackup(hydrated),
+        isOpfsSupported()
+          ? saveOpfsVaultBackup(hydrated, {
+              kind: 'pre_reset',
+              note: note || 'Automatic pre-destructive safety snapshot',
+            })
+          : Promise.resolve(null),
+      ]);
+      void refreshVaultAndArchives();
     },
-    [hydrateSnapshotForExport]
+    [hydrateSnapshotForExport, refreshVaultAndArchives]
   );
 
   const reloadFromAdapter = useCallback(async () => {
     const fresh = await adapterRef.current!.loadSnapshot({ lightweightPhotos: true });
     setSnapshot(fresh);
     void refreshStorageStatus();
-  }, [refreshStorageStatus]);
+    void refreshVaultAndArchives();
+  }, [refreshStorageStatus, refreshVaultAndArchives]);
+
+  // Keep prior-use sentinel synced with active non-wiped barn data
+  useEffect(() => {
+    if (!snapshot || isLoading || wipedRecoveryContext?.detected) return;
+    markPriorUseSentinelFromSnapshot(snapshot);
+  }, [snapshot, isLoading, wipedRecoveryContext]);
+
+  // Idle Monthly OPFS Auto-Backup & Export Canary (visibilityState-guarded, zero foreground contention)
+  useEffect(() => {
+    if (isLoading || !snapshot || wipedRecoveryContext?.detected || !isOpfsSupported()) {
+      return;
+    }
+
+    let cancelled = false;
+    let idleHandle: number | null = null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const runBackgroundMaintenance = async () => {
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+
+      try {
+        if (snapshot.animals.length > 0 && hasNonTestingBarnData(snapshot)) {
+          if (await shouldCreateMonthlyOpfsBackup()) {
+            const hydrated = await hydrateSnapshotForExport(snapshot);
+            const saved = await saveOpfsVaultBackup(hydrated, {
+              kind: 'monthly',
+              note: 'Scheduled 30-day automatic backup',
+            });
+            if (saved && !cancelled) {
+              void refreshVaultAndArchives();
+            }
+          }
+        }
+      } catch {
+        // Non-fatal background monthly backup check
+      }
+
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+
+      try {
+        if (shouldRunExportCanary()) {
+          const res = await runOpfsExportCanary(snapshot);
+          if (!res.ok && !cancelled) {
+            setExportCanaryWarning(
+              res.reason || 'Background export canary verification could not read back probe.'
+            );
+          }
+        }
+      } catch {
+        // Non-fatal canary probe check
+      }
+    };
+
+    const scheduleIdleRun = () => {
+      if (cancelled) return;
+      const win = typeof window !== 'undefined' ? (window as unknown as {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+        cancelIdleCallback?: (id: number) => void;
+      }) : null;
+      if (win && typeof win.requestIdleCallback === 'function') {
+        if (idleHandle !== null && typeof win.cancelIdleCallback === 'function') {
+          win.cancelIdleCallback(idleHandle);
+        }
+        idleHandle = win.requestIdleCallback(
+          () => {
+            idleHandle = null;
+            void runBackgroundMaintenance();
+          },
+          { timeout: 6000 }
+        );
+      } else {
+        if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => {
+          timeoutHandle = null;
+          void runBackgroundMaintenance();
+        }, 3500);
+      }
+    };
+
+    scheduleIdleRun();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleIdleRun();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+
+    return () => {
+      cancelled = true;
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+      const win = typeof window !== 'undefined' ? (window as unknown as {
+        cancelIdleCallback?: (id: number) => void;
+      }) : null;
+      if (idleHandle !== null && win && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleHandle);
+      }
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    };
+  }, [
+    isLoading,
+    snapshot,
+    wipedRecoveryContext,
+    hydrateSnapshotForExport,
+    refreshVaultAndArchives,
+  ]);
 
   const updateSettings = useCallback(
     async (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => {
@@ -2883,11 +3059,14 @@ export function useBarnStore() {
       if (!snapshot) return;
       const incoming = parseBarnBackupJson(jsonText, snapshot.settings);
       if (mode === 'replace') {
-        await saveSafetyRollingBackup(snapshot);
+        if (snapshot.animals.length > 0) {
+          await saveSafetyRollingBackup(snapshot, 'Pre-JSON-replace safety snapshot');
+        }
         photoCacheRef.current.clear();
         const flagRes = applyImportConflictAttentionFlags(incoming.animals);
         const nextSnap: BarnDatabaseSnapshot = { ...incoming, animals: flagRes.animals };
         await adapterRef.current!.replaceSnapshot(nextSnap);
+        setWipedRecoveryContext(null);
         await reloadFromAdapter();
         if (flagRes.alertMessage) {
           const spNames = Array.from(
@@ -2984,11 +3163,14 @@ export function useBarnStore() {
         }
 
         if (mode === 'replace') {
-          await saveSafetyRollingBackup(snapshot);
+          if (snapshot.animals.length > 0) {
+            await saveSafetyRollingBackup(snapshot, 'Pre-archive-replace safety snapshot');
+          }
           photoCacheRef.current.clear();
           const flagRes = applyImportConflictAttentionFlags(parsed.snapshot.animals);
           const nextSnap: BarnDatabaseSnapshot = { ...parsed.snapshot, animals: flagRes.animals };
           await adapterRef.current!.replaceSnapshot(nextSnap);
+          setWipedRecoveryContext(null);
           await reloadFromAdapter();
           if (flagRes.alertMessage) {
             const spNames = Array.from(
@@ -3153,12 +3335,261 @@ export function useBarnStore() {
         notify('Could not load that rolling backup snapshot.');
         return;
       }
+      if (snapshot && !wipedRecoveryContext?.detected && snapshot.animals.length > 0) {
+        await saveSafetyRollingBackup(snapshot, 'Pre-rolling-restore safety snapshot');
+      }
       await adapterRef.current!.replaceSnapshot(snap);
+      setWipedRecoveryContext(null);
       await reloadFromAdapter();
       notify(`Restored rolling snapshot (${snap.animals.length} animals).`);
     },
-    [reloadFromAdapter, notify]
+    [snapshot, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify]
   );
+
+  const saveManualOpfsVaultBackup = useCallback(
+    async (note?: string): Promise<VaultBackupMetadata | null> => {
+      if (!snapshot) return null;
+      try {
+        const hydrated = await hydrateSnapshotForExport(snapshot);
+        const [, opfsRes] = await Promise.allSettled([
+          saveRollingSnapshotBackup(hydrated),
+          isOpfsSupported()
+            ? saveOpfsVaultBackup(hydrated, {
+                kind: 'manual',
+                note: note?.trim() || 'Manual snapshot saved to Vault',
+              })
+            : Promise.resolve(null),
+        ]);
+        const meta = opfsRes.status === 'fulfilled' ? opfsRes.value : null;
+        await refreshVaultAndArchives();
+        if (meta) {
+          await recordBackupExport('json', meta.fileName);
+          notify(
+            `Saved snapshot to OPFS Backup Vault (${meta.animalCount} animals, ${meta.photoCount} photos · ${formatByteSizePure(meta.byteSize)}).`
+          );
+          return meta;
+        }
+        await recordBackupExport('json', 'rolling-local-snapshot');
+        notify(
+          'Saved snapshot to IndexedDB Rolling Vault (OPFS directory access is unavailable in this browser).'
+        );
+        return null;
+      } catch (err) {
+        reportPersistenceFailure('save snapshot to backup vault', err);
+        throw err;
+      }
+    },
+    [snapshot, hydrateSnapshotForExport, refreshVaultAndArchives, recordBackupExport, notify, reportPersistenceFailure]
+  );
+
+  const restoreOpfsVaultBackup = useCallback(
+    async (key: string) => {
+      try {
+        const loaded = await loadOpfsVaultBackup(key, snapshot?.settings);
+        if (!loaded) {
+          notify('Could not read or verify that OPFS backup file.');
+          return;
+        }
+        const migrated = loaded.migrated;
+        if (snapshot && !wipedRecoveryContext?.detected && snapshot.animals.length > 0) {
+          await saveSafetyRollingBackup(snapshot, 'Pre-vault-restore safety snapshot');
+        }
+        photoCacheRef.current.clear();
+        await adapterRef.current!.replaceSnapshot(migrated.snapshot);
+        setWipedRecoveryContext(null);
+        setActiveSpeciesName(migrated.snapshot.settings.defaultSpecies || 'Rabbit');
+        await reloadFromAdapter();
+        const migNote =
+          migrated.migratedFromVersion < migrated.schemaVersion
+            ? ` (migrated v${migrated.migratedFromVersion} → v${migrated.schemaVersion})`
+            : '';
+        notify(
+          `Restored ${migrated.snapshot.animals.length} animals & ${(migrated.snapshot.animalPhotos ?? []).length} photos from OPFS Vault${migNote}.`
+        );
+      } catch (err) {
+        reportPersistenceFailure('restore OPFS vault backup', err);
+        throw err;
+      }
+    },
+    [snapshot, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const downloadOpfsVaultBackupByKey = useCallback(
+    async (key: string) => {
+      const jsonText = await readOpfsVaultBackupRawJson(key);
+      if (!jsonText) {
+        notify('Could not read OPFS vault backup file for download.');
+        return;
+      }
+      const matched = opfsVaultBackups.find((b) => b.key === key || b.fileName === key);
+      const fileName = matched?.fileName || (key.endsWith('.json') ? key : `${key}.json`);
+      await downloadTextFile(fileName, jsonText, 'application/json');
+      notify(`Downloaded ${fileName}.`);
+    },
+    [opfsVaultBackups, notify]
+  );
+
+  const deleteOpfsVaultBackupByKey = useCallback(
+    async (key: string) => {
+      await deleteOpfsVaultBackup(key);
+      await refreshVaultAndArchives();
+      notify('Removed backup from OPFS Vault.');
+    },
+    [refreshVaultAndArchives, notify]
+  );
+
+  const deleteRollingIdbBackupByKey = useCallback(
+    async (key: string) => {
+      await deleteRollingSnapshotBackup(key);
+      await refreshVaultAndArchives();
+      notify('Removed local IndexedDB rolling snapshot.');
+    },
+    [refreshVaultAndArchives, notify]
+  );
+
+  const offloadAnimalsToOpfsArchive = useCallback(
+    async (
+      animalIds: string[]
+    ): Promise<{
+      archivedCount: number;
+      stubCount: number;
+      removedCount: number;
+      fileName: string;
+    } | null> => {
+      if (!snapshot || animalIds.length === 0) return null;
+      if (!isOpfsSupported()) {
+        notify(
+          'OPFS /archives storage is not available in this browser. Animals remain in the local Archived tab.'
+        );
+        return null;
+      }
+      try {
+        const hydrated = await hydrateSnapshotForExport(snapshot);
+        const built = buildArchivedAnimalsBundle(hydrated, animalIds);
+        if (built.indexEntry.animalCount === 0) {
+          notify('No eligible active/archived animals selected to offload.');
+          return null;
+        }
+        await saveOpfsHerdArchive(built.indexEntry, built.zipBytes);
+        await adapterRef.current!.replaceSnapshot(built.nextActiveSnapshot);
+        photoCacheRef.current.clear();
+
+        const removedSet = new Set(built.removedAnimalIds);
+        if (selectedAnimalId && removedSet.has(selectedAnimalId)) setSelectedAnimalId(null);
+        if (pedigreeAnimalId && removedSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
+
+        await reloadFromAdapter();
+        notify(
+          `Offloaded ${built.indexEntry.animalCount} animal${built.indexEntry.animalCount === 1 ? '' : 's'} to OPFS /archives (${built.stubAnimalIds.length} retained as Pedigree Reference stub${built.stubAnimalIds.length === 1 ? '' : 's'}).`
+        );
+        return {
+          archivedCount: built.indexEntry.animalCount,
+          stubCount: built.stubAnimalIds.length,
+          removedCount: built.removedAnimalIds.length,
+          fileName: built.fileName,
+        };
+      } catch (err) {
+        reportPersistenceFailure('offload animals to OPFS /archives', err);
+        return null;
+      }
+    },
+    [snapshot, hydrateSnapshotForExport, selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const restoreArchivedHerdBundle = useCallback(
+    async (
+      archiveKey: string,
+      options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
+    ) => {
+      if (!snapshot) return;
+      try {
+        const loaded = await loadOpfsHerdArchive(archiveKey, snapshot.settings);
+        if (!loaded) {
+          notify('Archived herd bundle could not be loaded or verified.');
+          return;
+        }
+        const merged = mergeRestoredArchiveIntoSnapshot(snapshot, loaded.unpacked, options);
+        await adapterRef.current!.replaceSnapshot(merged.nextSnapshot);
+        if (options?.deleteArchiveAfterRestore !== false) {
+          await deleteOpfsHerdArchive(archiveKey);
+        }
+        photoCacheRef.current.clear();
+        await reloadFromAdapter();
+        notify(
+          `Restored ${merged.restoredAnimalCount} animal(s), ${merged.restoredPhotoCount} photo(s), and ${merged.restoredCareLogCount} care log(s) from OPFS /archives.`
+        );
+      } catch (err) {
+        reportPersistenceFailure('restore archived herd bundle', err);
+        throw err;
+      }
+    },
+    [snapshot, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const downloadArchivedHerdBundle = useCallback(
+    async (archiveKey: string) => {
+      const res = await readOpfsHerdArchiveRawBytes(archiveKey);
+      if (!res) {
+        notify('Archived bundle file not found in OPFS /archives.');
+        return;
+      }
+      await downloadBinaryFile(res.fileName, res.bytes, 'application/zip');
+      notify(`Downloaded ${res.fileName}.`);
+    },
+    [notify]
+  );
+
+  const deleteArchivedHerdBundle = useCallback(
+    async (archiveKey: string) => {
+      await deleteOpfsHerdArchive(archiveKey);
+      if (snapshot) {
+        const staleStubs = snapshot.animals
+          .filter((a) => a.offloadedArchiveKey === archiveKey)
+          .map((a) => ({
+            ...a,
+            offloadedArchiveKey: '',
+            offloadedAtIso: '',
+            updatedAt: nowIsoUtc(),
+          }));
+        if (staleStubs.length > 0) {
+          await adapterRef.current!.saveAnimalsBatch(staleStubs);
+        }
+      }
+      await reloadFromAdapter();
+      notify('Deleted archive bundle from OPFS /archives.');
+    },
+    [snapshot, reloadFromAdapter, notify]
+  );
+
+  const restoreLatestOpfsOnWipedRecovery = useCallback(async () => {
+    let targetKey = wipedRecoveryContext?.latestOpfsBackup?.key;
+    if (!targetKey) {
+      const list = await listOpfsVaultBackups();
+      targetKey = list[0]?.key;
+    }
+    if (!targetKey) {
+      notify('No OPFS vault backup found to restore.');
+      return;
+    }
+    await restoreOpfsVaultBackup(targetKey);
+  }, [wipedRecoveryContext, restoreOpfsVaultBackup, notify]);
+
+  const startFreshAfterWipedRecovery = useCallback(async () => {
+    clearPriorUseSentinel();
+    photoCacheRef.current.clear();
+    const adapter = adapterRef.current!;
+    const fresh = adapter.rebuildCleanDatabase
+      ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true, allowSeedFresh: true })
+      : await adapter.initialize({ lightweightPhotos: true, allowSeedFresh: true });
+    setSnapshot(fresh);
+    setWipedRecoveryContext(null);
+    setSelectedAnimalId(null);
+    setPedigreeAnimalId(null);
+    setActiveSpeciesName(fresh.settings.defaultSpecies || 'Rabbit');
+    setRoute('home');
+    await refreshVaultAndArchives();
+    notify(`Initialized fresh starter herds (${fresh.animals.length} sample animals).`);
+  }, [refreshVaultAndArchives, notify]);
 
   const applyPlatformImportPreview = useCallback(
     async (
@@ -3266,20 +3697,22 @@ export function useBarnStore() {
 
   const importSqliteBytes = useCallback(
     async (bytes: Uint8Array) => {
-      if (snapshot) {
-        await saveSafetyRollingBackup(snapshot);
+      if (snapshot && snapshot.animals.length > 0) {
+        await saveSafetyRollingBackup(snapshot, 'Pre-SQLite-import safety snapshot');
       }
       photoCacheRef.current.clear();
       const snap = await adapterRef.current!.importRawSqliteBytes(bytes, {
         lightweightPhotos: true,
       });
       setSnapshot(snap);
+      setWipedRecoveryContext(null);
       void refreshStorageStatus();
+      void refreshVaultAndArchives();
       notify(
         `Loaded SQLite database (${snap.animals.length} animals, ${(snap.animalPhotos ?? []).length} photos).`
       );
     },
-    [snapshot, saveSafetyRollingBackup, refreshStorageStatus, notify]
+    [snapshot, saveSafetyRollingBackup, refreshStorageStatus, refreshVaultAndArchives, notify]
   );
 
   const scanDatabaseHealth = useCallback((): BarnHealthReport | null => {
@@ -3438,6 +3871,25 @@ export function useBarnStore() {
     storageStatus,
     refreshStorageStatus,
     triggerPersistentStorageRequest,
+    opfsSupported,
+    opfsVaultBackups,
+    rollingBackups,
+    archivedHerdBundles,
+    refreshVaultAndArchives,
+    saveManualOpfsVaultBackup,
+    restoreOpfsVaultBackup,
+    downloadOpfsVaultBackupByKey,
+    deleteOpfsVaultBackupByKey,
+    deleteRollingIdbBackupByKey,
+    offloadAnimalsToOpfsArchive,
+    restoreArchivedHerdBundle,
+    downloadArchivedHerdBundle,
+    deleteArchivedHerdBundle,
+    wipedRecoveryContext,
+    restoreLatestOpfsOnWipedRecovery,
+    startFreshAfterWipedRecovery,
+    exportCanaryWarning,
+    dismissExportCanaryWarning: () => setExportCanaryWarning(null),
     syncOperations,
     syncConflicts,
     buildLocalDeltaJsonPayload,

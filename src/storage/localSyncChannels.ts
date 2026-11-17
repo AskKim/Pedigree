@@ -83,12 +83,24 @@ function openSyncIdb(): Promise<IDBDatabase> {
     try {
       const req = indexedDB.open(SYNC_IDB_NAME, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE_OUTBOX)) {
-          db.createObjectStore(STORE_OUTBOX, { keyPath: 'op_id' });
-        }
-        if (!db.objectStoreNames.contains(STORE_CONFLICTS)) {
-          db.createObjectStore(STORE_CONFLICTS, { keyPath: 'conflict_id' });
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STORE_OUTBOX)) {
+            db.createObjectStore(STORE_OUTBOX, { keyPath: 'op_id' });
+          }
+          if (!db.objectStoreNames.contains(STORE_CONFLICTS)) {
+            db.createObjectStore(STORE_CONFLICTS, { keyPath: 'conflict_id' });
+          }
+        } catch (upgradeErr) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(
+                SYNC_IDB_NAME,
+                'Sync outbox IndexedDB schema upgrade failed'
+              )
+            )
+            .catch(() => {});
+          finishReject(upgradeErr);
         }
       };
       req.onblocked = () => {
@@ -111,7 +123,17 @@ function openSyncIdb(): Promise<IDBDatabase> {
         clearTimeout(timer);
         resolve(req.result);
       };
-      req.onerror = () => finishReject(req.error);
+      req.onerror = () => {
+        const err = req.error;
+        if (err && (err.name === 'VersionError' || /version/i.test(String(err.message || '')))) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(SYNC_IDB_NAME, 'Sync outbox IndexedDB VersionError')
+            )
+            .catch(() => {});
+        }
+        finishReject(err);
+      };
     } catch (err) {
       finishReject(err);
     }

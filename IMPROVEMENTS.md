@@ -22,7 +22,7 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 
 ---
 
-## Logged Improvements (17)
+## Logged Improvements (18)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -114,17 +114,17 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 2. Guard `registerSW` behind `if (import.meta.env.PROD)` and unregister dev SWs in `src/main.tsx`.
 3. Forward `activeCalls` inside `PedigreeIndex.inbreeding` in `src/core/pedigreeCalculator.ts` and skip unnecessary COI precompute on `home`/`settings` in `src/hooks/useBarnStore.ts`.
 
-### IMP-008: Subpath-Safe PWA Base Config & GitHub Actions CI Pipeline
+### IMP-008: Hardcoded Root Base Path PWA Config & GitHub Actions CI Pipeline
 
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
-- **User Goal:** Automatically verify all domain tests, lint, improvements, and subpath PWA builds on every push without requiring user env prompts.
-- **Summary:** Normalizes `VITE_BASE_PATH` in Vite/PWA config for GitHub Pages subpath builds while keeping `.env.example` commented out, and runs unit tests, improvement verification, lint, and builds in `.github/workflows/ci.yml`.
+- **User Goal:** Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` hardcoded so AI Studio never prompts for `VITE_BASE_PATH`.
+- **Summary:** Hardcodes `basePath = '/'` in Vite/PWA config (removing `process.env.VITE_BASE_PATH` and omitting it from `.env.example`), and runs unit tests, improvement verification, lint, and builds in `.github/workflows/ci.yml`.
 - **Tracked Files:** `vite.config.ts`, `.env.example`, `.github/workflows/ci.yml`, `package.json`
 
 **Restoration Playbook if Overwritten:**
-1. Ensure `normalizeBasePath(process.env.VITE_BASE_PATH)` wraps `base` and PWA icon/manifest paths in `vite.config.ts`.
-2. Keep `VITE_BASE_PATH` commented in `.env.example`.
+1. Keep `const basePath = '/'` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH`.
+2. Do not add `VITE_BASE_PATH` to `.env.example`.
 3. Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.
 
 ### IMP-009: Crash Error Boundary, Persistent Crash Log & DB Health Self-Repair
@@ -238,4 +238,16 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 2. Keep `archiveAndImport.worker.ts` and `offThreadWorkerClient.ts` wired into `useBarnStore.ts`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `ExternalImporterPanel.tsx`.
 3. Keep `onLoadFullPhoto` / `onHydrateSnapshotForExport` props wired from `App.tsx` to galleries, pedigree print modals, Barn Binders, and backup exports.
 
+### IMP-018: Hybrid OPFS Storage Vault, Archived Herds, Wiped-Storage Recovery & IDB Migration Guard
+
+- **Category:** Backups & Safety (`backup-safety`)
+- **Origin:** Session Improvement
+- **User Goal:** Isolate temporary exports in OPFS `/tmp`, unify automated + manual backup vaults in OPFS `/backups` with IDB fallback, offload Sold/Deceased stock to OPFS `/archives` while preserving ancestor pedigree stubs, pause on wiped browser storage with restore recovery, and dump raw stores before resetting failed IndexedDB migrations.
+- **Summary:** Adds pure TS schema v6 envelopes, SHA-256 verification, legacy migration, and `.archive.zip` bundling in `backupVault.ts`; manages OPFS `/tmp`, `/backups` (retention 6 monthly / 3 pre-upgrade / 8 pre-reset), `/archives`, boot orphan sweeps, `QuotaExceededError` recovery, idle Export Canary, prior-use sentinel, and IndexedDB rescue dumps in `opfsStorage.ts`; and mounts `UnifiedBackupVaultPanel`, `ArchivedHerdsModal`, `WipedStorageRecoveryModal`, and a 1-click Save to Vault banner.
+- **Tracked Files:** `src/core/backupVault.ts`, `src/storage/opfsStorage.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/UnifiedBackupVaultPanel.tsx`, `src/components/ArchivedHerdsModal.tsx`, `src/components/WipedStorageRecoveryModal.tsx`, `src/App.tsx`, `src/core/__tests__/backupVault.test.ts`, `src/storage/__tests__/opfsStorage.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `src/core/backupVault.ts` pure TypeScript with schema v6 migration, SHA-256 verification, and `computePedigreeReferencedIds` stub preservation.
+2. Keep `src/storage/opfsStorage.ts` managing `/tmp`, `/backups`, `/archives`, `try/finally` `.close()`, boot sweeps, canary checks, and IDB failure dumps.
+3. Keep `UnifiedBackupVaultPanel.tsx`, `ArchivedHerdsModal.tsx`, `WipedStorageRecoveryModal.tsx`, `useBarnStore.ts`, and `App.tsx` connected.
 

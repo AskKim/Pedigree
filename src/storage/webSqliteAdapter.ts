@@ -39,8 +39,18 @@ import {
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
+import { buildEmptyShellSnapshot } from '../core/backupVault';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
+import {
+  detectReturningUserWipedStorage,
+  dumpIndexedDbDatabaseToOpfs,
+  dumpRawRecordsToOpfsRecoveryBackup,
+  isVersionError,
+  markPriorUseSentinelFromSnapshot,
+  saveOpfsVaultBackup,
+  WipedStorageRecoveryContext,
+} from './opfsStorage';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 import { SnapshotLoadOptions, StorageAdapter } from './storageAdapter';
 import {
@@ -54,6 +64,7 @@ const IDB_DB_NAME = 'community_pedigree_local_db';
 const IDB_STORE_NAME = 'sqlite_files';
 const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
+const SQLITE_SCHEMA_VERSION = 2;
 
 /**
  * Canonical SQLite DDL shared 1:1 with future `expo-sqlite` native adapter.
@@ -136,6 +147,8 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     sire_id TEXT NOT NULL,
     dam_id TEXT NOT NULL,
     notes TEXT NOT NULL,
+    offloaded_archive_key TEXT NOT NULL DEFAULT '',
+    offloaded_at_iso TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -284,9 +297,17 @@ function openIdb(): Promise<IDBDatabase> {
     try {
       const req = indexedDB.open(IDB_DB_NAME, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
-          db.createObjectStore(IDB_STORE_NAME);
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+            db.createObjectStore(IDB_STORE_NAME);
+          }
+        } catch (upgradeErr) {
+          void dumpIndexedDbDatabaseToOpfs(
+            IDB_DB_NAME,
+            'Primary IndexedDB schema upgrade failed'
+          ).catch(() => {});
+          finish(() => reject(upgradeErr));
         }
       };
       req.onblocked = () => {
@@ -298,7 +319,16 @@ function openIdb(): Promise<IDBDatabase> {
         });
       };
       req.onsuccess = () => finish(() => resolve(req.result));
-      req.onerror = () => finish(() => reject(req.error || new Error('IndexedDB open failed.')));
+      req.onerror = () => {
+        const err = req.error || new Error('IndexedDB open failed.');
+        if (isVersionError(err)) {
+          void dumpIndexedDbDatabaseToOpfs(
+            IDB_DB_NAME,
+            'Primary IndexedDB VersionError on open'
+          ).catch(() => {});
+        }
+        finish(() => reject(err));
+      };
     } catch (err) {
       finish(() => reject(err));
     }
@@ -453,6 +483,8 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE care_logs ADD COLUMN fecal_egg_count INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE care_logs ADD COLUMN ultrasound_result TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE care_logs ADD COLUMN ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE animals ADD COLUMN offloaded_archive_key TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE animals ADD COLUMN offloaded_at_iso TEXT NOT NULL DEFAULT '';",
   ];
   for (const stmt of alterStatements) {
     try {
@@ -461,6 +493,25 @@ function applySchemaMigrations(db: Database): void {
       // Column already exists
     }
   }
+  db.run(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`);
+}
+
+function readSqliteUserVersion(db: Database): number {
+  try {
+    const stmt = db.prepare('PRAGMA user_version;');
+    try {
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as { user_version?: unknown };
+        const val = Number(row.user_version);
+        return Number.isFinite(val) ? val : 0;
+      }
+    } finally {
+      stmt.free();
+    }
+  } catch {
+    // Ignore PRAGMA query failure
+  }
+  return 0;
 }
 
 export class WebSqliteAdapter implements StorageAdapter {
@@ -468,9 +519,14 @@ export class WebSqliteAdapter implements StorageAdapter {
   private db: Database | null = null;
   private fallbackSnapshot: BarnDatabaseSnapshot | null = null;
   private lastRollingSaveMs = 0;
+  private wipedRecoveryContext: WipedStorageRecoveryContext | null = null;
 
   get engineName(): string {
     return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
+  }
+
+  getWipedRecoveryContext(): WipedStorageRecoveryContext | null {
+    return this.wipedRecoveryContext;
   }
 
   private async findRecoveredBackupSnapshot(): Promise<{
@@ -547,8 +603,24 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async initialize(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
+    this.wipedRecoveryContext = null;
     const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
       options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
+
+    const tryDetectWipedStorage = async (): Promise<BarnDatabaseSnapshot | null> => {
+      if (options?.allowSeedFresh) return null;
+      const wiped = await detectReturningUserWipedStorage().catch(() => null);
+      if (wiped && wiped.detected) {
+        this.wipedRecoveryContext = wiped;
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message: `Paused auto-seed: detected prior-use evidence (${wiped.reason}) while primary IndexedDB appeared empty`,
+        });
+        return finalizeSnapshot(buildEmptyShellSnapshot());
+      }
+      return null;
+    };
 
     try {
       this.SQL = await initSqlJs({
@@ -567,7 +639,47 @@ export class WebSqliteAdapter implements StorageAdapter {
           throw new Error(headerCheck.error);
         }
         this.db = new this.SQL.Database(savedBytes);
-        applySchemaMigrations(this.db);
+
+        // Automated pre-upgrade OPFS snapshot before migrating older schema versions
+        const prevSchemaVer = readSqliteUserVersion(this.db);
+        if (prevSchemaVer < SQLITE_SCHEMA_VERSION) {
+          try {
+            const preSnap = await this.loadSnapshot();
+            if (preSnap.animals.length > 0) {
+              await saveOpfsVaultBackup(preSnap, {
+                kind: 'pre_upgrade',
+                note: `Automatic pre-upgrade snapshot (SQLite schema v${prevSchemaVer} → v${SQLITE_SCHEMA_VERSION})`,
+              });
+            }
+          } catch {
+            // Non-blocking pre-upgrade snapshot
+          }
+        }
+
+        try {
+          applySchemaMigrations(this.db);
+        } catch (migErr) {
+          let salvagedSnapshot: BarnDatabaseSnapshot | null = null;
+          const rawStores: Record<string, unknown[]> = {};
+          try {
+            salvagedSnapshot = await this.loadSnapshot();
+          } catch {
+            try {
+              rawStores.animals = this.queryObjects('SELECT * FROM animals');
+              rawStores.species_profiles = this.queryObjects('SELECT * FROM species_profiles');
+            } catch {
+              // Ignore raw salvage query errors
+            }
+          }
+          await dumpRawRecordsToOpfsRecoveryBackup({
+            sourceDbName: IDB_DB_NAME,
+            reason: migErr instanceof Error ? migErr.message : 'SQLite schema migration failure',
+            stores: rawStores,
+            salvagedSnapshot,
+          }).catch(() => {});
+          throw migErr;
+        }
+
         const snap = await this.loadSnapshot(options);
         if (snap.speciesProfiles.length === 0 && snap.animals.length === 0) {
           const recovered = await this.findRecoveredBackupSnapshot();
@@ -579,6 +691,10 @@ export class WebSqliteAdapter implements StorageAdapter {
               message: `Corrective action: Recovered ${recovered.snapshot.animals.length} animals from ${recovered.source} after empty SQLite database`,
             });
             return finalizeSnapshot(recovered.snapshot);
+          }
+          const wipedShell = await tryDetectWipedStorage();
+          if (wipedShell) {
+            return wipedShell;
           }
           const seeded = buildFullPredefinedSampleSnapshot();
           await this.replaceSnapshot(seeded);
@@ -603,6 +719,10 @@ export class WebSqliteAdapter implements StorageAdapter {
           });
           return finalizeSnapshot(recovered.snapshot);
         }
+        const wipedShell = await tryDetectWipedStorage();
+        if (wipedShell) {
+          return wipedShell;
+        }
         const seeded = buildFullPredefinedSampleSnapshot();
         await this.replaceSnapshot(seeded);
         return finalizeSnapshot(seeded);
@@ -616,6 +736,12 @@ export class WebSqliteAdapter implements StorageAdapter {
         error: err,
       });
 
+      if (isVersionError(err)) {
+        await dumpIndexedDbDatabaseToOpfs(IDB_DB_NAME, 'Primary SQLite IndexedDB VersionError').catch(
+          () => {}
+        );
+      }
+
       const recovered = await this.findRecoveredBackupSnapshot();
       if (recovered) {
         const rebuiltSqlite = await this.tryRestoreIntoFreshSqliteDb(recovered.snapshot);
@@ -628,6 +754,11 @@ export class WebSqliteAdapter implements StorageAdapter {
           message: `Corrective action: Auto-recovered ${recovered.snapshot.animals.length} animals from ${recovered.source}${rebuiltSqlite ? ' and rebuilt clean SQLite DB' : ''}`,
         });
         return finalizeSnapshot(recovered.snapshot);
+      }
+
+      const wipedShell = await tryDetectWipedStorage();
+      if (wipedShell) {
+        return wipedShell;
       }
 
       const seeded = buildFullPredefinedSampleSnapshot();
@@ -672,6 +803,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.lastRollingSaveMs = nowMs;
       try {
         const snap = preloadedSnapshot ?? (await this.loadSnapshot());
+        markPriorUseSentinelFromSnapshot(snap);
         void saveRollingSnapshotBackup(snap).catch(() => {});
         if (this.db) {
           void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
@@ -807,6 +939,7 @@ export class WebSqliteAdapter implements StorageAdapter {
             Number.isFinite(extraSettings.backupReminderSnoozedUntilMs)
               ? extraSettings.backupReminderSnoozedUntilMs
               : undefined,
+          autoOffloadRetiredToOpfs: Boolean(extraSettings.autoOffloadRetiredToOpfs),
           updatedAt: String(sRow.updated_at || nowIsoUtc()),
         }
       : {
@@ -828,6 +961,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           speciesHubBlockOrder: {},
           includePhotoOnPedigree: false,
           calendarSync: { ...DEFAULT_CALENDAR_SYNC_SETTINGS },
+          autoOffloadRetiredToOpfs: false,
           updatedAt: nowIsoUtc(),
         };
 
@@ -946,6 +1080,8 @@ export class WebSqliteAdapter implements StorageAdapter {
           sireId: String(r.sire_id),
           damId: String(r.dam_id),
           notes: String(r.notes),
+          offloadedArchiveKey: r.offloaded_archive_key ? String(r.offloaded_archive_key) : undefined,
+          offloadedAtIso: r.offloaded_at_iso ? String(r.offloaded_at_iso) : undefined,
           createdAt: String(r.created_at),
           updatedAt: String(r.updated_at),
         };
@@ -1249,6 +1385,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       calendarSync: s.calendarSync ? normalizeCalendarSyncSettings(s.calendarSync) : undefined,
       lastBackupMeta: s.lastBackupMeta ?? undefined,
       backupReminderSnoozedUntilMs: s.backupReminderSnoozedUntilMs ?? undefined,
+      autoOffloadRetiredToOpfs: Boolean(s.autoOffloadRetiredToOpfs),
     });
     this.db?.run(
       `INSERT OR REPLACE INTO barn_settings
@@ -1309,8 +1446,8 @@ export class WebSqliteAdapter implements StorageAdapter {
     );
     this.db?.run(
       `INSERT OR REPLACE INTO animals
-       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, ignored_conflicts_json, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, ownership_type, culled, cull_date_iso, cull_reason, deceased_date_iso, death_cause, sold_date_iso, sale_price_cents, purchase_cost_cents, buyer_name, sire_id, dam_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tattoo, name, species, breed, variety, sex, status, archived, needs_attention, ignored_conflicts_json, birth_date_iso, weight_grams, genotype_json, genotype_raw, rufus_level, suspected_carrier_of_json, confirmed_carrier_of_json, cleared_carrier_of_json, registration_number, grand_champion_number, legs_count, cage_location, breeder_name, owner_name, ownership_type, culled, cull_date_iso, cull_reason, deceased_date_iso, death_cause, sold_date_iso, sale_price_cents, purchase_cost_cents, buyer_name, sire_id, dam_id, notes, offloaded_archive_key, offloaded_at_iso, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         a.id,
         a.tattoo,
@@ -1350,6 +1487,8 @@ export class WebSqliteAdapter implements StorageAdapter {
         a.sireId,
         a.damId,
         a.notes,
+        a.offloadedArchiveKey || '',
+        a.offloadedAtIso || '',
         a.createdAt,
         a.updatedAt,
       ]
@@ -1930,6 +2069,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     this.fallbackSnapshot = null;
     await idbDelete(IDB_PRIMARY_KEY);
     await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-    return this.initialize(options);
+    return this.initialize({ ...options, allowSeedFresh: options?.allowSeedFresh ?? true });
   }
 }

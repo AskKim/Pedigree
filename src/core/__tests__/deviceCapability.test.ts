@@ -44,7 +44,7 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     expect(DEVICE_CAPABILITY_TIER_LIST).toHaveLength(5);
   });
 
-  it('classifies mobile RAM profiles cleanly into Tiers 1 through 4 and desktops/tablets into Tier 5', () => {
+  it('classifies mobile and tablet RAM profiles across Tiers 1 through 4 and desktops into Tier 5', () => {
     const tier1 = classifyDeviceCapability(
       makeSignals({
         deviceMemoryGb: 1,
@@ -67,6 +67,18 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     expect(tier2.tier).toBe(2);
     expect(tier2.shouldApplyLowMemoryHandling).toBe(true);
 
+    const tier2Tablet = classifyDeviceCapability(
+      makeSignals({
+        deviceMemoryGb: 3,
+        hardwareConcurrency: 8,
+        userAgent: 'Mozilla/5.0 (Linux; Android 11; SM-T220) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        screenWidthPx: 800,
+        screenHeightPx: 1340,
+      })
+    );
+    expect(tier2Tablet.tier).toBe(2);
+    expect(tier2Tablet.formFactor).toBe('tablet');
+
     const tier3 = classifyDeviceCapability(
       makeSignals({
         deviceMemoryGb: 4,
@@ -77,6 +89,18 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     expect(tier3.tier).toBe(3);
     expect(tier3.shouldApplyLowMemoryHandling).toBe(false);
 
+    const tier3Tablet = classifyDeviceCapability(
+      makeSignals({
+        deviceMemoryGb: 4,
+        hardwareConcurrency: 8,
+        userAgent: 'Mozilla/5.0 (Linux; Android 13; SM-X200) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        screenWidthPx: 800,
+        screenHeightPx: 1280,
+      })
+    );
+    expect(tier3Tablet.tier).toBe(3);
+    expect(tier3Tablet.formFactor).toBe('tablet');
+
     const tier4 = classifyDeviceCapability(
       makeSignals({
         deviceMemoryGb: 8,
@@ -86,6 +110,19 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     );
     expect(tier4.tier).toBe(4);
     expect(tier4.formFactor).toBe('phone');
+
+    const tier4Tablet = classifyDeviceCapability(
+      makeSignals({
+        deviceMemoryGb: null,
+        hardwareConcurrency: 8,
+        userAgent:
+          'Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+        screenWidthPx: 820,
+        screenHeightPx: 1180,
+      })
+    );
+    expect(tier4Tablet.tier).toBe(4);
+    expect(tier4Tablet.formFactor).toBe('tablet');
 
     const tier5Desktop = classifyDeviceCapability(
       makeSignals({
@@ -102,19 +139,6 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     );
     expect(tier5Desktop.tier).toBe(5);
     expect(tier5Desktop.formFactor).toBe('desktop');
-
-    const tier5Tablet = classifyDeviceCapability(
-      makeSignals({
-        deviceMemoryGb: null,
-        hardwareConcurrency: 8,
-        userAgent:
-          'Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
-        screenWidthPx: 820,
-        screenHeightPx: 1180,
-      })
-    );
-    expect(tier5Tablet.tier).toBe(5);
-    expect(tier5Tablet.formFactor).toBe('tablet');
   });
 
   it('classifies browsers without navigator.deviceMemory (such as iOS Safari) cleanly', () => {

@@ -91,7 +91,10 @@ import {
   syncWithPickedDirectory,
 } from '../storage/localSyncChannels';
 import {
-  listRollingSnapshotBackups,
+  ArchivedHerdIndexEntry,
+  VaultBackupMetadata,
+} from '../core/backupVault';
+import {
   RollingBackupMeta,
   StorageProtectionStatus,
   usePWAInstall,
@@ -100,11 +103,13 @@ import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
+import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
+import { UnifiedBackupVaultPanel } from './UnifiedBackupVaultPanel';
 
 interface SettingsAndSyncScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -172,6 +177,21 @@ interface SettingsAndSyncScreenProps {
     targetSnapshot?: BarnDatabaseSnapshot,
     filterSpecies?: string
   ) => Promise<BarnDatabaseSnapshot>;
+  opfsSupported?: boolean;
+  opfsVaultBackups?: VaultBackupMetadata[];
+  rollingBackups?: RollingBackupMeta[];
+  archivedHerdBundles?: ArchivedHerdIndexEntry[];
+  onSaveManualOpfsVaultBackup?: (note?: string) => Promise<unknown> | void;
+  onRestoreOpfsVaultBackup?: (key: string) => Promise<void>;
+  onDownloadOpfsVaultBackup?: (key: string) => Promise<void>;
+  onDeleteOpfsVaultBackup?: (key: string) => Promise<void>;
+  onDeleteRollingBackup?: (key: string) => Promise<void>;
+  onRestoreArchivedHerdBundle?: (
+    archiveKey: string,
+    options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
+  ) => Promise<void>;
+  onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
+  onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
 }
 
 export function SettingsAndSyncScreen({
@@ -219,6 +239,18 @@ export function SettingsAndSyncScreen({
   onLocateConflicts,
   deviceCapability,
   onHydrateSnapshotForExport,
+  opfsSupported = false,
+  opfsVaultBackups = [],
+  rollingBackups = [],
+  archivedHerdBundles = [],
+  onSaveManualOpfsVaultBackup,
+  onRestoreOpfsVaultBackup,
+  onDownloadOpfsVaultBackup,
+  onDeleteOpfsVaultBackup,
+  onDeleteRollingBackup,
+  onRestoreArchivedHerdBundle,
+  onDownloadArchivedHerdBundle,
+  onDeleteArchivedHerdBundle,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -251,6 +283,9 @@ export function SettingsAndSyncScreen({
   const [includePhotoOnPedigree, setIncludePhotoOnPedigree] = useState<boolean>(
     Boolean(settings.includePhotoOnPedigree)
   );
+  const [autoOffloadRetiredToOpfs, setAutoOffloadRetiredToOpfs] = useState<boolean>(
+    Boolean(settings.autoOffloadRetiredToOpfs)
+  );
 
   const [confirmGlobalDeleteAll, setConfirmGlobalDeleteAll] = useState(false);
   const [confirmFactoryRestore, setConfirmFactoryRestore] = useState(false);
@@ -258,7 +293,7 @@ export function SettingsAndSyncScreen({
   const [portabilityFeedback, setPortabilityFeedback] = useState<string | null>(null);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [showCustomSpeciesModal, setShowCustomSpeciesModal] = useState(false);
-  const [rollingBackups, setRollingBackups] = useState<RollingBackupMeta[]>([]);
+  const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
   const [folderSyncBusy, setFolderSyncBusy] = useState(false);
   const [zipExportBusy, setZipExportBusy] = useState<'complete' | 'photos' | 'json' | null>(null);
 
@@ -272,21 +307,6 @@ export function SettingsAndSyncScreen({
   }, [openAddSpeciesOnMount, onConsumedOpenAddSpecies]);
 
   useEffect(() => {
-    let active = true;
-    listRollingSnapshotBackups().then((items) => {
-      if (active) setRollingBackups(items);
-    });
-    return () => {
-      active = false;
-    };
-  }, [
-    snapshot.animals.length,
-    snapshot.animalPhotos?.length,
-    snapshot.breedings.length,
-    snapshot.speciesProfiles.length,
-  ]);
-
-  useEffect(() => {
     setBarnName(settings.barnName);
     setBreederName(settings.breederName);
     setPreferredUnit(settings.preferredUnit);
@@ -297,6 +317,7 @@ export function SettingsAndSyncScreen({
     setImageOptimizationPreset(settings.imageOptimizationPreset || 'balanced');
     setShowHomeSummaryGrid(settings.showHomeSummaryGrid !== false);
     setIncludePhotoOnPedigree(Boolean(settings.includePhotoOnPedigree));
+    setAutoOffloadRetiredToOpfs(Boolean(settings.autoOffloadRetiredToOpfs));
   }, [settings]);
 
   const mergeFileRef = useRef<HTMLInputElement | null>(null);
@@ -360,6 +381,7 @@ export function SettingsAndSyncScreen({
       imageOptimizationPreset,
       showHomeSummaryGrid,
       includePhotoOnPedigree,
+      autoOffloadRetiredToOpfs,
     });
   };
 
@@ -982,6 +1004,20 @@ export function SettingsAndSyncScreen({
                   />
                   <span>Include animal&apos;s primary photo on printed .HTM / PDF pedigrees</span>
                 </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoOffloadRetiredToOpfs}
+                    disabled={!opfsSupported}
+                    onChange={(e) => setAutoOffloadRetiredToOpfs(e.target.checked)}
+                    className="w-4 h-4 accent-[var(--barn-sage)]"
+                  />
+                  <span>
+                    Auto-offload Sold &amp; Deceased animals&apos; heavy photos &amp; logs to OPFS{' '}
+                    <code className="font-mono">/archives</code>
+                  </span>
+                </label>
               </div>
             </div>
 
@@ -1481,39 +1517,32 @@ export function SettingsAndSyncScreen({
               ) : null}
             </div>
 
-            {/* Rolling Local Snapshot Backups */}
-            {rollingBackups.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-[var(--barn-muted)]">
-                  Automatic Rolling Local Snapshots (Last {rollingBackups.length})
-                </div>
-                <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl bg-[var(--barn-canvas)]">
-                  {rollingBackups.map((rb) => (
-                    <div
-                      key={rb.key}
-                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
-                    >
-                      <div className="min-w-0 font-mono text-[11px]">
-                        <div className="truncate font-semibold text-[var(--barn-ink)]">
-                          {new Date(rb.savedAtIso).toLocaleString()}
-                        </div>
-                        <div className="text-[var(--barn-muted)] tabular-nums">
-                          {rb.animalCount} animals · {rb.photoCount ?? 0} photos ·{' '}
-                          {rb.speciesCount} species · {formatByteSizePure(rb.byteSize)}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void onRestoreRollingBackup(rb.key)}
-                        className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
-                      >
-                        Restore
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Unified OPFS Backup Vault + IndexedDB Rolling Fallback */}
+            <UnifiedBackupVaultPanel
+              opfsSupported={opfsSupported}
+              opfsBackups={opfsVaultBackups}
+              rollingBackups={rollingBackups}
+              archivedBundlesCount={archivedHerdBundles.length}
+              archivedAnimalsCount={archivedHerdBundles.reduce(
+                (acc, b) => acc + b.animalCount,
+                0
+              )}
+              onSaveManualVaultBackup={(note) => onSaveManualOpfsVaultBackup?.(note)}
+              onRestoreOpfsBackup={async (key) => {
+                if (onRestoreOpfsVaultBackup) await onRestoreOpfsVaultBackup(key);
+              }}
+              onDownloadOpfsBackup={async (key) => {
+                if (onDownloadOpfsVaultBackup) await onDownloadOpfsVaultBackup(key);
+              }}
+              onDeleteOpfsBackup={async (key) => {
+                if (onDeleteOpfsVaultBackup) await onDeleteOpfsVaultBackup(key);
+              }}
+              onRestoreRollingBackup={onRestoreRollingBackup}
+              onDeleteRollingBackup={async (key) => {
+                if (onDeleteRollingBackup) await onDeleteRollingBackup(key);
+              }}
+              onOpenArchivedHerdsModal={() => setShowArchivedHerdsModal(true)}
+            />
           </section>
 
           {/* Appearance, Light/Dark Switcher & Custom Color Picker */}
@@ -2072,6 +2101,18 @@ export function SettingsAndSyncScreen({
 
               {confirmGlobalDeleteAll && (
                 <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center gap-2">
+                  {onSaveManualOpfsVaultBackup && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void onSaveManualOpfsVaultBackup('Pre-reset snapshot before deleting all animal data')
+                      }
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Save Pre-Reset Vault Snapshot
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleDownloadTimestampedFullBackup}
@@ -2130,6 +2171,18 @@ export function SettingsAndSyncScreen({
 
               {confirmFactoryRestore && (
                 <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center gap-2">
+                  {onSaveManualOpfsVaultBackup && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void onSaveManualOpfsVaultBackup('Pre-reset snapshot before factory restore')
+                      }
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Save Pre-Reset Vault Snapshot
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleDownloadTimestampedFullBackup}
@@ -2235,6 +2288,32 @@ export function SettingsAndSyncScreen({
           onClose={() => setShowCustomSpeciesModal(false)}
         />
       )}
+
+      <ArchivedHerdsModal
+        isOpen={showArchivedHerdsModal}
+        opfsSupported={opfsSupported}
+        archives={archivedHerdBundles}
+        autoOffloadEnabled={Boolean(settings.autoOffloadRetiredToOpfs)}
+        onToggleAutoOffload={(enabled) =>
+          onUpdateSettings({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
+        }
+        onRestoreArchive={async (archiveKey, opts) => {
+          if (onRestoreArchivedHerdBundle) {
+            await onRestoreArchivedHerdBundle(archiveKey, opts);
+          }
+        }}
+        onDownloadArchive={async (archiveKey) => {
+          if (onDownloadArchivedHerdBundle) {
+            await onDownloadArchivedHerdBundle(archiveKey);
+          }
+        }}
+        onDeleteArchive={async (archiveKey) => {
+          if (onDeleteArchivedHerdBundle) {
+            await onDeleteArchivedHerdBundle(archiveKey);
+          }
+        }}
+        onClose={() => setShowArchivedHerdsModal(false)}
+      />
     </div>
   );
 }

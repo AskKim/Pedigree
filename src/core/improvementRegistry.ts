@@ -369,24 +369,26 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
   },
   {
     id: 'IMP-008',
-    title: 'Subpath-Safe PWA Base Config & GitHub Actions CI Pipeline',
+    title: 'Hardcoded Root Base Path PWA Config & GitHub Actions CI Pipeline',
     category: 'ci-tooling',
     source: 'session',
     summary:
-      'Normalizes `VITE_BASE_PATH` in Vite/PWA config for GitHub Pages subpath builds while keeping `.env.example` commented out (no AI Studio env prompt), and runs unit tests, improvement verification, lint, and production + subpath builds in `.github/workflows/ci.yml`.',
+      "Hardcodes `basePath = '/'` in Vite/PWA config so AI Studio never prompts for `VITE_BASE_PATH`, and runs unit tests, improvement verification, lint, and production builds in `.github/workflows/ci.yml`.",
     userIntent:
-      'Automatically verify all domain tests, lint, improvements, and subpath PWA builds on every push without requiring user env prompts.',
+      'Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` hardcoded so AI Studio never prompts for `VITE_BASE_PATH`.',
     files: ['vite.config.ts', '.env.example', '.github/workflows/ci.yml', 'package.json'],
     invariants: [
       {
         filePath: 'vite.config.ts',
-        requiredSubstrings: ['normalizeBasePath', 'process.env.VITE_BASE_PATH'],
-        rationale: 'Base path normalization lets GitHub Pages subpath deploys load assets/SW correctly.',
+        requiredSubstrings: ["const basePath = '/'"],
+        forbiddenSubstrings: ['process.env.VITE_BASE_PATH'],
+        rationale: "Hardcoding `basePath = '/'` prevents AI Studio from prompting the user for `VITE_BASE_PATH`.",
       },
       {
         filePath: '.env.example',
-        requiredSubstrings: ['# VITE_BASE_PATH='],
-        rationale: 'Keeping `VITE_BASE_PATH` commented prevents AI Studio from prompting the user for an unconfigured env var.',
+        requiredSubstrings: ['DISABLE_HMR'],
+        forbiddenSubstrings: ['VITE_BASE_PATH'],
+        rationale: 'Omitting `VITE_BASE_PATH` from `.env.example` prevents AI Studio from prompting for an unconfigured env var.',
       },
       {
         filePath: '.github/workflows/ci.yml',
@@ -400,8 +402,8 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
     ],
     restorePlaybook: [
-      'Ensure `normalizeBasePath(process.env.VITE_BASE_PATH)` wraps `base` and PWA icon/manifest paths in `vite.config.ts`.',
-      'Keep `VITE_BASE_PATH` commented in `.env.example`.',
+      "Keep `const basePath = '/'` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH`.",
+      'Do not add `VITE_BASE_PATH` to `.env.example`.',
       'Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.',
     ],
   },
@@ -865,6 +867,113 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `BoundedPhotoDataCache` and `hydrateSnapshotWithPhotoDataUrls` in `src/storage/photoHydration.ts` plus `lightweightPhotos` guards in `src/storage/webSqliteAdapter.ts`.',
       'Keep `archiveAndImport.worker.ts` and `offThreadWorkerClient.ts` wired into `useBarnStore.ts`, `SettingsAndSyncScreen.tsx`, `DiagnosticsAndSupportPanel.tsx`, and `ExternalImporterPanel.tsx`.',
       'Keep `onLoadFullPhoto` / `onHydrateSnapshotForExport` props wired from `App.tsx` to galleries, pedigree print modals, Barn Binders, and backup exports.',
+    ],
+  },
+  {
+    id: 'IMP-018',
+    title: 'Hybrid OPFS Storage Vault, Archived Herds, Wiped-Storage Recovery & IDB Migration Guard',
+    category: 'backup-safety',
+    source: 'session',
+    userIntent:
+      'Isolate temporary exports in OPFS /tmp, unify automated + manual backup vaults in OPFS /backups with IDB fallback, offload Sold/Deceased stock to OPFS /archives while preserving ancestor pedigree stubs, pause on wiped browser storage with restore recovery, and dump raw stores before resetting failed IndexedDB migrations.',
+    summary:
+      'Adds pure TS schema v6 envelopes, SHA-256 verification, legacy migration, and .archive.zip bundling in `backupVault.ts`; manages OPFS `/tmp`, `/backups` (retention 6 monthly / 3 pre-upgrade / 8 pre-reset), `/archives`, boot orphan sweeps, QuotaExceededError recovery, idle Export Canary, prior-use sentinel, and IndexedDB rescue dumps in `opfsStorage.ts`; and mounts UnifiedBackupVaultPanel, ArchivedHerdsModal, WipedStorageRecoveryModal, and 1-click Save to Vault banner.',
+    files: [
+      'src/core/backupVault.ts',
+      'src/storage/opfsStorage.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/UnifiedBackupVaultPanel.tsx',
+      'src/components/ArchivedHerdsModal.tsx',
+      'src/components/WipedStorageRecoveryModal.tsx',
+      'src/App.tsx',
+      'src/core/__tests__/backupVault.test.ts',
+      'src/storage/__tests__/opfsStorage.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/backupVault.ts',
+        requiredSubstrings: [
+          'CURRENT_BACKUP_SCHEMA_VERSION',
+          'migrateAndValidateBackupEnvelope',
+          'buildExportCanaryProbe',
+          'buildArchivedAnimalsBundle',
+        ],
+        rationale: 'Pure TypeScript OPFS vault envelopes, schema migration, canary verification, and pedigree-stub-safe archive bundling must remain intact.',
+      },
+      {
+        filePath: 'src/storage/opfsStorage.ts',
+        requiredSubstrings: [
+          'sweepOrphanedOpfsTmpOnBoot',
+          'saveOpfsVaultBackup',
+          'saveOpfsHerdArchive',
+          'detectReturningUserWipedStorage',
+          'dumpIndexedDbDatabaseToOpfs',
+        ],
+        rationale: 'OPFS `/tmp`, `/backups`, `/archives` persistence, boot sweeps, QuotaExceededError retries, wiped detection, and IDB rescue dumps must stay wired.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: [
+          'allowSeedFresh',
+          'detectReturningUserWipedStorage',
+          'markPriorUseSentinelFromSnapshot',
+          'pre_upgrade',
+        ],
+        rationale: 'SQLite adapter must pause sample seeding on wiped returning storage, create pre-upgrade snapshots, and update prior-use sentinels.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'wipedRecoveryContext',
+          'opfsVaultBackups',
+          'archivedHerdBundles',
+          'offloadAnimalsToOpfsArchive',
+          'runOpfsExportCanary',
+        ],
+        rationale: 'Barn store must orchestrate unified OPFS/IDB vault actions, archive offload/restore, idle canary checks, and wiped-storage recovery.',
+      },
+      {
+        filePath: 'src/components/UnifiedBackupVaultPanel.tsx',
+        requiredSubstrings: [
+          'UnifiedBackupVaultPanel',
+          'onRestoreOpfsBackup',
+          'onRestoreRollingBackup',
+        ],
+        rationale: 'Settings UI must unify OPFS vault backups and IndexedDB rolling snapshots in one clean recovery panel.',
+      },
+      {
+        filePath: 'src/components/ArchivedHerdsModal.tsx',
+        requiredSubstrings: [
+          'ArchivedHerdsModal',
+          'autoOffloadRetiredToOpfs',
+          'onRestoreArchive',
+        ],
+        rationale: 'Archived Herds modal must support searching, downloading, deleting, and restoring offloaded Sold/Deceased bundles.',
+      },
+      {
+        filePath: 'src/components/WipedStorageRecoveryModal.tsx',
+        requiredSubstrings: [
+          'WipedStorageRecoveryModal',
+          'onRestoreLatestOpfs',
+          'onStartFresh',
+        ],
+        rationale: 'Blocking wiped-storage recovery dialog must offer latest OPFS restore, local file upload, and explicit two-step Start Fresh.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: [
+          '<WipedStorageRecoveryModal',
+          'store.exportCanaryWarning',
+          'Save to Vault',
+        ],
+        rationale: 'App shell must mount WipedStorageRecoveryModal, Export Canary alerts, and 1-click Save to Vault on backup banners.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `src/core/backupVault.ts` pure TypeScript with schema v6 migration, SHA-256 verification, and `computePedigreeReferencedIds` stub preservation.',
+      'Keep `src/storage/opfsStorage.ts` managing `/tmp`, `/backups`, `/archives`, `try/finally` `.close()`, boot sweeps, canary checks, and IDB failure dumps.',
+      'Keep `UnifiedBackupVaultPanel.tsx`, `ArchivedHerdsModal.tsx`, `WipedStorageRecoveryModal.tsx`, `useBarnStore.ts`, and `App.tsx` connected.',
     ],
   },
 ];

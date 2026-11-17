@@ -10,11 +10,11 @@
  * Runs identically in Web PWA, Node.js tests, and React Native / Expo.
  *
  * Classifies the host device into 5 practical pedigree-workload tiers:
- * - Tier 1: Critical Memory Limit (Not Recommended) — locked visible on Home & Settings
- * - Tier 2: Compact / Low-Memory Baseline (Survival Mode) — closable on Home, persistent in Settings
- * - Tier 3: Mid-Tier Mobile Workhorse — closable on Home & Settings, reopenable from Settings
- * - Tier 4: Modern Mobile Standard — closable on Home & Settings, reopenable from Settings
- * - Tier 5: Desktop, Laptop & Tablet Class — closable on Home & Settings, reopenable from Settings
+ * - Tier 1: Critical Memory Limit — locked visible on Home & Settings
+ * - Tier 2: Low-Memory Baseline (Survival Mode) — closable on Home, persistent in Settings
+ * - Tier 3: Mid-Tier Mobile & Tablet — closable on Home & Settings, reopenable from Settings
+ * - Tier 4: Modern Mobile & Pro Tablet — closable on Home & Settings, reopenable from Settings
+ * - Tier 5: Desktop & Laptop Class — closable on Home & Settings, reopenable from Settings
  */
 
 import type { ImageOptimizationPresetId } from './imageOptimizationSpec';
@@ -86,17 +86,17 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     tier: 1,
     slug: 'critical-low-memory',
     shortLabel: 'Tier 1 · Below Minimum',
-    title: 'Critical Memory Limit (Not Recommended)',
+    title: 'Critical Memory Limit',
     badgeLabel: 'Tier 1 · High Crash Risk',
     severity: 'danger',
     targetHardware:
-      'Entry-level or legacy smartphones and older tablets with ~1 GB RAM or less and single/dual-core processors.',
+      '≤1 GB RAM · Legacy or kids phones & tablets (e.g., Fire 7, older 1 GB Android/iPad).',
     browserReality:
-      'Severely restricted JS heap (~50–100 MB) and legacy browser engine with minimal headroom for WebAssembly SQLite or image decoding.',
+      '~50–100 MB JS heap; very little room for SQLite or photo decoding.',
     workloadProfile:
-      'Likely to freeze or crash almost immediately during multi-generation pedigree .ZIP imports or photo-heavy backups.',
+      'Up to ~1,000 records. Heavy .ZIP imports or photos will likely freeze or crash the tab.',
     cautionNotice:
-      'This device falls below minimum hardware requirements. Importing large pedigree archives or photo sets may cause your browser tab to freeze or crash due to memory limits. Use Compact photo compression, keep herds small, or run heavy imports on a newer phone or computer.',
+      'Below minimum hardware requirements. Large imports or photos may crash this tab—use Compact photos and run big .ZIP imports on a newer device.',
     maxRecommendedRecords: 1000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,
@@ -108,17 +108,17 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     tier: 2,
     slug: 'survival-baseline',
     shortLabel: 'Tier 2 · Survival Mode',
-    title: 'Compact / Low-Memory Baseline (Survival Mode)',
+    title: 'Low-Memory Baseline (Survival Mode)',
     badgeLabel: 'Tier 2 · Low Memory',
     severity: 'warn',
     targetHardware:
-      'Older mid-range or compact smartphones and budget tablets with 2–3 GB RAM (e.g., Galaxy S7/S8/J-series or iPhone 6/6 Plus class).',
+      '2–3 GB RAM · Budget/older phones & tablets (e.g., Galaxy S7/J-series, iPhone 6, Fire HD 8/10, Galaxy Tab A7 Lite, iPad 6th Gen).',
     browserReality:
-      'Tight JS heap limit (~150–250 MB) with CPU throttling during large JSON merges, archive parsing, and deep recursive ancestor lookups.',
+      '~150–250 MB JS heap; large JSON merges or deep trees can feel sluggish.',
     workloadProfile:
-      'Safely supports ~4–5 base animals with full 8-generation pedigrees (~2,500 total records) and compressed photos on ~25% of entries, near the device stability threshold.',
+      'Up to ~3,000 records (~4–5 base animals, 8-gen trees, ~25% compact photos).',
     cautionNotice:
-      'Low-memory device detected. For dependable performance on this device without unexpected tab reloads, keep local herds and imported pedigree trees under ~3,000 total records, enable Compact photo compression, and export regular backups.',
+      'Low-memory device detected. Keep local records under ~3,000, use Compact photos, and export regular backups.',
     maxRecommendedRecords: 3000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,
@@ -129,18 +129,18 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
   3: {
     tier: 3,
     slug: 'standard-mobile',
-    shortLabel: 'Tier 3 · Standard Mobile',
-    title: 'Mid-Tier Mobile Workhorse',
-    badgeLabel: 'Tier 3 · Standard Mobile',
+    shortLabel: 'Tier 3 · Mid-Tier Mobile',
+    title: 'Mid-Tier Mobile & Tablet',
+    badgeLabel: 'Tier 3 · Mid-Tier Mobile',
     severity: 'neutral',
     targetHardware:
-      'Mainstream late-2010s to early-2020s smartphones with ~4 GB RAM and multi-core CPUs (e.g., Galaxy S9 / A10–A20 or iPhone 7/8/SE 2nd Gen class).',
+      '4 GB RAM · Mainstream phones & mid-range tablets (e.g., Galaxy A10–A20, iPhone 7/8/SE 2, Galaxy Tab A8/A9, iPad 9th Gen).',
     browserReality:
-      'Stable JS heap (~500 MB) capable of handling larger livestock tables and recursive pedigree math without locking the interface.',
+      '~500 MB JS heap; steady performance for daily barn logs and pedigree trees.',
     workloadProfile:
-      'Comfortably manages 15–20 base animals with full 8-generation pedigrees (~7,500–10,000 total records) when image compression is active.',
+      'Up to ~10,000 records (15–20 base animals, 8-gen trees, compressed photos).',
     cautionNotice:
-      'Standard mobile operating range. Multi-generation pedigrees and compressed photo libraries run reliably on this device, though large multi-megabyte .ZIP imports may pause briefly while processing.',
+      'Mid-tier mobile hardware detected. Multi-generation pedigrees and compressed photos run reliably; large .ZIP imports may pause briefly.',
     maxRecommendedRecords: 10000,
     recommendedImagePreset: 'balanced',
     recommendedDefaultGenerations: 4,
@@ -152,17 +152,17 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     tier: 4,
     slug: 'modern-mobile',
     shortLabel: 'Tier 4 · Modern Mobile',
-    title: 'Modern Mobile Standard',
+    title: 'Modern Mobile & Pro Tablet',
     badgeLabel: 'Tier 4 · Modern Mobile',
     severity: 'good',
     targetHardware:
-      'Modern smartphones with 6–8 GB+ RAM (e.g., Galaxy A15/A16, Galaxy S20+, or iPhone X/11/12/13 and newer).',
+      '6–8 GB+ RAM · Modern phones & flagship tablets (e.g., Galaxy S20+/A15+, iPhone 11+, Galaxy Tab S8/S9, iPad Air/Pro M-series).',
     browserReality:
-      'Generous JS heap allocation, fast V8/JavaScriptCore engines, and hardware-accelerated image canvas scaling.',
+      'Generous mobile JS heap with hardware-accelerated image canvas scaling.',
     workloadProfile:
-      'Easily handles 50+ base animals with full 8-generation pedigrees (25,000+ total records) and extensive compressed photo galleries without slowdown.',
+      '25,000+ records (50+ base animals, 8-gen trees, full compressed photo galleries).',
     cautionNotice:
-      'Modern mobile hardware detected. Full herds, multi-generation pedigree trees, COI calculations, and compressed photo galleries run smoothly on this device.',
+      'Modern mobile or pro tablet hardware detected. Full herds, COI math, and compressed photo galleries run smoothly.',
     maxRecommendedRecords: 25000,
     recommendedImagePreset: 'balanced',
     recommendedDefaultGenerations: 4,
@@ -173,18 +173,18 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
   5: {
     tier: 5,
     slug: 'desktop-powerhouse',
-    shortLabel: 'Tier 5 · Desktop / Tablet',
-    title: 'Desktop, Laptop & Tablet Class',
-    badgeLabel: 'Tier 5 · High Capacity',
+    shortLabel: 'Tier 5 · Desktop / Laptop',
+    title: 'Desktop & Laptop Class',
+    badgeLabel: 'Tier 5 · Desktop / Laptop',
     severity: 'good',
     targetHardware:
-      'Desktop computers, laptops, and full-size tablets with high system memory and multi-core workstation or tablet chips.',
+      '8–16 GB+ RAM · Windows, Mac, Linux & Chromebook PCs with desktop-class CPUs.',
     browserReality:
-      'Abundant browser heap headroom relative to Community Pedigree’s lightweight local SQLite and IndexedDB storage footprint.',
+      'Full desktop browser memory headroom for SQLite, IndexedDB, and bulk archives.',
     workloadProfile:
-      'Handles commercial-scale herd exports, full multi-species photo archives, and deep recursive lookups across hundreds of base animals simultaneously.',
+      'Commercial-scale herds, multi-species photo backups, and bulk .ZIP imports across hundreds of animals.',
     cautionNotice:
-      'High-capacity desktop or tablet environment detected. Large commercial herd imports, full photo backups, and multi-generation pedigree lookups run comfortably with ample headroom.',
+      'Desktop or laptop environment detected. Large commercial imports, full photo archives, and deep pedigree lookups run with ample headroom.',
     maxRecommendedRecords: null,
     recommendedImagePreset: 'balanced',
     recommendedDefaultGenerations: 5,
@@ -313,24 +313,53 @@ export function classifyDeviceCapability(
   } else if (formFactor === 'tablet') {
     const iosMajor = parseIosMajorVersion(ua);
     const androidMajor = parseAndroidMajorVersion(ua);
-    if (
-      (ramGb !== null && ramGb <= 1) ||
-      (heapMb !== null && heapMb < 130) ||
-      (iosMajor !== null && iosMajor <= 10) ||
-      (androidMajor !== null && androidMajor <= 6 && (cores ?? 2) <= 2)
-    ) {
-      tier = 1;
-    } else if (
-      (ramGb !== null && ramGb <= 3) ||
-      (heapMb !== null && heapMb < 290) ||
-      (cores !== null && cores <= 2) ||
-      (iosMajor !== null && iosMajor <= 13)
-    ) {
-      tier = 2;
-    } else if (ramGb !== null && ramGb === 4 && cores !== null && cores <= 4) {
-      tier = 3;
+    if (ramGb !== null) {
+      if (ramGb <= 1) {
+        tier = 1;
+      } else if (ramGb <= 3) {
+        tier = 2;
+      } else if (ramGb < 6) {
+        tier = 3;
+      } else {
+        tier = 4;
+      }
+    } else if (iosMajor !== null) {
+      if (iosMajor <= 10 || (cores !== null && cores <= 1)) {
+        tier = 1;
+      } else if (iosMajor <= 13 || (cores !== null && cores <= 2)) {
+        tier = 2;
+      } else if (iosMajor <= 15 || (cores !== null && cores <= 4)) {
+        tier = 3;
+      } else {
+        tier = 4;
+      }
+    } else if (androidMajor !== null) {
+      if (androidMajor <= 6 || (cores !== null && cores <= 2)) {
+        tier = 1;
+      } else if (androidMajor <= 9 || (cores !== null && cores <= 4)) {
+        tier = 2;
+      } else if (androidMajor <= 12 || (cores !== null && cores <= 6)) {
+        tier = 3;
+      } else {
+        tier = 4;
+      }
+    } else if (cores !== null) {
+      if (cores <= 2) tier = 1;
+      else if (cores <= 4) tier = 2;
+      else if (cores <= 6) tier = 3;
+      else tier = 4;
     } else {
-      tier = 5;
+      tier = 3;
+    }
+
+    if (heapMb !== null) {
+      if (heapMb < 130) {
+        tier = 1;
+      } else if (heapMb < 300 && tier > 2) {
+        tier = 2;
+      } else if (heapMb < 650 && tier > 3) {
+        tier = 3;
+      }
     }
   } else {
     // Phone / handheld mobile

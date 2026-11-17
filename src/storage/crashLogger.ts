@@ -322,10 +322,26 @@ function openLogsIdb(): Promise<IDBDatabase> {
     try {
       const req = indexedDB.open(LOG_IDB_NAME, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(LOG_STORE_NAME)) {
-          const store = db.createObjectStore(LOG_STORE_NAME, { keyPath: 'id' });
-          store.createIndex('timestampMs', 'timestampMs', { unique: false });
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(LOG_STORE_NAME)) {
+            const store = db.createObjectStore(LOG_STORE_NAME, { keyPath: 'id' });
+            store.createIndex('timestampMs', 'timestampMs', { unique: false });
+          }
+        } catch (upgradeErr) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(
+                LOG_IDB_NAME,
+                'Diagnostics IndexedDB schema upgrade failed'
+              )
+            )
+            .catch(() => {});
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(upgradeErr);
+          }
         }
       };
       req.onblocked = () => {
@@ -348,10 +364,18 @@ function openLogsIdb(): Promise<IDBDatabase> {
         resolve(req.result);
       };
       req.onerror = () => {
+        const err = req.error;
+        if (err && (err.name === 'VersionError' || /version/i.test(String(err.message || '')))) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(LOG_IDB_NAME, 'Diagnostics IndexedDB VersionError')
+            )
+            .catch(() => {});
+        }
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        reject(req.error);
+        reject(err);
       };
     } catch (err) {
       if (!settled) {

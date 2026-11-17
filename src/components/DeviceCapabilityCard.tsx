@@ -259,7 +259,7 @@ export function DeviceCapabilityCard({
           onClick={() => setShowTierMatrix((prev) => !prev)}
           className="min-h-[34px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap"
         >
-          {showTierMatrix ? 'Hide All 5 Tiers' : 'Compare All 5 Device Tiers'}
+          {showTierMatrix ? 'Hide All 5 Tiers' : 'See All 5 Tiers'}
           {showTierMatrix ? (
             <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
           ) : (
@@ -272,7 +272,7 @@ export function DeviceCapabilityCard({
       {showTierMatrix && (
         <div className="pt-2 border-t border-[var(--barn-border)] space-y-2">
           <div className="text-[11px] font-semibold text-[var(--barn-ink)]">
-            Community Pedigree 5-Tier Device Capability Reference
+            Device Capability Tiers (Phones, Tablets &amp; Desktops)
           </div>
           <div className="grid grid-cols-1 gap-2">
             {DEVICE_CAPABILITY_TIER_LIST.map((item) => {
@@ -280,7 +280,7 @@ export function DeviceCapabilityCard({
               return (
                 <div
                   key={item.tier}
-                  className={`p-3 rounded-xl border text-[11px] space-y-1 ${
+                  className={`p-2.5 rounded-xl border text-[11px] space-y-1 ${
                     isCurrent
                       ? 'bg-[var(--barn-surface)] border-[var(--barn-sage)] ring-1 ring-[var(--barn-sage)]'
                       : 'bg-[var(--barn-surface)]/75 border-[var(--barn-border)]'
@@ -298,21 +298,17 @@ export function DeviceCapabilityCard({
                       )}
                       <span className="font-mono text-[10px] text-[var(--barn-muted)]">
                         {item.maxRecommendedRecords
-                          ? `Up to ~${item.maxRecommendedRecords.toLocaleString()} records`
-                          : 'High capacity'}
+                          ? `≤~${item.maxRecommendedRecords.toLocaleString()} rec.`
+                          : 'Commercial scale'}
                       </span>
                     </div>
                   </div>
-                  <p className="text-[var(--barn-muted)]">
-                    <strong className="text-[var(--barn-ink)]">Hardware:</strong>{' '}
+                  <p className="text-[var(--barn-muted)] leading-snug">
+                    <strong className="text-[var(--barn-ink)]">Specs:</strong>{' '}
                     {item.targetHardware}
                   </p>
-                  <p className="text-[var(--barn-muted)]">
-                    <strong className="text-[var(--barn-ink)]">Browser Sandbox:</strong>{' '}
-                    {item.browserReality}
-                  </p>
-                  <p className="text-[var(--barn-muted)]">
-                    <strong className="text-[var(--barn-ink)]">Pedigree Workload:</strong>{' '}
+                  <p className="text-[var(--barn-muted)] leading-snug">
+                    <strong className="text-[var(--barn-ink)]">Capacity:</strong>{' '}
                     {item.workloadProfile}
                   </p>
                 </div>

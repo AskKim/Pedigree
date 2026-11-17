@@ -344,6 +344,7 @@ export function exportBarnBackupJson(
     format: 'community-pedigree-backup',
     package: 'Pedigree',
     version: 5,
+    _schemaVersion: 6,
     exportedAtIsoUtc,
     exportedAtLocal: new Date(exportedAtIsoUtc).toLocaleString(),
     ...(extraMeta ?? {}),
@@ -395,6 +396,19 @@ export function parseBarnBackupJson(
   const raw = JSON.parse(jsonText);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Backup file is not a valid JSON object.');
+  }
+  const hasKnownRootCollection =
+    Array.isArray(raw.animals) ||
+    Array.isArray(raw.speciesProfiles) ||
+    Array.isArray(raw.speciesConfigs) ||
+    (raw.settings && typeof raw.settings === 'object') ||
+    (raw.profile && typeof raw.profile === 'object') ||
+    raw.format === 'community-pedigree-backup' ||
+    raw.format === 'community-pedigree-vault-backup';
+  if (!hasKnownRootCollection) {
+    throw new Error(
+      'Backup JSON root structure is invalid (missing animals, speciesProfiles, or settings collections).'
+    );
   }
 
   const ts = nowIsoUtc();
@@ -500,6 +514,10 @@ export function parseBarnBackupJson(
     calendarSync: normalizeCalendarSyncSettings(
       rawSettings.calendarSync ?? fallbackSettings.calendarSync
     ),
+    autoOffloadRetiredToOpfs:
+      typeof rawSettings.autoOffloadRetiredToOpfs === 'boolean'
+        ? rawSettings.autoOffloadRetiredToOpfs
+        : fallbackSettings.autoOffloadRetiredToOpfs ?? false,
     updatedAt: sanitizeSingleLineText(rawSettings.updatedAt || ts, 64) || ts,
   };
 
@@ -635,6 +653,8 @@ export function parseBarnBackupJson(
         sireId: typeof a.sireId === 'string' && isSafeRecordKey(a.sireId) ? a.sireId : '',
         damId: typeof a.damId === 'string' && isSafeRecordKey(a.damId) ? a.damId : '',
         notes: sanitizePlainText(a.notes || '', 20_000),
+        offloadedArchiveKey: sanitizeSingleLineText(a.offloadedArchiveKey || '', 160) || undefined,
+        offloadedAtIso: sanitizeSingleLineText(a.offloadedAtIso || '', 64) || undefined,
         createdAt: typeof a.createdAt === 'string' && a.createdAt ? a.createdAt : ts,
         updatedAt: typeof a.updatedAt === 'string' && a.updatedAt ? a.updatedAt : ts,
       };

@@ -1,7 +1,8 @@
 Pedigree/
 ├── .github/
 │   ├── prompts/
-│   │   └── master_system_prompt.md   <-- Core AI Studio prompt
+│   │   ├── master_system_prompt.md        <-- Core AI Studio prompt (v2)
+│   │   └── master_system_prompt_old_v1.md <-- Archived v1 master prompt
 │   ├── workflows/
 │   │   ├── ci.yml
 │   │   └── deploy-pages.yml

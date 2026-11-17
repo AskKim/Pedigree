@@ -358,6 +358,7 @@ export interface BarnSettings {
   speciesHubBlockOrder?: Record<string, SpeciesHubBlockId[]>;
   includePhotoOnPedigree?: boolean;
   calendarSync?: CalendarSyncSettings;
+  autoOffloadRetiredToOpfs?: boolean;
   lastBackupMeta?: {
     exportedAtIso: string;
     format: 'zip' | 'sqlite' | 'json';
@@ -448,6 +449,8 @@ export interface Animal {
   sireId: string;
   damId: string;
   notes: string;
+  offloadedArchiveKey?: string;
+  offloadedAtIso?: string;
   createdAt: string;
   updatedAt: string;
 }

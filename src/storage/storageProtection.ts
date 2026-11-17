@@ -177,9 +177,21 @@ function openRollingIdb(): Promise<IDBDatabase> {
     try {
       const req = indexedDB.open(ROLLING_IDB_NAME, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(ROLLING_STORE_NAME)) {
-          db.createObjectStore(ROLLING_STORE_NAME, { keyPath: 'key' });
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(ROLLING_STORE_NAME)) {
+            db.createObjectStore(ROLLING_STORE_NAME, { keyPath: 'key' });
+          }
+        } catch (upgradeErr) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(
+                ROLLING_IDB_NAME,
+                'Rolling backup IndexedDB schema upgrade failed'
+              )
+            )
+            .catch(() => {});
+          finishReject(upgradeErr);
         }
       };
       req.onblocked = () => {
@@ -202,7 +214,20 @@ function openRollingIdb(): Promise<IDBDatabase> {
         clearTimeout(timer);
         resolve(req.result);
       };
-      req.onerror = () => finishReject(req.error);
+      req.onerror = () => {
+        const err = req.error;
+        if (err && (err.name === 'VersionError' || /version/i.test(String(err.message || '')))) {
+          void import('./opfsStorage')
+            .then((m) =>
+              m.dumpIndexedDbDatabaseToOpfs(
+                ROLLING_IDB_NAME,
+                'Rolling backup IndexedDB VersionError'
+              )
+            )
+            .catch(() => {});
+        }
+        finishReject(err);
+      };
     } catch (err) {
       finishReject(err);
     }
@@ -344,6 +369,27 @@ export async function loadRollingSnapshotBackup(
     });
   } catch {
     return null;
+  }
+}
+
+export async function deleteRollingSnapshotBackup(key: string): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false;
+  try {
+    const db = await openRollingIdb();
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
+      tx.objectStore(ROLLING_STORE_NAME).delete(key);
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch {
+    return false;
   }
 }
 

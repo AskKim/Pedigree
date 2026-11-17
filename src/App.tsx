@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
+import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
@@ -134,6 +135,7 @@ export default function App() {
   useEffect(() => {
     const onGlobalShortcut = (e: KeyboardEvent) => {
       if (store.isLoading || !store.snapshot || !store.activeSpeciesData) return;
+      if (store.wipedRecoveryContext?.detected) return;
       if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
       if (showHerdSpeciesPicker || showShortcutsHelp || store.pendingCalendarSync) return;
       if (typeof document !== 'undefined' && document.querySelector('[role="dialog"]')) return;
@@ -188,6 +190,7 @@ export default function App() {
     store.route,
     store.setRoute,
     store.pendingCalendarSync,
+    store.wipedRecoveryContext?.detected,
     showHerdSpeciesPicker,
     showShortcutsHelp,
     triggerShortcutToast,
@@ -447,6 +450,45 @@ export default function App() {
           </div>
         )}
 
+        {/* Idle Export Canary Warning Banner (IMP-018) */}
+        {store.exportCanaryWarning && (
+          <div
+            role="alert"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-semibold">Backup Canary Integrity Warning</div>
+                <div className="text-[11px] text-[var(--barn-muted)] break-words">
+                  {store.exportCanaryWarning}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {route !== 'settings' && (
+                <button
+                  type="button"
+                  onClick={() => setRoute('settings')}
+                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                >
+                  Open Backups
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={store.dismissExportCanaryWarning}
+                className="min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Proactive Unbacked-Edits Reminder Banner (IMP-001) */}
         {store.backupStatus && store.backupStatus.showDismissibleBanner && route !== 'settings' && (
           <div
@@ -460,10 +502,23 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {store.opfsSupported && (
+                <button
+                  type="button"
+                  onClick={() => void store.saveManualOpfsVaultBackup('Banner 1-click save')}
+                  className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                >
+                  Save to Vault
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setRoute('settings')}
-                className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                className={`min-h-[32px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
+                  store.opfsSupported
+                    ? 'border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)]'
+                    : 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+                }`}
               >
                 Open Backups
               </button>
@@ -756,9 +811,9 @@ export default function App() {
               store.setPedigreeAnimalId(id);
               setRoute('pedigree');
             }}
-            onSaveAnimal={(draft, pendingPhotos) => {
-              void store.saveAnimal(draft, undefined, pendingPhotos);
-            }}
+            onSaveAnimal={(draft, pendingPhotos) =>
+              store.saveAnimal(draft, undefined, pendingPhotos)
+            }
             onAddAnimalPhotos={store.addOptimizedAnimalPhotos}
             onSetPrimaryAnimalPhoto={store.setPrimaryAnimalPhoto}
             onUpdateAnimalPhotoCaption={store.updateAnimalPhotoCaption}
@@ -792,6 +847,15 @@ export default function App() {
             }}
             requestedConflictFocusNonce={store.requestedHerdConflictNonce}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
+            opfsSupported={store.opfsSupported}
+            archivedHerdBundles={store.archivedHerdBundles}
+            onOffloadAnimalsToOpfsArchive={store.offloadAnimalsToOpfsArchive}
+            onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
+            onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
+            onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
+            }}
           />
         )}
 
@@ -920,6 +984,18 @@ export default function App() {
             onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             deviceCapability={deviceCapability}
             onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
+            opfsSupported={store.opfsSupported}
+            opfsVaultBackups={store.opfsVaultBackups}
+            rollingBackups={store.rollingBackups}
+            archivedHerdBundles={store.archivedHerdBundles}
+            onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
+            onRestoreOpfsVaultBackup={store.restoreOpfsVaultBackup}
+            onDownloadOpfsVaultBackup={store.downloadOpfsVaultBackupByKey}
+            onDeleteOpfsVaultBackup={store.deleteOpfsVaultBackupByKey}
+            onDeleteRollingBackup={store.deleteRollingIdbBackupByKey}
+            onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
+            onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
+            onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
           />
               )}
             </Suspense>
@@ -975,6 +1051,18 @@ export default function App() {
           />
         </Suspense>
       )}
+
+      {/* Blocking Wiped-Browser-Storage Recovery Gate (IMP-018) */}
+      <WipedStorageRecoveryModal
+        context={store.wipedRecoveryContext}
+        onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+        onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
+        onImportArchiveReplace={(bytes, fileName) =>
+          store.importBackupArchiveBytes(bytes, fileName, 'replace')
+        }
+        onImportSqlite={store.importSqliteBytes}
+        onStartFresh={store.startFreshAfterWipedRecovery}
+      />
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (

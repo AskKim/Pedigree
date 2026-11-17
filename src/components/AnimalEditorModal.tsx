@@ -95,10 +95,14 @@ interface AnimalEditorModalProps {
   defaultBreederName: string;
   defaultOwnerName: string;
   forcedSex?: BiologicalSex;
+  opfsSupported?: boolean;
+  autoOffloadRetiredToOpfs?: boolean;
   onSave: (
     draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => void;
+  ) => Promise<string | void> | string | void;
+  onOffloadRetiredAnimal?: (animalId: string) => Promise<void> | void;
+  onSetAutoOffloadRetired?: (enabled: boolean) => void;
   onDelete?: (animal: Animal) => void;
   onClose: () => void;
 }
@@ -114,12 +118,23 @@ export function AnimalEditorModal({
   defaultBreederName,
   defaultOwnerName,
   forcedSex,
+  opfsSupported = false,
+  autoOffloadRetiredToOpfs = false,
   onSave,
+  onOffloadRetiredAnimal,
+  onSetAutoOffloadRetired,
   onDelete,
   onClose,
 }: AnimalEditorModalProps) {
   const isEditing = Boolean(initialAnimal?.id);
   const defaultPrefix = (speciesProfile.defaultAnimalPrefix || '').trim();
+  const [pendingOffloadPrompt, setPendingOffloadPrompt] = useState<{
+    animalId: string;
+    animalName: string;
+    status: AnimalStatus;
+  } | null>(null);
+  const [rememberAutoOffload, setRememberAutoOffload] = useState(false);
+  const [offloadingNow, setOffloadingNow] = useState(false);
 
   const [tattoo, setTattoo] = useState(initialAnimal?.tattoo || '');
   const [name, setName] = useState(() => {
@@ -504,7 +519,7 @@ export function AnimalEditorModal({
     return Math.round(parsed * 100);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
     if (sexChangeMismatchError) {
@@ -527,7 +542,15 @@ export function AnimalEditorModal({
       confirmedCarrierOf,
       clearedCarrierOf
     );
-    onSave(
+    const wasRetired = Boolean(
+      initialAnimal && (initialAnimal.status === 'Sold' || initialAnimal.status === 'Deceased')
+    );
+    const becomingRetired =
+      (status === 'Sold' || status === 'Deceased') &&
+      !wasRetired &&
+      !initialAnimal?.offloadedArchiveKey;
+
+    const savedResult = await onSave(
       {
         id: initialAnimal?.id,
         createdAt: initialAnimal?.createdAt,
@@ -567,9 +590,36 @@ export function AnimalEditorModal({
         sireId,
         damId,
         notes: notes.trim(),
+        offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
+        offloadedAtIso: initialAnimal?.offloadedAtIso,
       },
       stagedPhotos.length > 0 ? stagedPhotos : undefined
     );
+
+    const savedId =
+      typeof savedResult === 'string' && savedResult.trim()
+        ? savedResult.trim()
+        : initialAnimal?.id || '';
+
+    if (becomingRetired && opfsSupported && onOffloadRetiredAnimal && savedId) {
+      if (autoOffloadRetiredToOpfs) {
+        setOffloadingNow(true);
+        try {
+          await onOffloadRetiredAnimal(savedId);
+        } finally {
+          setOffloadingNow(false);
+        }
+        onClose();
+        return;
+      }
+      setPendingOffloadPrompt({
+        animalId: savedId,
+        animalName: name.trim(),
+        status,
+      });
+      return;
+    }
+
     onClose();
   };
 
@@ -586,7 +636,11 @@ export function AnimalEditorModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--barn-border)]">
           <div>
             <h2 className="font-display text-lg font-semibold">
-              {isEditing ? `Edit ${initialAnimal?.name}` : `Add ${speciesProfile.name} Record`}
+              {pendingOffloadPrompt
+                ? `Archive ${pendingOffloadPrompt.animalName} to OPFS`
+                : isEditing
+                ? `Edit ${initialAnimal?.name}`
+                : `Add ${speciesProfile.name} Record`}
             </h2>
             <p className="text-xs text-[var(--barn-muted)]">
               Species: {speciesProfile.name} · Parent links restricted to {speciesProfile.name} herd
@@ -602,7 +656,77 @@ export function AnimalEditorModal({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
+        {pendingOffloadPrompt ? (
+          <div className="p-6 space-y-4">
+            <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
+              <div className="font-semibold text-sm text-[var(--barn-ink)]">
+                Offload full photos &amp; logs to OPFS <code className="font-mono">/archives</code>?
+              </div>
+              <p className="text-[var(--barn-muted)] leading-relaxed">
+                <strong>{pendingOffloadPrompt.animalName}</strong> was saved as{' '}
+                <strong>{pendingOffloadPrompt.status}</strong>. You can keep its record in the local
+                Archived tab, or compress its full-resolution photos and care logs into an{' '}
+                <code className="font-mono">.archive.zip</code> bundle in OPFS{' '}
+                <code className="font-mono">/archives</code> (any sire/dam pedigree lineage links
+                stay intact as a lightweight Pedigree Reference stub).
+              </p>
+            </div>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={rememberAutoOffload}
+                onChange={(e) => setRememberAutoOffload(e.target.checked)}
+                className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+              />
+              <span>
+                <strong className="text-[var(--barn-ink)]">
+                  Always auto-offload Sold/Deceased records
+                </strong>
+                <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                  Automatically archives future Sold or Deceased animals without prompting (can be
+                  changed anytime in Import &amp; Settings).
+                </span>
+              </span>
+            </label>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[var(--barn-border)]">
+              <button
+                type="button"
+                disabled={offloadingNow}
+                onClick={() => {
+                  if (rememberAutoOffload) {
+                    onSetAutoOffloadRetired?.(true);
+                  }
+                  onClose();
+                }}
+                className="min-h-[42px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+              >
+                Keep in Archived Tab
+              </button>
+              <button
+                type="button"
+                disabled={offloadingNow}
+                onClick={async () => {
+                  setOffloadingNow(true);
+                  try {
+                    if (rememberAutoOffload) {
+                      onSetAutoOffloadRetired?.(true);
+                    }
+                    await onOffloadRetiredAnimal?.(pendingOffloadPrompt.animalId);
+                  } finally {
+                    setOffloadingNow(false);
+                    onClose();
+                  }
+                }}
+                className="min-h-[42px] px-4 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+              >
+                {offloadingNow ? 'Offloading to /archives...' : 'Offload to OPFS /archives'}
+              </button>
+            </div>
+          </div>
+        ) : (
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 overflow-y-auto p-6 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-2">
               <label
@@ -1955,6 +2079,7 @@ export function AnimalEditorModal({
             </div>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

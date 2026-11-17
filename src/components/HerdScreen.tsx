@@ -80,9 +80,11 @@ import {
   generateThermalCageCardHtml,
   PedigreePrintOptions,
 } from '../core/syncAndExports';
+import { ArchivedHerdIndexEntry } from '../core/backupVault';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
+import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
@@ -102,7 +104,7 @@ interface HerdScreenProps {
   onSaveAnimal: (
     draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => void;
+  ) => Promise<string | void> | string | void;
   onAddAnimalPhotos: (
     animal: Animal,
     payloads: Array<OptimizedImagePayload & { caption?: string }>
@@ -125,6 +127,16 @@ interface HerdScreenProps {
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   requestedConflictFocusNonce?: number;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
+  opfsSupported?: boolean;
+  archivedHerdBundles?: ArchivedHerdIndexEntry[];
+  onOffloadAnimalsToOpfsArchive?: (animalIds: string[]) => Promise<unknown> | void;
+  onRestoreArchivedHerdBundle?: (
+    archiveKey: string,
+    options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
+  ) => Promise<void>;
+  onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
+  onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
+  onUpdateSettings?: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
 }
 
 type HerdFilterTab =
@@ -164,6 +176,13 @@ export function HerdScreen({
   onRestoreConflictAlert,
   requestedConflictFocusNonce,
   onLoadFullPhoto,
+  opfsSupported = false,
+  archivedHerdBundles = [],
+  onOffloadAnimalsToOpfsArchive,
+  onRestoreArchivedHerdBundle,
+  onDownloadArchivedHerdBundle,
+  onDeleteArchivedHerdBundle,
+  onUpdateSettings,
 }: HerdScreenProps) {
   const {
     speciesProfile,
@@ -217,6 +236,7 @@ export function HerdScreen({
 
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
+  const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
 
   // Print preview state
   const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
@@ -789,6 +809,48 @@ export function HerdScreen({
               </div>
             );
           })()}
+
+          {activeAnimal.offloadedArchiveKey && (
+            <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5 min-w-0">
+                <div className="font-semibold text-[var(--barn-ink)] flex items-center gap-1.5">
+                  <Archive className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  <span>Pedigree Reference Stub (Photos &amp; Care Logs in OPFS /archives)</span>
+                </div>
+                <p className="text-[var(--barn-muted)]">
+                  Full-resolution photos and historical care logs were offloaded
+                  {activeAnimal.offloadedAtIso
+                    ? ` on ${new Date(activeAnimal.offloadedAtIso).toLocaleDateString()}`
+                    : ''}{' '}
+                  while keeping lineage links intact for descendants.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onRestoreArchivedHerdBundle && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void onRestoreArchivedHerdBundle(activeAnimal.offloadedArchiveKey!, {
+                        restoreToActiveStatus: false,
+                        deleteArchiveAfterRestore: true,
+                      })
+                    }
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <ArchiveRestore className="w-3.5 h-3.5" aria-hidden="true" />
+                    Restore Full Photos &amp; Logs
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowArchivedHerdsModal(true)}
+                  className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                >
+                  Open /archives
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-6">
             {/* Header & Cage-Side Print/Tree Actions */}
@@ -1689,6 +1751,20 @@ export function HerdScreen({
                     Move to Archived
                   </button>
 
+                  {opfsSupported && onOffloadAnimalsToOpfsArchive && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await onOffloadAnimalsToOpfsArchive(checkedIds);
+                        setCheckedIds([]);
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Archive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Offload to OPFS /archives
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => {
@@ -1800,7 +1876,17 @@ export function HerdScreen({
                     />
                     <span>Select All Shown ({filteredAnimals.length})</span>
                   </label>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {(opfsSupported || archivedHerdBundles.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowArchivedHerdsModal(true)}
+                        className="text-xs font-medium text-[var(--barn-sage)] hover:underline inline-flex items-center gap-1"
+                      >
+                        <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                        Archived Herds /archives ({archivedHerdBundles.length})
+                      </button>
+                    )}
                     <span>Tap any animal row to open its full page</span>
                   </div>
                 </div>
@@ -1918,6 +2004,7 @@ export function HerdScreen({
                                   ? ` · ${normalizeOwnershipType(a.ownershipType)}`
                                   : ''}
                                 {a.culled ? ' · Flagged Cull' : ''}
+                                {a.offloadedArchiveKey ? ' · Offloaded Stub' : ''}
                                 {a.cageLocation ? ` · ${a.cageLocation}` : ''}
                               </div>
                               {(() => {
@@ -1998,11 +2085,51 @@ export function HerdScreen({
           optimizationPresetId={settings.imageOptimizationPreset}
           defaultBreederName={settings.breederName}
           defaultOwnerName={settings.barnName}
+          opfsSupported={opfsSupported}
+          autoOffloadRetiredToOpfs={Boolean(settings.autoOffloadRetiredToOpfs)}
           onSave={onSaveAnimal}
+          onOffloadRetiredAnimal={
+            onOffloadAnimalsToOpfsArchive
+              ? async (animalId) => {
+                  await onOffloadAnimalsToOpfsArchive([animalId]);
+                }
+              : undefined
+          }
+          onSetAutoOffloadRetired={
+            onUpdateSettings
+              ? (enabled) => onUpdateSettings({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
+              : undefined
+          }
           onDelete={onDeleteAnimal}
           onClose={() => setShowAnimalModal(false)}
         />
       )}
+
+      <ArchivedHerdsModal
+        isOpen={showArchivedHerdsModal}
+        opfsSupported={opfsSupported}
+        archives={archivedHerdBundles}
+        autoOffloadEnabled={Boolean(settings.autoOffloadRetiredToOpfs)}
+        onToggleAutoOffload={(enabled) =>
+          onUpdateSettings?.({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
+        }
+        onRestoreArchive={async (archiveKey, opts) => {
+          if (onRestoreArchivedHerdBundle) {
+            await onRestoreArchivedHerdBundle(archiveKey, opts);
+          }
+        }}
+        onDownloadArchive={async (archiveKey) => {
+          if (onDownloadArchivedHerdBundle) {
+            await onDownloadArchivedHerdBundle(archiveKey);
+          }
+        }}
+        onDeleteArchive={async (archiveKey) => {
+          if (onDeleteArchivedHerdBundle) {
+            await onDeleteArchivedHerdBundle(archiveKey);
+          }
+        }}
+        onClose={() => setShowArchivedHerdsModal(false)}
+      />
 
       {migrationModalState && (
         <SpeciesMigrationModal

@@ -22,6 +22,7 @@ import {
   ShowEvent,
   SpeciesProfile,
 } from '../core/models';
+import type { WipedStorageRecoveryContext } from './opfsStorage';
 
 export interface SnapshotLoadOptions {
   /**
@@ -30,6 +31,11 @@ export interface SnapshotLoadOptions {
    * stay lightweight in JS memory. Full-resolution images are loaded on demand.
    */
   lightweightPhotos?: boolean;
+  /**
+   * When true, allows initializing/seeding starter sample data even if returning-user
+   * evidence (prior-use sentinel or OPFS backups) exists.
+   */
+  allowSeedFresh?: boolean;
 }
 
 export interface StorageAdapter {
@@ -103,4 +109,7 @@ export interface StorageAdapter {
 
   /** Purges and rebuilds a corrupted primary IndexedDB/SQLite store cleanly from starter schema. */
   rebuildCleanDatabase?(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
+
+  /** Returns detected wiped-storage recovery state when IndexedDB appeared wiped for a returning user. */
+  getWipedRecoveryContext?(): WipedStorageRecoveryContext | null;
 }

@@ -4,13 +4,6 @@ import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-function normalizeBasePath(raw?: string): string {
-  const trimmed = (raw || '').trim();
-  if (!trimmed || trimmed === '/') return '/';
-  const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
-}
-
 function devServiceWorkerCleanupPlugin(): Plugin {
   const selfDestructSw = `
 self.addEventListener('install', () => { self.skipWaiting(); });
@@ -46,7 +39,7 @@ self.addEventListener('activate', (event) => {
 }
 
 export default defineConfig(() => {
-  const basePath = normalizeBasePath(process.env.VITE_BASE_PATH);
+  const basePath = '/';
 
   return {
     base: basePath,
