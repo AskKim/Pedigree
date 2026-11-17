@@ -3,11 +3,118 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Minimal zero-dependency ES2018 runtime shims.
- * Targets 2018-era browsers (Chrome 68+, Safari 12+, Firefox 63+, Edge 79+) without core-js bloat:
+ * Targets 2018-era browsers (Chrome 68+, Safari 12+, Firefox 63+, Edge 79+ — and older where possible)
+ * without core-js bloat:
  * - globalThis (ES2020)
  * - Promise.allSettled (ES2020)
  * - Object.fromEntries (ES2019)
+ * - Blob.prototype.arrayBuffer / Blob.prototype.text (Chrome 76+ / Safari 14+ -> FileReader fallback)
+ * - String.prototype.trimStart / trimEnd (Chrome 66+ / Safari 12+)
  */
+
+type MarkedShimFn = ((...args: any[]) => any) & { __pedigreeEs2018Shim?: boolean };
+
+/**
+ * Reads any Blob/File into an ArrayBuffer safely on 2018 browsers (Chrome 68–75, Safari 12–13,
+ * Firefox 63–68) where native `Blob.prototype.arrayBuffer()` does not exist yet.
+ */
+export function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
+  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+    return Promise.resolve(candidate.call(blob));
+  }
+
+  if (typeof FileReader === 'function') {
+    return new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (reader.result instanceof ArrayBuffer) {
+          resolve(reader.result);
+        } else {
+          reject(new Error('FileReader did not return an ArrayBuffer.'));
+        }
+      };
+      reader.onerror = () => {
+        reject(reader.error || new Error('Failed to read binary file data.'));
+      };
+      reader.onabort = () => {
+        reject(new Error('Binary file read was aborted.'));
+      };
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  if (typeof Response === 'function') {
+    return new Response(blob).arrayBuffer();
+  }
+
+  return Promise.reject(new Error('Blob binary reader is unavailable in this browser.'));
+}
+
+/**
+ * Reads any Blob/File as UTF-8 text safely on 2018 browsers where native `Blob.prototype.text()`
+ * is unavailable, falling back to `FileReader.prototype.readAsText` or `TextDecoder`.
+ */
+export function readBlobAsText(blob: Blob): Promise<string> {
+  const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
+  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+    return Promise.resolve(candidate.call(blob));
+  }
+
+  if (typeof FileReader === 'function') {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(typeof reader.result === 'string' ? reader.result : '');
+      };
+      reader.onerror = () => {
+        reject(reader.error || new Error('Failed to read text file data.'));
+      };
+      reader.onabort = () => {
+        reject(new Error('Text file read was aborted.'));
+      };
+      reader.readAsText(blob, 'utf-8');
+    });
+  }
+
+  if (typeof Response === 'function') {
+    return new Response(blob).text();
+  }
+
+  return readBlobAsArrayBuffer(blob).then((buf) => {
+    if (typeof TextDecoder === 'function') {
+      return new TextDecoder('utf-8').decode(new Uint8Array(buf));
+    }
+    const bytes = new Uint8Array(buf);
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 1) {
+      out += String.fromCharCode(bytes[i]);
+    }
+    return out;
+  });
+}
+
+function defineNonEnumerableMethod(
+  proto: Record<string, any> | undefined,
+  methodName: string,
+  fn: MarkedShimFn
+): void {
+  if (!proto || typeof proto[methodName] === 'function') return;
+  try {
+    Object.defineProperty(proto, methodName, {
+      value: fn,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  } catch {
+    try {
+      proto[methodName] = fn;
+    } catch {
+      // Ignore frozen prototypes
+    }
+  }
+}
 
 export function ensureEs2018Globals(host?: Record<string, unknown>): void {
   const g: Record<string, any> | undefined =
@@ -64,6 +171,40 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
       }
       return out;
     };
+  }
+
+  const blobCtor = (g.Blob ?? (typeof Blob === 'function' ? Blob : undefined)) as
+    | { prototype?: Record<string, any> }
+    | undefined;
+  if (blobCtor?.prototype) {
+    const arrayBufferShim: MarkedShimFn = function blobArrayBufferShim(this: Blob) {
+      return readBlobAsArrayBuffer(this);
+    };
+    arrayBufferShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(blobCtor.prototype, 'arrayBuffer', arrayBufferShim);
+
+    const textShim: MarkedShimFn = function blobTextShim(this: Blob) {
+      return readBlobAsText(this);
+    };
+    textShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(blobCtor.prototype, 'text', textShim);
+  }
+
+  const stringCtor = (g.String ?? String) as { prototype?: Record<string, any> } | undefined;
+  if (stringCtor?.prototype) {
+    const trimStartShim: MarkedShimFn = function stringTrimStartShim(this: string) {
+      return typeof (this as any).trimLeft === 'function'
+        ? (this as any).trimLeft()
+        : String(this).replace(/^[\s\uFEFF\xA0]+/, '');
+    };
+    defineNonEnumerableMethod(stringCtor.prototype, 'trimStart', trimStartShim);
+
+    const trimEndShim: MarkedShimFn = function stringTrimEndShim(this: string) {
+      return typeof (this as any).trimRight === 'function'
+        ? (this as any).trimRight()
+        : String(this).replace(/[\s\uFEFF\xA0]+$/, '');
+    };
+    defineNonEnumerableMethod(stringCtor.prototype, 'trimEnd', trimEndShim);
   }
 }
 

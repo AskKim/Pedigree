@@ -9,6 +9,7 @@
  * photos or unpacking multi-thousand-record CSV/HTM/JSON pedigree archives.
  */
 
+import '../utils/es2018Shims';
 import {
   inspectParsedArchiveBeforeRestorePure,
 } from '../core/archiveInspector';

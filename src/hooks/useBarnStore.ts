@@ -59,7 +59,6 @@ import {
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
   normalizeUltrasoundResult,
-  nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
   ServiceFeeDirection,
@@ -140,17 +139,18 @@ import {
   allocateNextLogicalCounter,
   appendSyncConflictsToIdb,
   appendSyncOperationsToIdb,
-  BackupSinkStatus,
+  BackupSyncStatus,
   buildDeltaFilePayload,
-  configureBackupSinkFolder,
-  disconnectBackupSinkFolder,
+  configureBackupSyncFolder,
+  disconnectBackupSyncFolder,
   getOrCreateLocalDeviceId,
-  getPersistedBackupSinkStatus,
+  getPersistedBackupSyncStatus,
   loadAllSyncConflictsFromIdb,
   loadAllSyncOperationsFromIdb,
-  reauthorizeBackupSinkFolder,
+  reauthorizeBackupSyncFolder,
   replaceSyncOperationsInIdb,
   saveSyncConflictInIdb,
+  subscribeCrossTabDbCommits,
 } from '../storage/localSyncChannels';
 import {
   assertForegroundOrPause,
@@ -183,6 +183,7 @@ import {
   checkStorageStatus,
   deleteRollingSnapshotBackup,
   getAdjustedNowIsoUtc,
+  getAdjustedNowMs,
   getEffectiveOnlineStatus,
   isQuotaExceededError,
   listRollingSnapshotBackups,
@@ -191,25 +192,26 @@ import {
   RollingBackupMeta,
   saveRollingSnapshotBackup,
   StorageProtectionStatus,
+  useConnectivityStatus,
 } from '../storage/storageProtection';
 import { reoptimizeAnimalPhotoRecord } from '../storage/webImageOptimizer';
 import { detectCurrentDeviceCapability } from '../storage/deviceCapabilityDetector';
 import { markPreUpgradeBackupVerified } from '../storage/pwaUpdateManager';
 import {
-  clearOpfsPruneSinkWarning,
+  clearOpfsPruneSyncWarning,
   clearPriorUseSentinel,
   deleteOpfsHerdArchive,
   deleteOpfsVaultBackup,
-  flushOpfsBackupsToSinkFolder,
+  flushOpfsBackupsToSyncFolder,
   isOpfsSupported,
   listOpfsHerdArchives,
   listOpfsVaultBackups,
   loadOpfsHerdArchive,
   loadOpfsVaultBackup,
   markPriorUseSentinelFromSnapshot,
-  OpfsPruneSinkWarning,
+  OpfsPruneSyncWarning,
   readOpfsHerdArchiveBlob,
-  readOpfsPruneSinkWarning,
+  readOpfsPruneSyncWarning,
   readOpfsVaultBackupBlob,
   runOpfsExportCanary,
   saveOpfsHerdArchive,
@@ -301,6 +303,7 @@ export function useBarnStore() {
     } | null>) | null
   >(null);
 
+  const { clockSkewMs } = useConnectivityStatus();
   const [deviceId] = useState<string>(() => getOrCreateLocalDeviceId());
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [snapshot, setSnapshot] = useState<BarnDatabaseSnapshot | null>(null);
@@ -330,6 +333,8 @@ export function useBarnStore() {
   const syncOperationsRef = useRef<SyncOperation[]>([]);
   syncOperationsRef.current = syncOperations;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflictEntry[]>([]);
+  const syncConflictsRef = useRef<SyncConflictEntry[]>([]);
+  syncConflictsRef.current = syncConflicts;
   const [openAddSpeciesInSettings, setOpenAddSpeciesInSettings] = useState<boolean>(false);
   const [localLastBackupMeta, setLocalLastBackupMeta] = useState<LastBackupMeta | null>(() => {
     try {
@@ -354,9 +359,9 @@ export function useBarnStore() {
   const [wipedRecoveryContext, setWipedRecoveryContext] =
     useState<WipedStorageRecoveryContext | null>(null);
   const [exportCanaryWarning, setExportCanaryWarning] = useState<string | null>(null);
-  const [backupSinkStatus, setBackupSinkStatus] = useState<BackupSinkStatus | null>(null);
-  const [pruneSinkWarning, setPruneSinkWarning] = useState<OpfsPruneSinkWarning | null>(() =>
-    readOpfsPruneSinkWarning()
+  const [backupSyncStatus, setBackupSyncStatus] = useState<BackupSyncStatus | null>(null);
+  const [pruneSyncWarning, setPruneSyncWarning] = useState<OpfsPruneSyncWarning | null>(() =>
+    readOpfsPruneSyncWarning()
   );
 
   const nextEntityRev = useCallback((entityUuid: string, currentRev?: number): number => {
@@ -452,8 +457,10 @@ export function useBarnStore() {
 
   const recordOutboxOps = useCallback(async (ops: SyncOperation[]) => {
     if (ops.length === 0) return;
-    await appendSyncOperationsToIdb(ops);
-    setSyncOperations((prev) => [...prev, ...ops]);
+    const writtenOps = await appendSyncOperationsToIdb(ops);
+    const nextOps = [...syncOperationsRef.current, ...writtenOps];
+    syncOperationsRef.current = nextOps;
+    setSyncOperations(nextOps);
   }, []);
 
   const refreshStorageStatus = useCallback(async () => {
@@ -463,17 +470,17 @@ export function useBarnStore() {
   }, []);
 
   const refreshVaultAndArchives = useCallback(async () => {
-    const [opfsRes, rollingRes, archivesRes, sinkRes] = await Promise.allSettled([
+    const [opfsRes, rollingRes, archivesRes, syncRes] = await Promise.allSettled([
       listOpfsVaultBackups(),
       listRollingSnapshotBackups(),
       listOpfsHerdArchives(),
-      getPersistedBackupSinkStatus(),
+      getPersistedBackupSyncStatus(),
     ]);
     if (opfsRes.status === 'fulfilled') setOpfsVaultBackups(opfsRes.value);
     if (rollingRes.status === 'fulfilled') setRollingBackups(rollingRes.value);
     if (archivesRes.status === 'fulfilled') setArchivedHerdBundles(archivesRes.value);
-    if (sinkRes.status === 'fulfilled') setBackupSinkStatus(sinkRes.value);
-    setPruneSinkWarning(readOpfsPruneSinkWarning());
+    if (syncRes.status === 'fulfilled') setBackupSyncStatus(syncRes.value);
+    setPruneSyncWarning(readOpfsPruneSyncWarning());
   }, []);
 
   const triggerPersistentStorageRequest = useCallback(async () => {
@@ -920,13 +927,14 @@ export function useBarnStore() {
 
   const backupStatus: BackupStatusEvaluation | null = useMemo(() => {
     if (!snapshot) return null;
+    void clockSkewMs;
     return evaluateBackupStatus(
       snapshot,
       effectiveLastBackupMeta,
-      Date.now(),
+      getAdjustedNowMs(),
       effectiveBackupSnoozedUntilMs
     );
-  }, [snapshot, effectiveLastBackupMeta, effectiveBackupSnoozedUntilMs]);
+  }, [snapshot, effectiveLastBackupMeta, effectiveBackupSnoozedUntilMs, clockSkewMs]);
 
   const loadAnimalPhotoDataUrl = useCallback(
     async (photoId: string): Promise<string | null> => {
@@ -988,10 +996,54 @@ export function useBarnStore() {
 
   const reloadFromAdapter = useCallback(async () => {
     const fresh = await adapterRef.current!.loadSnapshot({ lightweightPhotos: true });
+    snapshotRef.current = fresh;
     setSnapshot(fresh);
     void refreshStorageStatus();
     void refreshVaultAndArchives();
   }, [refreshStorageStatus, refreshVaultAndArchives]);
+
+  const reloadFromAdapterSilently = useCallback(async () => {
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+    const [fresh, freshOps, freshConflicts] = await Promise.all([
+      adapter.loadSnapshot({ lightweightPhotos: true }),
+      loadAllSyncOperationsFromIdb().catch(() => syncOperationsRef.current),
+      loadAllSyncConflictsFromIdb().catch(() => syncConflictsRef.current),
+    ]);
+    photoCacheRef.current?.clear();
+    snapshotRef.current = fresh;
+    setSnapshot(fresh);
+    setPedigreeGenerations(fresh.settings.defaultGenerations);
+    syncOperationsRef.current = freshOps;
+    setSyncOperations(freshOps);
+    syncConflictsRef.current = freshConflicts;
+    setSyncConflicts(freshConflicts);
+
+    const animalIds = new Set(fresh.animals.map((a) => a.id));
+    setSelectedAnimalId((prev) => (prev && !animalIds.has(prev) ? null : prev));
+    setPedigreeAnimalId((prev) => (prev && !animalIds.has(prev) ? null : prev));
+
+    const taskIds = new Set(fresh.tasks.map((t) => t.id));
+    setHighlightedTaskId((prev) => (prev && !taskIds.has(prev) ? null : prev));
+
+    setActiveSpeciesName((prev) => {
+      if (fresh.speciesProfiles.some((sp) => isSameSpecies(sp.name, prev))) {
+        return prev;
+      }
+      return fresh.speciesProfiles[0]?.name || fresh.settings.defaultSpecies || prev;
+    });
+
+    void refreshStorageStatus();
+    void refreshVaultAndArchives();
+  }, [refreshStorageStatus, refreshVaultAndArchives]);
+
+  // Silently reload Tab B whenever another tab commits a new IndexedDB epoch
+  useEffect(() => {
+    if (isLoading) return;
+    return subscribeCrossTabDbCommits(() => {
+      void enqueueStoreMutation(() => reloadFromAdapterSilently());
+    });
+  }, [isLoading, enqueueStoreMutation, reloadFromAdapterSilently]);
 
   // Keep prior-use sentinel synced with active non-wiped barn data
   useEffect(() => {
@@ -999,15 +1051,26 @@ export function useBarnStore() {
     markPriorUseSentinelFromSnapshot(snapshot);
   }, [snapshot, isLoading, wipedRecoveryContext]);
 
-  // Trim cached full-res photos whenever the browser tab moves to the background (via shared freeze dispatcher)
+  // Trim cached full-res photos on hide, and catch any remote-tab writes when returning visible
   useEffect(() => {
     return registerFreezeLifecycleListener({
       id: 'barn-store-photo-cache-trim',
       onHidden: () => {
         photoCacheRef.current?.clear();
       },
+      onVisible: () => {
+        if (isLoading) return;
+        const adapter = adapterRef.current;
+        if (!adapter?.syncFromPersistedStorageIfStale) return;
+        void enqueueStoreMutation(async () => {
+          const updated = await adapter.syncFromPersistedStorageIfStale!();
+          if (updated) {
+            await reloadFromAdapterSilently();
+          }
+        });
+      },
     });
-  }, []);
+  }, [isLoading, enqueueStoreMutation, reloadFromAdapterSilently]);
 
   const hasSnapshotReady = Boolean(snapshot);
   const wipedRecoveryDetected = Boolean(wipedRecoveryContext?.detected);
@@ -1131,14 +1194,15 @@ export function useBarnStore() {
     refreshVaultAndArchives,
   ]);
 
-  const updateSettings = useCallback(
+  const updateSettingsInternal = useCallback(
     async (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => {
-      if (!snapshot) return;
+      const currentSnapshot = snapshotRef.current;
+      if (!currentSnapshot) return;
       try {
         const ts = getAdjustedNowIsoUtc();
-        const rev = nextEntityRev(snapshot.settings.id, snapshot.settings._rev);
+        const rev = nextEntityRev(currentSnapshot.settings.id, currentSnapshot.settings._rev);
         const updated: BarnSettings = {
-          ...snapshot.settings,
+          ...currentSnapshot.settings,
           ...patch,
           _rev: rev,
           updatedAt: ts,
@@ -1146,7 +1210,7 @@ export function useBarnStore() {
         await adapterRef.current!.saveSettings(updated);
         const ops = diffEntityFieldsToOperations({
           entityType: 'settings',
-          previous: snapshot.settings,
+          previous: currentSnapshot.settings,
           next: updated,
           deviceId,
           nextCounter: allocateNextLogicalCounter,
@@ -1157,6 +1221,7 @@ export function useBarnStore() {
         if (patch.defaultGenerations) {
           setPedigreeGenerations(patch.defaultGenerations);
         }
+        snapshotRef.current = { ...currentSnapshot, settings: updated };
         setSnapshot((prev) => (prev ? { ...prev, settings: updated } : prev));
         if (!options?.silent) {
           notify('Barn preferences saved locally.');
@@ -1165,19 +1230,30 @@ export function useBarnStore() {
         reportPersistenceFailure('save barn preferences', err);
       }
     },
-    [snapshot, deviceId, nextEntityRev, recordOutboxOps, notify, reportPersistenceFailure]
+    [deviceId, nextEntityRev, recordOutboxOps, notify, reportPersistenceFailure]
+  );
+
+  const updateSettings = useCallback(
+    async (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => {
+      return enqueueStoreMutation(() => updateSettingsInternal(patch, options));
+    },
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const ignoreTaskAlertsPermanently = useCallback(
     async (taskIds: string[]) => {
-      if (!snapshot || taskIds.length === 0) return;
-      const merged = Array.from(
-        new Set([...(snapshot.settings.ignoredTaskIds || []), ...taskIds])
-      );
-      await updateSettings({ ignoredTaskIds: merged }, { silent: true });
-      notify(`Dismissed ${taskIds.length} task alert(s) permanently.`);
+      if (taskIds.length === 0) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const merged = Array.from(
+          new Set([...(currentSnapshot.settings.ignoredTaskIds || []), ...taskIds])
+        );
+        await updateSettingsInternal({ ignoredTaskIds: merged }, { silent: true });
+        notify(`Dismissed ${taskIds.length} task alert(s) permanently.`);
+      });
     },
-    [snapshot, updateSettings, notify]
+    [enqueueStoreMutation, updateSettingsInternal, notify]
   );
 
   const clearTaskAlertGroup = useCallback(
@@ -1185,31 +1261,42 @@ export function useBarnStore() {
       const isEmpty = Array.isArray(groupSignature)
         ? groupSignature.length === 0
         : !groupSignature;
-      if (!snapshot || isEmpty) return;
-      const key = speciesName.trim().toLowerCase();
-      const prevMap = snapshot.settings.dismissedTaskGroupKeys || {};
-      const nextMap: Record<string, string | string[]> = { ...prevMap, [key]: groupSignature };
-      await updateSettings({ dismissedTaskGroupKeys: nextMap }, { silent: true });
-      notify(`Cleared alert for current ${speciesName} overdue tasks.`);
+      if (isEmpty) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const key = speciesName.trim().toLowerCase();
+        const prevMap = currentSnapshot.settings.dismissedTaskGroupKeys || {};
+        const nextMap: Record<string, string | string[]> = { ...prevMap, [key]: groupSignature };
+        await updateSettingsInternal({ dismissedTaskGroupKeys: nextMap }, { silent: true });
+        notify(`Cleared alert for current ${speciesName} overdue tasks.`);
+      });
     },
-    [snapshot, updateSettings, notify]
+    [enqueueStoreMutation, updateSettingsInternal, notify]
   );
 
   const dismissSpeciesMemoAlert = useCallback(
     async (speciesName: string, memoSignature: string) => {
-      if (!snapshot || !memoSignature) return;
-      const key = speciesName.trim().toLowerCase();
-      const prevMap = snapshot.settings.dismissedMemoAlertSignatures || {};
-      const nextMap: Record<string, string> = { ...prevMap, [key]: memoSignature };
-      await updateSettings({ dismissedMemoAlertSignatures: nextMap }, { silent: true });
+      if (!memoSignature) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const key = speciesName.trim().toLowerCase();
+        const prevMap = currentSnapshot.settings.dismissedMemoAlertSignatures || {};
+        const nextMap: Record<string, string> = { ...prevMap, [key]: memoSignature };
+        await updateSettingsInternal(
+          { dismissedMemoAlertSignatures: nextMap },
+          { silent: true }
+        );
+      });
     },
-    [snapshot, updateSettings]
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const recordBackupExport = useCallback(
     async (format: 'zip' | 'sqlite' | 'json', fileName?: string) => {
       const meta: LastBackupMeta = {
-        exportedAtIso: nowIsoUtc(),
+        exportedAtIso: getAdjustedNowIsoUtc(),
         format,
         fileName,
       };
@@ -1221,194 +1308,210 @@ export function useBarnStore() {
       } catch {
         // Ignore private browsing storage quota warnings
       }
-      if (snapshot) {
-        await updateSettings(
-          { lastBackupMeta: meta, backupReminderSnoozedUntilMs: 0 },
-          { silent: true }
+      if (snapshotRef.current) {
+        await enqueueStoreMutation(() =>
+          updateSettingsInternal(
+            { lastBackupMeta: meta, backupReminderSnoozedUntilMs: 0 },
+            { silent: true }
+          )
         );
       }
     },
-    [snapshot, updateSettings]
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const snoozeBackupReminder = useCallback(
     async (hours: number = 24) => {
-      const untilMs = Date.now() + hours * 60 * 60 * 1000;
+      const untilMs = getAdjustedNowMs() + hours * 60 * 60 * 1000;
       setLocalSnoozedUntilMs(untilMs);
       try {
         localStorage.setItem('pedigree.backupReminderSnoozedUntil.v1', String(untilMs));
       } catch {
         // Ignore storage warnings
       }
-      if (snapshot) {
-        await updateSettings({ backupReminderSnoozedUntilMs: untilMs }, { silent: true });
+      if (snapshotRef.current) {
+        await enqueueStoreMutation(() =>
+          updateSettingsInternal({ backupReminderSnoozedUntilMs: untilMs }, { silent: true })
+        );
       }
     },
-    [snapshot, updateSettings]
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const togglePinSpeciesLanding = useCallback(
     async (speciesName: string) => {
-      if (!snapshot) return;
-      const currentlyPinned = isSameSpecies(snapshot.settings.pinnedLandingSpecies, speciesName);
-      const nextPinned = currentlyPinned ? '' : speciesName;
-      await updateSettings({ pinnedLandingSpecies: nextPinned }, { silent: true });
-      notify(
-        nextPinned
-          ? `Pinned ${speciesName} hub as your startup landing page.`
-          : 'Unpinned startup species — app will open on All-Species Home.'
-      );
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const currentlyPinned = isSameSpecies(
+          currentSnapshot.settings.pinnedLandingSpecies,
+          speciesName
+        );
+        const nextPinned = currentlyPinned ? '' : speciesName;
+        await updateSettingsInternal({ pinnedLandingSpecies: nextPinned }, { silent: true });
+        notify(
+          nextPinned
+            ? `Pinned ${speciesName} hub as your startup landing page.`
+            : 'Unpinned startup species — app will open on All-Species Home.'
+        );
+      });
     },
-    [snapshot, updateSettings, notify]
+    [enqueueStoreMutation, updateSettingsInternal, notify]
   );
 
   const saveSpeciesProfile = useCallback(
-    async (profile: SpeciesProfile) => {
-      const ts = getAdjustedNowIsoUtc();
-      const existing = snapshot?.speciesProfiles.find((sp) => sp.id === profile.id);
-      try {
-        if (existing) {
-          const rev = nextEntityRev(existing.id, existing._rev);
-          const clean: SpeciesProfile = {
-            ...profile,
-            sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
-            name: profile.name.trim(),
-            defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
-            memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
-            memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
-            _rev: rev,
-            createdAt: profile.createdAt || existing.createdAt || ts,
-            updatedAt: ts,
-          };
-
-          const renamed =
-            snapshot && !isSameSpecies(existing.name, clean.name);
-          if (renamed && snapshot) {
-            const oldName = existing.name;
-            const newName = clean.name;
-            const oldKey = oldName.trim().toLowerCase();
-            const newKey = newName.trim().toLowerCase();
-
-            const nextDismissedTaskGroups = {
-              ...(snapshot.settings.dismissedTaskGroupKeys || {}),
+    async (profile: SpeciesProfile): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const ts = getAdjustedNowIsoUtc();
+        const existing = currentSnapshot?.speciesProfiles.find((sp) => sp.id === profile.id);
+        try {
+          if (existing) {
+            const rev = nextEntityRev(existing.id, existing._rev);
+            const clean: SpeciesProfile = {
+              ...profile,
+              sortOrder: profile.sortOrder ?? existing.sortOrder ?? 0,
+              name: profile.name.trim(),
+              defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+              memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
+              memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
+              _rev: rev,
+              createdAt: profile.createdAt || existing.createdAt || ts,
+              updatedAt: ts,
             };
-            if (oldKey in nextDismissedTaskGroups) {
-              nextDismissedTaskGroups[newKey] = nextDismissedTaskGroups[oldKey];
-              delete nextDismissedTaskGroups[oldKey];
-            }
-            const nextDismissedMemos = {
-              ...(snapshot.settings.dismissedMemoAlertSignatures || {}),
-            };
-            if (oldKey in nextDismissedMemos) {
-              nextDismissedMemos[newKey] = nextDismissedMemos[oldKey];
-              delete nextDismissedMemos[oldKey];
+
+            const renamed =
+              currentSnapshot && !isSameSpecies(existing.name, clean.name);
+            if (renamed && currentSnapshot) {
+              const oldName = existing.name;
+              const newName = clean.name;
+              const oldKey = oldName.trim().toLowerCase();
+              const newKey = newName.trim().toLowerCase();
+
+              const nextDismissedTaskGroups = {
+                ...(currentSnapshot.settings.dismissedTaskGroupKeys || {}),
+              };
+              if (oldKey in nextDismissedTaskGroups) {
+                nextDismissedTaskGroups[newKey] = nextDismissedTaskGroups[oldKey];
+                delete nextDismissedTaskGroups[oldKey];
+              }
+              const nextDismissedMemos = {
+                ...(currentSnapshot.settings.dismissedMemoAlertSignatures || {}),
+              };
+              if (oldKey in nextDismissedMemos) {
+                nextDismissedMemos[newKey] = nextDismissedMemos[oldKey];
+                delete nextDismissedMemos[oldKey];
+              }
+
+              const renamedSnapshot: BarnDatabaseSnapshot = {
+                ...currentSnapshot,
+                settings: {
+                  ...currentSnapshot.settings,
+                  defaultSpecies: isSameSpecies(currentSnapshot.settings.defaultSpecies, oldName)
+                    ? newName
+                    : currentSnapshot.settings.defaultSpecies,
+                  pinnedLandingSpecies: isSameSpecies(
+                    currentSnapshot.settings.pinnedLandingSpecies,
+                    oldName
+                  )
+                    ? newName
+                    : currentSnapshot.settings.pinnedLandingSpecies,
+                  dismissedTaskGroupKeys: nextDismissedTaskGroups,
+                  dismissedMemoAlertSignatures: nextDismissedMemos,
+                  updatedAt: ts,
+                },
+                speciesProfiles: currentSnapshot.speciesProfiles.map((sp) =>
+                  sp.id === clean.id ? clean : sp
+                ),
+                animals: currentSnapshot.animals.map((a) =>
+                  isSameSpecies(a.species, oldName) ? { ...a, species: newName, updatedAt: ts } : a
+                ),
+                animalPhotos: (currentSnapshot.animalPhotos ?? []).map((p) =>
+                  isSameSpecies(p.species, oldName) ? { ...p, species: newName, updatedAt: ts } : p
+                ),
+                cages: currentSnapshot.cages.map((c) =>
+                  isSameSpecies(c.species, oldName) ? { ...c, species: newName, updatedAt: ts } : c
+                ),
+                breedings: currentSnapshot.breedings.map((b) =>
+                  isSameSpecies(b.species, oldName) ? { ...b, species: newName, updatedAt: ts } : b
+                ),
+                tasks: currentSnapshot.tasks.map((t) =>
+                  isSameSpecies(t.species, oldName) ? { ...t, species: newName, updatedAt: ts } : t
+                ),
+                careLogs: currentSnapshot.careLogs.map((l) =>
+                  isSameSpecies(l.species, oldName) ? { ...l, species: newName, updatedAt: ts } : l
+                ),
+                shows: currentSnapshot.shows.map((s) =>
+                  isSameSpecies(s.species, oldName) ? { ...s, species: newName, updatedAt: ts } : s
+                ),
+              };
+              await adapterRef.current!.replaceSnapshot(renamedSnapshot);
+              if (isSameSpecies(activeSpeciesName, oldName)) {
+                setActiveSpeciesName(newName);
+              }
+            } else {
+              await adapterRef.current!.saveSpeciesProfile(clean);
             }
 
-            const renamedSnapshot: BarnDatabaseSnapshot = {
-              ...snapshot,
-              settings: {
-                ...snapshot.settings,
-                defaultSpecies: isSameSpecies(snapshot.settings.defaultSpecies, oldName)
-                  ? newName
-                  : snapshot.settings.defaultSpecies,
-                pinnedLandingSpecies: isSameSpecies(snapshot.settings.pinnedLandingSpecies, oldName)
-                  ? newName
-                  : snapshot.settings.pinnedLandingSpecies,
-                dismissedTaskGroupKeys: nextDismissedTaskGroups,
-                dismissedMemoAlertSignatures: nextDismissedMemos,
-                updatedAt: ts,
-              },
-              speciesProfiles: snapshot.speciesProfiles.map((sp) =>
-                sp.id === clean.id ? clean : sp
-              ),
-              animals: snapshot.animals.map((a) =>
-                isSameSpecies(a.species, oldName) ? { ...a, species: newName, updatedAt: ts } : a
-              ),
-              animalPhotos: (snapshot.animalPhotos ?? []).map((p) =>
-                isSameSpecies(p.species, oldName) ? { ...p, species: newName, updatedAt: ts } : p
-              ),
-              cages: snapshot.cages.map((c) =>
-                isSameSpecies(c.species, oldName) ? { ...c, species: newName, updatedAt: ts } : c
-              ),
-              breedings: snapshot.breedings.map((b) =>
-                isSameSpecies(b.species, oldName) ? { ...b, species: newName, updatedAt: ts } : b
-              ),
-              tasks: snapshot.tasks.map((t) =>
-                isSameSpecies(t.species, oldName) ? { ...t, species: newName, updatedAt: ts } : t
-              ),
-              careLogs: snapshot.careLogs.map((l) =>
-                isSameSpecies(l.species, oldName) ? { ...l, species: newName, updatedAt: ts } : l
-              ),
-              shows: snapshot.shows.map((s) =>
-                isSameSpecies(s.species, oldName) ? { ...s, species: newName, updatedAt: ts } : s
-              ),
-            };
-            await adapterRef.current!.replaceSnapshot(renamedSnapshot);
-            if (isSameSpecies(activeSpeciesName, oldName)) {
-              setActiveSpeciesName(newName);
-            }
+            await recordOutboxOps(
+              diffEntityFieldsToOperations({
+                entityType: 'species',
+                previous: existing,
+                next: clean,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: rev,
+              })
+            );
+            await reloadFromAdapter();
+            notify(
+              renamed
+                ? `Renamed ${existing.name} to ${clean.name} across all barn records.`
+                : `${clean.name} schedule saved.`
+            );
           } else {
-            await adapterRef.current!.saveSpeciesProfile(clean);
+            const currentList = currentSnapshot?.speciesProfiles ?? [];
+            const newId = profile.id || `species-${generateUuid()}`;
+            const rev = nextEntityRev(newId, profile._rev);
+            const cleanNew: SpeciesProfile = {
+              ...profile,
+              id: newId,
+              sortOrder: currentList.length,
+              name: profile.name.trim(),
+              defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
+              memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
+              memoUpdatedAt: profile.memoUpdatedAt ?? '',
+              _rev: rev,
+              createdAt: profile.createdAt || ts,
+              updatedAt: ts,
+            };
+            await adapterRef.current!.saveSpeciesProfile(cleanNew);
+            await recordOutboxOps(
+              diffEntityFieldsToOperations({
+                entityType: 'species',
+                previous: undefined,
+                next: cleanNew,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: rev,
+              })
+            );
+            await reloadFromAdapter();
+            notify(`${cleanNew.name} added to your barn.`);
           }
-
-          await recordOutboxOps(
-            diffEntityFieldsToOperations({
-              entityType: 'species',
-              previous: existing,
-              next: clean,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-              timestamp: ts,
-              recordRev: rev,
-            })
-          );
-          await reloadFromAdapter();
-          notify(
-            renamed
-              ? `Renamed ${existing.name} to ${clean.name} across all barn records.`
-              : `${clean.name} schedule saved.`
-          );
-        } else {
-          const currentList = snapshot?.speciesProfiles ?? [];
-          const newId = profile.id || `species-${generateUuid()}`;
-          const rev = nextEntityRev(newId, profile._rev);
-          const cleanNew: SpeciesProfile = {
-            ...profile,
-            id: newId,
-            sortOrder: currentList.length,
-            name: profile.name.trim(),
-            defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
-            memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
-            memoUpdatedAt: profile.memoUpdatedAt ?? '',
-            _rev: rev,
-            createdAt: profile.createdAt || ts,
-            updatedAt: ts,
-          };
-          await adapterRef.current!.saveSpeciesProfile(cleanNew);
-          await recordOutboxOps(
-            diffEntityFieldsToOperations({
-              entityType: 'species',
-              previous: undefined,
-              next: cleanNew,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-              timestamp: ts,
-              recordRev: rev,
-            })
-          );
-          await reloadFromAdapter();
-          notify(`${cleanNew.name} added to your barn.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save ${profile.name} species schedule`, err);
+          return false;
         }
-        return true;
-      } catch (err) {
-        reportPersistenceFailure(`save ${profile.name} species schedule`, err);
-        return false;
-      }
+      });
     },
     [
-      snapshot,
       activeSpeciesName,
       deviceId,
+      enqueueStoreMutation,
       nextEntityRev,
       recordOutboxOps,
       reloadFromAdapter,
@@ -1419,110 +1522,131 @@ export function useBarnStore() {
 
   const saveSpeciesMemo = useCallback(
     async (speciesId: string, rawMemoText: unknown, options?: { silent?: boolean }) => {
-      if (!snapshot) return;
-      const existing = snapshot.speciesProfiles.find((sp) => sp.id === speciesId);
-      if (!existing) return;
-      const cleanMemo = sanitizeSpeciesMemo(rawMemoText);
-      if ((existing.memoText ?? '') === cleanMemo) return;
-      const ts = getAdjustedNowIsoUtc();
-      const rev = nextEntityRev(existing.id, existing._rev);
-      const updated: SpeciesProfile = {
-        ...existing,
-        memoText: cleanMemo,
-        memoUpdatedAt: ts,
-        _rev: rev,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveSpeciesProfile(updated);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'species',
-            previous: existing,
-            next: updated,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-            timestamp: ts,
-            recordRev: rev,
-          })
-        );
-        await reloadFromAdapter();
-        if (!options?.silent) {
-          notify(`${existing.name} memo pad saved.`);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const existing = currentSnapshot.speciesProfiles.find((sp) => sp.id === speciesId);
+        if (!existing) return;
+        const cleanMemo = sanitizeSpeciesMemo(rawMemoText);
+        if ((existing.memoText ?? '') === cleanMemo) return;
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(existing.id, existing._rev);
+        const updated: SpeciesProfile = {
+          ...existing,
+          memoText: cleanMemo,
+          memoUpdatedAt: ts,
+          _rev: rev,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveSpeciesProfile(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'species',
+              previous: existing,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          if (!options?.silent) {
+            notify(`${existing.name} memo pad saved.`);
+          }
+        } catch (err) {
+          reportPersistenceFailure(`save ${existing.name} memo pad`, err);
         }
+      });
+    },
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const reorderSpeciesCardsInternal = useCallback(
+    async (orderedIds: string[]) => {
+      const currentSnapshot = snapshotRef.current;
+      if (!currentSnapshot) return;
+      try {
+        const byId = new Map(currentSnapshot.speciesProfiles.map((sp) => [sp.id, sp]));
+        const ordered: SpeciesProfile[] = [];
+        const seen = new Set<string>();
+        const ts = getAdjustedNowIsoUtc();
+
+        for (const id of orderedIds) {
+          const sp = byId.get(id);
+          if (sp && !seen.has(id)) {
+            seen.add(id);
+            ordered.push({ ...sp, sortOrder: ordered.length, updatedAt: ts });
+          }
+        }
+        for (const sp of currentSnapshot.speciesProfiles) {
+          if (!seen.has(sp.id)) {
+            ordered.push({ ...sp, sortOrder: ordered.length, updatedAt: ts });
+          }
+        }
+
+        await adapterRef.current!.saveSpeciesProfilesBatch(ordered);
+        await reloadFromAdapter();
       } catch (err) {
-        reportPersistenceFailure(`save ${existing.name} memo pad`, err);
+        reportPersistenceFailure('reorder species cards', err);
       }
     },
-    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [reloadFromAdapter, reportPersistenceFailure]
   );
 
   const reorderSpeciesCards = useCallback(
     async (orderedIds: string[]) => {
-      if (!snapshot) return;
-      const byId = new Map(snapshot.speciesProfiles.map((sp) => [sp.id, sp]));
-      const ordered: SpeciesProfile[] = [];
-      const seen = new Set<string>();
-      const ts = nowIsoUtc();
-
-      for (const id of orderedIds) {
-        const sp = byId.get(id);
-        if (sp && !seen.has(id)) {
-          seen.add(id);
-          ordered.push({ ...sp, sortOrder: ordered.length, updatedAt: ts });
-        }
-      }
-      for (const sp of snapshot.speciesProfiles) {
-        if (!seen.has(sp.id)) {
-          ordered.push({ ...sp, sortOrder: ordered.length, updatedAt: ts });
-        }
-      }
-
-      await adapterRef.current!.saveSpeciesProfilesBatch(ordered);
-      await reloadFromAdapter();
+      return enqueueStoreMutation(() => reorderSpeciesCardsInternal(orderedIds));
     },
-    [snapshot, reloadFromAdapter]
+    [enqueueStoreMutation, reorderSpeciesCardsInternal]
   );
 
   const moveSpeciesCard = useCallback(
     async (speciesId: string, direction: 'up' | 'down' | 'top') => {
-      if (!snapshot) return;
-      const ids = snapshot.speciesProfiles.map((sp) => sp.id);
-      const fromIdx = ids.indexOf(speciesId);
-      if (fromIdx === -1) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const ids = currentSnapshot.speciesProfiles.map((sp) => sp.id);
+        const fromIdx = ids.indexOf(speciesId);
+        if (fromIdx === -1) return;
 
-      let toIdx = fromIdx;
-      if (direction === 'top') toIdx = 0;
-      else if (direction === 'up') toIdx = Math.max(0, fromIdx - 1);
-      else if (direction === 'down') toIdx = Math.min(ids.length - 1, fromIdx + 1);
+        let toIdx = fromIdx;
+        if (direction === 'top') toIdx = 0;
+        else if (direction === 'up') toIdx = Math.max(0, fromIdx - 1);
+        else if (direction === 'down') toIdx = Math.min(ids.length - 1, fromIdx + 1);
 
-      if (toIdx === fromIdx) return;
+        if (toIdx === fromIdx) return;
 
-      const nextIds = [...ids];
-      const [moved] = nextIds.splice(fromIdx, 1);
-      nextIds.splice(toIdx, 0, moved);
-      await reorderSpeciesCards(nextIds);
+        const nextIds = [...ids];
+        const [moved] = nextIds.splice(fromIdx, 1);
+        nextIds.splice(toIdx, 0, moved);
+        await reorderSpeciesCardsInternal(nextIds);
+      });
     },
-    [snapshot, reorderSpeciesCards]
+    [enqueueStoreMutation, reorderSpeciesCardsInternal]
   );
 
   const reorderSpeciesHubBlocks = useCallback(
     async (speciesName: string, orderedBlockIds: SpeciesHubBlockId[]) => {
-      if (!snapshot) return;
-      const key = speciesName.trim().toLowerCase();
-      const normalized = normalizeSpeciesHubBlockOrder(orderedBlockIds);
-      const prevMap = snapshot.settings.speciesHubBlockOrder || {};
-      await updateSettings(
-        {
-          speciesHubBlockOrder: {
-            ...prevMap,
-            [key]: normalized,
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const key = speciesName.trim().toLowerCase();
+        const normalized = normalizeSpeciesHubBlockOrder(orderedBlockIds);
+        const prevMap = currentSnapshot.settings.speciesHubBlockOrder || {};
+        await updateSettingsInternal(
+          {
+            speciesHubBlockOrder: {
+              ...prevMap,
+              [key]: normalized,
+            },
           },
-        },
-        { silent: true }
-      );
+          { silent: true }
+        );
+      });
     },
-    [snapshot, updateSettings]
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const moveSpeciesHubBlock = useCallback(
@@ -1531,65 +1655,102 @@ export function useBarnStore() {
       blockId: SpeciesHubBlockId,
       direction: 'up' | 'down' | 'top'
     ) => {
-      if (!snapshot) return;
-      const key = speciesName.trim().toLowerCase();
-      const ids = normalizeSpeciesHubBlockOrder(snapshot.settings.speciesHubBlockOrder?.[key]);
-      const fromIdx = ids.indexOf(blockId);
-      if (fromIdx === -1) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const key = speciesName.trim().toLowerCase();
+        const ids = normalizeSpeciesHubBlockOrder(
+          currentSnapshot.settings.speciesHubBlockOrder?.[key]
+        );
+        const fromIdx = ids.indexOf(blockId);
+        if (fromIdx === -1) return;
 
-      let toIdx = fromIdx;
-      if (direction === 'top') toIdx = 0;
-      else if (direction === 'up') toIdx = Math.max(0, fromIdx - 1);
-      else if (direction === 'down') toIdx = Math.min(ids.length - 1, fromIdx + 1);
+        let toIdx = fromIdx;
+        if (direction === 'top') toIdx = 0;
+        else if (direction === 'up') toIdx = Math.max(0, fromIdx - 1);
+        else if (direction === 'down') toIdx = Math.min(ids.length - 1, fromIdx + 1);
 
-      if (toIdx === fromIdx) return;
+        if (toIdx === fromIdx) return;
 
-      const nextIds = [...ids];
-      const [moved] = nextIds.splice(fromIdx, 1);
-      nextIds.splice(toIdx, 0, moved);
-      await reorderSpeciesHubBlocks(speciesName, nextIds);
+        const nextIds = [...ids];
+        const [moved] = nextIds.splice(fromIdx, 1);
+        nextIds.splice(toIdx, 0, moved);
+        const prevMap = currentSnapshot.settings.speciesHubBlockOrder || {};
+        await updateSettingsInternal(
+          {
+            speciesHubBlockOrder: {
+              ...prevMap,
+              [key]: normalizeSpeciesHubBlockOrder(nextIds),
+            },
+          },
+          { silent: true }
+        );
+      });
     },
-    [snapshot, reorderSpeciesHubBlocks]
+    [enqueueStoreMutation, updateSettingsInternal]
   );
 
   const deleteSpeciesProfile = useCallback(
     async (profile: SpeciesProfile) => {
-      try {
-        if (snapshot) {
-          const remainingRecords = countAllSpeciesRecords(snapshot, profile.name);
-          if (remainingRecords > 0) {
-            notify(
-              `Only empty species can be fully removed (${profile.name} still has ${remainingRecords} record${remainingRecords === 1 ? '' : 's'}).`
-            );
-            return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        try {
+          if (currentSnapshot) {
+            const remainingRecords = countAllSpeciesRecords(currentSnapshot, profile.name);
+            if (remainingRecords > 0) {
+              notify(
+                `Only empty species can be fully removed (${profile.name} still has ${remainingRecords} record${remainingRecords === 1 ? '' : 's'}).`
+              );
+              return;
+            }
+            if (currentSnapshot.speciesProfiles.length <= 1) {
+              notify('At least one species must remain in your barn.');
+              return;
+            }
+            await saveSafetyRollingBackup(currentSnapshot);
           }
-          if (snapshot.speciesProfiles.length <= 1) {
-            notify('At least one species must remain in your barn.');
-            return;
+          const ts = getAdjustedNowIsoUtc();
+          await adapterRef.current!.deleteSpeciesProfile(profile.id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'species',
+              entityUuid: profile.id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(profile.id, profile._rev),
+            }),
+          ]);
+          if (currentSnapshot && isSameSpecies(currentSnapshot.settings.pinnedLandingSpecies, profile.name)) {
+            await updateSettingsInternal({ pinnedLandingSpecies: '' }, { silent: true });
           }
-          await saveSafetyRollingBackup(snapshot);
+          await reloadFromAdapter();
+          if (isSameSpecies(activeSpeciesName, profile.name)) {
+            const fallbackName =
+              currentSnapshot?.speciesProfiles.find((p) => p.id !== profile.id)?.name || 'Rabbit';
+            setActiveSpeciesName(fallbackName);
+            setRoute('home');
+          }
+          notify(`${profile.name} removed from configured species.`);
+        } catch (err) {
+          reportPersistenceFailure(`remove ${profile.name} species`, err);
         }
-        await adapterRef.current!.deleteSpeciesProfile(profile.id);
-        if (snapshot && isSameSpecies(snapshot.settings.pinnedLandingSpecies, profile.name)) {
-          await adapterRef.current!.saveSettings({
-            ...snapshot.settings,
-            pinnedLandingSpecies: '',
-            updatedAt: nowIsoUtc(),
-          });
-        }
-        await reloadFromAdapter();
-        if (isSameSpecies(activeSpeciesName, profile.name)) {
-          const fallbackName =
-            snapshot?.speciesProfiles.find((p) => p.id !== profile.id)?.name || 'Rabbit';
-          setActiveSpeciesName(fallbackName);
-          setRoute('home');
-        }
-        notify(`${profile.name} removed from configured species.`);
-      } catch (err) {
-        reportPersistenceFailure(`remove ${profile.name} species`, err);
-      }
+      });
     },
-    [snapshot, activeSpeciesName, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      enqueueStoreMutation,
+      activeSpeciesName,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      saveSafetyRollingBackup,
+      updateSettingsInternal,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const exportTimestampedSpeciesBackup = useCallback(
@@ -1623,7 +1784,6 @@ export function useBarnStore() {
     ): Promise<string | null> => {
       return enqueueStoreMutation(async () => {
         const latestSnapshot = snapshotRef.current ?? snapshot;
-        const ts = nowIsoUtc();
         const previous = draft.id
           ? latestSnapshot?.animals.find((a) => a.id === draft.id)
           : undefined;
@@ -1783,226 +1943,260 @@ export function useBarnStore() {
 
   const ignoreAnimalConflicts = useCallback(
     async (animalId: string, kinds: AnimalConflictKind[]) => {
-      if (!snapshot || kinds.length === 0) return;
-      const target = snapshot.animals.find((a) => a.id === animalId);
-      if (!target) return;
-      const ts = getAdjustedNowIsoUtc();
-      const rev = nextEntityRev(target.id, target._rev);
-      const nextIgnored = normalizeIgnoredConflicts([
-        ...(target.ignoredConflicts || []),
-        ...kinds,
-      ]);
-      const summariesAfter = analyzeBarnAnimalConflicts(
-        snapshot.animals.map((a) =>
-          a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
-        )
-      );
-      const stillHasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
-      const updated: Animal = {
-        ...target,
-        ignoredConflicts: nextIgnored,
-        needsAttention: stillHasActive ? target.needsAttention : false,
-        _rev: rev,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveAnimal(updated);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'animal',
-            previous: target,
-            next: updated,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-            timestamp: ts,
-            recordRev: rev,
-          })
+      if (kinds.length === 0) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const target = currentSnapshot.animals.find((a) => a.id === animalId);
+        if (!target) return;
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(target.id, target._rev);
+        const nextIgnored = normalizeIgnoredConflicts([
+          ...(target.ignoredConflicts || []),
+          ...kinds,
+        ]);
+        const summariesAfter = analyzeBarnAnimalConflicts(
+          currentSnapshot.animals.map((a) =>
+            a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
+          )
         );
-        await reloadFromAdapter();
-        notify(
-          `Conflict alert ignored for ${target.name}. A soft warning remains visible until the underlying issue is resolved.`
-        );
-      } catch (err) {
-        reportPersistenceFailure(`ignore conflict for ${target.name}`, err);
-      }
+        const stillHasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
+        const updated: Animal = {
+          ...target,
+          ignoredConflicts: nextIgnored,
+          needsAttention: stillHasActive ? target.needsAttention : false,
+          _rev: rev,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveAnimal(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'animal',
+              previous: target,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(
+            `Conflict alert ignored for ${target.name}. A soft warning remains visible until the underlying issue is resolved.`
+          );
+        } catch (err) {
+          reportPersistenceFailure(`ignore conflict for ${target.name}`, err);
+        }
+      });
     },
-    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const restoreAnimalConflictAlert = useCallback(
     async (animalId: string, kinds?: AnimalConflictKind[]) => {
-      if (!snapshot) return;
-      const target = snapshot.animals.find((a) => a.id === animalId);
-      if (!target) return;
-      const ts = getAdjustedNowIsoUtc();
-      const rev = nextEntityRev(target.id, target._rev);
-      const currentIgnored = normalizeIgnoredConflicts(target.ignoredConflicts);
-      const nextIgnored =
-        kinds && kinds.length > 0
-          ? currentIgnored.filter((k) => !kinds.includes(k))
-          : [];
-      const summariesAfter = analyzeBarnAnimalConflicts(
-        snapshot.animals.map((a) =>
-          a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
-        )
-      );
-      const hasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
-      const updated: Animal = {
-        ...target,
-        ignoredConflicts: nextIgnored,
-        needsAttention: hasActive ? true : target.needsAttention,
-        _rev: rev,
-        updatedAt: ts,
-      };
-      try {
-        await adapterRef.current!.saveAnimal(updated);
-        await recordOutboxOps(
-          diffEntityFieldsToOperations({
-            entityType: 'animal',
-            previous: target,
-            next: updated,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-            timestamp: ts,
-            recordRev: rev,
-          })
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const target = currentSnapshot.animals.find((a) => a.id === animalId);
+        if (!target) return;
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(target.id, target._rev);
+        const currentIgnored = normalizeIgnoredConflicts(target.ignoredConflicts);
+        const nextIgnored =
+          kinds && kinds.length > 0
+            ? currentIgnored.filter((k) => !kinds.includes(k))
+            : [];
+        const summariesAfter = analyzeBarnAnimalConflicts(
+          currentSnapshot.animals.map((a) =>
+            a.id === animalId ? { ...a, ignoredConflicts: nextIgnored } : a
+          )
         );
-        await reloadFromAdapter();
-        notify(`Conflict alert re-enabled for ${target.name}.`);
-      } catch (err) {
-        reportPersistenceFailure(`restore conflict alert for ${target.name}`, err);
-      }
+        const hasActive = Boolean(summariesAfter.get(animalId)?.hasActiveConflict);
+        const updated: Animal = {
+          ...target,
+          ignoredConflicts: nextIgnored,
+          needsAttention: hasActive ? true : target.needsAttention,
+          _rev: rev,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveAnimal(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'animal',
+              previous: target,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Conflict alert re-enabled for ${target.name}.`);
+        } catch (err) {
+          reportPersistenceFailure(`restore conflict alert for ${target.name}`, err);
+        }
+      });
     },
-    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const archiveAnimals = useCallback(
     async (animalIds: string[], archived: boolean) => {
-      if (!snapshot || animalIds.length === 0) return;
-      const idSet = new Set(animalIds);
-      const ts = getAdjustedNowIsoUtc();
-      const ops: SyncOperation[] = [];
-      const updatedBatch: Animal[] = [];
-
-      for (const animal of snapshot.animals) {
-        if (!idSet.has(animal.id)) continue;
-        const rev = nextEntityRev(animal.id, animal._rev);
-        const nextStatus =
-          !archived &&
-          (animal.status === 'Archived' ||
-            animal.status === 'Deceased' ||
-            animal.status === 'Sold' ||
-            animal.status === 'Retired')
-            ? 'Active'
-            : archived && (animal.status === 'Active' || animal.status === 'Junior')
-            ? 'Archived'
-            : animal.status;
-        const updated: Animal = {
-          ...animal,
-          archived,
-          status: nextStatus,
-          _rev: rev,
-          updatedAt: ts,
-        };
-        updatedBatch.push(updated);
-        ops.push(
-          ...diffEntityFieldsToOperations({
-            entityType: 'animal',
-            previous: animal,
-            next: updated,
-            deviceId,
-            nextCounter: allocateNextLogicalCounter,
-            timestamp: ts,
-            recordRev: rev,
-          })
-        );
-      }
-
-      try {
-        if (updatedBatch.length > 0) {
-          await adapterRef.current!.saveAnimalsBatch(updatedBatch);
-        }
-        await recordOutboxOps(ops);
-        const autoOffloadIds =
-          archived && snapshot.settings.autoOffloadRetiredToOpfs && isOpfsSupported()
-            ? updatedBatch
-                .filter((a) => a.status === 'Sold' || a.status === 'Deceased')
-                .map((a) => a.id)
-            : [];
-        if (autoOffloadIds.length > 0 && offloadAnimalsRef.current) {
-          const offloaded = await offloadAnimalsRef.current(autoOffloadIds);
-          if (offloaded) return;
-        }
-        await reloadFromAdapter();
-        notify(
-          archived
-            ? `Moved ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} to Archived (retained for pedigrees).`
-            : `Restored ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} back to Active herd.`
-        );
-      } catch (err) {
-        reportPersistenceFailure(archived ? 'archive animal(s)' : 'restore animal(s)', err);
-      }
-    },
-    [snapshot, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
-  );
-
-  const deleteAnimalsBatch = useCallback(
-    async (animalIds: string[]) => {
-      if (!snapshot || animalIds.length === 0) return;
-      try {
-        await saveSafetyRollingBackup(snapshot);
+      if (animalIds.length === 0) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
         const idSet = new Set(animalIds);
         const ts = getAdjustedNowIsoUtc();
         const ops: SyncOperation[] = [];
+        const updatedBatch: Animal[] = [];
 
-        // Unlink offspring sire/dam references pointing to deleted animals in a single batch
-        const unlinkedChildren: Animal[] = [];
-        for (const a of snapshot.animals) {
-          if (idSet.has(a.id)) continue;
-          const clearSire = a.sireId && idSet.has(a.sireId);
-          const clearDam = a.damId && idSet.has(a.damId);
-          if (clearSire || clearDam) {
-            unlinkedChildren.push({
-              ...a,
-              sireId: clearSire ? '' : a.sireId,
-              damId: clearDam ? '' : a.damId,
-              _rev: nextEntityRev(a.id, a._rev),
-              updatedAt: ts,
-            });
-          }
-        }
-        if (unlinkedChildren.length > 0) {
-          await adapterRef.current!.saveAnimalsBatch(unlinkedChildren);
-        }
-
-        await adapterRef.current!.deleteAnimalsBatch(Array.from(idSet));
-        for (const id of idSet) {
-          const deletedAnimal = snapshot.animals.find((a) => a.id === id);
+        for (const animal of currentSnapshot.animals) {
+          if (!idSet.has(animal.id)) continue;
+          const rev = nextEntityRev(animal.id, animal._rev);
+          const nextStatus =
+            !archived &&
+            (animal.status === 'Archived' ||
+              animal.status === 'Deceased' ||
+              animal.status === 'Sold' ||
+              animal.status === 'Retired')
+              ? 'Active'
+              : archived && (animal.status === 'Active' || animal.status === 'Junior')
+              ? 'Archived'
+              : animal.status;
+          const updated: Animal = {
+            ...animal,
+            archived,
+            status: nextStatus,
+            _rev: rev,
+            updatedAt: ts,
+          };
+          updatedBatch.push(updated);
           ops.push(
-            createOutboxOperation({
+            ...diffEntityFieldsToOperations({
               entityType: 'animal',
-              entityUuid: id,
+              previous: animal,
+              next: updated,
               deviceId,
-              logicalCounter: allocateNextLogicalCounter(),
-              fieldName: '__delete__',
-              newValue: true,
+              nextCounter: allocateNextLogicalCounter,
               timestamp: ts,
-              recordRev: nextEntityRev(id, deletedAnimal?._rev),
+              recordRev: rev,
             })
           );
         }
 
-        if (selectedAnimalId && idSet.has(selectedAnimalId)) setSelectedAnimalId(null);
-        if (pedigreeAnimalId && idSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
-        await recordOutboxOps(ops);
-        await reloadFromAdapter();
-        notify(`Deleted ${idSet.size} selected animal${idSet.size === 1 ? '' : 's'}.`);
-      } catch (err) {
-        reportPersistenceFailure('delete selected animal(s)', err);
-      }
+        try {
+          if (updatedBatch.length > 0) {
+            await adapterRef.current!.saveAnimalsBatch(updatedBatch);
+          }
+          await recordOutboxOps(ops);
+          const autoOffloadIds =
+            archived && currentSnapshot.settings.autoOffloadRetiredToOpfs && isOpfsSupported()
+              ? updatedBatch
+                  .filter((a) => a.status === 'Sold' || a.status === 'Deceased')
+                  .map((a) => a.id)
+              : [];
+          if (autoOffloadIds.length > 0 && offloadAnimalsRef.current) {
+            const offloaded = await offloadAnimalsRef.current(autoOffloadIds);
+            if (offloaded) return;
+          }
+          await reloadFromAdapter();
+          notify(
+            archived
+              ? `Moved ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} to Archived (retained for pedigrees).`
+              : `Restored ${animalIds.length} animal${animalIds.length === 1 ? '' : 's'} back to Active herd.`
+          );
+        } catch (err) {
+          reportPersistenceFailure(archived ? 'archive animal(s)' : 'restore animal(s)', err);
+        }
+      });
+    },
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const deleteAnimalsBatch = useCallback(
+    async (animalIds: string[]) => {
+      if (animalIds.length === 0) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        try {
+          await saveSafetyRollingBackup(currentSnapshot);
+          const idSet = new Set(animalIds);
+          const ts = getAdjustedNowIsoUtc();
+          const ops: SyncOperation[] = [];
+
+          // Unlink offspring sire/dam references pointing to deleted animals in a single batch
+          const unlinkedChildren: Animal[] = [];
+          for (const a of currentSnapshot.animals) {
+            if (idSet.has(a.id)) continue;
+            const clearSire = a.sireId && idSet.has(a.sireId);
+            const clearDam = a.damId && idSet.has(a.damId);
+            if (clearSire || clearDam) {
+              const childRev = nextEntityRev(a.id, a._rev);
+              const nextChild: Animal = {
+                ...a,
+                sireId: clearSire ? '' : a.sireId,
+                damId: clearDam ? '' : a.damId,
+                _rev: childRev,
+                updatedAt: ts,
+              };
+              unlinkedChildren.push(nextChild);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'animal',
+                  previous: a,
+                  next: nextChild,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: childRev,
+                })
+              );
+            }
+          }
+          if (unlinkedChildren.length > 0) {
+            await adapterRef.current!.saveAnimalsBatch(unlinkedChildren);
+          }
+
+          await adapterRef.current!.deleteAnimalsBatch(Array.from(idSet));
+          for (const photo of currentSnapshot.animalPhotos ?? []) {
+            if (idSet.has(photo.animalId)) {
+              photoCacheRef.current.delete(photo.id);
+            }
+          }
+          for (const id of idSet) {
+            const deletedAnimal = currentSnapshot.animals.find((a) => a.id === id);
+            ops.push(
+              createOutboxOperation({
+                entityType: 'animal',
+                entityUuid: id,
+                deviceId,
+                logicalCounter: allocateNextLogicalCounter(),
+                fieldName: '__delete__',
+                newValue: true,
+                timestamp: ts,
+                recordRev: nextEntityRev(id, deletedAnimal?._rev),
+              })
+            );
+          }
+
+          if (selectedAnimalId && idSet.has(selectedAnimalId)) setSelectedAnimalId(null);
+          if (pedigreeAnimalId && idSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(`Deleted ${idSet.size} selected animal${idSet.size === 1 ? '' : 's'}.`);
+        } catch (err) {
+          reportPersistenceFailure('delete selected animal(s)', err);
+        }
+      });
     },
     [
-      snapshot,
+      enqueueStoreMutation,
+      saveSafetyRollingBackup,
       selectedAnimalId,
       pedigreeAnimalId,
       deviceId,
@@ -2024,38 +2218,47 @@ export function useBarnStore() {
       targetSpeciesName: string,
       options?: SpeciesMigrationOptions
     ): Promise<SpeciesMigrationResult | null> => {
-      if (!snapshot) return null;
       if (!options?.migrateEntireSpecies && animalIds.length === 0) return null;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return null;
 
-      try {
-        await saveSafetyRollingBackup(snapshot);
-        const result = migrateAnimalsToSpecies(snapshot, animalIds, targetSpeciesName, options);
-        await adapterRef.current!.replaceSnapshot(result.snapshot);
+        try {
+          await saveSafetyRollingBackup(currentSnapshot);
+          const result = migrateAnimalsToSpecies(
+            currentSnapshot,
+            animalIds,
+            targetSpeciesName,
+            options
+          );
+          await adapterRef.current!.replaceSnapshot(result.snapshot);
 
-        const prevSpeciesById = new Map(snapshot.animals.map((a) => [a.id, a.species]));
-        const movedSet = new Set(
-          result.snapshot.animals
-            .filter((a) => {
-              const prevSpecies = prevSpeciesById.get(a.id);
-              return prevSpecies !== undefined && !isSameSpecies(prevSpecies, a.species);
-            })
-            .map((a) => a.id)
-        );
-        if (selectedAnimalId && movedSet.has(selectedAnimalId)) setSelectedAnimalId(null);
-        if (pedigreeAnimalId && movedSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
+          const prevSpeciesById = new Map(currentSnapshot.animals.map((a) => [a.id, a.species]));
+          const movedSet = new Set(
+            result.snapshot.animals
+              .filter((a) => {
+                const prevSpecies = prevSpeciesById.get(a.id);
+                return prevSpecies !== undefined && !isSameSpecies(prevSpecies, a.species);
+              })
+              .map((a) => a.id)
+          );
+          if (selectedAnimalId && movedSet.has(selectedAnimalId)) setSelectedAnimalId(null);
+          if (pedigreeAnimalId && movedSet.has(pedigreeAnimalId)) setPedigreeAnimalId(null);
 
-        await reloadFromAdapter();
-        notify(
-          `Moved ${result.animalsMigrated} animal${result.animalsMigrated === 1 ? '' : 's'} to ${result.targetSpecies}.`
-        );
-        return result;
-      } catch (err) {
-        reportPersistenceFailure(`migrate stock to ${targetSpeciesName}`, err);
-        return null;
-      }
+          await reloadFromAdapter();
+          notify(
+            `Moved ${result.animalsMigrated} animal${result.animalsMigrated === 1 ? '' : 's'} to ${result.targetSpecies}.`
+          );
+          return result;
+        } catch (err) {
+          reportPersistenceFailure(`migrate stock to ${targetSpeciesName}`, err);
+          return null;
+        }
+      });
     },
     [
-      snapshot,
+      enqueueStoreMutation,
+      saveSafetyRollingBackup,
       selectedAnimalId,
       pedigreeAnimalId,
       reloadFromAdapter,
@@ -2070,121 +2273,173 @@ export function useBarnStore() {
       payloads: Array<OptimizedImagePayload & { caption?: string }>
     ): Promise<number> => {
       if (payloads.length === 0) return 0;
-      const ts = nowIsoUtc();
-      const existingPhotos = (snapshot?.animalPhotos ?? []).filter(
-        (p) => p.animalId === animal.id
-      );
-      const hasPrimary = existingPhotos.some((p) => p.isPrimary);
-
-      let origSum = 0;
-      let storedSum = 0;
-
-      const records: AnimalPhoto[] = payloads.map((pay, idx) => {
-        origSum += pay.originalBytes;
-        storedSum += pay.storedBytes;
-        return {
-          id: generateUuid(),
-          species: animal.species,
-          animalId: animal.id,
-          isPrimary: !hasPrimary && idx === 0,
-          sortOrder: existingPhotos.length + idx,
-          caption: (pay.caption || '').trim(),
-          originalFileName: pay.originalFileName,
-          mimeType: pay.mimeType,
-          width: pay.width,
-          height: pay.height,
-          originalBytes: pay.originalBytes,
-          storedBytes: pay.storedBytes,
-          thumbnailDataUrl: pay.thumbnailDataUrl,
-          dataUrl: pay.dataUrl,
-          createdAt: ts,
-          updatedAt: ts,
-        };
-      });
-
-      try {
-        await adapterRef.current!.saveAnimalPhotosBatch(records);
-        for (const rec of records) {
-          photoCacheRef.current.set(rec.id, rec.dataUrl);
-        }
-        await reloadFromAdapter();
-
-        const totalAfter = existingPhotos.length + records.length;
-        const pct = calculateSavingsPercent(origSum, storedSum);
-        notify(
-          pct > 0
-            ? `Added ${records.length} photo${records.length === 1 ? '' : 's'} to ${
-                animal.name
-              } (${formatByteSizePure(origSum)} → ${formatByteSizePure(storedSum)} · saved ${pct}%).`
-            : `Added ${records.length} photo${records.length === 1 ? '' : 's'} to ${animal.name}.`
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const ts = getAdjustedNowIsoUtc();
+        const existingPhotos = (currentSnapshot?.animalPhotos ?? []).filter(
+          (p) => p.animalId === animal.id
         );
-        return totalAfter;
-      } catch (err) {
-        reportPersistenceFailure(`save photo(s) for ${animal.name}`, err);
-        throw err;
-      }
+        const hasPrimary = existingPhotos.some((p) => p.isPrimary);
+
+        let origSum = 0;
+        let storedSum = 0;
+
+        const records: AnimalPhoto[] = payloads.map((pay, idx) => {
+          origSum += pay.originalBytes;
+          storedSum += pay.storedBytes;
+          return {
+            id: generateUuid(),
+            species: animal.species,
+            animalId: animal.id,
+            isPrimary: !hasPrimary && idx === 0,
+            sortOrder: existingPhotos.length + idx,
+            caption: (pay.caption || '').trim(),
+            originalFileName: pay.originalFileName,
+            mimeType: pay.mimeType,
+            width: pay.width,
+            height: pay.height,
+            originalBytes: pay.originalBytes,
+            storedBytes: pay.storedBytes,
+            thumbnailDataUrl: pay.thumbnailDataUrl,
+            dataUrl: pay.dataUrl,
+            _rev: 1,
+            createdAt: ts,
+            updatedAt: ts,
+          };
+        });
+
+        try {
+          await adapterRef.current!.saveAnimalPhotosBatch(records);
+          for (const rec of records) {
+            photoCacheRef.current.set(rec.id, rec.dataUrl);
+          }
+          await reloadFromAdapter();
+
+          const totalAfter = existingPhotos.length + records.length;
+          const pct = calculateSavingsPercent(origSum, storedSum);
+          notify(
+            pct > 0
+              ? `Added ${records.length} photo${records.length === 1 ? '' : 's'} to ${
+                  animal.name
+                } (${formatByteSizePure(origSum)} → ${formatByteSizePure(storedSum)} · saved ${pct}%).`
+              : `Added ${records.length} photo${records.length === 1 ? '' : 's'} to ${animal.name}.`
+          );
+          return totalAfter;
+        } catch (err) {
+          reportPersistenceFailure(`save photo(s) for ${animal.name}`, err);
+          throw err;
+        }
+      });
     },
-    [snapshot, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const setPrimaryAnimalPhoto = useCallback(
     async (animalId: string, photoId: string) => {
-      if (!snapshot) return;
-      const ts = nowIsoUtc();
-      const targetPhotos = (snapshot.animalPhotos ?? []).filter((p) => p.animalId === animalId);
-      if (targetPhotos.length === 0) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const ts = getAdjustedNowIsoUtc();
+        const targetPhotos = (currentSnapshot.animalPhotos ?? []).filter(
+          (p) => p.animalId === animalId
+        );
+        if (targetPhotos.length === 0) return;
 
-      const updated = targetPhotos.map((p) => ({
-        ...p,
-        isPrimary: p.id === photoId,
-        updatedAt: ts,
-      }));
-      await adapterRef.current!.saveAnimalPhotosBatch(updated);
-      await reloadFromAdapter();
-      notify('Primary cover photo updated (available for pedigrees).');
+        const updated = targetPhotos.map((p) => ({
+          ...p,
+          isPrimary: p.id === photoId,
+          _rev: nextEntityRev(p.id, p._rev),
+          updatedAt: ts,
+        }));
+        try {
+          await adapterRef.current!.saveAnimalPhotosBatch(updated);
+          await reloadFromAdapter();
+          notify('Primary cover photo updated (available for pedigrees).');
+        } catch (err) {
+          reportPersistenceFailure('update primary cover photo', err);
+        }
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [enqueueStoreMutation, nextEntityRev, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const updateAnimalPhotoCaption = useCallback(
     async (photoId: string, caption: string) => {
-      if (!snapshot) return;
-      const found = (snapshot.animalPhotos ?? []).find((p) => p.id === photoId);
-      if (!found) return;
-      await adapterRef.current!.saveAnimalPhoto({
-        ...found,
-        caption: caption.trim(),
-        updatedAt: nowIsoUtc(),
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const found = (currentSnapshot.animalPhotos ?? []).find((p) => p.id === photoId);
+        if (!found) return;
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.saveAnimalPhoto({
+            ...found,
+            caption: caption.trim(),
+            _rev: nextEntityRev(found.id, found._rev),
+            updatedAt: ts,
+          });
+          await reloadFromAdapter();
+        } catch (err) {
+          reportPersistenceFailure('update photo caption', err);
+        }
       });
-      await reloadFromAdapter();
     },
-    [snapshot, reloadFromAdapter]
+    [enqueueStoreMutation, nextEntityRev, reloadFromAdapter, reportPersistenceFailure]
   );
 
   const deleteAnimalPhoto = useCallback(
     async (photoId: string) => {
-      if (!snapshot) return;
-      const all = snapshot.animalPhotos ?? [];
-      const target = all.find((p) => p.id === photoId);
-      await adapterRef.current!.deleteAnimalPhoto(photoId);
-      photoCacheRef.current.delete(photoId);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const all = currentSnapshot.animalPhotos ?? [];
+        const target = all.find((p) => p.id === photoId);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteAnimalPhoto(photoId);
+          photoCacheRef.current.delete(photoId);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'photo',
+              entityUuid: photoId,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(photoId, target?._rev),
+            }),
+          ]);
 
-      if (target && target.isPrimary) {
-        const siblings = all
-          .filter((p) => p.animalId === target.animalId && p.id !== photoId)
-          .sort((a, b) => a.sortOrder - b.sortOrder);
-        if (siblings.length > 0) {
-          await adapterRef.current!.saveAnimalPhoto({
-            ...siblings[0],
-            isPrimary: true,
-            updatedAt: nowIsoUtc(),
-          });
+          if (target && target.isPrimary) {
+            const siblings = all
+              .filter((p) => p.animalId === target.animalId && p.id !== photoId)
+              .sort((a, b) => a.sortOrder - b.sortOrder);
+            if (siblings.length > 0) {
+              await adapterRef.current!.saveAnimalPhoto({
+                ...siblings[0],
+                isPrimary: true,
+                _rev: nextEntityRev(siblings[0].id, siblings[0]._rev),
+                updatedAt: ts,
+              });
+            }
+          }
+          await reloadFromAdapter();
+          notify('Photo removed.');
+        } catch (err) {
+          reportPersistenceFailure('delete photo', err);
         }
-      }
-      await reloadFromAdapter();
-      notify('Photo removed.');
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const deleteAnimal = useCallback(
@@ -2250,15 +2505,32 @@ export function useBarnStore() {
 
   const deleteCage = useCallback(
     async (id: string) => {
-      try {
-        await adapterRef.current!.deleteCage(id);
-        await reloadFromAdapter();
-        notify('Cage/location removed.');
-      } catch (err) {
-        reportPersistenceFailure('delete cage location', err);
-      }
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = currentSnapshot?.cages.find((c) => c.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteCage(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'cage',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Cage/location removed.');
+        } catch (err) {
+          reportPersistenceFailure('delete cage location', err);
+        }
+      });
     },
-    [reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   /**
@@ -2666,15 +2938,48 @@ export function useBarnStore() {
 
   const deleteBreeding = useCallback(
     async (id: string) => {
-      try {
-        await adapterRef.current!.deleteBreeding(id);
-        await reloadFromAdapter();
-        notify('Breeding & linked chores removed.');
-      } catch (err) {
-        reportPersistenceFailure('delete breeding record', err);
-      }
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = currentSnapshot?.breedings.find((b) => b.id === id);
+        const linkedTasks = (currentSnapshot?.tasks ?? []).filter(
+          (t) => t.linkedBreedingId === id
+        );
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteBreeding(id);
+          const ops: SyncOperation[] = [
+            createOutboxOperation({
+              entityType: 'breeding',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+            ...linkedTasks.map((t) =>
+              createOutboxOperation({
+                entityType: 'task',
+                entityUuid: t.id,
+                deviceId,
+                logicalCounter: allocateNextLogicalCounter(),
+                fieldName: '__delete__',
+                newValue: true,
+                timestamp: ts,
+                recordRev: nextEntityRev(t.id, t._rev),
+              })
+            ),
+          ];
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify('Breeding & linked chores removed.');
+        } catch (err) {
+          reportPersistenceFailure('delete breeding record', err);
+        }
+      });
     },
-    [reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const saveTask = useCallback(
@@ -3062,14 +3367,31 @@ export function useBarnStore() {
 
   const deleteTask = useCallback(
     async (id: string) => {
-      try {
-        await adapterRef.current!.deleteTask(id);
-        await reloadFromAdapter();
-      } catch (err) {
-        reportPersistenceFailure('delete task', err);
-      }
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = currentSnapshot?.tasks.find((t) => t.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteTask(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'task',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+        } catch (err) {
+          reportPersistenceFailure('delete task', err);
+        }
+      });
     },
-    [reloadFromAdapter, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, reportPersistenceFailure]
   );
 
   const addCareLog = useCallback(
@@ -3145,14 +3467,31 @@ export function useBarnStore() {
 
   const deleteCareLog = useCallback(
     async (id: string) => {
-      try {
-        await adapterRef.current!.deleteCareLog(id);
-        await reloadFromAdapter();
-      } catch (err) {
-        reportPersistenceFailure('delete care log entry', err);
-      }
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = currentSnapshot?.careLogs.find((l) => l.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteCareLog(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'careLog',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+        } catch (err) {
+          reportPersistenceFailure('delete care log entry', err);
+        }
+      });
     },
-    [reloadFromAdapter, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, reportPersistenceFailure]
   );
 
   const saveShow = useCallback(
@@ -3211,423 +3550,502 @@ export function useBarnStore() {
 
   const deleteShow = useCallback(
     async (id: string) => {
-      try {
-        await adapterRef.current!.deleteShow(id);
-        await reloadFromAdapter();
-        notify('Show removed.');
-      } catch (err) {
-        reportPersistenceFailure('delete show', err);
-      }
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = currentSnapshot?.shows.find((s) => s.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteShow(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'show',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Show removed.');
+        } catch (err) {
+          reportPersistenceFailure('delete show', err);
+        }
+      });
     },
-    [reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const seedSpeciesSampleData = useCallback(
     async (speciesName: string) => {
-      if (!snapshot) return;
-      const existingProfile = snapshot.speciesProfiles.find((sp) =>
-        isSameSpecies(sp.name, speciesName)
-      );
-      const bundle = buildSampleDataForSpecies(speciesName, existingProfile);
-      if (!bundle) {
-        notify(`No predefined testing dataset found for ${speciesName}.`);
-        return;
-      }
-      const spKey = speciesName.trim().toLowerCase();
-      const seedTaskIds = new Set(bundle.tasks.map((t) => t.id));
-      const nextIgnored = (snapshot.settings.ignoredTaskIds || []).filter(
-        (id) => !seedTaskIds.has(id)
-      );
-      const nextDismissed = { ...(snapshot.settings.dismissedTaskGroupKeys || {}) };
-      delete nextDismissed[spKey];
-      const refreshedSettings: BarnSettings = {
-        ...snapshot.settings,
-        ignoredTaskIds: nextIgnored,
-        dismissedTaskGroupKeys: nextDismissed,
-        updatedAt: nowIsoUtc(),
-      };
-      const report = mergeBarnSnapshots(
-        { ...snapshot, settings: refreshedSettings },
-        {
-          settings: refreshedSettings,
-          speciesProfiles: [bundle.speciesProfile],
-          animals: bundle.animals,
-          animalPhotos: [],
-          cages: bundle.cages,
-          breedings: bundle.breedings,
-          tasks: bundle.tasks,
-          careLogs: bundle.careLogs,
-          shows: bundle.shows,
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const existingProfile = currentSnapshot.speciesProfiles.find((sp) =>
+          isSameSpecies(sp.name, speciesName)
+        );
+        const bundle = buildSampleDataForSpecies(speciesName, existingProfile);
+        if (!bundle) {
+          notify(`No predefined testing dataset found for ${speciesName}.`);
+          return;
         }
-      );
-      await adapterRef.current!.replaceSnapshot(report.snapshot);
-      await reloadFromAdapter();
-      notify(`Loaded 6-generation testing dataset for ${speciesName}.`);
+        try {
+          const spKey = speciesName.trim().toLowerCase();
+          const seedTaskIds = new Set(bundle.tasks.map((t) => t.id));
+          const nextIgnored = (currentSnapshot.settings.ignoredTaskIds || []).filter(
+            (id) => !seedTaskIds.has(id)
+          );
+          const nextDismissed = { ...(currentSnapshot.settings.dismissedTaskGroupKeys || {}) };
+          delete nextDismissed[spKey];
+          const refreshedSettings: BarnSettings = {
+            ...currentSnapshot.settings,
+            ignoredTaskIds: nextIgnored,
+            dismissedTaskGroupKeys: nextDismissed,
+            updatedAt: getAdjustedNowIsoUtc(),
+          };
+          const report = mergeBarnSnapshots(
+            { ...currentSnapshot, settings: refreshedSettings },
+            {
+              settings: refreshedSettings,
+              speciesProfiles: [bundle.speciesProfile],
+              animals: bundle.animals,
+              animalPhotos: [],
+              cages: bundle.cages,
+              breedings: bundle.breedings,
+              tasks: bundle.tasks,
+              careLogs: bundle.careLogs,
+              shows: bundle.shows,
+            }
+          );
+          await adapterRef.current!.replaceSnapshot(report.snapshot);
+          await reloadFromAdapter();
+          notify(`Loaded 6-generation testing dataset for ${speciesName}.`);
+        } catch (err) {
+          reportPersistenceFailure(`load ${speciesName} testing dataset`, err);
+        }
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const seedAllPredefinedSpecies = useCallback(async () => {
-    const cleanedSettings: Partial<BarnSettings> | undefined = snapshot?.settings
-      ? {
-          ...snapshot.settings,
-          ignoredTaskIds: (snapshot.settings.ignoredTaskIds || []).filter(
-            (id) => !isSampleTestingId(id)
-          ),
-          dismissedTaskGroupKeys: {},
-        }
-      : undefined;
-    const full = buildFullPredefinedSampleSnapshot(cleanedSettings);
-    const memoBySpeciesKey = new Map(
-      (snapshot?.speciesProfiles || []).map((sp) => [
-        sp.name.trim().toLowerCase(),
-        {
-          memoText: sanitizeSpeciesMemo(sp.memoText ?? ''),
-          memoUpdatedAt: sp.memoUpdatedAt || '',
-        },
-      ])
-    );
-    full.speciesProfiles = full.speciesProfiles.map((sp) => {
-      const prevMemo = memoBySpeciesKey.get(sp.name.trim().toLowerCase());
-      return prevMemo && prevMemo.memoText
-        ? { ...sp, memoText: prevMemo.memoText, memoUpdatedAt: prevMemo.memoUpdatedAt }
-        : sp;
+    return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current;
+      try {
+        const cleanedSettings: Partial<BarnSettings> | undefined = currentSnapshot?.settings
+          ? {
+              ...currentSnapshot.settings,
+              ignoredTaskIds: (currentSnapshot.settings.ignoredTaskIds || []).filter(
+                (id) => !isSampleTestingId(id)
+              ),
+              dismissedTaskGroupKeys: {},
+            }
+          : undefined;
+        const full = buildFullPredefinedSampleSnapshot(cleanedSettings);
+        const memoBySpeciesKey = new Map(
+          (currentSnapshot?.speciesProfiles || []).map((sp) => [
+            sp.name.trim().toLowerCase(),
+            {
+              memoText: sanitizeSpeciesMemo(sp.memoText ?? ''),
+              memoUpdatedAt: sp.memoUpdatedAt || '',
+            },
+          ])
+        );
+        full.speciesProfiles = full.speciesProfiles.map((sp) => {
+          const prevMemo = memoBySpeciesKey.get(sp.name.trim().toLowerCase());
+          return prevMemo && prevMemo.memoText
+            ? { ...sp, memoText: prevMemo.memoText, memoUpdatedAt: prevMemo.memoUpdatedAt }
+            : sp;
+        });
+        await adapterRef.current!.replaceSnapshot(full);
+        await reloadFromAdapter();
+        notify(
+          `Loaded 6-generation testing herds across all ${PREDEFINED_SPECIES_PRESETS.length} predefined species.`
+        );
+      } catch (err) {
+        reportPersistenceFailure('load predefined testing herds', err);
+      }
     });
-    await adapterRef.current!.replaceSnapshot(full);
-    await reloadFromAdapter();
-    notify(
-      `Loaded 6-generation testing herds across all ${PREDEFINED_SPECIES_PRESETS.length} predefined species.`
-    );
-  }, [snapshot, reloadFromAdapter, notify]);
+  }, [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]);
 
   const deleteSpeciesTestingData = useCallback(
     async (speciesName: string) => {
-      if (!snapshot) return;
-      const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
-        purgeSpeciesTestingDataPure(snapshot, speciesName);
-      if (removedTotalRecords === 0) {
-        notify(`No testing records found in ${speciesName}.`);
-        return;
-      }
-      try {
-        await saveSafetyRollingBackup(snapshot);
-        await adapterRef.current!.replaceSnapshot(nextSnapshot);
-        if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
-          setSelectedAnimalId(null);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
+          purgeSpeciesTestingDataPure(currentSnapshot, speciesName);
+        if (removedTotalRecords === 0) {
+          notify(`No testing records found in ${speciesName}.`);
+          return;
         }
-        if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
-          setPedigreeAnimalId(null);
+        try {
+          await saveSafetyRollingBackup(currentSnapshot);
+          await adapterRef.current!.replaceSnapshot(nextSnapshot);
+          const keptPhotoIds = new Set((nextSnapshot.animalPhotos ?? []).map((p) => p.id));
+          for (const photo of currentSnapshot.animalPhotos ?? []) {
+            if (!keptPhotoIds.has(photo.id)) {
+              photoCacheRef.current.delete(photo.id);
+            }
+          }
+          if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
+            setSelectedAnimalId(null);
+          }
+          if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
+            setPedigreeAnimalId(null);
+          }
+          await reloadFromAdapter();
+          notify(
+            `Deleted ${speciesName} testing data (${removedAnimals} sample animals, ${removedTotalRecords} total testing records).`
+          );
+        } catch (err) {
+          reportPersistenceFailure(`delete ${speciesName} testing data`, err);
         }
-        await reloadFromAdapter();
-        notify(
-          `Deleted ${speciesName} testing data (${removedAnimals} sample animals, ${removedTotalRecords} total testing records).`
-        );
-      } catch (err) {
-        reportPersistenceFailure(`delete ${speciesName} testing data`, err);
-      }
+      });
     },
-    [snapshot, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteSpeciesNonTestingData = useCallback(
     async (speciesName: string) => {
-      if (!snapshot) return;
-      const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
-        purgeSpeciesNonTestingDataPure(snapshot, speciesName);
-      if (removedTotalRecords === 0) {
-        notify(`No non-testing records found in ${speciesName}.`);
-        return;
-      }
-      try {
-        await saveSafetyRollingBackup(snapshot);
-        await adapterRef.current!.replaceSnapshot(nextSnapshot);
-        if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
-          setSelectedAnimalId(null);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
+          purgeSpeciesNonTestingDataPure(currentSnapshot, speciesName);
+        if (removedTotalRecords === 0) {
+          notify(`No non-testing records found in ${speciesName}.`);
+          return;
         }
-        if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
-          setPedigreeAnimalId(null);
+        try {
+          await saveSafetyRollingBackup(currentSnapshot);
+          await adapterRef.current!.replaceSnapshot(nextSnapshot);
+          const keptPhotoIds = new Set((nextSnapshot.animalPhotos ?? []).map((p) => p.id));
+          for (const photo of currentSnapshot.animalPhotos ?? []) {
+            if (!keptPhotoIds.has(photo.id)) {
+              photoCacheRef.current.delete(photo.id);
+            }
+          }
+          if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
+            setSelectedAnimalId(null);
+          }
+          if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
+            setPedigreeAnimalId(null);
+          }
+          await reloadFromAdapter();
+          notify(
+            `Removed ${speciesName} non-testing data (${removedAnimals} animals, ${removedTotalRecords} total records).`
+          );
+        } catch (err) {
+          reportPersistenceFailure(`remove ${speciesName} non-testing data`, err);
         }
-        await reloadFromAdapter();
-        notify(
-          `Removed ${speciesName} non-testing data (${removedAnimals} animals, ${removedTotalRecords} total records).`
-        );
-      } catch (err) {
-        reportPersistenceFailure(`remove ${speciesName} non-testing data`, err);
-      }
+      });
     },
-    [snapshot, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const deleteAllSpeciesRecords = useCallback(
     async (speciesName: string) => {
-      if (!snapshot) return;
-      const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
-        purgeAllSpeciesRecordsPure(snapshot, speciesName);
-      if (removedTotalRecords === 0) {
-        notify(`${speciesName} already has zero records.`);
-        return;
-      }
-      try {
-        await saveSafetyRollingBackup(snapshot);
-        await adapterRef.current!.replaceSnapshot(nextSnapshot);
-        if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
-          setSelectedAnimalId(null);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const { nextSnapshot, removedAnimals, removedTotalRecords, removedAnimalIds } =
+          purgeAllSpeciesRecordsPure(currentSnapshot, speciesName);
+        if (removedTotalRecords === 0) {
+          notify(`${speciesName} already has zero records.`);
+          return;
         }
-        if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
-          setPedigreeAnimalId(null);
+        try {
+          await saveSafetyRollingBackup(currentSnapshot);
+          await adapterRef.current!.replaceSnapshot(nextSnapshot);
+          const keptPhotoIds = new Set((nextSnapshot.animalPhotos ?? []).map((p) => p.id));
+          for (const photo of currentSnapshot.animalPhotos ?? []) {
+            if (!keptPhotoIds.has(photo.id)) {
+              photoCacheRef.current.delete(photo.id);
+            }
+          }
+          if (selectedAnimalId && removedAnimalIds.has(selectedAnimalId)) {
+            setSelectedAnimalId(null);
+          }
+          if (pedigreeAnimalId && removedAnimalIds.has(pedigreeAnimalId)) {
+            setPedigreeAnimalId(null);
+          }
+          await reloadFromAdapter();
+          notify(
+            `Deleted all ${speciesName} records (${removedAnimals} animals, ${removedTotalRecords} total records) while keeping ${speciesName} configured.`
+          );
+        } catch (err) {
+          reportPersistenceFailure(`delete all ${speciesName} records`, err);
         }
-        await reloadFromAdapter();
-        notify(
-          `Deleted all ${speciesName} records (${removedAnimals} animals, ${removedTotalRecords} total records) while keeping ${speciesName} configured.`
-        );
-      } catch (err) {
-        reportPersistenceFailure(`delete all ${speciesName} records`, err);
-      }
+      });
     },
-    [snapshot, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, selectedAnimalId, pedigreeAnimalId, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const clearAllRecordsKeepSpecies = useCallback(async () => {
-    if (!snapshot) return;
-    try {
-      await saveSafetyRollingBackup(snapshot);
-      const empty: BarnDatabaseSnapshot = {
-        settings: { ...snapshot.settings, updatedAt: nowIsoUtc() },
-        speciesProfiles: snapshot.speciesProfiles,
-        animals: [],
-        animalPhotos: [],
-        cages: [],
-        breedings: [],
-        tasks: [],
-        careLogs: [],
-        shows: [],
-      };
-      await adapterRef.current!.replaceSnapshot(empty);
-      photoCacheRef.current.clear();
-      setSelectedAnimalId(null);
-      setPedigreeAnimalId(null);
-      await reloadFromAdapter();
-      notify('Deleted all animal, photo, breeding, and chore data across all species.');
-    } catch (err) {
-      reportPersistenceFailure('clear all animal data', err);
-    }
-  }, [snapshot, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
+    return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current;
+      if (!currentSnapshot) return;
+      try {
+        await saveSafetyRollingBackup(currentSnapshot);
+        const empty: BarnDatabaseSnapshot = {
+          settings: { ...currentSnapshot.settings, updatedAt: getAdjustedNowIsoUtc() },
+          speciesProfiles: currentSnapshot.speciesProfiles,
+          animals: [],
+          animalPhotos: [],
+          cages: [],
+          breedings: [],
+          tasks: [],
+          careLogs: [],
+          shows: [],
+        };
+        await adapterRef.current!.replaceSnapshot(empty);
+        photoCacheRef.current.clear();
+        setSelectedAnimalId(null);
+        setPedigreeAnimalId(null);
+        await reloadFromAdapter();
+        notify('Deleted all animal, photo, breeding, and chore data across all species.');
+      } catch (err) {
+        reportPersistenceFailure('clear all animal data', err);
+      }
+    });
+  }, [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
 
   const restoreFactoryDefaults = useCallback(async () => {
-    try {
-      if (snapshot) {
-        await saveSafetyRollingBackup(snapshot);
+    return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current;
+      try {
+        if (currentSnapshot) {
+          await saveSafetyRollingBackup(currentSnapshot);
+        }
+        const factorySnapshot = buildFullPredefinedSampleSnapshot();
+        await adapterRef.current!.replaceSnapshot(factorySnapshot);
+        photoCacheRef.current.clear();
+        setSelectedAnimalId(null);
+        setPedigreeAnimalId(null);
+        setPedigreeGenerations(factorySnapshot.settings.defaultGenerations);
+        setActiveSpeciesName(factorySnapshot.settings.defaultSpecies || 'Rabbit');
+        setRoute('home');
+        await reloadFromAdapter();
+        notify('Restored app to factory settings, theme palette, and 9 starter species herds.');
+      } catch (err) {
+        reportPersistenceFailure('restore factory defaults', err);
       }
-      const factorySnapshot = buildFullPredefinedSampleSnapshot();
-      await adapterRef.current!.replaceSnapshot(factorySnapshot);
-      photoCacheRef.current.clear();
-      setSelectedAnimalId(null);
-      setPedigreeAnimalId(null);
-      setPedigreeGenerations(factorySnapshot.settings.defaultGenerations);
-      setActiveSpeciesName(factorySnapshot.settings.defaultSpecies || 'Rabbit');
-      setRoute('home');
-      await reloadFromAdapter();
-      notify('Restored app to factory settings, theme palette, and 9 starter species herds.');
-    } catch (err) {
-      reportPersistenceFailure('restore factory defaults', err);
-    }
-  }, [snapshot, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
+    });
+  }, [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
 
   const importJsonBackup = useCallback(
     async (jsonText: string, mode: 'merge' | 'replace') => {
-      if (!snapshot) return;
-      const incoming = parseBarnBackupJson(jsonText, snapshot.settings);
-      if (mode === 'replace') {
-        if (snapshot.animals.length > 0) {
-          await saveSafetyRollingBackup(snapshot, 'Pre-JSON-replace safety snapshot');
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        try {
+          const incoming = parseBarnBackupJson(jsonText, currentSnapshot.settings);
+          if (mode === 'replace') {
+            if (currentSnapshot.animals.length > 0) {
+              await saveSafetyRollingBackup(currentSnapshot, 'Pre-JSON-replace safety snapshot');
+            }
+            photoCacheRef.current.clear();
+            const flagRes = applyImportConflictAttentionFlags(incoming.animals);
+            const nextSnap: BarnDatabaseSnapshot = { ...incoming, animals: flagRes.animals };
+            await adapterRef.current!.replaceSnapshot(nextSnap);
+            setWipedRecoveryContext(null);
+            await reloadFromAdapter();
+            if (flagRes.alertMessage) {
+              const spNames = Array.from(
+                new Set(
+                  flagRes.animals
+                    .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                    .map((a) => a.species)
+                )
+              );
+              setImportConflictAlert({
+                message: flagRes.alertMessage,
+                speciesNames: spNames,
+                conflictedCount: flagRes.conflictedAnimalIds.length,
+              });
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: flagRes.alertMessage,
+              });
+            }
+            notify(
+              `Restored ${incoming.animals.length} animals & ${incoming.animalPhotos.length} photos from JSON backup.${
+                flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+              }`
+            );
+          } else {
+            const merged = mergeBarnSnapshots(currentSnapshot, incoming);
+            const importedIds = new Set(incoming.animals.map((a) => a.id));
+            const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+            const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
+            await adapterRef.current!.replaceSnapshot(nextSnap);
+            await reloadFromAdapter();
+            if (flagRes.alertMessage) {
+              const spNames = Array.from(
+                new Set(
+                  flagRes.animals
+                    .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                    .map((a) => a.species)
+                )
+              );
+              setImportConflictAlert({
+                message: flagRes.alertMessage,
+                speciesNames: spNames,
+                conflictedCount: flagRes.conflictedAnimalIds.length,
+              });
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: flagRes.alertMessage,
+              });
+            }
+            notify(
+              `UUID/Timestamp sync complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
+                flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+              }`
+            );
+          }
+        } catch (err) {
+          reportPersistenceFailure('import JSON backup', err);
+          throw err;
         }
-        photoCacheRef.current.clear();
-        const flagRes = applyImportConflictAttentionFlags(incoming.animals);
-        const nextSnap: BarnDatabaseSnapshot = { ...incoming, animals: flagRes.animals };
-        await adapterRef.current!.replaceSnapshot(nextSnap);
-        setWipedRecoveryContext(null);
-        await reloadFromAdapter();
-        if (flagRes.alertMessage) {
-          const spNames = Array.from(
-            new Set(
-              flagRes.animals
-                .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
-                .map((a) => a.species)
-            )
-          );
-          setImportConflictAlert({
-            message: flagRes.alertMessage,
-            speciesNames: spNames,
-            conflictedCount: flagRes.conflictedAnimalIds.length,
-          });
-          logDiagnosticEvent({
-            level: 'warn',
-            category: 'storage',
-            message: flagRes.alertMessage,
-          });
-        }
-        notify(
-          `Restored ${incoming.animals.length} animals & ${incoming.animalPhotos.length} photos from JSON backup.${
-            flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
-          }`
-        );
-      } else {
-        const merged = mergeBarnSnapshots(snapshot, incoming);
-        const importedIds = new Set(incoming.animals.map((a) => a.id));
-        const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
-        const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
-        await adapterRef.current!.replaceSnapshot(nextSnap);
-        await reloadFromAdapter();
-        if (flagRes.alertMessage) {
-          const spNames = Array.from(
-            new Set(
-              flagRes.animals
-                .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
-                .map((a) => a.species)
-            )
-          );
-          setImportConflictAlert({
-            message: flagRes.alertMessage,
-            speciesNames: spNames,
-            conflictedCount: flagRes.conflictedAnimalIds.length,
-          });
-          logDiagnosticEvent({
-            level: 'warn',
-            category: 'storage',
-            message: flagRes.alertMessage,
-          });
-        }
-        notify(
-          `UUID/Timestamp sync complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
-            flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
-          }`
-        );
-      }
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const importBackupArchiveBytes = useCallback(
     async (bytes: Uint8Array, fileName: string, mode: 'merge' | 'replace') => {
-      if (!snapshot) return;
-      try {
-        const parsed = await parseBackupArchiveOffThread(bytes, fileName, snapshot.settings);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        try {
+          const parsed = await parseBackupArchiveOffThread(
+            bytes,
+            fileName,
+            currentSnapshot.settings
+          );
 
-        if (parsed.kind === 'photos_only') {
+          if (parsed.kind === 'photos_only') {
+            if (mode === 'replace') {
+              throw new Error(
+                'This ZIP contains only animal photos (photos/manifest.json without herd tables). Use "Merge (.JSON / .ZIP)" to restore photos without wiping your records.'
+              );
+            }
+            const photoMerge = mergePhotosOnlyIntoSnapshot(
+              currentSnapshot,
+              parsed.photos,
+              parsed.manifestEntries
+            );
+            await adapterRef.current!.replaceSnapshot(photoMerge.nextSnapshot);
+            await reloadFromAdapter();
+            const skippedMsg =
+              photoMerge.unmatchedSkipped > 0
+                ? ` (${photoMerge.unmatchedSkipped} unmatched skipped)`
+                : '';
+            logDiagnosticEvent({
+              level: 'info',
+              category: 'storage',
+              message: `Merged photos-only archive "${fileName}" (+${photoMerge.photosAdded} added, ${photoMerge.photosUpdated} updated)`,
+            });
+            notify(
+              `Photos archive merged: +${photoMerge.photosAdded} added, ${photoMerge.photosUpdated} updated${skippedMsg}.`
+            );
+            return;
+          }
+
           if (mode === 'replace') {
-            throw new Error(
-              'This ZIP contains only animal photos (photos/manifest.json without herd tables). Use "Merge (.JSON / .ZIP)" to restore photos without wiping your records.'
-            );
-          }
-          const photoMerge = mergePhotosOnlyIntoSnapshot(
-            snapshot,
-            parsed.photos,
-            parsed.manifestEntries
-          );
-          await adapterRef.current!.replaceSnapshot(photoMerge.nextSnapshot);
-          await reloadFromAdapter();
-          const skippedMsg =
-            photoMerge.unmatchedSkipped > 0
-              ? ` (${photoMerge.unmatchedSkipped} unmatched skipped)`
-              : '';
-          logDiagnosticEvent({
-            level: 'info',
-            category: 'storage',
-            message: `Merged photos-only archive "${fileName}" (+${photoMerge.photosAdded} added, ${photoMerge.photosUpdated} updated)`,
-          });
-          notify(
-            `Photos archive merged: +${photoMerge.photosAdded} added, ${photoMerge.photosUpdated} updated${skippedMsg}.`
-          );
-          return;
-        }
-
-        if (mode === 'replace') {
-          if (snapshot.animals.length > 0) {
-            await saveSafetyRollingBackup(snapshot, 'Pre-archive-replace safety snapshot');
-          }
-          photoCacheRef.current.clear();
-          const flagRes = applyImportConflictAttentionFlags(parsed.snapshot.animals);
-          const nextSnap: BarnDatabaseSnapshot = { ...parsed.snapshot, animals: flagRes.animals };
-          await adapterRef.current!.replaceSnapshot(nextSnap);
-          setWipedRecoveryContext(null);
-          await reloadFromAdapter();
-          if (flagRes.alertMessage) {
-            const spNames = Array.from(
-              new Set(
-                flagRes.animals
-                  .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
-                  .map((a) => a.species)
-              )
-            );
-            setImportConflictAlert({
-              message: flagRes.alertMessage,
-              speciesNames: spNames,
-              conflictedCount: flagRes.conflictedAnimalIds.length,
-            });
+            if (currentSnapshot.animals.length > 0) {
+              await saveSafetyRollingBackup(currentSnapshot, 'Pre-archive-replace safety snapshot');
+            }
+            photoCacheRef.current.clear();
+            const flagRes = applyImportConflictAttentionFlags(parsed.snapshot.animals);
+            const nextSnap: BarnDatabaseSnapshot = { ...parsed.snapshot, animals: flagRes.animals };
+            await adapterRef.current!.replaceSnapshot(nextSnap);
+            setWipedRecoveryContext(null);
+            await reloadFromAdapter();
+            if (flagRes.alertMessage) {
+              const spNames = Array.from(
+                new Set(
+                  flagRes.animals
+                    .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                    .map((a) => a.species)
+                )
+              );
+              setImportConflictAlert({
+                message: flagRes.alertMessage,
+                speciesNames: spNames,
+                conflictedCount: flagRes.conflictedAnimalIds.length,
+              });
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: flagRes.alertMessage,
+              });
+            }
             logDiagnosticEvent({
-              level: 'warn',
+              level: 'info',
               category: 'storage',
-              message: flagRes.alertMessage,
+              message: `Restored full archive "${fileName}" (${parsed.snapshot.animals.length} animals, ${parsed.photosReconstructed} photos)`,
             });
-          }
-          logDiagnosticEvent({
-            level: 'info',
-            category: 'storage',
-            message: `Restored full archive "${fileName}" (${parsed.snapshot.animals.length} animals, ${parsed.photosReconstructed} photos)`,
-          });
-          notify(
-            `Restored ${parsed.snapshot.animals.length} animals & ${parsed.photosReconstructed} photos from ${parsed.sourceFormat.toUpperCase()} backup.${
-              flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
-            }`
-          );
-        } else {
-          const merged = mergeBarnSnapshots(snapshot, parsed.snapshot);
-          const importedIds = new Set(parsed.snapshot.animals.map((a) => a.id));
-          const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
-          const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
-          await adapterRef.current!.replaceSnapshot(nextSnap);
-          await reloadFromAdapter();
-          if (flagRes.alertMessage) {
-            const spNames = Array.from(
-              new Set(
-                flagRes.animals
-                  .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
-                  .map((a) => a.species)
-              )
+            notify(
+              `Restored ${parsed.snapshot.animals.length} animals & ${parsed.photosReconstructed} photos from ${parsed.sourceFormat.toUpperCase()} backup.${
+                flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+              }`
             );
-            setImportConflictAlert({
-              message: flagRes.alertMessage,
-              speciesNames: spNames,
-              conflictedCount: flagRes.conflictedAnimalIds.length,
-            });
+          } else {
+            const merged = mergeBarnSnapshots(currentSnapshot, parsed.snapshot);
+            const importedIds = new Set(parsed.snapshot.animals.map((a) => a.id));
+            const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+            const nextSnap: BarnDatabaseSnapshot = { ...merged.snapshot, animals: flagRes.animals };
+            await adapterRef.current!.replaceSnapshot(nextSnap);
+            await reloadFromAdapter();
+            if (flagRes.alertMessage) {
+              const spNames = Array.from(
+                new Set(
+                  flagRes.animals
+                    .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                    .map((a) => a.species)
+                )
+              );
+              setImportConflictAlert({
+                message: flagRes.alertMessage,
+                speciesNames: spNames,
+                conflictedCount: flagRes.conflictedAnimalIds.length,
+              });
+              logDiagnosticEvent({
+                level: 'warn',
+                category: 'storage',
+                message: flagRes.alertMessage,
+              });
+            }
             logDiagnosticEvent({
-              level: 'warn',
+              level: 'info',
               category: 'storage',
-              message: flagRes.alertMessage,
+              message: `Merged archive "${fileName}" (+${merged.animalsAdded} added, ${merged.photosMerged} photos merged)`,
             });
+            notify(
+              `Merge complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
+                flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+              }`
+            );
           }
+        } catch (err) {
           logDiagnosticEvent({
-            level: 'info',
-            category: 'storage',
-            message: `Merged archive "${fileName}" (+${merged.animalsAdded} added, ${merged.photosMerged} photos merged)`,
+            level: 'error',
+            category: isMemoryLikeError(err) ? 'memory' : 'storage',
+            message: `Archive import failed for "${fileName}" (${bytes.byteLength} bytes, mode=${mode})`,
+            error: err,
           });
-          notify(
-            `Merge complete: +${merged.animalsAdded} added, ${merged.animalsUpdated} updated, ${merged.photosMerged} photos merged.${
-              flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
-            }`
-          );
+          throw err;
         }
-      } catch (err) {
-        logDiagnosticEvent({
-          level: 'error',
-          category: isMemoryLikeError(err) ? 'memory' : 'storage',
-          message: `Archive import failed for "${fileName}" (${bytes.byteLength} bytes, mode=${mode})`,
-          error: err,
-        });
-        throw err;
-      }
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify]
   );
 
   const importDeltaOperations = useCallback(
@@ -3635,61 +4053,85 @@ export function useBarnStore() {
       return enqueueStoreMutation(async () => {
         const currentSnapshot = snapshotRef.current ?? snapshot;
         if (!currentSnapshot) return;
-        const result = mergeDeltaOperations(currentSnapshot, syncOperations, incomingOps, deviceId);
-        if (result.appliedOpCount === 0) {
-          notify('Delta sync checked — no new remote operations needed applying.');
-          return;
+        try {
+          const result = mergeDeltaOperations(
+            currentSnapshot,
+            syncOperationsRef.current,
+            incomingOps,
+            deviceId
+          );
+          if (result.appliedOpCount === 0) {
+            notify('Delta sync checked — no new remote operations needed applying.');
+            return;
+          }
+          await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
+          await replaceSyncOperationsInIdb(result.mergedOperations);
+          syncOperationsRef.current = result.mergedOperations;
+          setSyncOperations(result.mergedOperations);
+          if (result.newConflicts.length > 0) {
+            await appendSyncConflictsToIdb(result.newConflicts);
+            setSyncConflicts((prev) => [...result.newConflicts, ...prev]);
+          }
+          await reloadFromAdapter();
+          notify(
+            result.newConflicts.length > 0
+              ? `Merged ${result.appliedOpCount} field operation(s); ${result.newConflicts.length} field collision(s) logged for review.`
+              : `Merged ${result.appliedOpCount} field operation(s) cleanly with zero collisions.`
+          );
+        } catch (err) {
+          reportPersistenceFailure('apply delta sync operations', err);
+          throw err;
         }
-        await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
-        await replaceSyncOperationsInIdb(result.mergedOperations);
-        setSyncOperations(result.mergedOperations);
-        if (result.newConflicts.length > 0) {
-          await appendSyncConflictsToIdb(result.newConflicts);
-          setSyncConflicts((prev) => [...result.newConflicts, ...prev]);
-        }
-        await reloadFromAdapter();
-        notify(
-          result.newConflicts.length > 0
-            ? `Merged ${result.appliedOpCount} field operation(s); ${result.newConflicts.length} field collision(s) logged for review.`
-            : `Merged ${result.appliedOpCount} field operation(s) cleanly with zero collisions.`
-        );
       });
     },
-    [snapshot, syncOperations, deviceId, enqueueStoreMutation, reloadFromAdapter, notify]
+    [snapshot, deviceId, enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const resolveSyncConflict = useCallback(
     async (conflictId: string, useSide: 'winning' | 'losing') => {
-      if (!snapshot) return;
-      const conflict = syncConflicts.find((c) => c.conflict_id === conflictId);
-      if (!conflict) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
+        const conflict = syncConflicts.find((c) => c.conflict_id === conflictId);
+        if (!conflict) return;
 
-      const chosenValue = useSide === 'winning' ? conflict.winning_value : conflict.losing_value;
-      const op = createOutboxOperation({
-        entityType: conflict.entity_type,
-        entityUuid: conflict.entity_uuid,
-        deviceId,
-        logicalCounter: allocateNextLogicalCounter(),
-        fieldName: conflict.field_name,
-        newValue: chosenValue,
-        timestamp: getAdjustedNowIsoUtc(),
-        recordRev: nextEntityRev(conflict.entity_uuid),
+        try {
+          const chosenValue = useSide === 'winning' ? conflict.winning_value : conflict.losing_value;
+          const op = createOutboxOperation({
+            entityType: conflict.entity_type,
+            entityUuid: conflict.entity_uuid,
+            deviceId,
+            logicalCounter: allocateNextLogicalCounter(),
+            fieldName: conflict.field_name,
+            newValue: chosenValue,
+            timestamp: getAdjustedNowIsoUtc(),
+            recordRev: nextEntityRev(conflict.entity_uuid),
+          });
+
+          const applied = mergeDeltaOperations(
+            currentSnapshot,
+            syncOperationsRef.current,
+            [op],
+            deviceId
+          );
+          await adapterRef.current!.replaceSnapshot(applied.nextSnapshot);
+          await replaceSyncOperationsInIdb(applied.mergedOperations);
+          syncOperationsRef.current = applied.mergedOperations;
+          setSyncOperations(applied.mergedOperations);
+
+          const resolvedConflict: SyncConflictEntry = { ...conflict, resolved: true };
+          await saveSyncConflictInIdb(resolvedConflict);
+          setSyncConflicts((prev) =>
+            prev.map((c) => (c.conflict_id === conflictId ? resolvedConflict : c))
+          );
+          await reloadFromAdapter();
+          notify(`Applied chosen value for ${conflict.entity_label} (${conflict.field_name}).`);
+        } catch (err) {
+          reportPersistenceFailure('resolve sync conflict', err);
+        }
       });
-
-      const applied = mergeDeltaOperations(snapshot, syncOperations, [op], deviceId);
-      await adapterRef.current!.replaceSnapshot(applied.nextSnapshot);
-      await replaceSyncOperationsInIdb(applied.mergedOperations);
-      setSyncOperations(applied.mergedOperations);
-
-      const resolvedConflict: SyncConflictEntry = { ...conflict, resolved: true };
-      await saveSyncConflictInIdb(resolvedConflict);
-      setSyncConflicts((prev) =>
-        prev.map((c) => (c.conflict_id === conflictId ? resolvedConflict : c))
-      );
-      await reloadFromAdapter();
-      notify(`Applied chosen value for ${conflict.entity_label} (${conflict.field_name}).`);
     },
-    [snapshot, syncConflicts, syncOperations, deviceId, nextEntityRev, reloadFromAdapter, notify]
+    [enqueueStoreMutation, syncConflicts, deviceId, nextEntityRev, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const dismissSyncConflict = useCallback(
@@ -3714,20 +4156,29 @@ export function useBarnStore() {
 
   const restoreRollingBackupByKey = useCallback(
     async (key: string) => {
-      const snap = await loadRollingSnapshotBackup(key);
-      if (!snap) {
-        notify('Could not load that rolling backup snapshot.');
-        return;
-      }
-      if (snapshot && !wipedRecoveryContext?.detected && snapshot.animals.length > 0) {
-        await saveSafetyRollingBackup(snapshot, 'Pre-rolling-restore safety snapshot');
-      }
-      await adapterRef.current!.replaceSnapshot(snap);
-      setWipedRecoveryContext(null);
-      await reloadFromAdapter();
-      notify(`Restored rolling snapshot (${snap.animals.length} animals).`);
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        try {
+          const snap = await loadRollingSnapshotBackup(key);
+          if (!snap) {
+            notify('Could not load that rolling backup snapshot.');
+            return;
+          }
+          if (currentSnapshot && !wipedRecoveryContext?.detected && currentSnapshot.animals.length > 0) {
+            await saveSafetyRollingBackup(currentSnapshot, 'Pre-rolling-restore safety snapshot');
+          }
+          photoCacheRef.current?.clear();
+          await adapterRef.current!.replaceSnapshot(snap);
+          setWipedRecoveryContext(null);
+          await reloadFromAdapter();
+          notify(`Restored rolling snapshot (${snap.animals.length} animals).`);
+        } catch (err) {
+          reportPersistenceFailure('restore rolling snapshot', err);
+          throw err;
+        }
+      });
     },
-    [snapshot, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify]
+    [enqueueStoreMutation, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const saveManualOpfsVaultBackup = useCallback(
@@ -3812,17 +4263,18 @@ export function useBarnStore() {
     reportPersistenceFailure,
   ]);
 
-  const restoreOpfsVaultBackup = useCallback(
+  const restoreOpfsVaultBackupInternal = useCallback(
     async (key: string) => {
+      const currentSnapshot = snapshotRef.current;
       try {
-        const loaded = await loadOpfsVaultBackup(key, snapshot?.settings);
+        const loaded = await loadOpfsVaultBackup(key, currentSnapshot?.settings);
         if (!loaded) {
           notify('Could not read or verify that OPFS backup file.');
           return;
         }
         const migrated = loaded.migrated;
-        if (snapshot && !wipedRecoveryContext?.detected && snapshot.animals.length > 0) {
-          await saveSafetyRollingBackup(snapshot, 'Pre-vault-restore safety snapshot');
+        if (currentSnapshot && !wipedRecoveryContext?.detected && currentSnapshot.animals.length > 0) {
+          await saveSafetyRollingBackup(currentSnapshot, 'Pre-vault-restore safety snapshot');
         }
         photoCacheRef.current?.clear();
         await adapterRef.current!.replaceSnapshot(migrated.snapshot);
@@ -3841,7 +4293,14 @@ export function useBarnStore() {
         throw err;
       }
     },
-    [snapshot, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+  );
+
+  const restoreOpfsVaultBackup = useCallback(
+    async (key: string) => {
+      return enqueueStoreMutation(() => restoreOpfsVaultBackupInternal(key));
+    },
+    [enqueueStoreMutation, restoreOpfsVaultBackupInternal]
   );
 
   const downloadOpfsVaultBackupByKey = useCallback(
@@ -3877,7 +4336,7 @@ export function useBarnStore() {
     [refreshVaultAndArchives, notify]
   );
 
-  const offloadAnimalsToOpfsArchive = useCallback(
+  const offloadAnimalsToOpfsArchiveInternal = useCallback(
     async (
       animalIds: string[]
     ): Promise<{
@@ -3931,32 +4390,39 @@ export function useBarnStore() {
     },
     [hydrateSnapshotForExport, selectedAnimalId, pedigreeAnimalId, reloadFromAdapter, notify, reportPersistenceFailure]
   );
-  offloadAnimalsRef.current = offloadAnimalsToOpfsArchive;
+  offloadAnimalsRef.current = offloadAnimalsToOpfsArchiveInternal;
 
-  const connectBackupSinkFolder = useCallback(async () => {
+  const offloadAnimalsToOpfsArchive = useCallback(
+    async (animalIds: string[]) => {
+      return enqueueStoreMutation(() => offloadAnimalsToOpfsArchiveInternal(animalIds));
+    },
+    [enqueueStoreMutation, offloadAnimalsToOpfsArchiveInternal]
+  );
+
+  const connectBackupSyncFolder = useCallback(async () => {
     try {
-      const nextStatus = await configureBackupSinkFolder();
-      const flushRes = await flushOpfsBackupsToSinkFolder();
+      const nextStatus = await configureBackupSyncFolder();
+      const flushRes = await flushOpfsBackupsToSyncFolder();
       await refreshVaultAndArchives();
       const syncNote =
         flushRes.pushed > 0
           ? ` Synced ${flushRes.pushed} current vault backup(s) into "${nextStatus.folderName}/pedigree-vault-archive".`
           : '';
       notify(
-        `Connected Backup Sink folder "${nextStatus.folderName}". Expiring local backups will copy there automatically before pruning.${syncNote}`
+        `Connected Backup Sync folder "${nextStatus.folderName}". Expiring local backups will copy there automatically before pruning.${syncNote}`
       );
       return nextStatus;
     } catch (err) {
-      reportPersistenceFailure('connect Backup Sink folder', err);
+      reportPersistenceFailure('connect Backup Sync folder', err);
       return null;
     }
   }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
 
-  const reauthorizeBackupSinkFolderAction = useCallback(async () => {
+  const reauthorizeBackupSyncFolderAction = useCallback(async () => {
     try {
-      const nextStatus = await reauthorizeBackupSinkFolder();
+      const nextStatus = await reauthorizeBackupSyncFolder();
       if (nextStatus.permissionState === 'granted') {
-        const flushRes = await flushOpfsBackupsToSinkFolder();
+        const flushRes = await flushOpfsBackupsToSyncFolder();
         await refreshVaultAndArchives();
         notify(
           flushRes.pushed > 0
@@ -3969,31 +4435,31 @@ export function useBarnStore() {
       }
       return nextStatus;
     } catch (err) {
-      reportPersistenceFailure('re-authorize Backup Sink folder', err);
+      reportPersistenceFailure('re-authorize Backup Sync folder', err);
       return null;
     }
   }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
 
-  const disconnectBackupSinkFolderAction = useCallback(async () => {
+  const disconnectBackupSyncFolderAction = useCallback(async () => {
     try {
-      const nextStatus = await disconnectBackupSinkFolder();
-      setBackupSinkStatus(nextStatus);
-      notify('Disconnected Backup Sink folder.');
+      const nextStatus = await disconnectBackupSyncFolder();
+      setBackupSyncStatus(nextStatus);
+      notify('Disconnected Backup Sync folder.');
     } catch (err) {
-      reportPersistenceFailure('disconnect Backup Sink folder', err);
+      reportPersistenceFailure('disconnect Backup Sync folder', err);
     }
   }, [notify, reportPersistenceFailure]);
 
-  const syncVaultBackupsToSinkNow = useCallback(async () => {
+  const syncVaultBackupsToSyncNow = useCallback(async () => {
     try {
-      const res = await flushOpfsBackupsToSinkFolder();
+      const res = await flushOpfsBackupsToSyncFolder();
       await refreshVaultAndArchives();
       if (res.pushed > 0) {
-        notify(`Synced ${res.pushed} vault backup(s) to connected Backup Sink folder.`);
+        notify(`Synced ${res.pushed} vault backup(s) to connected Backup Sync folder.`);
       } else if (res.skippedReason === 'permission_required') {
-        notify('Backup Sink folder needs re-authorization before syncing.');
+        notify('Backup Sync folder needs re-authorization before syncing.');
       } else if (res.skippedReason === 'not_configured') {
-        notify('Connect a Backup Sink folder first.');
+        notify('Connect a Backup Sync folder first.');
       } else {
         notify('Vault backups are already empty or up to date.');
       }
@@ -4004,9 +4470,9 @@ export function useBarnStore() {
     }
   }, [refreshVaultAndArchives, notify, reportPersistenceFailure]);
 
-  const dismissPruneSinkWarning = useCallback(() => {
-    clearOpfsPruneSinkWarning();
-    setPruneSinkWarning(null);
+  const dismissPruneSyncWarning = useCallback(() => {
+    clearOpfsPruneSyncWarning();
+    setPruneSyncWarning(null);
   }, []);
 
   const restoreArchivedHerdBundle = useCallback(
@@ -4014,33 +4480,35 @@ export function useBarnStore() {
       archiveKey: string,
       options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
     ) => {
-      const freshBase = adapterRef.current
-        ? await adapterRef.current.loadSnapshot({ lightweightPhotos: true })
-        : snapshotRef.current;
-      if (!freshBase) return;
-      try {
-        const loaded = await loadOpfsHerdArchive(archiveKey, freshBase.settings);
-        if (!loaded) {
-          notify('Archived herd bundle could not be loaded or verified.');
-          return;
+      return enqueueStoreMutation(async () => {
+        const freshBase = adapterRef.current
+          ? await adapterRef.current.loadSnapshot({ lightweightPhotos: true })
+          : snapshotRef.current;
+        if (!freshBase) return;
+        try {
+          const loaded = await loadOpfsHerdArchive(archiveKey, freshBase.settings);
+          if (!loaded) {
+            notify('Archived herd bundle could not be loaded or verified.');
+            return;
+          }
+          const merged = mergeRestoredArchiveIntoSnapshot(freshBase, loaded.unpacked, options);
+          await adapterRef.current!.replaceSnapshot(merged.nextSnapshot);
+          if (options?.deleteArchiveAfterRestore !== false) {
+            await deleteOpfsHerdArchive(archiveKey);
+          }
+          photoCacheRef.current?.clear();
+          setWipedRecoveryContext(null);
+          await reloadFromAdapter();
+          notify(
+            `Restored ${merged.restoredAnimalCount} animal(s), ${merged.restoredPhotoCount} photo(s), and ${merged.restoredCareLogCount} care log(s) from OPFS /archives.`
+          );
+        } catch (err) {
+          reportPersistenceFailure('restore archived herd bundle', err);
+          throw err;
         }
-        const merged = mergeRestoredArchiveIntoSnapshot(freshBase, loaded.unpacked, options);
-        await adapterRef.current!.replaceSnapshot(merged.nextSnapshot);
-        if (options?.deleteArchiveAfterRestore !== false) {
-          await deleteOpfsHerdArchive(archiveKey);
-        }
-        photoCacheRef.current?.clear();
-        setWipedRecoveryContext(null);
-        await reloadFromAdapter();
-        notify(
-          `Restored ${merged.restoredAnimalCount} animal(s), ${merged.restoredPhotoCount} photo(s), and ${merged.restoredCareLogCount} care log(s) from OPFS /archives.`
-        );
-      } catch (err) {
-        reportPersistenceFailure('restore archived herd bundle', err);
-        throw err;
-      }
+      });
     },
-    [reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const downloadArchivedHerdBundle = useCallback(
@@ -4058,56 +4526,73 @@ export function useBarnStore() {
 
   const deleteArchivedHerdBundle = useCallback(
     async (archiveKey: string) => {
-      await deleteOpfsHerdArchive(archiveKey);
-      const currentSnap = snapshotRef.current;
-      if (currentSnap) {
-        const staleStubs = currentSnap.animals
-          .filter((a) => a.offloadedArchiveKey === archiveKey)
-          .map((a) => ({
-            ...a,
-            offloadedArchiveKey: '',
-            offloadedAtIso: '',
-            updatedAt: nowIsoUtc(),
-          }));
-        if (staleStubs.length > 0) {
-          await adapterRef.current!.saveAnimalsBatch(staleStubs);
+      return enqueueStoreMutation(async () => {
+        try {
+          await deleteOpfsHerdArchive(archiveKey);
+          const currentSnap = snapshotRef.current;
+          if (currentSnap) {
+            const ts = getAdjustedNowIsoUtc();
+            const staleStubs = currentSnap.animals
+              .filter((a) => a.offloadedArchiveKey === archiveKey)
+              .map((a) => ({
+                ...a,
+                offloadedArchiveKey: '',
+                offloadedAtIso: '',
+                _rev: nextEntityRev(a.id, a._rev),
+                updatedAt: ts,
+              }));
+            if (staleStubs.length > 0) {
+              await adapterRef.current!.saveAnimalsBatch(staleStubs);
+            }
+          }
+          await reloadFromAdapter();
+          notify('Deleted archive bundle from OPFS /archives.');
+        } catch (err) {
+          reportPersistenceFailure('delete archived herd bundle', err);
         }
-      }
-      await reloadFromAdapter();
-      notify('Deleted archive bundle from OPFS /archives.');
+      });
     },
-    [reloadFromAdapter, notify]
+    [enqueueStoreMutation, nextEntityRev, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const restoreLatestOpfsOnWipedRecovery = useCallback(async () => {
-    let targetKey = wipedRecoveryContext?.latestOpfsBackup?.key;
-    if (!targetKey) {
-      const list = await listOpfsVaultBackups();
-      targetKey = list[0]?.key;
-    }
-    if (!targetKey) {
-      notify('No OPFS vault backup found to restore.');
-      return;
-    }
-    await restoreOpfsVaultBackup(targetKey);
-  }, [wipedRecoveryContext, restoreOpfsVaultBackup, notify]);
+    return enqueueStoreMutation(async () => {
+      let targetKey = wipedRecoveryContext?.latestOpfsBackup?.key;
+      if (!targetKey) {
+        const list = await listOpfsVaultBackups();
+        targetKey = list[0]?.key;
+      }
+      if (!targetKey) {
+        notify('No OPFS vault backup found to restore.');
+        return;
+      }
+      await restoreOpfsVaultBackupInternal(targetKey);
+    });
+  }, [enqueueStoreMutation, wipedRecoveryContext, restoreOpfsVaultBackupInternal, notify]);
 
   const startFreshAfterWipedRecovery = useCallback(async () => {
-    clearPriorUseSentinel();
-    photoCacheRef.current?.clear();
-    const adapter = adapterRef.current!;
-    const fresh = adapter.rebuildCleanDatabase
-      ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true, allowSeedFresh: true })
-      : await adapter.initialize({ lightweightPhotos: true, allowSeedFresh: true });
-    setSnapshot(fresh);
-    setWipedRecoveryContext(null);
-    setSelectedAnimalId(null);
-    setPedigreeAnimalId(null);
-    setActiveSpeciesName(fresh.settings.defaultSpecies || 'Rabbit');
-    setRoute('home');
-    await refreshVaultAndArchives();
-    notify(`Initialized fresh starter herds (${fresh.animals.length} sample animals).`);
-  }, [refreshVaultAndArchives, notify]);
+    return enqueueStoreMutation(async () => {
+      try {
+        clearPriorUseSentinel();
+        photoCacheRef.current?.clear();
+        const adapter = adapterRef.current!;
+        const fresh = adapter.rebuildCleanDatabase
+          ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true, allowSeedFresh: true })
+          : await adapter.initialize({ lightweightPhotos: true, allowSeedFresh: true });
+        snapshotRef.current = fresh;
+        setSnapshot(fresh);
+        setWipedRecoveryContext(null);
+        setSelectedAnimalId(null);
+        setPedigreeAnimalId(null);
+        setActiveSpeciesName(fresh.settings.defaultSpecies || 'Rabbit');
+        setRoute('home');
+        await refreshVaultAndArchives();
+        notify(`Initialized fresh starter herds (${fresh.animals.length} sample animals).`);
+      } catch (err) {
+        reportPersistenceFailure('start fresh starter herds', err);
+      }
+    });
+  }, [enqueueStoreMutation, refreshVaultAndArchives, notify, reportPersistenceFailure]);
 
   const applyPlatformImportPreview = useCallback(
     async (
@@ -4115,98 +4600,106 @@ export function useBarnStore() {
       optimizedPhotos: AnimalPhoto[] = [],
       conflictSelections: ConflictSelectionMap = {}
     ) => {
-      if (!snapshot) return;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return;
 
-      const resolvedAnimals = resolveAnimalsWithConflictChoices(
-        preview.animals,
-        snapshot,
-        conflictSelections
-      );
+        try {
+          const resolvedAnimals = resolveAnimalsWithConflictChoices(
+            preview.animals,
+            currentSnapshot,
+            conflictSelections
+          );
 
-      let localAdjustedSnapshot = snapshot;
-      let incomingSpeciesProfiles = preview.newSpeciesProfiles;
-      if (preview.newSpeciesProfiles.length > 0) {
-        const ts = nowIsoUtc();
-        const offset = preview.newSpeciesProfiles.length;
-        incomingSpeciesProfiles = preview.newSpeciesProfiles.map((sp, idx) => ({
-          ...sp,
-          sortOrder: idx,
-          updatedAt: ts,
-        }));
-        localAdjustedSnapshot = {
-          ...snapshot,
-          speciesProfiles: snapshot.speciesProfiles.map((sp, idx) => ({
-            ...sp,
-            sortOrder: idx + offset,
-          })),
-        };
-      }
+          let localAdjustedSnapshot = currentSnapshot;
+          let incomingSpeciesProfiles = preview.newSpeciesProfiles;
+          if (preview.newSpeciesProfiles.length > 0) {
+            const ts = getAdjustedNowIsoUtc();
+            const offset = preview.newSpeciesProfiles.length;
+            incomingSpeciesProfiles = preview.newSpeciesProfiles.map((sp, idx) => ({
+              ...sp,
+              sortOrder: idx,
+              updatedAt: ts,
+            }));
+            localAdjustedSnapshot = {
+              ...currentSnapshot,
+              speciesProfiles: currentSnapshot.speciesProfiles.map((sp, idx) => ({
+                ...sp,
+                sortOrder: idx + offset,
+              })),
+            };
+          }
 
-      const incoming: BarnDatabaseSnapshot = {
-        settings: localAdjustedSnapshot.settings,
-        speciesProfiles: incomingSpeciesProfiles,
-        animals: resolvedAnimals,
-        animalPhotos: optimizedPhotos,
-        cages: preview.cages,
-        breedings: preview.breedings,
-        tasks: preview.tasks,
-        careLogs: preview.careLogs,
-        shows: preview.shows,
-      };
-      const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
-      const importedIds = new Set(resolvedAnimals.map((a) => a.id));
-      const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
-      const finalSnapshot: BarnDatabaseSnapshot = {
-        ...merged.snapshot,
-        animals: flagRes.animals,
-      };
-      await adapterRef.current!.replaceSnapshot(finalSnapshot);
-      await reloadFromAdapter();
-      if (flagRes.alertMessage) {
-        const spNames = Array.from(
-          new Set(
-            flagRes.animals
-              .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
-              .map((a) => a.species)
-          )
-        );
-        setImportConflictAlert({
-          message: flagRes.alertMessage,
-          speciesNames: spNames,
-          conflictedCount: flagRes.conflictedAnimalIds.length,
-        });
-        logDiagnosticEvent({
-          level: 'warn',
-          category: 'storage',
-          message: `${preview.platformName} import conflict alert: ${flagRes.alertMessage}`,
-        });
-      }
-      if (preview.speciesDetected.length === 1) {
-        setActiveSpeciesName(preview.speciesDetected[0]);
-      } else if (preview.newSpeciesProfiles.length > 0) {
-        setActiveSpeciesName(preview.newSpeciesProfiles[0].name);
-      }
-      const origPhotoBytes = optimizedPhotos.reduce((acc, p) => acc + p.originalBytes, 0);
-      const storedPhotoBytes = optimizedPhotos.reduce((acc, p) => acc + p.storedBytes, 0);
-      const photoSummary =
-        optimizedPhotos.length > 0
-          ? `, ${optimizedPhotos.length} optimized photos (${formatByteSizePure(
-              origPhotoBytes
-            )} → ${formatByteSizePure(storedPhotoBytes)})`
-          : '';
-      const newSpSummary =
-        preview.newSpeciesProfiles.length > 0
-          ? `, +${preview.newSpeciesProfiles.length} custom species (${preview.newSpeciesProfiles
-              .map((s) => s.name)
-              .join(', ')})`
-          : '';
-      notify(
-        `${preview.platformName} import complete: ${resolvedAnimals.length} animals (${preview.parentLinksResolved} parent links), ${preview.breedings.length} breedings, ${preview.careLogs.length} logs${photoSummary}${newSpSummary}.${
-          flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
-        }`
-      );
+          const incoming: BarnDatabaseSnapshot = {
+            settings: localAdjustedSnapshot.settings,
+            speciesProfiles: incomingSpeciesProfiles,
+            animals: resolvedAnimals,
+            animalPhotos: optimizedPhotos,
+            cages: preview.cages,
+            breedings: preview.breedings,
+            tasks: preview.tasks,
+            careLogs: preview.careLogs,
+            shows: preview.shows,
+          };
+          const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
+          const importedIds = new Set(resolvedAnimals.map((a) => a.id));
+          const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
+          const finalSnapshot: BarnDatabaseSnapshot = {
+            ...merged.snapshot,
+            animals: flagRes.animals,
+          };
+          await adapterRef.current!.replaceSnapshot(finalSnapshot);
+          await reloadFromAdapter();
+          if (flagRes.alertMessage) {
+            const spNames = Array.from(
+              new Set(
+                flagRes.animals
+                  .filter((a) => flagRes.conflictedAnimalIds.includes(a.id))
+                  .map((a) => a.species)
+              )
+            );
+            setImportConflictAlert({
+              message: flagRes.alertMessage,
+              speciesNames: spNames,
+              conflictedCount: flagRes.conflictedAnimalIds.length,
+            });
+            logDiagnosticEvent({
+              level: 'warn',
+              category: 'storage',
+              message: `${preview.platformName} import conflict alert: ${flagRes.alertMessage}`,
+            });
+          }
+          if (preview.speciesDetected.length === 1) {
+            setActiveSpeciesName(preview.speciesDetected[0]);
+          } else if (preview.newSpeciesProfiles.length > 0) {
+            setActiveSpeciesName(preview.newSpeciesProfiles[0].name);
+          }
+          const origPhotoBytes = optimizedPhotos.reduce((acc, p) => acc + p.originalBytes, 0);
+          const storedPhotoBytes = optimizedPhotos.reduce((acc, p) => acc + p.storedBytes, 0);
+          const photoSummary =
+            optimizedPhotos.length > 0
+              ? `, ${optimizedPhotos.length} optimized photos (${formatByteSizePure(
+                  origPhotoBytes
+                )} → ${formatByteSizePure(storedPhotoBytes)})`
+              : '';
+          const newSpSummary =
+            preview.newSpeciesProfiles.length > 0
+              ? `, +${preview.newSpeciesProfiles.length} custom species (${preview.newSpeciesProfiles
+                  .map((s) => s.name)
+                  .join(', ')})`
+              : '';
+          notify(
+            `${preview.platformName} import complete: ${resolvedAnimals.length} animals (${preview.parentLinksResolved} parent links), ${preview.breedings.length} breedings, ${preview.careLogs.length} logs${photoSummary}${newSpSummary}.${
+              flagRes.alertMessage ? ` ${flagRes.alertMessage}` : ''
+            }`
+          );
+        } catch (err) {
+          reportPersistenceFailure(`import ${preview.platformName} data`, err);
+          throw err;
+        }
+      });
     },
-    [snapshot, reloadFromAdapter, notify]
+    [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const exportSqliteBytes = useCallback(async () => {
@@ -4231,35 +4724,56 @@ export function useBarnStore() {
 
   const importSqliteBytes = useCallback(
     async (bytes: Uint8Array) => {
-      if (snapshot && snapshot.animals.length > 0) {
-        await saveSafetyRollingBackup(snapshot, 'Pre-SQLite-import safety snapshot');
-      }
-      photoCacheRef.current.clear();
-      const snap = await adapterRef.current!.importRawSqliteBytes(bytes, {
-        lightweightPhotos: true,
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        try {
+          if (currentSnapshot && currentSnapshot.animals.length > 0) {
+            await saveSafetyRollingBackup(currentSnapshot, 'Pre-SQLite-import safety snapshot');
+          }
+          photoCacheRef.current.clear();
+          const snap = await adapterRef.current!.importRawSqliteBytes(bytes, {
+            lightweightPhotos: true,
+          });
+          snapshotRef.current = snap;
+          setSnapshot(snap);
+          setWipedRecoveryContext(null);
+          void refreshStorageStatus();
+          void refreshVaultAndArchives();
+          notify(
+            `Loaded SQLite database (${snap.animals.length} animals, ${(snap.animalPhotos ?? []).length} photos).`
+          );
+        } catch (err) {
+          reportPersistenceFailure('load SQLite database file', err);
+          throw err;
+        }
       });
-      setSnapshot(snap);
-      setWipedRecoveryContext(null);
-      void refreshStorageStatus();
-      void refreshVaultAndArchives();
-      notify(
-        `Loaded SQLite database (${snap.animals.length} animals, ${(snap.animalPhotos ?? []).length} photos).`
-      );
     },
-    [snapshot, saveSafetyRollingBackup, refreshStorageStatus, refreshVaultAndArchives, notify]
+    [enqueueStoreMutation, saveSafetyRollingBackup, refreshStorageStatus, refreshVaultAndArchives, notify, reportPersistenceFailure]
   );
 
   const analyzePhotoStorageFootprint = useCallback(
     async (presetId?: ImageOptimizationPresetId): Promise<PhotoStorageFootprintReport | null> => {
       const base = snapshotRef.current ?? snapshot;
       if (!base) return null;
-      const hydrated = await hydrateSnapshotForExport(base);
+      const missingIds = (base.animalPhotos ?? [])
+        .filter((p) => !p.dataUrl && (!p.storedBytes || p.storedBytes <= 0))
+        .map((p) => p.id);
+      let scanSnapshot = base;
+      if (missingIds.length > 0 && adapterRef.current?.loadAnimalPhotoDataUrlsBatch) {
+        const fetched = await adapterRef.current.loadAnimalPhotoDataUrlsBatch(missingIds);
+        scanSnapshot = {
+          ...base,
+          animalPhotos: (base.animalPhotos ?? []).map((p) =>
+            !p.dataUrl && fetched[p.id] ? { ...p, dataUrl: fetched[p.id] } : p
+          ),
+        };
+      }
       return analyzePhotoStorageFootprintPure(
-        hydrated,
-        presetId ?? hydrated.settings.imageOptimizationPreset
+        scanSnapshot,
+        presetId ?? scanSnapshot.settings.imageOptimizationPreset
       );
     },
-    [snapshot, hydrateSnapshotForExport]
+    [snapshot]
   );
 
   const pruneOrphanAnimalPhotos = useCallback(async (): Promise<{
@@ -4269,6 +4783,11 @@ export function useBarnStore() {
     return enqueueStoreMutation(async () => {
       const base = snapshotRef.current ?? snapshot;
       if (!base) return { removedCount: 0, reclaimedBytes: 0 };
+      const preCheck = removeOrphanPhotosFromSnapshotPure(base);
+      if (preCheck.removedCount === 0) {
+        notify('Photo check finished — zero orphan attachments found.');
+        return { removedCount: 0, reclaimedBytes: 0 };
+      }
       const hydrated = await hydrateSnapshotForExport(base);
       const res = removeOrphanPhotosFromSnapshotPure(hydrated);
       if (res.removedCount === 0) {
@@ -4296,8 +4815,13 @@ export function useBarnStore() {
       return enqueueStoreMutation(async () => {
         const base = snapshotRef.current ?? snapshot;
         if (!base) return { updatedCount: 0, oversizedFound: 0, reclaimedBytes: 0 };
+        const targetPreset = presetId ?? base.settings.imageOptimizationPreset ?? 'balanced';
+        const preReport = analyzePhotoStorageFootprintPure(base, targetPreset);
+        if (preReport.oversizedPhotoIds.length === 0) {
+          notify('All animal photos already fit cleanly inside the active optimization preset.');
+          return { updatedCount: 0, oversizedFound: 0, reclaimedBytes: 0 };
+        }
         const hydrated = await hydrateSnapshotForExport(base);
-        const targetPreset = presetId ?? hydrated.settings.imageOptimizationPreset ?? 'balanced';
         const report = analyzePhotoStorageFootprintPure(hydrated, targetPreset);
         if (report.oversizedPhotoIds.length === 0) {
           notify('All animal photos already fit cleanly inside the active optimization preset.');
@@ -4358,8 +4882,17 @@ export function useBarnStore() {
     return enqueueStoreMutation(async () => {
       const base = snapshotRef.current ?? snapshot;
       if (!base) return { prunedCount: 0, reclaimedBytes: 0 };
+      const preReport = analyzePhotoStorageFootprintPure(base);
+      if (preReport.fullResPrunableIds.length === 0) {
+        notify('No full-resolution photo payloads needed compacting.');
+        return { prunedCount: 0, reclaimedBytes: 0 };
+      }
       const hydrated = await hydrateSnapshotForExport(base);
-      const res = pruneFullResPayloadsFromSnapshotPure(hydrated);
+      const res = pruneFullResPayloadsFromSnapshotPure(
+        hydrated,
+        undefined,
+        getAdjustedNowIsoUtc()
+      );
       if (res.prunedCount === 0) {
         notify('No full-resolution photo payloads needed compacting.');
         return { prunedCount: 0, reclaimedBytes: 0 };
@@ -4367,7 +4900,7 @@ export function useBarnStore() {
       await saveSafetyRollingBackup(hydrated, 'Pre-fullres-photo-prune safety snapshot');
       await adapterRef.current!.saveAnimalPhotosBatch(res.updatedPhotos);
       for (const p of res.updatedPhotos) {
-        photoCacheRef.current.set(p.id, p.dataUrl);
+        photoCacheRef.current.delete(p.id);
       }
       await reloadFromAdapter();
       void refreshStorageStatus();
@@ -4384,107 +4917,121 @@ export function useBarnStore() {
   }, [snapshot]);
 
   const runHealthCheckAndRepair = useCallback(async (): Promise<BarnHealthRepairResult | null> => {
-    if (!snapshot) return null;
-    try {
-      await saveSafetyRollingBackup(snapshot);
-      const result = repairBarnDataHealth(snapshot);
-      if (result.repairsApplied.length > 0) {
-        await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
-        await reloadFromAdapter();
+    return enqueueStoreMutation(async () => {
+      const currentSnapshot = snapshotRef.current;
+      if (!currentSnapshot) return null;
+      try {
+        await saveSafetyRollingBackup(currentSnapshot);
+        const result = repairBarnDataHealth(currentSnapshot);
+        if (result.repairsApplied.length > 0) {
+          await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
+          await reloadFromAdapter();
+          logDiagnosticEvent({
+            level: 'info',
+            category: 'storage',
+            message: `Database self-repair completed (${result.repairsApplied.length} repair(s) applied, 0 records deleted)`,
+            details: result.repairsApplied,
+          });
+          notify(
+            `Database health repair complete (${result.repairsApplied.length} fix(es) applied safely with zero data loss).`
+          );
+        } else {
+          notify('Database health scan finished — no structural issues needed repair.');
+        }
+        return result;
+      } catch (err) {
+        reportPersistenceFailure('repair database health', err);
+        throw err;
+      }
+    });
+  }, [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
+
+  const resetDatabaseConnection = useCallback(async () => {
+    return enqueueStoreMutation(async () => {
+      try {
+        const adapter = adapterRef.current!;
+        photoCacheRef.current.clear();
+        const fresh = adapter.resetConnection
+          ? await adapter.resetConnection({ lightweightPhotos: true })
+          : await adapter.initialize({ lightweightPhotos: true });
+        snapshotRef.current = fresh;
+        setSnapshot(fresh);
+        void refreshStorageStatus();
         logDiagnosticEvent({
           level: 'info',
           category: 'storage',
-          message: `Database self-repair completed (${result.repairsApplied.length} repair(s) applied, 0 records deleted)`,
-          details: result.repairsApplied,
+          message: `Reset local database connection (${adapter.engineName}: ${fresh.animals.length} animals intact)`,
         });
         notify(
-          `Database health repair complete (${result.repairsApplied.length} fix(es) applied safely with zero data loss).`
+          `Local database connection reset (${fresh.animals.length} animals & ${
+            (fresh.animalPhotos ?? []).length
+          } photos intact).`
         );
-      } else {
-        notify('Database health scan finished — no structural issues needed repair.');
+      } catch (err) {
+        reportPersistenceFailure('reset database connection', err);
       }
-      return result;
-    } catch (err) {
-      reportPersistenceFailure('repair database health', err);
-      throw err;
-    }
-  }, [snapshot, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
-
-  const resetDatabaseConnection = useCallback(async () => {
-    const adapter = adapterRef.current!;
-    photoCacheRef.current.clear();
-    const fresh = adapter.resetConnection
-      ? await adapter.resetConnection({ lightweightPhotos: true })
-      : await adapter.initialize({ lightweightPhotos: true });
-    setSnapshot(fresh);
-    void refreshStorageStatus();
-    logDiagnosticEvent({
-      level: 'info',
-      category: 'storage',
-      message: `Reset local database connection (${adapter.engineName}: ${fresh.animals.length} animals intact)`,
     });
-    notify(
-      `Local database connection reset (${fresh.animals.length} animals & ${
-        (fresh.animalPhotos ?? []).length
-      } photos intact).`
-    );
-  }, [refreshStorageStatus, notify]);
+  }, [enqueueStoreMutation, refreshStorageStatus, notify, reportPersistenceFailure]);
 
   const purgeCorruptedCachesAndRecover = useCallback(
     async (options: { downloadBackupFirst: boolean; rebuildLocalDb: boolean }) => {
-      const adapter = adapterRef.current!;
-      let backupFilename: string | null = null;
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const adapter = adapterRef.current!;
+        let backupFilename: string | null = null;
 
-      if (options.downloadBackupFirst && snapshot) {
-        try {
-          const hydrated = await hydrateSnapshotForExport(snapshot);
-          const zip = await buildCompleteBackupZipOffThread(hydrated);
-          backupFilename = `pedigree-recovery-backup-${formatTimestampedBackupSlug()}.zip`;
-          await downloadBinaryFile(backupFilename, zip.bytes, 'application/zip');
-        } catch (err) {
-          logDiagnosticEvent({
-            level: 'error',
-            category: isMemoryLikeError(err) ? 'memory' : 'storage',
-            message: 'Pre-recovery backup download failed before cache purge',
-            error: err,
-          });
+        if (options.downloadBackupFirst && currentSnapshot) {
+          try {
+            const hydrated = await hydrateSnapshotForExport(currentSnapshot);
+            const zip = await buildCompleteBackupZipOffThread(hydrated);
+            backupFilename = `pedigree-recovery-backup-${formatTimestampedBackupSlug()}.zip`;
+            await downloadBinaryFile(backupFilename, zip.bytes, 'application/zip');
+          } catch (err) {
+            logDiagnosticEvent({
+              level: 'error',
+              category: isMemoryLikeError(err) ? 'memory' : 'storage',
+              message: 'Pre-recovery backup download failed before cache purge',
+              error: err,
+            });
+          }
         }
-      }
 
-      const { cachesCleared, serviceWorkersUnregistered } = await purgeStaleBrowserCaches();
+        const { cachesCleared, serviceWorkersUnregistered } = await purgeStaleBrowserCaches();
 
-      photoCacheRef.current.clear();
-      const fresh =
-        options.rebuildLocalDb && adapter.rebuildCleanDatabase
-          ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true })
-          : adapter.resetConnection
-          ? await adapter.resetConnection({ lightweightPhotos: true })
-          : await adapter.initialize({ lightweightPhotos: true });
+        photoCacheRef.current.clear();
+        const fresh =
+          options.rebuildLocalDb && adapter.rebuildCleanDatabase
+            ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true })
+            : adapter.resetConnection
+            ? await adapter.resetConnection({ lightweightPhotos: true })
+            : await adapter.initialize({ lightweightPhotos: true });
 
-      setSnapshot(fresh);
-      if (options.rebuildLocalDb) {
-        setSelectedAnimalId(null);
-        setPedigreeAnimalId(null);
-      }
-      void refreshStorageStatus();
+        snapshotRef.current = fresh;
+        setSnapshot(fresh);
+        if (options.rebuildLocalDb) {
+          setSelectedAnimalId(null);
+          setPedigreeAnimalId(null);
+        }
+        void refreshStorageStatus();
 
-      logDiagnosticEvent({
-        level: 'info',
-        category: 'storage',
-        message: `Cache recovery executed (cachesCleared=${cachesCleared}, swUnregistered=${serviceWorkersUnregistered}, rebuildDb=${options.rebuildLocalDb}, backup="${
-          backupFilename || 'none'
-        }")`,
+        logDiagnosticEvent({
+          level: 'info',
+          category: 'storage',
+          message: `Cache recovery executed (cachesCleared=${cachesCleared}, swUnregistered=${serviceWorkersUnregistered}, rebuildDb=${options.rebuildLocalDb}, backup="${
+            backupFilename || 'none'
+          }")`,
+        });
+
+        const backupNote = backupFilename ? ` Retained backup: ${backupFilename}.` : '';
+        notify(
+          options.rebuildLocalDb
+            ? `Purged caches (${cachesCleared}) and rebuilt local DB cleanly.${backupNote} You can re-import your backup anytime via Restore (.ZIP).`
+            : `Purged ${cachesCleared} browser cache(s) & ${serviceWorkersUnregistered} service worker(s) and reset DB connection (${fresh.animals.length} animals intact).${backupNote}`
+        );
+        return { cachesCleared, serviceWorkersUnregistered, backupFilename };
       });
-
-      const backupNote = backupFilename ? ` Retained backup: ${backupFilename}.` : '';
-      notify(
-        options.rebuildLocalDb
-          ? `Purged caches (${cachesCleared}) and rebuilt local DB cleanly.${backupNote} You can re-import your backup anytime via Restore (.ZIP).`
-          : `Purged ${cachesCleared} browser cache(s) & ${serviceWorkersUnregistered} service worker(s) and reset DB connection (${fresh.animals.length} animals intact).${backupNote}`
-      );
-      return { cachesCleared, serviceWorkersUnregistered, backupFilename };
     },
-    [snapshot, hydrateSnapshotForExport, refreshStorageStatus, notify]
+    [enqueueStoreMutation, hydrateSnapshotForExport, refreshStorageStatus, notify]
   );
 
   const handleSetPedigreeGenerations = useCallback(
@@ -4554,13 +5101,13 @@ export function useBarnStore() {
     startFreshAfterWipedRecovery,
     exportCanaryWarning,
     dismissExportCanaryWarning: () => setExportCanaryWarning(null),
-    backupSinkStatus,
-    pruneSinkWarning,
-    connectBackupSinkFolder,
-    reauthorizeBackupSinkFolder: reauthorizeBackupSinkFolderAction,
-    disconnectBackupSinkFolder: disconnectBackupSinkFolderAction,
-    syncVaultBackupsToSinkNow,
-    dismissPruneSinkWarning,
+    backupSyncStatus,
+    pruneSyncWarning,
+    connectBackupSyncFolder,
+    reauthorizeBackupSyncFolder: reauthorizeBackupSyncFolderAction,
+    disconnectBackupSyncFolder: disconnectBackupSyncFolderAction,
+    syncVaultBackupsToSyncNow,
+    dismissPruneSyncWarning,
     syncOperations,
     syncConflicts,
     buildLocalDeltaJsonPayload,

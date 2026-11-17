@@ -203,7 +203,8 @@ export function removeOrphanPhotosFromSnapshotPure(snapshot: BarnDatabaseSnapsho
  */
 export function pruneFullResPayloadsFromSnapshotPure(
   snapshot: BarnDatabaseSnapshot,
-  targetPhotoIds?: string[]
+  targetPhotoIds?: string[],
+  timestampIso?: string
 ): {
   nextSnapshot: BarnDatabaseSnapshot;
   prunedCount: number;
@@ -211,7 +212,7 @@ export function pruneFullResPayloadsFromSnapshotPure(
   updatedPhotos: AnimalPhoto[];
 } {
   const allowSet = targetPhotoIds ? new Set(targetPhotoIds) : null;
-  const ts = nowIsoUtc();
+  const ts = timestampIso || nowIsoUtc();
   let prunedCount = 0;
   let reclaimedBytes = 0;
   const updatedPhotos: AnimalPhoto[] = [];

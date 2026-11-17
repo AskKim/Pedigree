@@ -3,11 +3,14 @@ import {
   CLOCK_DRIFT_WARNING_THRESHOLD_MS,
   formatClockSkewHuman,
   getAdjustedNowIsoUtc,
+  getAdjustedNowMs,
   getConnectivitySnapshot,
   getRecordedClockSkewMs,
   recordServerDateHeaderSkew,
   resetConnectivityStateForTests,
 } from '../storageProtection';
+import { evaluateBackupStatus } from '../../core/backupStatus';
+import { makeEmptySnapshot } from '../../core/__tests__/testFixtures';
 import {
   decryptBytesWithPassphrase,
   decryptTextWithPassphrase,
@@ -55,6 +58,40 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
       const localFixedNow = Date.parse('2026-06-01T12:00:00.000Z');
       recordServerDateHeaderSkew('Mon, 01 Jun 2026 12:02:00 GMT', localFixedNow);
       expect(getConnectivitySnapshot().clockDriftWarning).toBe(false);
+    });
+
+    it('aligns backup age and reminder snooze window with getAdjustedNowMs when device clock is skewed', () => {
+      resetConnectivityStateForTests();
+      vi.useFakeTimers();
+      try {
+        const deviceClockMs = Date.parse('2026-06-01T12:00:00.000Z');
+        vi.setSystemTime(deviceClockMs);
+        // Server clock is 2 hours ahead of rewound device clock
+        recordServerDateHeaderSkew('Mon, 01 Jun 2026 14:00:00 GMT', deviceClockMs);
+
+        const adjustedNow = getAdjustedNowMs();
+        expect(adjustedNow).toBe(Date.parse('2026-06-01T14:00:00.000Z'));
+
+        const snap = makeEmptySnapshot();
+        const lastBackup = {
+          exportedAtIso: '2026-06-01T13:30:00.000Z',
+          format: 'zip' as const,
+        };
+        const status = evaluateBackupStatus(snap, lastBackup, adjustedNow, 0);
+        expect(status.lastExportRelative).toBe('30m ago');
+
+        // A 1-hour snooze from device clock (13:00Z) would still appear expired relative to adjusted 14:00Z
+        const expiredSnooze = evaluateBackupStatus(
+          snap,
+          null,
+          adjustedNow,
+          Date.parse('2026-06-01T13:00:00.000Z')
+        );
+        expect(expiredSnooze.showDismissibleBanner).toBe(false); // empty test snap has no real data
+        expect(status.ageDays).toBeCloseTo(30 / (60 * 24), 4);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

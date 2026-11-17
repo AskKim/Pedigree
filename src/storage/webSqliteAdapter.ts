@@ -45,6 +45,11 @@ import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import {
+  getCurrentTabId,
+  publishCrossTabDbCommit,
+  withCrossTabLock,
+} from './localSyncChannels';
+import {
   detectReturningUserWipedStorage,
   dumpIndexedDbDatabaseToOpfs,
   dumpRawRecordsToOpfsRecoveryBackup,
@@ -66,7 +71,15 @@ const IDB_DB_NAME = 'community_pedigree_local_db';
 const IDB_STORE_NAME = 'sqlite_files';
 const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
+export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
+export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
 const SQLITE_SCHEMA_VERSION = 2;
+
+export interface PersistedWriteEpochMeta {
+  epoch: number;
+  writerTabId: string;
+  updatedAtIso: string;
+}
 
 /**
  * Canonical SQLite DDL shared 1:1 with future `expo-sqlite` native adapter.
@@ -354,12 +367,22 @@ async function idbGet<T>(key: string): Promise<T | undefined> {
 }
 
 async function idbSet<T>(key: string, value: T): Promise<void> {
+  return idbSetAtomic([{ key, value }]);
+}
+
+async function idbSetAtomic(
+  entries: Array<{ key: string; value: unknown }>
+): Promise<void> {
+  if (entries.length === 0) return;
   let db: IDBDatabase | null = null;
   try {
     db = await openIdb();
     await new Promise<void>((resolve, reject) => {
       const tx = db!.transaction(IDB_STORE_NAME, 'readwrite');
-      tx.objectStore(IDB_STORE_NAME).put(value, key);
+      const store = tx.objectStore(IDB_STORE_NAME);
+      for (const entry of entries) {
+        store.put(entry.value, entry.key);
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () =>
@@ -520,6 +543,9 @@ export class WebSqliteAdapter implements StorageAdapter {
   private fallbackSnapshot: BarnDatabaseSnapshot | null = null;
   private lastRollingSaveMs = 0;
   private wipedRecoveryContext: WipedStorageRecoveryContext | null = null;
+  private loadedEpoch = 0;
+
+  constructor(private readonly tabId: string = getCurrentTabId()) {}
 
   get engineName(): string {
     return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
@@ -527,6 +553,96 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   getWipedRecoveryContext(): WipedStorageRecoveryContext | null {
     return this.wipedRecoveryContext;
+  }
+
+  getLoadedEpoch(): number {
+    return this.loadedEpoch;
+  }
+
+  private async readPersistedWriteEpoch(): Promise<PersistedWriteEpochMeta> {
+    try {
+      const meta = await idbGet<Partial<PersistedWriteEpochMeta>>(IDB_WRITE_EPOCH_KEY);
+      const epoch = Number(meta?.epoch);
+      if (meta && Number.isFinite(epoch) && epoch > 0) {
+        return {
+          epoch,
+          writerTabId: typeof meta.writerTabId === 'string' ? meta.writerTabId : '',
+          updatedAtIso: typeof meta.updatedAtIso === 'string' ? meta.updatedAtIso : '',
+        };
+      }
+    } catch {
+      // Ignore read failure; treat as epoch 0
+    }
+    return { epoch: 0, writerTabId: '', updatedAtIso: '' };
+  }
+
+  /**
+   * Reloads `this.db` or `this.fallbackSnapshot` from IndexedDB if another tab has committed
+   * a higher write epoch. MUST only be called while holding `DB_WRITE_LOCK_NAME` (or during
+   * initialization under lock).
+   */
+  private async syncFromPersistedStorageIfStaleLocked(): Promise<boolean> {
+    const persisted = await this.readPersistedWriteEpoch();
+    if (persisted.epoch <= this.loadedEpoch) {
+      return false;
+    }
+
+    if (this.SQL) {
+      const savedBytes = await idbGet<Uint8Array>(IDB_PRIMARY_KEY).catch(() => undefined);
+      if (savedBytes && savedBytes.byteLength > 0) {
+        const headerCheck = validateSqliteFileHeader(savedBytes, IDB_PRIMARY_KEY);
+        if (headerCheck.ok) {
+          const reloadedDb = new this.SQL.Database(savedBytes);
+          if (readSqliteUserVersion(reloadedDb) < SQLITE_SCHEMA_VERSION) {
+            applySchemaMigrations(reloadedDb);
+          }
+          if (this.db) {
+            try {
+              this.db.close();
+            } catch {
+              // Ignore close error on superseded DB
+            }
+          }
+          this.db = reloadedDb;
+          this.fallbackSnapshot = null;
+          this.loadedEpoch = persisted.epoch;
+          return true;
+        }
+      }
+    }
+
+    const savedFallback = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY).catch(
+      () => undefined
+    );
+    if (
+      savedFallback &&
+      typeof savedFallback === 'object' &&
+      Array.isArray(savedFallback.animals) &&
+      Array.isArray(savedFallback.speciesProfiles)
+    ) {
+      if (this.db) {
+        try {
+          this.db.close();
+        } catch {
+          // Ignore close error
+        }
+        this.db = null;
+      }
+      this.fallbackSnapshot = savedFallback;
+      this.loadedEpoch = persisted.epoch;
+      return true;
+    }
+
+    this.loadedEpoch = persisted.epoch;
+    return false;
+  }
+
+  async syncFromPersistedStorageIfStale(): Promise<boolean> {
+    const persisted = await this.readPersistedWriteEpoch();
+    if (persisted.epoch <= this.loadedEpoch) {
+      return false;
+    }
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, () => this.syncFromPersistedStorageIfStaleLocked());
   }
 
   private async findRecoveredBackupSnapshot(): Promise<{
@@ -572,7 +688,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     return null;
   }
 
-  private async tryRestoreIntoFreshSqliteDb(snapshot: BarnDatabaseSnapshot): Promise<boolean> {
+  private async tryRestoreIntoFreshSqliteDbLocked(snapshot: BarnDatabaseSnapshot): Promise<boolean> {
     if (!this.SQL) return false;
     try {
       const freshDb = new this.SQL.Database();
@@ -586,7 +702,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       }
       this.db = freshDb;
       this.fallbackSnapshot = null;
-      await this.replaceSnapshot(snapshot);
+      await this.replaceSnapshotLocked(snapshot, 'restoreFreshSqliteDb');
       return true;
     } catch (rebuildErr) {
       this.db = null;
@@ -603,6 +719,10 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async initialize(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, () => this.initializeLocked(options));
+  }
+
+  private async initializeLocked(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     this.wipedRecoveryContext = null;
     const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
       options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
@@ -627,7 +747,10 @@ export class WebSqliteAdapter implements StorageAdapter {
         locateFile: () => sqlWasmUrl,
       });
 
-      const savedBytes = await idbGet<Uint8Array>(IDB_PRIMARY_KEY);
+      const [savedBytes, epochMeta] = await Promise.all([
+        idbGet<Uint8Array>(IDB_PRIMARY_KEY),
+        this.readPersistedWriteEpoch(),
+      ]);
       if (savedBytes && savedBytes.byteLength > 0) {
         const headerCheck = validateSqliteFileHeader(savedBytes, IDB_PRIMARY_KEY);
         if (!headerCheck.ok) {
@@ -639,12 +762,13 @@ export class WebSqliteAdapter implements StorageAdapter {
           throw new Error(headerCheck.error);
         }
         this.db = new this.SQL.Database(savedBytes);
+        this.loadedEpoch = epochMeta.epoch;
 
         // Automated pre-upgrade OPFS snapshot before migrating older schema versions
         const prevSchemaVer = readSqliteUserVersion(this.db);
         if (prevSchemaVer < SQLITE_SCHEMA_VERSION) {
           try {
-            const preSnap = await this.loadSnapshot();
+            const preSnap = this.loadSnapshotUnlocked();
             if (preSnap.animals.length > 0) {
               await saveOpfsVaultBackup(preSnap, {
                 kind: 'pre_upgrade',
@@ -662,7 +786,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           let salvagedSnapshot: BarnDatabaseSnapshot | null = null;
           const rawStores: Record<string, unknown[]> = {};
           try {
-            salvagedSnapshot = await this.loadSnapshot();
+            salvagedSnapshot = this.loadSnapshotUnlocked();
           } catch {
             try {
               rawStores.animals = this.queryObjects('SELECT * FROM animals');
@@ -680,11 +804,11 @@ export class WebSqliteAdapter implements StorageAdapter {
           throw migErr;
         }
 
-        const snap = await this.loadSnapshot(options);
+        const snap = this.loadSnapshotUnlocked(options);
         if (snap.speciesProfiles.length === 0 && snap.animals.length === 0) {
           const recovered = await this.findRecoveredBackupSnapshot();
           if (recovered) {
-            await this.replaceSnapshot(recovered.snapshot);
+            await this.replaceSnapshotLocked(recovered.snapshot, 'initializeRecoverEmptySqlite');
             logDiagnosticEvent({
               level: 'warn',
               category: 'storage',
@@ -697,7 +821,7 @@ export class WebSqliteAdapter implements StorageAdapter {
             return wipedShell;
           }
           const seeded = buildFullPredefinedSampleSnapshot();
-          await this.replaceSnapshot(seeded);
+          await this.replaceSnapshotLocked(seeded, 'initializeSeedEmptySqlite');
           logDiagnosticEvent({
             level: 'info',
             category: 'storage',
@@ -711,7 +835,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         this.db = new this.SQL.Database();
         applySchemaMigrations(this.db);
         if (recovered) {
-          await this.replaceSnapshot(recovered.snapshot);
+          await this.replaceSnapshotLocked(recovered.snapshot, 'initializeRecoverMissingSqlite');
           logDiagnosticEvent({
             level: 'warn',
             category: 'storage',
@@ -721,10 +845,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         }
         const wipedShell = await tryDetectWipedStorage();
         if (wipedShell) {
+          this.loadedEpoch = epochMeta.epoch;
           return wipedShell;
         }
         const seeded = buildFullPredefinedSampleSnapshot();
-        await this.replaceSnapshot(seeded);
+        await this.replaceSnapshotLocked(seeded, 'initializeFreshSeed');
         return finalizeSnapshot(seeded);
       }
     } catch (err) {
@@ -744,9 +869,10 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       const recovered = await this.findRecoveredBackupSnapshot();
       if (recovered) {
-        const rebuiltSqlite = await this.tryRestoreIntoFreshSqliteDb(recovered.snapshot);
+        const rebuiltSqlite = await this.tryRestoreIntoFreshSqliteDbLocked(recovered.snapshot);
         if (!rebuiltSqlite) {
           this.fallbackSnapshot = recovered.snapshot;
+          this.loadedEpoch = (await this.readPersistedWriteEpoch()).epoch;
         }
         logDiagnosticEvent({
           level: 'warn',
@@ -758,6 +884,7 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       const wipedShell = await tryDetectWipedStorage();
       if (wipedShell) {
+        this.loadedEpoch = (await this.readPersistedWriteEpoch()).epoch;
         return wipedShell;
       }
 
@@ -769,7 +896,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         message: `Corrective action: Primary & fallback stores unavailable — initialized clean starter snapshot (${seeded.animals.length} sample animals)`,
       });
       try {
-        await idbSet(IDB_FALLBACK_SNAPSHOT_KEY, seeded);
+        await this.persistToDiskLocked(seeded, 'initializeFallbackSeed');
       } catch {
         // Keep in-memory fallback even if quota is full
       }
@@ -777,14 +904,37 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  private async persistToDisk(preloadedSnapshot?: BarnDatabaseSnapshot): Promise<void> {
+  private async persistToDiskLocked(
+    preloadedSnapshot?: BarnDatabaseSnapshot,
+    reason?: string
+  ): Promise<void> {
+    const persisted = await this.readPersistedWriteEpoch();
+    const nextEpoch = Math.max(persisted.epoch, this.loadedEpoch) + 1;
+    const epochMeta: PersistedWriteEpochMeta = {
+      epoch: nextEpoch,
+      writerTabId: this.tabId,
+      updatedAtIso: nowIsoUtc(),
+    };
+
     try {
       if (this.db) {
         const bytes = this.db.export();
-        await idbSet(IDB_PRIMARY_KEY, bytes);
+        await idbSetAtomic([
+          { key: IDB_PRIMARY_KEY, value: bytes },
+          { key: IDB_WRITE_EPOCH_KEY, value: epochMeta },
+        ]);
       } else if (this.fallbackSnapshot) {
-        await idbSet(IDB_FALLBACK_SNAPSHOT_KEY, this.fallbackSnapshot);
+        await idbSetAtomic([
+          { key: IDB_FALLBACK_SNAPSHOT_KEY, value: this.fallbackSnapshot },
+          { key: IDB_WRITE_EPOCH_KEY, value: epochMeta },
+        ]);
       }
+      this.loadedEpoch = nextEpoch;
+      publishCrossTabDbCommit({
+        epoch: nextEpoch,
+        writerTabId: this.tabId,
+        reason,
+      });
     } catch (err) {
       logDiagnosticEvent({
         level: 'error',
@@ -807,7 +957,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           ? policy.dehydrateMirrorPhotos
             ? stripPhotoDataUrlsFromSnapshot(preloadedSnapshot)
             : preloadedSnapshot
-          : await this.loadSnapshot({ lightweightPhotos: policy.dehydrateMirrorPhotos });
+          : this.loadSnapshotUnlocked({ lightweightPhotos: policy.dehydrateMirrorPhotos });
         markPriorUseSentinelFromSnapshot(snap);
         void saveRollingSnapshotBackup(snap, {
           maxRollingBackups: policy.rollingIdbCap,
@@ -853,12 +1003,23 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
   }
 
-  async loadSnapshot(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
+  private loadSnapshotUnlocked(options?: SnapshotLoadOptions): BarnDatabaseSnapshot {
     if (!this.db) {
       const base = this.fallbackSnapshot ?? buildFullPredefinedSampleSnapshot();
       return options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(base) : base;
     }
     return this.readSnapshotFromDatabase(this.db, options);
+  }
+
+  async loadSnapshot(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
+    const persisted = await this.readPersistedWriteEpoch();
+    if (persisted.epoch > this.loadedEpoch) {
+      return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+        await this.syncFromPersistedStorageIfStaleLocked();
+        return this.loadSnapshotUnlocked(options);
+      });
+    }
+    return this.loadSnapshotUnlocked(options);
   }
 
   private readSnapshotFromDatabase(
@@ -1266,6 +1427,7 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   async loadAnimalPhotoDataUrl(photoId: string): Promise<string | null> {
     if (!photoId) return null;
+    await this.syncFromPersistedStorageIfStale();
     if (!this.db) {
       const found = (this.fallbackSnapshot?.animalPhotos ?? []).find((p) => p.id === photoId);
       return found?.dataUrl || found?.thumbnailDataUrl || null;
@@ -1285,6 +1447,7 @@ export class WebSqliteAdapter implements StorageAdapter {
   async loadAnimalPhotoDataUrlsBatch(photoIds?: string[]): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     if (photoIds && photoIds.length === 0) return out;
+    await this.syncFromPersistedStorageIfStale();
 
     if (!this.db) {
       const wanted = photoIds ? new Set(photoIds) : null;
@@ -1329,6 +1492,15 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void> {
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, () =>
+      this.replaceSnapshotLocked(snapshot, 'replaceSnapshot')
+    );
+  }
+
+  private async replaceSnapshotLocked(
+    snapshot: BarnDatabaseSnapshot,
+    reason = 'replaceSnapshot'
+  ): Promise<void> {
     if (!this.db) {
       const existingById = new Map<string, string>();
       for (const prev of this.fallbackSnapshot?.animalPhotos ?? []) {
@@ -1339,7 +1511,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       );
       const nextSnap: BarnDatabaseSnapshot = { ...snapshot, animalPhotos: nextPhotos };
       this.fallbackSnapshot = nextSnap;
-      await this.persistToDisk(nextSnap);
+      await this.persistToDiskLocked(nextSnap, reason);
       return;
     }
 
@@ -1390,7 +1562,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       throw e;
     }
 
-    await this.persistToDisk(hasDehydratedPhoto ? undefined : snapshot);
+    await this.persistToDiskLocked(hasDehydratedPhoto ? undefined : snapshot, reason);
   }
 
   private upsertSettingsRow(s: BarnSettings): void {
@@ -1676,362 +1848,394 @@ export class WebSqliteAdapter implements StorageAdapter {
     );
   }
 
+  private async withLockedWrite(reason: string, mutate: () => void): Promise<void> {
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+      await this.syncFromPersistedStorageIfStaleLocked();
+      mutate();
+      await this.persistToDiskLocked(undefined, reason);
+    });
+  }
+
   async saveSettings(settings: BarnSettings): Promise<void> {
-    if (this.db) {
-      this.upsertSettingsRow(settings);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.settings = settings;
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveSettings', () => {
+      if (this.db) {
+        this.upsertSettingsRow(settings);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.settings = settings;
+      }
+    });
   }
 
   async saveSpeciesProfile(profile: SpeciesProfile): Promise<void> {
-    if (this.db) {
-      this.upsertSpeciesRow(profile);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.speciesProfiles.findIndex((p) => p.id === profile.id);
-      if (idx >= 0) this.fallbackSnapshot.speciesProfiles[idx] = profile;
-      else this.fallbackSnapshot.speciesProfiles.push(profile);
-      this.fallbackSnapshot.speciesProfiles.sort(
-        (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
-      );
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveSpeciesProfile', () => {
+      if (this.db) {
+        this.upsertSpeciesRow(profile);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.speciesProfiles.findIndex((p) => p.id === profile.id);
+        if (idx >= 0) this.fallbackSnapshot.speciesProfiles[idx] = profile;
+        else this.fallbackSnapshot.speciesProfiles.push(profile);
+        this.fallbackSnapshot.speciesProfiles.sort(
+          (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
+        );
+      }
+    });
   }
 
   async saveSpeciesProfilesBatch(profiles: SpeciesProfile[]): Promise<void> {
     if (profiles.length === 0) return;
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const sp of profiles) this.upsertSpeciesRow(sp);
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('saveSpeciesProfilesBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const sp of profiles) this.upsertSpeciesRow(sp);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        for (const sp of profiles) {
+          const idx = this.fallbackSnapshot.speciesProfiles.findIndex((p) => p.id === sp.id);
+          if (idx >= 0) this.fallbackSnapshot.speciesProfiles[idx] = sp;
+          else this.fallbackSnapshot.speciesProfiles.push(sp);
+        }
+        this.fallbackSnapshot.speciesProfiles.sort(
+          (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
+        );
       }
-    } else if (this.fallbackSnapshot) {
-      for (const sp of profiles) {
-        const idx = this.fallbackSnapshot.speciesProfiles.findIndex((p) => p.id === sp.id);
-        if (idx >= 0) this.fallbackSnapshot.speciesProfiles[idx] = sp;
-        else this.fallbackSnapshot.speciesProfiles.push(sp);
-      }
-      this.fallbackSnapshot.speciesProfiles.sort(
-        (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)
-      );
-    }
-    await this.persistToDisk();
+    });
   }
 
   async deleteSpeciesProfile(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM species_profiles WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.speciesProfiles = this.fallbackSnapshot.speciesProfiles.filter(
-        (p) => p.id !== id
-      );
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteSpeciesProfile', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM species_profiles WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.speciesProfiles = this.fallbackSnapshot.speciesProfiles.filter(
+          (p) => p.id !== id
+        );
+      }
+    });
   }
 
   async saveAnimal(animal: Animal): Promise<void> {
-    if (this.db) {
-      this.upsertAnimalRow(animal);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.animals.findIndex((a) => a.id === animal.id);
-      if (idx >= 0) this.fallbackSnapshot.animals[idx] = animal;
-      else this.fallbackSnapshot.animals.push(animal);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveAnimal', () => {
+      if (this.db) {
+        this.upsertAnimalRow(animal);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.animals.findIndex((a) => a.id === animal.id);
+        if (idx >= 0) this.fallbackSnapshot.animals[idx] = animal;
+        else this.fallbackSnapshot.animals.push(animal);
+      }
+    });
   }
 
   async saveAnimalsBatch(animals: Animal[]): Promise<void> {
     if (animals.length === 0) return;
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const a of animals) this.upsertAnimalRow(a);
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('saveAnimalsBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const a of animals) this.upsertAnimalRow(a);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        for (const a of animals) {
+          const idx = this.fallbackSnapshot.animals.findIndex((x) => x.id === a.id);
+          if (idx >= 0) this.fallbackSnapshot.animals[idx] = a;
+          else this.fallbackSnapshot.animals.push(a);
+        }
       }
-    } else if (this.fallbackSnapshot) {
-      for (const a of animals) {
-        const idx = this.fallbackSnapshot.animals.findIndex((x) => x.id === a.id);
-        if (idx >= 0) this.fallbackSnapshot.animals[idx] = a;
-        else this.fallbackSnapshot.animals.push(a);
-      }
-    }
-    await this.persistToDisk();
+    });
   }
 
   async deleteAnimal(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM animals WHERE id = ?', [id]);
-      this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
-      this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => a.id !== id);
-      this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
-        (p) => p.animalId !== id
-      );
-      this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
-        (l) => l.animalId !== id
-      );
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteAnimal', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM animals WHERE id = ?', [id]);
+        this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
+        this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => a.id !== id);
+        this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
+          (p) => p.animalId !== id
+        );
+        this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
+          (l) => l.animalId !== id
+        );
+      }
+    });
   }
 
   async deleteAnimalsBatch(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const id of ids) {
-          this.db.run('DELETE FROM animals WHERE id = ?', [id]);
-          this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
-          this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
-        }
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('deleteAnimalsBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const id of ids) {
+            this.db.run('DELETE FROM animals WHERE id = ?', [id]);
+            this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
+            this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
+          }
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => !idSet.has(a.id));
+        this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
+          (p) => !idSet.has(p.animalId)
+        );
+        this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
+          (l) => !idSet.has(l.animalId)
+        );
       }
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => !idSet.has(a.id));
-      this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
-        (p) => !idSet.has(p.animalId)
-      );
-      this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
-        (l) => !idSet.has(l.animalId)
-      );
-    }
-    await this.persistToDisk();
+    });
   }
 
   async saveAnimalPhoto(photo: AnimalPhoto): Promise<void> {
-    if (this.db) {
-      this.upsertAnimalPhotoRow(photo);
-    } else if (this.fallbackSnapshot) {
-      const list = this.fallbackSnapshot.animalPhotos || [];
-      const idx = list.findIndex((p) => p.id === photo.id);
-      const preserved =
-        !photo.dataUrl && idx >= 0 ? { ...photo, dataUrl: list[idx].dataUrl } : photo;
-      if (idx >= 0) list[idx] = preserved;
-      else list.push(preserved);
-      this.fallbackSnapshot.animalPhotos = list;
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveAnimalPhoto', () => {
+      if (this.db) {
+        this.upsertAnimalPhotoRow(photo);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.animalPhotos || [];
+        const idx = list.findIndex((p) => p.id === photo.id);
+        const preserved =
+          !photo.dataUrl && idx >= 0 ? { ...photo, dataUrl: list[idx].dataUrl } : photo;
+        if (idx >= 0) list[idx] = preserved;
+        else list.push(preserved);
+        this.fallbackSnapshot.animalPhotos = list;
+      }
+    });
   }
 
   async saveAnimalPhotosBatch(photos: AnimalPhoto[]): Promise<void> {
     if (photos.length === 0) return;
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const p of photos) this.upsertAnimalPhotoRow(p);
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('saveAnimalPhotosBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const p of photos) this.upsertAnimalPhotoRow(p);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.animalPhotos || [];
+        for (const p of photos) {
+          const idx = list.findIndex((x) => x.id === p.id);
+          const preserved =
+            !p.dataUrl && idx >= 0 ? { ...p, dataUrl: list[idx].dataUrl } : p;
+          if (idx >= 0) list[idx] = preserved;
+          else list.push(preserved);
+        }
+        this.fallbackSnapshot.animalPhotos = list;
       }
-    } else if (this.fallbackSnapshot) {
-      const list = this.fallbackSnapshot.animalPhotos || [];
-      for (const p of photos) {
-        const idx = list.findIndex((x) => x.id === p.id);
-        const preserved =
-          !p.dataUrl && idx >= 0 ? { ...p, dataUrl: list[idx].dataUrl } : p;
-        if (idx >= 0) list[idx] = preserved;
-        else list.push(preserved);
-      }
-      this.fallbackSnapshot.animalPhotos = list;
-    }
-    await this.persistToDisk();
+    });
   }
 
   async deleteAnimalPhoto(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM animal_photos WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
-        (p) => p.id !== id
-      );
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteAnimalPhoto', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM animal_photos WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
+          (p) => p.id !== id
+        );
+      }
+    });
   }
 
   async saveCage(cage: CageLocation): Promise<void> {
-    if (this.db) {
-      this.upsertCageRow(cage);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.cages.findIndex((c) => c.id === cage.id);
-      if (idx >= 0) this.fallbackSnapshot.cages[idx] = cage;
-      else this.fallbackSnapshot.cages.push(cage);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveCage', () => {
+      if (this.db) {
+        this.upsertCageRow(cage);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.cages.findIndex((c) => c.id === cage.id);
+        if (idx >= 0) this.fallbackSnapshot.cages[idx] = cage;
+        else this.fallbackSnapshot.cages.push(cage);
+      }
+    });
   }
 
   async deleteCage(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM cages WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.cages = this.fallbackSnapshot.cages.filter((c) => c.id !== id);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteCage', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM cages WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.cages = this.fallbackSnapshot.cages.filter((c) => c.id !== id);
+      }
+    });
   }
 
   async saveBreeding(breeding: BreedingRecord): Promise<void> {
-    if (this.db) {
-      this.upsertBreedingRow(breeding);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.breedings.findIndex((b) => b.id === breeding.id);
-      if (idx >= 0) this.fallbackSnapshot.breedings[idx] = breeding;
-      else this.fallbackSnapshot.breedings.push(breeding);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveBreeding', () => {
+      if (this.db) {
+        this.upsertBreedingRow(breeding);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.breedings.findIndex((b) => b.id === breeding.id);
+        if (idx >= 0) this.fallbackSnapshot.breedings[idx] = breeding;
+        else this.fallbackSnapshot.breedings.push(breeding);
+      }
+    });
   }
 
   async deleteBreeding(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM breedings WHERE id = ?', [id]);
-      this.db.run('DELETE FROM barn_tasks WHERE linked_breeding_id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.breedings = this.fallbackSnapshot.breedings.filter((b) => b.id !== id);
-      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter(
-        (t) => t.linkedBreedingId !== id
-      );
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteBreeding', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM breedings WHERE id = ?', [id]);
+        this.db.run('DELETE FROM barn_tasks WHERE linked_breeding_id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.breedings = this.fallbackSnapshot.breedings.filter((b) => b.id !== id);
+        this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter(
+          (t) => t.linkedBreedingId !== id
+        );
+      }
+    });
   }
 
   async saveTask(task: BarnTask): Promise<void> {
-    if (this.db) {
-      this.upsertTaskRow(task);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.tasks.findIndex((t) => t.id === task.id);
-      if (idx >= 0) this.fallbackSnapshot.tasks[idx] = task;
-      else this.fallbackSnapshot.tasks.push(task);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveTask', () => {
+      if (this.db) {
+        this.upsertTaskRow(task);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.tasks.findIndex((t) => t.id === task.id);
+        if (idx >= 0) this.fallbackSnapshot.tasks[idx] = task;
+        else this.fallbackSnapshot.tasks.push(task);
+      }
+    });
   }
 
   async saveTasksBatch(tasks: BarnTask[]): Promise<void> {
     if (tasks.length === 0) return;
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const t of tasks) this.upsertTaskRow(t);
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('saveTasksBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const t of tasks) this.upsertTaskRow(t);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        for (const t of tasks) {
+          const idx = this.fallbackSnapshot.tasks.findIndex((x) => x.id === t.id);
+          if (idx >= 0) this.fallbackSnapshot.tasks[idx] = t;
+          else this.fallbackSnapshot.tasks.push(t);
+        }
       }
-    } else if (this.fallbackSnapshot) {
-      for (const t of tasks) {
-        const idx = this.fallbackSnapshot.tasks.findIndex((x) => x.id === t.id);
-        if (idx >= 0) this.fallbackSnapshot.tasks[idx] = t;
-        else this.fallbackSnapshot.tasks.push(t);
-      }
-    }
-    await this.persistToDisk();
+    });
   }
 
   async deleteTask(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => t.id !== id);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteTask', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => t.id !== id);
+      }
+    });
   }
 
   async deleteTasksBatch(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
-    if (this.db) {
-      this.db.run('BEGIN TRANSACTION;');
-      try {
-        for (const id of ids) {
-          this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
-        }
-        this.db.run('COMMIT;');
-      } catch (e) {
+    await this.withLockedWrite('deleteTasksBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
         try {
-          this.db.run('ROLLBACK;');
-        } catch {
-          // Ignore rollback error so root exception surfaces cleanly
+          for (const id of ids) {
+            this.db.run('DELETE FROM barn_tasks WHERE id = ?', [id]);
+          }
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
         }
-        throw e;
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => !idSet.has(t.id));
       }
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.tasks = this.fallbackSnapshot.tasks.filter((t) => !idSet.has(t.id));
-    }
-    await this.persistToDisk();
+    });
   }
 
   async saveCareLog(log: CareLog): Promise<void> {
-    if (this.db) {
-      this.upsertCareLogRow(log);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.careLogs.findIndex((l) => l.id === log.id);
-      if (idx >= 0) this.fallbackSnapshot.careLogs[idx] = log;
-      else this.fallbackSnapshot.careLogs.push(log);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveCareLog', () => {
+      if (this.db) {
+        this.upsertCareLogRow(log);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.careLogs.findIndex((l) => l.id === log.id);
+        if (idx >= 0) this.fallbackSnapshot.careLogs[idx] = log;
+        else this.fallbackSnapshot.careLogs.push(log);
+      }
+    });
   }
 
   async deleteCareLog(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM care_logs WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter((l) => l.id !== id);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteCareLog', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM care_logs WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter((l) => l.id !== id);
+      }
+    });
   }
 
   async saveShow(show: ShowEvent): Promise<void> {
-    if (this.db) {
-      this.upsertShowRow(show);
-    } else if (this.fallbackSnapshot) {
-      const idx = this.fallbackSnapshot.shows.findIndex((s) => s.id === show.id);
-      if (idx >= 0) this.fallbackSnapshot.shows[idx] = show;
-      else this.fallbackSnapshot.shows.push(show);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('saveShow', () => {
+      if (this.db) {
+        this.upsertShowRow(show);
+      } else if (this.fallbackSnapshot) {
+        const idx = this.fallbackSnapshot.shows.findIndex((s) => s.id === show.id);
+        if (idx >= 0) this.fallbackSnapshot.shows[idx] = show;
+        else this.fallbackSnapshot.shows.push(show);
+      }
+    });
   }
 
   async deleteShow(id: string): Promise<void> {
-    if (this.db) {
-      this.db.run('DELETE FROM shows WHERE id = ?', [id]);
-    } else if (this.fallbackSnapshot) {
-      this.fallbackSnapshot.shows = this.fallbackSnapshot.shows.filter((s) => s.id !== id);
-    }
-    await this.persistToDisk();
+    await this.withLockedWrite('deleteShow', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM shows WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.shows = this.fallbackSnapshot.shows.filter((s) => s.id !== id);
+      }
+    });
   }
 
   async exportRawSqliteBytes(): Promise<Uint8Array | null> {
+    await this.syncFromPersistedStorageIfStale();
     if (!this.db) return null;
     return this.db.export();
   }
@@ -2069,55 +2273,73 @@ export class WebSqliteAdapter implements StorageAdapter {
     bytes: Uint8Array,
     options?: SnapshotLoadOptions
   ): Promise<BarnDatabaseSnapshot> {
-    if (!this.SQL) {
-      throw new Error('SQLite WebAssembly engine is not available in this browser.');
-    }
-    const headerCheck = validateSqliteFileHeader(bytes);
-    if (!headerCheck.ok) {
-      throw new Error(headerCheck.error);
-    }
-    const importedDb = new this.SQL.Database(bytes);
-    applySchemaMigrations(importedDb);
-    if (this.db) {
-      this.db.close();
-    }
-    this.db = importedDb;
-    await this.persistToDisk();
-    return this.loadSnapshot(options);
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+      if (!this.SQL) {
+        this.SQL = await initSqlJs({
+          locateFile: () => sqlWasmUrl,
+        });
+      }
+      if (!this.SQL) {
+        throw new Error('SQLite WebAssembly engine is not available in this browser.');
+      }
+      const headerCheck = validateSqliteFileHeader(bytes);
+      if (!headerCheck.ok) {
+        throw new Error(headerCheck.error);
+      }
+      const importedDb = new this.SQL.Database(bytes);
+      applySchemaMigrations(importedDb);
+      if (this.db) {
+        try {
+          this.db.close();
+        } catch {
+          // Ignore close error on superseded DB
+        }
+      }
+      this.db = importedDb;
+      this.fallbackSnapshot = null;
+      await this.persistToDiskLocked(undefined, 'importRawSqliteBytes');
+      return this.loadSnapshotUnlocked(options);
+    });
   }
 
   async resetConnection(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
-    if (this.db) {
-      try {
-        this.db.close();
-      } catch {
-        // Ignore close error on already-closed WASM DB
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+      if (this.db) {
+        try {
+          this.db.close();
+        } catch {
+          // Ignore close error on already-closed WASM DB
+        }
+        this.db = null;
       }
-      this.db = null;
-    }
-    this.SQL = null;
-    this.fallbackSnapshot = null;
-    try {
-      await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-    } catch {
-      // Ignore fallback delete failure
-    }
-    return this.initialize(options);
+      this.SQL = null;
+      this.fallbackSnapshot = null;
+      this.loadedEpoch = 0;
+      try {
+        await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+      } catch {
+        // Ignore fallback delete failure
+      }
+      return this.initializeLocked(options);
+    });
   }
 
   async rebuildCleanDatabase(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
-    if (this.db) {
-      try {
-        this.db.close();
-      } catch {
-        // Ignore close error
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+      if (this.db) {
+        try {
+          this.db.close();
+        } catch {
+          // Ignore close error
+        }
+        this.db = null;
       }
-      this.db = null;
-    }
-    this.SQL = null;
-    this.fallbackSnapshot = null;
-    await idbDelete(IDB_PRIMARY_KEY);
-    await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-    return this.initialize({ ...options, allowSeedFresh: options?.allowSeedFresh ?? true });
+      this.SQL = null;
+      this.fallbackSnapshot = null;
+      this.loadedEpoch = 0;
+      await idbDelete(IDB_PRIMARY_KEY);
+      await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+      return this.initializeLocked({ ...options, allowSeedFresh: options?.allowSeedFresh ?? true });
+    });
   }
 }

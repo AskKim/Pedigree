@@ -5,6 +5,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnimalPhoto, BarnDatabaseSnapshot } from '../../core/models';
+import {
+  analyzePhotoStorageFootprintPure,
+  OVERSIZED_PHOTO_BYTES_THRESHOLD,
+  pruneFullResPayloadsFromSnapshotPure,
+} from '../../core/photoMaintenance';
 import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
 import {
   BoundedPhotoDataCache,
@@ -222,6 +227,46 @@ describe('BoundedPhotoDataCache & snapshot hydration', () => {
     expect(light.animalPhotos![0].isPrimary).toBe(true);
     expect(light.animalPhotos![0].dataUrl).toBe('');
     expect(light.animalPhotos![0].thumbnailDataUrl).toBe('');
+  });
+
+  it('audits dehydrated photo metadata accurately without loading full-res blobs and supports clock-adjusted pruning', () => {
+    const snap = makeTestSnapshot();
+    snap.animalPhotos = [
+      {
+        ...snap.animalPhotos![0],
+        storedBytes: OVERSIZED_PHOTO_BYTES_THRESHOLD + 32 * 1024,
+        width: 2400,
+        height: 1800,
+      },
+      {
+        ...snap.animalPhotos![1],
+        storedBytes: 95 * 1024,
+        width: 1024,
+        height: 768,
+      },
+    ];
+    const stripped = stripPhotoDataUrlsFromSnapshot(snap);
+    expect(stripped.animalPhotos!.every((p) => p.dataUrl === '')).toBe(true);
+
+    const footprint = analyzePhotoStorageFootprintPure(stripped, 'balanced');
+    expect(footprint.oversizedPhotoIds).toEqual(['photo-rabbit-1']);
+    expect(footprint.fullResPrunableIds).toEqual(['photo-rabbit-1', 'photo-goat-1']);
+
+    const cache = new BoundedPhotoDataCache(4);
+    cache.set('photo-rabbit-1', snap.animalPhotos![0].dataUrl);
+    cache.set('photo-goat-1', snap.animalPhotos![1].dataUrl);
+
+    const customTs = '2026-08-15T14:30:00.000Z';
+    const pruned = pruneFullResPayloadsFromSnapshotPure(snap, ['photo-rabbit-1'], customTs);
+    expect(pruned.prunedCount).toBe(1);
+    expect(pruned.updatedPhotos[0]?.updatedAt).toBe(customTs);
+    expect(pruned.updatedPhotos[0]?.dataUrl).toBe(snap.animalPhotos![0].thumbnailDataUrl);
+
+    for (const p of pruned.updatedPhotos) {
+      cache.delete(p.id);
+    }
+    expect(cache.get('photo-rabbit-1')).toBeUndefined();
+    expect(cache.get('photo-goat-1')).toBe(snap.animalPhotos![1].dataUrl);
   });
 });
 

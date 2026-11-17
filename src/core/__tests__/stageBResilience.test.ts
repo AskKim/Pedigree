@@ -286,6 +286,213 @@ describe('Stage B pure domain features (IMP-023)', () => {
       expect(ops[0]?.field_name).toBe('weightGrams');
       expect(ops[0]?.record_rev).toBe(5);
     });
+
+    it('propagates __delete__ outbox ops across cages, breedings, tasks, careLogs, shows, photos, and species', () => {
+      const snap = makeEmptySnapshot({
+        cages: [
+          {
+            id: 'c-1',
+            species: 'Rabbit',
+            label: 'R-1',
+            section: 'Main',
+            capacity: 1,
+            notes: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        breedings: [
+          {
+            id: 'b-1',
+            species: 'Rabbit',
+            sireId: 's-1',
+            damId: 'd-1',
+            sireName: 'S',
+            damName: 'D',
+            bredDateIso: '2026-01-01',
+            expectedDueDateIso: '2026-02-01',
+            actualBirthDateIso: '',
+            projectedCoiPercent: 0,
+            liveCount: 0,
+            stillbornCount: 0,
+            fosteredCount: 0,
+            weanedCount: 0,
+            offspringCreated: false,
+            status: 'Bred',
+            notes: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        tasks: [
+          {
+            id: 't-1',
+            species: 'Rabbit',
+            title: 'Place Nestbox',
+            dueDateIso: '2026-01-28',
+            priority: 'High',
+            category: 'Nestbox',
+            linkedAnimalId: '',
+            linkedAnimalName: '',
+            linkedBreedingId: 'b-1',
+            completed: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        careLogs: [
+          {
+            id: 'l-1',
+            species: 'Rabbit',
+            animalId: 'a-1',
+            dateIso: '2026-01-02',
+            type: 'Weight Check',
+            title: 'Monthly weigh-in',
+            weightGrams: 1800,
+            showLegEarned: false,
+            notes: '',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            updatedAt: '2026-01-02T00:00:00.000Z',
+          },
+        ],
+        shows: [
+          {
+            id: 'sh-1',
+            species: 'Rabbit',
+            name: 'Spring Classic',
+            location: 'Barn',
+            sanctioningBody: 'ARBA',
+            eventDateIso: '2026-04-01',
+            entryDeadlineIso: '2026-03-25',
+            enteredAnimalIds: [],
+            notes: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        animalPhotos: [
+          {
+            id: 'ph-1',
+            species: 'Rabbit',
+            animalId: 'a-1',
+            isPrimary: true,
+            sortOrder: 0,
+            caption: 'Profile',
+            originalFileName: 'clover.webp',
+            mimeType: 'image/webp',
+            width: 800,
+            height: 600,
+            originalBytes: 120000,
+            storedBytes: 32000,
+            thumbnailDataUrl: 'data:image/webp;base64,AAA=',
+            dataUrl: 'data:image/webp;base64,BBBB',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        speciesProfiles: [
+          {
+            id: 'sp-1',
+            name: 'Rabbit',
+            gestationDays: 31,
+            rebreedDaysAfterBirth: 28,
+            weanDaysAfterBirth: 42,
+            birthEventLabel: 'Kindling',
+            maleLabel: 'Buck',
+            femaleLabel: 'Doe',
+            offspringLabel: 'Kit',
+            exampleBreeds: ['Holland Lop'],
+            milestones: [],
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      });
+
+      const ts = '2026-02-01T12:00:00.000Z';
+      const deleteOps = [
+        createOutboxOperation({
+          entityType: 'cage',
+          entityUuid: 'c-1',
+          deviceId: 'dev-b',
+          logicalCounter: 1,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'breeding',
+          entityUuid: 'b-1',
+          deviceId: 'dev-b',
+          logicalCounter: 2,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'task',
+          entityUuid: 't-1',
+          deviceId: 'dev-b',
+          logicalCounter: 3,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'careLog',
+          entityUuid: 'l-1',
+          deviceId: 'dev-b',
+          logicalCounter: 4,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'show',
+          entityUuid: 'sh-1',
+          deviceId: 'dev-b',
+          logicalCounter: 5,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'photo',
+          entityUuid: 'ph-1',
+          deviceId: 'dev-b',
+          logicalCounter: 6,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+        createOutboxOperation({
+          entityType: 'species',
+          entityUuid: 'sp-1',
+          deviceId: 'dev-b',
+          logicalCounter: 7,
+          fieldName: '__delete__',
+          newValue: true,
+          timestamp: ts,
+          recordRev: 2,
+        }),
+      ];
+
+      const merged = mergeDeltaOperations(snap, [], deleteOps, 'dev-a');
+      expect(merged.appliedOpCount).toBe(7);
+      expect(merged.nextSnapshot.cages).toHaveLength(0);
+      expect(merged.nextSnapshot.breedings).toHaveLength(0);
+      expect(merged.nextSnapshot.tasks).toHaveLength(0);
+      expect(merged.nextSnapshot.careLogs).toHaveLength(0);
+      expect(merged.nextSnapshot.shows).toHaveLength(0);
+      expect(merged.nextSnapshot.animalPhotos).toHaveLength(0);
+      expect(merged.nextSnapshot.speciesProfiles).toHaveLength(0);
+    });
   });
 
   describe('calendarExport deterministic Google Calendar event IDs', () => {

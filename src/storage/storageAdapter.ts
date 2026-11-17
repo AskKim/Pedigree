@@ -113,6 +113,9 @@ export interface StorageAdapter {
   /** Purges and rebuilds a corrupted primary IndexedDB/SQLite store cleanly from starter schema. */
   rebuildCleanDatabase?(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 
+  /** Checks persisted storage epoch and reloads internal state if another tab wrote newer changes. */
+  syncFromPersistedStorageIfStale?(): Promise<boolean>;
+
   /** Returns detected wiped-storage recovery state when IndexedDB appeared wiped for a returning user. */
   getWipedRecoveryContext?(): WipedStorageRecoveryContext | null;
 }

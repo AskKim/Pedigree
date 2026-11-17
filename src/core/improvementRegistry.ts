@@ -1191,7 +1191,6 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'src/components/HerdScreen.tsx',
       'src/components/SpeciesMemoScreen.tsx',
       'src/core/syncAndExports.ts',
-      'docs/plans/optimization-and-resilience-phase-plan.md',
     ],
     invariants: [
       {

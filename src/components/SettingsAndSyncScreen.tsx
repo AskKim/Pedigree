@@ -48,6 +48,7 @@ import {
 } from '../storage/backgroundFreezeCoordinator';
 import { emitAsyncErrorToast } from '../storage/crashLogger';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 import {
   buildCompleteBackupZipOffThread,
   buildPhotosOnlyZipOffThread,
@@ -80,8 +81,8 @@ import {
   getTierStoragePolicy,
 } from '../core/deviceCapability';
 import { detectCurrentBrowserCompatibility } from '../storage/deviceCapabilityDetector';
-import { BackupSinkStatus } from '../storage/localSyncChannels';
-import { OpfsPruneSinkWarning } from '../storage/opfsStorage';
+import { BackupSyncStatus } from '../storage/localSyncChannels';
+import { OpfsPruneSyncWarning } from '../storage/opfsStorage';
 import {
   calculateSavingsPercent,
   formatByteSizePure,
@@ -127,7 +128,7 @@ import {
 import {
   EncryptedSyncPassphraseError,
   parseDeltaFileTextAsync,
-  reauthorizeBackupSinkFolder,
+  reauthorizeBackupSyncFolder,
   resumePersistedDirectorySyncIfGranted,
   shareOrDownloadFile,
   supportsDirectoryPicker,
@@ -259,12 +260,12 @@ interface SettingsAndSyncScreenProps {
   ) => Promise<void>;
   onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
   onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
-  backupSinkStatus?: BackupSinkStatus | null;
-  pruneSinkWarning?: OpfsPruneSinkWarning | null;
-  onConnectBackupSink?: () => Promise<unknown>;
-  onReauthorizeBackupSink?: () => Promise<unknown>;
-  onDisconnectBackupSink?: () => Promise<unknown>;
-  onSyncVaultToSinkNow?: () => Promise<unknown>;
+  backupSyncStatus?: BackupSyncStatus | null;
+  pruneSyncWarning?: OpfsPruneSyncWarning | null;
+  onConnectBackupSync?: () => Promise<unknown>;
+  onReauthorizeBackupSync?: () => Promise<unknown>;
+  onDisconnectBackupSync?: () => Promise<unknown>;
+  onSyncVaultToSyncNow?: () => Promise<unknown>;
   onDismissPruneWarning?: () => void;
 }
 
@@ -331,12 +332,12 @@ export function SettingsAndSyncScreen({
   onRestoreArchivedHerdBundle,
   onDownloadArchivedHerdBundle,
   onDeleteArchivedHerdBundle,
-  backupSinkStatus = null,
-  pruneSinkWarning = null,
-  onConnectBackupSink,
-  onReauthorizeBackupSink,
-  onDisconnectBackupSink,
-  onSyncVaultToSinkNow,
+  backupSyncStatus = null,
+  pruneSyncWarning = null,
+  onConnectBackupSync,
+  onReauthorizeBackupSync,
+  onDisconnectBackupSync,
+  onSyncVaultToSyncNow,
   onDismissPruneWarning,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
@@ -777,7 +778,7 @@ export function SettingsAndSyncScreen({
       }
       setPendingLargeRestore(null);
       if (isJson) {
-        const text = await file.text();
+        const text = await readBlobAsText(file);
         const encryptedEnvelope = tryParseEncryptedEnvelopeJson(text);
         if (encryptedEnvelope) {
           setPendingRestorePassphrasePrompt({
@@ -804,7 +805,7 @@ export function SettingsAndSyncScreen({
           jsonText: text,
         });
       } else {
-        const buf = await file.arrayBuffer();
+        const buf = await readBlobAsArrayBuffer(file);
         const rawBytes = new Uint8Array(buf);
         const encryptedEnvelope = tryExtractEncryptedEnvelopeFromZip(rawBytes, file.name);
         if (encryptedEnvelope) {
@@ -948,7 +949,7 @@ export function SettingsAndSyncScreen({
         return;
       }
       setPendingLargeRestore(null);
-      const buf = await file.arrayBuffer();
+      const buf = await readBlobAsArrayBuffer(file);
       const sqliteBytes = new Uint8Array(buf);
       if (onInspectSqliteRestoreBytes) {
         setRestoreInspectBusy(true);
@@ -1004,7 +1005,7 @@ export function SettingsAndSyncScreen({
         const combinedOps: SyncOperation[] = [];
         let decryptedFileCount = 0;
         for (const file of list) {
-          const text = await file.text();
+          const text = await readBlobAsText(file);
           const parsed = await parseDeltaFileTextAsync(
             text,
             syncPassphrase || undefined
@@ -1054,7 +1055,7 @@ export function SettingsAndSyncScreen({
     setFolderSyncBusy(true);
     try {
       if (triggerReauthorize) {
-        await reauthorizeBackupSinkFolder();
+        await reauthorizeBackupSyncFolder();
       }
       const ctx = syncContextRef.current;
       const exportSnapshot =
@@ -2412,8 +2413,8 @@ export function SettingsAndSyncScreen({
                 0
               )}
               deviceTier={activeDeviceTier}
-              backupSinkStatus={backupSinkStatus}
-              pruneSinkWarning={pruneSinkWarning}
+              backupSyncStatus={backupSyncStatus}
+              pruneSyncWarning={pruneSyncWarning}
               onSaveManualVaultBackup={(note) => onSaveManualOpfsVaultBackup?.(note)}
               onRestoreOpfsBackup={async (key) => {
                 if (onRestoreOpfsVaultBackup) await onRestoreOpfsVaultBackup(key);
@@ -2429,10 +2430,10 @@ export function SettingsAndSyncScreen({
                 if (onDeleteRollingBackup) await onDeleteRollingBackup(key);
               }}
               onOpenArchivedHerdsModal={() => setShowArchivedHerdsModal(true)}
-              onConnectBackupSink={onConnectBackupSink}
-              onReauthorizeBackupSink={onReauthorizeBackupSink}
-              onDisconnectBackupSink={onDisconnectBackupSink}
-              onSyncVaultToSinkNow={onSyncVaultToSinkNow}
+              onConnectBackupSync={onConnectBackupSync}
+              onReauthorizeBackupSync={onReauthorizeBackupSync}
+              onDisconnectBackupSync={onDisconnectBackupSync}
+              onSyncVaultToSyncNow={onSyncVaultToSyncNow}
               onDismissPruneWarning={onDismissPruneWarning}
             />
           </section>
@@ -3261,8 +3262,9 @@ export function SettingsAndSyncScreen({
                 />
                 <button
                   type="button"
+                  disabled={restoreInspectBusy || restoreCommitLock.isSubmitting}
                   onClick={() => mergeFileRef.current?.click()}
-                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   Merge (.JSON / .ZIP)
@@ -3280,8 +3282,9 @@ export function SettingsAndSyncScreen({
                 />
                 <button
                   type="button"
+                  disabled={restoreInspectBusy || restoreCommitLock.isSubmitting}
                   onClick={() => replaceFileRef.current?.click()}
-                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   Restore (.JSON / .ZIP)
@@ -3299,11 +3302,13 @@ export function SettingsAndSyncScreen({
                 />
                 <button
                   type="button"
-                  disabled={isSqliteUnavailable}
+                  disabled={
+                    isSqliteUnavailable || restoreInspectBusy || restoreCommitLock.isSubmitting
+                  }
                   aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
                   onClick={() => sqliteFileRef.current?.click()}
                   className={`min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                    isSqliteUnavailable
+                    isSqliteUnavailable || restoreInspectBusy || restoreCommitLock.isSubmitting
                       ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
                       : 'hover:bg-[var(--barn-subtle)]'
                   }`}

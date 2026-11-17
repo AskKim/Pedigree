@@ -23,13 +23,14 @@ import {
   MAX_DELTA_OPERATIONS,
   validateUploadFileSize,
 } from '../core/inputSanitization';
-import { generateUuid, nowIsoUtc } from '../core/models';
+import { generateUuid } from '../core/models';
 import {
   DeltaExportFile,
   SyncConflictEntry,
   SyncOperation,
 } from '../core/syncOutbox';
 import { downloadTextFile } from '../utils/webFileActions';
+import { readBlobAsText } from '../utils/es2018Shims';
 import {
   BackgroundPausedError,
   isDocumentHidden,
@@ -47,12 +48,178 @@ const STORE_OUTBOX = 'sync_outbox';
 const STORE_CONFLICTS = 'sync_conflicts';
 const STORE_HANDLES = 'sync_handles';
 const STORE_CHECKPOINTS = 'sync_checkpoints';
-const BACKUP_SINK_HANDLE_KEY = 'backup_sink_folder';
-const BACKUP_SINK_ARCHIVE_SUBDIR = 'pedigree-vault-archive';
-const BACKUP_SINK_META_LS_KEY = 'pedigree.backupSinkMeta.v1';
+const BACKUP_SYNC_HANDLE_KEY = 'backup_sync_folder';
+const LEGACY_BACKUP_SINK_HANDLE_KEY = 'backup_sink_folder';
+const BACKUP_SYNC_ARCHIVE_SUBDIR = 'pedigree-vault-archive';
+const BACKUP_SYNC_META_LS_KEY = 'pedigree.backupSyncMeta.v1';
+const LEGACY_BACKUP_SINK_META_LS_KEY = 'pedigree.backupSinkMeta.v1';
 const DEVICE_ID_LS_KEY = 'pedigree_device_id_v1';
 const LOGICAL_COUNTER_LS_KEY = 'pedigree_logical_counter_v1';
 const SYNC_IDB_TIMEOUT_MS = 7000;
+const SYNC_OUTBOX_LOCK_NAME = 'community_pedigree_sync_outbox_v1';
+const LOGICAL_COUNTER_LOCK_NAME = 'community_pedigree_logical_counter_v1';
+export const TAB_SYNC_CHANNEL_NAME = 'community_pedigree_tab_sync_v1';
+export const DB_WRITE_EPOCH_LS_KEY = 'pedigree.dbWriteEpoch.v1';
+
+const CURRENT_TAB_ID = `tab-${generateUuid()}`;
+const inTabLockQueues = new Map<string, Promise<void>>();
+
+export function getCurrentTabId(): string {
+  return CURRENT_TAB_ID;
+}
+
+/**
+ * Serializes critical storage/outbox mutations both within the current tab (FIFO queue)
+ * and across parallel browser tabs via `navigator.locks` when supported (ES2018 fallback: in-tab FIFO).
+ * Never nest calls with the same `lockName`.
+ */
+export function withCrossTabLock<T>(lockName: string, task: () => Promise<T>): Promise<T> {
+  const prev = inTabLockQueues.get(lockName) ?? Promise.resolve();
+  const executeWithWebLock = async (): Promise<T> => {
+    const nav =
+      typeof navigator !== 'undefined'
+        ? (navigator as unknown as {
+            locks?: {
+              request?: <R>(
+                name: string,
+                options: { mode?: 'exclusive' | 'shared' },
+                callback: () => Promise<R>
+              ) => Promise<R>;
+            };
+          })
+        : undefined;
+    if (nav?.locks && typeof nav.locks.request === 'function') {
+      return nav.locks.request(lockName, { mode: 'exclusive' }, () => task());
+    }
+    return task();
+  };
+  const run = prev.catch(() => undefined).then(executeWithWebLock);
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  );
+  inTabLockQueues.set(lockName, settled);
+  return run.finally(() => {
+    if (inTabLockQueues.get(lockName) === settled) {
+      inTabLockQueues.delete(lockName);
+    }
+  });
+}
+
+export interface CrossTabDbCommitEvent {
+  epoch: number;
+  writerTabId: string;
+  committedAtIso: string;
+  reason?: string;
+}
+
+let sharedTabSyncChannel: BroadcastChannel | null = null;
+
+function getSharedTabSyncChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel !== 'function') return null;
+  if (!sharedTabSyncChannel) {
+    try {
+      sharedTabSyncChannel = new BroadcastChannel(TAB_SYNC_CHANNEL_NAME);
+    } catch {
+      return null;
+    }
+  }
+  return sharedTabSyncChannel;
+}
+
+export function publishCrossTabDbCommit(params: {
+  epoch: number;
+  writerTabId?: string;
+  reason?: string;
+}): CrossTabDbCommitEvent {
+  const payload: CrossTabDbCommitEvent = {
+    epoch: params.epoch,
+    writerTabId: params.writerTabId || CURRENT_TAB_ID,
+    committedAtIso: getAdjustedNowIsoUtc(),
+    reason: params.reason,
+  };
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(DB_WRITE_EPOCH_LS_KEY, JSON.stringify(payload));
+    } catch {
+      // Non-fatal
+    }
+  }
+  const ch = getSharedTabSyncChannel();
+  if (ch) {
+    try {
+      ch.postMessage(payload);
+    } catch {
+      // Non-fatal (channel closed/restricted)
+    }
+  }
+  return payload;
+}
+
+export function subscribeCrossTabDbCommits(
+  onRemoteCommit: (event: CrossTabDbCommitEvent) => void,
+  options?: { selfTabId?: string }
+): () => void {
+  const selfId = options?.selfTabId || CURRENT_TAB_ID;
+  let lastDeliveredEpoch = 0;
+
+  const handleCandidate = (raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return;
+    const candidate = raw as Partial<CrossTabDbCommitEvent>;
+    const epoch = Number(candidate.epoch);
+    const writerTabId = typeof candidate.writerTabId === 'string' ? candidate.writerTabId : '';
+    if (!Number.isFinite(epoch) || epoch <= 0 || !writerTabId || writerTabId === selfId) {
+      return;
+    }
+    if (epoch <= lastDeliveredEpoch) return;
+    lastDeliveredEpoch = epoch;
+    onRemoteCommit({
+      epoch,
+      writerTabId,
+      committedAtIso: String(candidate.committedAtIso || ''),
+      reason: typeof candidate.reason === 'string' ? candidate.reason : undefined,
+    });
+  };
+
+  let bc: BroadcastChannel | null = null;
+  const onBcMessage = (ev: MessageEvent) => {
+    handleCandidate(ev.data);
+  };
+  if (typeof BroadcastChannel === 'function') {
+    try {
+      bc = new BroadcastChannel(TAB_SYNC_CHANNEL_NAME);
+      bc.addEventListener('message', onBcMessage);
+    } catch {
+      bc = null;
+    }
+  }
+
+  const onStorage = (ev: StorageEvent) => {
+    if (ev.key !== DB_WRITE_EPOCH_LS_KEY || !ev.newValue) return;
+    try {
+      handleCandidate(JSON.parse(ev.newValue));
+    } catch {
+      // Ignore malformed storage payload
+    }
+  };
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', onStorage);
+  }
+
+  return () => {
+    if (bc) {
+      try {
+        bc.removeEventListener('message', onBcMessage);
+        bc.close();
+      } catch {
+        // Ignore
+      }
+    }
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('storage', onStorage);
+    }
+  };
+}
 
 export interface SyncCheckpointRecord {
   taskId: string;
@@ -63,7 +230,7 @@ export interface SyncCheckpointRecord {
   updatedAtIso: string;
 }
 
-export interface BackupSinkStatus {
+export interface BackupSyncStatus {
   supported: boolean;
   configured: boolean;
   folderName: string | null;
@@ -74,7 +241,7 @@ export interface BackupSinkStatus {
   lastPushError: string | null;
 }
 
-interface StoredSinkMeta {
+interface StoredSyncMeta {
   folderName: string;
   configuredAtIso: string;
   lastPushAtIso?: string | null;
@@ -89,9 +256,9 @@ interface StoredHandleRecord {
   configuredAtIso: string;
 }
 
-let testSinkHandleOverride: any | null = null;
-export function setBackupSinkHandleForTest(handle: any | null): void {
-  testSinkHandleOverride = handle;
+let testSyncHandleOverride: any | null = null;
+export function setBackupSyncHandleForTest(handle: any | null): void {
+  testSyncHandleOverride = handle;
 }
 
 export function getOrCreateLocalDeviceId(): string {
@@ -115,6 +282,10 @@ export function allocateNextLogicalCounter(): number {
   } catch {
     return Date.now();
   }
+}
+
+export async function allocateNextLogicalCounterLocked(): Promise<number> {
+  return withCrossTabLock(LOGICAL_COUNTER_LOCK_NAME, async () => allocateNextLogicalCounter());
 }
 
 function openSyncIdb(): Promise<IDBDatabase> {
@@ -283,23 +454,90 @@ export async function clearSyncCheckpointFromIdb(taskId: string): Promise<void> 
   }
 }
 
-export async function appendSyncOperationsToIdb(ops: SyncOperation[]): Promise<void> {
-  if (ops.length === 0 || typeof indexedDB === 'undefined') return;
-  try {
-    await withSyncIdb(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          const tx = db.transaction(STORE_OUTBOX, 'readwrite');
-          const store = tx.objectStore(STORE_OUTBOX);
-          for (const op of ops) store.put(op);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-          tx.onabort = () => reject(tx.error || new Error('Sync outbox write aborted'));
-        })
-    );
-  } catch {
-    // Non-blocking safeguard
-  }
+export async function appendSyncOperationsToIdb(
+  ops: SyncOperation[]
+): Promise<SyncOperation[]> {
+  if (ops.length === 0 || typeof indexedDB === 'undefined') return ops;
+  return withCrossTabLock(SYNC_OUTBOX_LOCK_NAME, async () => {
+    try {
+      return await withSyncIdb(
+        (db) =>
+          new Promise<SyncOperation[]>((resolve, reject) => {
+            const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+            const store = tx.objectStore(STORE_OUTBOX);
+            let writtenOps: SyncOperation[] = ops;
+
+            if (typeof store.getAll === 'function') {
+              const existingReq = store.getAll();
+
+              existingReq.onsuccess = () => {
+                const existing = (existingReq.result as SyncOperation[]) || [];
+                const usedByDevice = new Map<string, Set<number>>();
+                const maxByDevice = new Map<string, number>();
+
+                for (const ex of existing) {
+                  if (!ex || typeof ex.device_id !== 'string') continue;
+                  let used = usedByDevice.get(ex.device_id);
+                  if (!used) {
+                    used = new Set<number>();
+                    usedByDevice.set(ex.device_id, used);
+                  }
+                  if (typeof ex.logical_counter === 'number' && Number.isFinite(ex.logical_counter)) {
+                    used.add(ex.logical_counter);
+                    const prevMax = maxByDevice.get(ex.device_id) || 0;
+                    if (ex.logical_counter > prevMax) {
+                      maxByDevice.set(ex.device_id, ex.logical_counter);
+                    }
+                  }
+                }
+
+                writtenOps = ops.map((op) => {
+                  let used = usedByDevice.get(op.device_id);
+                  if (!used) {
+                    used = new Set<number>();
+                    usedByDevice.set(op.device_id, used);
+                  }
+                  let counter = op.logical_counter;
+                  const currentMax = maxByDevice.get(op.device_id) || 0;
+                  if (used.has(counter)) {
+                    let lsMax = 0;
+                    try {
+                      lsMax = Number(localStorage.getItem(LOGICAL_COUNTER_LS_KEY) || '0') || 0;
+                    } catch {
+                      lsMax = 0;
+                    }
+                    counter = Math.max(currentMax, lsMax) + 1;
+                    try {
+                      localStorage.setItem(LOGICAL_COUNTER_LS_KEY, String(counter));
+                    } catch {
+                      // Non-fatal
+                    }
+                  }
+                  used.add(counter);
+                  if (counter > currentMax) {
+                    maxByDevice.set(op.device_id, counter);
+                  }
+                  const normalizedOp = counter === op.logical_counter ? op : { ...op, logical_counter: counter };
+                  store.put(normalizedOp);
+                  return normalizedOp;
+                });
+              };
+
+              existingReq.onerror = () => {
+                for (const op of ops) store.put(op);
+              };
+            } else {
+              for (const op of ops) store.put(op);
+            }
+            tx.oncomplete = () => resolve(writtenOps);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('Sync outbox write aborted'));
+          })
+      );
+    } catch {
+      return ops;
+    }
+  });
 }
 
 export async function loadAllSyncOperationsFromIdb(): Promise<SyncOperation[]> {
@@ -322,22 +560,24 @@ export async function loadAllSyncOperationsFromIdb(): Promise<SyncOperation[]> {
 
 export async function replaceSyncOperationsInIdb(ops: SyncOperation[]): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
-  try {
-    await withSyncIdb(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          const tx = db.transaction(STORE_OUTBOX, 'readwrite');
-          const store = tx.objectStore(STORE_OUTBOX);
-          store.clear();
-          for (const op of ops) store.put(op);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-          tx.onabort = () => reject(tx.error || new Error('Sync outbox replace aborted'));
-        })
-    );
-  } catch {
-    // Ignore
-  }
+  await withCrossTabLock(SYNC_OUTBOX_LOCK_NAME, async () => {
+    try {
+      await withSyncIdb(
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+            const store = tx.objectStore(STORE_OUTBOX);
+            store.clear();
+            for (const op of ops) store.put(op);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('Sync outbox replace aborted'));
+          })
+      );
+    } catch {
+      // Ignore
+    }
+  });
 }
 
 export async function appendSyncConflictsToIdb(conflicts: SyncConflictEntry[]): Promise<void> {
@@ -388,24 +628,26 @@ export async function saveSyncConflictInIdb(conflict: SyncConflictEntry): Promis
 
 export async function clearAllSyncStateInIdb(): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
-  try {
-    await withSyncIdb(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          const tx = db.transaction([STORE_OUTBOX, STORE_CONFLICTS, STORE_CHECKPOINTS], 'readwrite');
-          tx.objectStore(STORE_OUTBOX).clear();
-          tx.objectStore(STORE_CONFLICTS).clear();
-          if (db.objectStoreNames.contains(STORE_CHECKPOINTS)) {
-            tx.objectStore(STORE_CHECKPOINTS).clear();
-          }
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-          tx.onabort = () => reject(tx.error || new Error('Sync state clear aborted'));
-        })
-    );
-  } catch {
-    // Ignore
-  }
+  await withCrossTabLock(SYNC_OUTBOX_LOCK_NAME, async () => {
+    try {
+      await withSyncIdb(
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const tx = db.transaction([STORE_OUTBOX, STORE_CONFLICTS, STORE_CHECKPOINTS], 'readwrite');
+            tx.objectStore(STORE_OUTBOX).clear();
+            tx.objectStore(STORE_CONFLICTS).clear();
+            if (db.objectStoreNames.contains(STORE_CHECKPOINTS)) {
+              tx.objectStore(STORE_CHECKPOINTS).clear();
+            }
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('Sync state clear aborted'));
+          })
+      );
+    } catch {
+      // Ignore
+    }
+  });
 }
 
 export class EncryptedSyncPassphraseError extends Error {
@@ -502,16 +744,28 @@ export function supportsDirectoryPicker(): boolean {
   );
 }
 
-function readLocalSinkMeta(): StoredSinkMeta | null {
+function readLocalSyncMeta(): StoredSyncMeta | null {
   try {
     if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(BACKUP_SINK_META_LS_KEY);
+    let raw = localStorage.getItem(BACKUP_SYNC_META_LS_KEY);
+    if (!raw) {
+      const legacyRaw = localStorage.getItem(LEGACY_BACKUP_SINK_META_LS_KEY);
+      if (legacyRaw) {
+        raw = legacyRaw;
+        try {
+          localStorage.setItem(BACKUP_SYNC_META_LS_KEY, legacyRaw);
+          localStorage.removeItem(LEGACY_BACKUP_SINK_META_LS_KEY);
+        } catch {
+          // Ignore migration write failure
+        }
+      }
+    }
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredSinkMeta>;
+    const parsed = JSON.parse(raw) as Partial<StoredSyncMeta>;
     if (!parsed || typeof parsed.folderName !== 'string') return null;
     return {
       folderName: parsed.folderName,
-      configuredAtIso: String(parsed.configuredAtIso || nowIsoUtc()),
+      configuredAtIso: String(parsed.configuredAtIso || getAdjustedNowIsoUtc()),
       lastPushAtIso: typeof parsed.lastPushAtIso === 'string' ? parsed.lastPushAtIso : null,
       lastPushFileName: typeof parsed.lastPushFileName === 'string' ? parsed.lastPushFileName : null,
       lastPushError: typeof parsed.lastPushError === 'string' ? parsed.lastPushError : null,
@@ -521,23 +775,25 @@ function readLocalSinkMeta(): StoredSinkMeta | null {
   }
 }
 
-function writeLocalSinkMeta(meta: StoredSinkMeta | null): void {
+function writeLocalSyncMeta(meta: StoredSyncMeta | null): void {
   try {
     if (typeof localStorage === 'undefined') return;
     if (!meta) {
-      localStorage.removeItem(BACKUP_SINK_META_LS_KEY);
+      localStorage.removeItem(BACKUP_SYNC_META_LS_KEY);
+      localStorage.removeItem(LEGACY_BACKUP_SINK_META_LS_KEY);
     } else {
-      localStorage.setItem(BACKUP_SINK_META_LS_KEY, JSON.stringify(meta));
+      localStorage.setItem(BACKUP_SYNC_META_LS_KEY, JSON.stringify(meta));
+      localStorage.removeItem(LEGACY_BACKUP_SINK_META_LS_KEY);
     }
   } catch {
     // Non-fatal
   }
 }
 
-async function saveBackupSinkHandleToIdb(handle: any, folderName: string): Promise<void> {
-  const configuredAtIso = nowIsoUtc();
-  writeLocalSinkMeta({
-    ...(readLocalSinkMeta() || {}),
+async function saveBackupSyncHandleToIdb(handle: any, folderName: string): Promise<void> {
+  const configuredAtIso = getAdjustedNowIsoUtc();
+  writeLocalSyncMeta({
+    ...(readLocalSyncMeta() || {}),
     folderName,
     configuredAtIso,
     lastPushError: null,
@@ -548,13 +804,15 @@ async function saveBackupSinkHandleToIdb(handle: any, folderName: string): Promi
       (db) =>
         new Promise<void>((resolve, reject) => {
           const tx = db.transaction(STORE_HANDLES, 'readwrite');
+          const store = tx.objectStore(STORE_HANDLES);
           const rec: StoredHandleRecord = {
-            key: BACKUP_SINK_HANDLE_KEY,
+            key: BACKUP_SYNC_HANDLE_KEY,
             handle,
             folderName,
             configuredAtIso,
           };
-          tx.objectStore(STORE_HANDLES).put(rec);
+          store.put(rec);
+          store.delete(LEGACY_BACKUP_SINK_HANDLE_KEY);
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
           tx.onabort = () => reject(tx.error || new Error('Sync handle write aborted'));
@@ -565,13 +823,13 @@ async function saveBackupSinkHandleToIdb(handle: any, folderName: string): Promi
   }
 }
 
-async function loadBackupSinkHandleRecord(): Promise<StoredHandleRecord | null> {
-  if (testSinkHandleOverride) {
+async function loadBackupSyncHandleRecord(): Promise<StoredHandleRecord | null> {
+  if (testSyncHandleOverride) {
     return {
-      key: BACKUP_SINK_HANDLE_KEY,
-      handle: testSinkHandleOverride,
-      folderName: String(testSinkHandleOverride.name || 'Test Sync Folder'),
-      configuredAtIso: nowIsoUtc(),
+      key: BACKUP_SYNC_HANDLE_KEY,
+      handle: testSyncHandleOverride,
+      folderName: String(testSyncHandleOverride.name || 'Test Sync Folder'),
+      configuredAtIso: getAdjustedNowIsoUtc(),
     };
   }
   if (typeof indexedDB === 'undefined') return null;
@@ -580,10 +838,21 @@ async function loadBackupSinkHandleRecord(): Promise<StoredHandleRecord | null> 
       (db) =>
         new Promise<StoredHandleRecord | null>((resolve) => {
           const tx = db.transaction(STORE_HANDLES, 'readonly');
-          const req = tx.objectStore(STORE_HANDLES).get(BACKUP_SINK_HANDLE_KEY);
+          const store = tx.objectStore(STORE_HANDLES);
+          const req = store.get(BACKUP_SYNC_HANDLE_KEY);
           req.onsuccess = () => {
             const res = req.result as StoredHandleRecord | undefined;
-            resolve(res?.handle ? res : null);
+            if (res?.handle) {
+              resolve(res);
+              return;
+            }
+            // Backwards-compatible lookup for legacy `backup_sink_folder` records
+            const legacyReq = store.get(LEGACY_BACKUP_SINK_HANDLE_KEY);
+            legacyReq.onsuccess = () => {
+              const legacyRes = legacyReq.result as StoredHandleRecord | undefined;
+              resolve(legacyRes?.handle ? legacyRes : null);
+            };
+            legacyReq.onerror = () => resolve(null);
           };
           req.onerror = () => resolve(null);
           tx.onabort = () => resolve(null);
@@ -609,9 +878,9 @@ async function queryHandleReadWritePermission(
   return 'granted';
 }
 
-export async function getPersistedBackupSinkStatus(): Promise<BackupSinkStatus> {
-  const meta = readLocalSinkMeta();
-  const supported = supportsDirectoryPicker() || Boolean(testSinkHandleOverride);
+export async function getPersistedBackupSyncStatus(): Promise<BackupSyncStatus> {
+  const meta = readLocalSyncMeta();
+  const supported = supportsDirectoryPicker() || Boolean(testSyncHandleOverride);
   if (!supported) {
     return {
       supported: false,
@@ -625,7 +894,7 @@ export async function getPersistedBackupSinkStatus(): Promise<BackupSinkStatus> 
     };
   }
 
-  const record = await loadBackupSinkHandleRecord();
+  const record = await loadBackupSyncHandleRecord();
   if (!record?.handle) {
     return {
       supported: true,
@@ -652,7 +921,7 @@ export async function getPersistedBackupSinkStatus(): Promise<BackupSinkStatus> 
   };
 }
 
-export async function configureBackupSinkFolder(): Promise<BackupSinkStatus> {
+export async function configureBackupSyncFolder(): Promise<BackupSyncStatus> {
   const picker = (
     window as unknown as {
       showDirectoryPicker?: (opts?: { id?: string; mode?: 'read' | 'readwrite' }) => Promise<any>;
@@ -663,37 +932,39 @@ export async function configureBackupSinkFolder(): Promise<BackupSinkStatus> {
       'Persisted folder sync is not supported in this browser. Use Chrome/Edge/Android Chromium or export manual backups regularly.'
     );
   }
-  const handle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
+  const handle = await picker({ id: 'community-pedigree-backup-sync', mode: 'readwrite' });
   if (typeof handle.requestPermission === 'function') {
     const state = await handle.requestPermission({ mode: 'readwrite' });
     if (state !== 'granted') {
       throw new Error('Read/write folder permission was not granted.');
     }
   }
-  await saveBackupSinkHandleToIdb(handle, String(handle.name || 'Backup Sink Folder'));
-  return getPersistedBackupSinkStatus();
+  await saveBackupSyncHandleToIdb(handle, String(handle.name || 'Backup Sync Folder'));
+  return getPersistedBackupSyncStatus();
 }
 
-export async function reauthorizeBackupSinkFolder(): Promise<BackupSinkStatus> {
-  const record = await loadBackupSinkHandleRecord();
+export async function reauthorizeBackupSyncFolder(): Promise<BackupSyncStatus> {
+  const record = await loadBackupSyncHandleRecord();
   if (!record?.handle) {
-    return configureBackupSinkFolder();
+    return configureBackupSyncFolder();
   }
   if (typeof record.handle.requestPermission === 'function') {
     await record.handle.requestPermission({ mode: 'readwrite' });
   }
-  return getPersistedBackupSinkStatus();
+  return getPersistedBackupSyncStatus();
 }
 
-export async function disconnectBackupSinkFolder(): Promise<BackupSinkStatus> {
-  writeLocalSinkMeta(null);
+export async function disconnectBackupSyncFolder(): Promise<BackupSyncStatus> {
+  writeLocalSyncMeta(null);
   if (typeof indexedDB !== 'undefined') {
     try {
       await withSyncIdb(
         (db) =>
           new Promise<void>((resolve) => {
             const tx = db.transaction(STORE_HANDLES, 'readwrite');
-            tx.objectStore(STORE_HANDLES).delete(BACKUP_SINK_HANDLE_KEY);
+            const store = tx.objectStore(STORE_HANDLES);
+            store.delete(BACKUP_SYNC_HANDLE_KEY);
+            store.delete(LEGACY_BACKUP_SINK_HANDLE_KEY);
             tx.oncomplete = () => resolve();
             tx.onerror = () => resolve();
             tx.onabort = () => resolve();
@@ -703,15 +974,15 @@ export async function disconnectBackupSinkFolder(): Promise<BackupSinkStatus> {
       // Ignore
     }
   }
-  return getPersistedBackupSinkStatus();
+  return getPersistedBackupSyncStatus();
 }
 
 /**
- * Silently pushes an expiring or archival backup file to the user's connected local/synced folder sink
+ * Silently pushes an expiring or archival backup file to the user's connected local/synced folder
  * (`<SyncFolder>/pedigree-vault-archive/<fileName>`) BEFORE local OPFS retention deletes it.
  * Never triggers interactive permission prompts in the background.
  */
-export async function pushBackupPayloadToSinkFolder(
+export async function pushBackupPayloadToSyncFolder(
   fileName: string,
   data: Uint8Array | Blob | string
 ): Promise<{
@@ -719,19 +990,19 @@ export async function pushBackupPayloadToSinkFolder(
   skippedReason?: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed';
   error?: string;
 }> {
-  const supported = supportsDirectoryPicker() || Boolean(testSinkHandleOverride);
+  const supported = supportsDirectoryPicker() || Boolean(testSyncHandleOverride);
   if (!supported) {
     return { ok: false, skippedReason: 'unsupported' };
   }
-  const record = await loadBackupSinkHandleRecord();
+  const record = await loadBackupSyncHandleRecord();
   if (!record?.handle) {
     return { ok: false, skippedReason: 'not_configured' };
   }
   const perm = await queryHandleReadWritePermission(record.handle);
   if (perm !== 'granted') {
-    const prev = readLocalSinkMeta();
+    const prev = readLocalSyncMeta();
     if (prev) {
-      writeLocalSinkMeta({
+      writeLocalSyncMeta({
         ...prev,
         lastPushError: 'Folder permission needs re-authorization before background offload.',
       });
@@ -742,7 +1013,7 @@ export async function pushBackupPayloadToSinkFolder(
   try {
     const archiveDir =
       typeof record.handle.getDirectoryHandle === 'function'
-        ? await record.handle.getDirectoryHandle(BACKUP_SINK_ARCHIVE_SUBDIR, { create: true })
+        ? await record.handle.getDirectoryHandle(BACKUP_SYNC_ARCHIVE_SUBDIR, { create: true })
         : record.handle;
     const fh = await archiveDir.getFileHandle(fileName, { create: true });
     const writable = await fh.createWritable();
@@ -751,20 +1022,20 @@ export async function pushBackupPayloadToSinkFolder(
     } finally {
       await writable.close();
     }
-    const prev = readLocalSinkMeta();
-    writeLocalSinkMeta({
-      folderName: prev?.folderName || record.folderName || 'Backup Sink Folder',
+    const prev = readLocalSyncMeta();
+    writeLocalSyncMeta({
+      folderName: prev?.folderName || record.folderName || 'Backup Sync Folder',
       configuredAtIso: prev?.configuredAtIso || record.configuredAtIso,
-      lastPushAtIso: nowIsoUtc(),
+      lastPushAtIso: getAdjustedNowIsoUtc(),
       lastPushFileName: fileName,
       lastPushError: null,
     });
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Folder write failed';
-    const prev = readLocalSinkMeta();
+    const prev = readLocalSyncMeta();
     if (prev) {
-      writeLocalSinkMeta({
+      writeLocalSyncMeta({
         ...prev,
         lastPushError: msg,
       });
@@ -788,7 +1059,7 @@ async function checkpointDirectorySyncPause(params: {
     phase: params.phase,
     peerFilesRead: params.peerFilesRead,
     incomingOpsQueued: params.incomingOps.length,
-    updatedAtIso: nowIsoUtc(),
+    updatedAtIso: getAdjustedNowIsoUtc(),
   });
   logDiagnosticEvent({
     level: 'info',
@@ -844,7 +1115,7 @@ async function runDirectorySyncWithHandle(params: {
           'a sync delta file'
         );
         if (!check.ok) continue;
-        const text = await file.text();
+        const text = await readBlobAsText(file);
         const parsed = await parseDeltaFileTextAsync(text, activePassphrase);
         incomingOps.push(...parsed.operations);
         peerFilesRead++;
@@ -957,7 +1228,7 @@ export async function resumePersistedDirectorySyncIfGranted(params: {
       folderName?: string;
     }
 > {
-  const record = await loadBackupSinkHandleRecord();
+  const record = await loadBackupSyncHandleRecord();
   if (!record?.handle) {
     return { resumed: false, reason: 'no_handle' };
   }
@@ -983,7 +1254,7 @@ export async function resumePersistedDirectorySyncIfGranted(params: {
 /**
  * Option B: Syncs local `delta_<device_id>.json` and master backup directly with a user-chosen
  * local folder (e.g., SyncThing folder on Android or Desktop Chrome/Edge) while reading all peer `delta_*.json`.
- * Also persists the folder handle as the pre-prune Backup Sink Folder and checkpoints cleanly on background freeze.
+ * Also persists the folder handle as the pre-prune Backup Sync Folder and checkpoints cleanly on background freeze.
  */
 export async function syncWithPickedDirectory(params: {
   deviceId: string;
@@ -1011,9 +1282,9 @@ export async function syncWithPickedDirectory(params: {
         'Folder Sync API is not supported in this browser. Use Web Share or manual delta export instead.'
       );
     }
-    dirHandle = await picker({ id: 'community-pedigree-backup-sink', mode: 'readwrite' });
+    dirHandle = await picker({ id: 'community-pedigree-backup-sync', mode: 'readwrite' });
   }
-  await saveBackupSinkHandleToIdb(dirHandle, String(dirHandle.name || 'Sync Folder'));
+  await saveBackupSyncHandleToIdb(dirHandle, String(dirHandle.name || 'Sync Folder'));
   return runDirectorySyncWithHandle({
     dirHandle,
     deviceId: params.deviceId,

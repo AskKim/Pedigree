@@ -544,8 +544,8 @@ function renderPedigreeTableHtml(
   if (generations >= 6) genHeaders.push('<th>Gen 6</th>');
 
   const safePrimary =
-    showPhotos && primaryPhoto?.dataUrl && primaryPhoto.dataUrl.startsWith('data:image/')
-      ? primaryPhoto.dataUrl
+    showPhotos && primaryPhoto?.dataUrl
+      ? sanitizeSafeRasterImageDataUrl(primaryPhoto.dataUrl)
       : '';
   const subjectGeno = subject.genotypeRaw || formatGenotypeArray(subject.genotype);
   const subjectCarriers = formatCompactCarrierDisclosure(subject, {

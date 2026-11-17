@@ -28,4 +28,4 @@
    - `useBarnStore.ts` computes `activeSpeciesData` via case-insensitive `isSameSpecies(...)` filtering and resets selected animal IDs on species switch so records from one species never leak into another species' Herd, Breeding, or Pedigree screens.
 
 4. **Documentation & Backlog (`docs/plans/`):**
-   - Active unimplemented suggestions live in `docs/plans/suggestions-backlog.md` and the current optimization roadmap lives in `docs/plans/optimization-and-resilience-phase-plan.md` alongside `ARCHITECTURE.md` and `IMPROVEMENTS.md` so roadmap items persist across GitHub syncs and AI Studio reinstalls.
+   - Active unimplemented suggestions live in `docs/plans/suggestions-backlog.md` alongside `ARCHITECTURE.md` and `IMPROVEMENTS.md` so roadmap items persist across GitHub syncs and AI Studio reinstalls.

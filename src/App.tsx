@@ -1289,13 +1289,13 @@ export default function App() {
             onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
             onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
             onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
-            backupSinkStatus={store.backupSinkStatus}
-            pruneSinkWarning={store.pruneSinkWarning}
-            onConnectBackupSink={store.connectBackupSinkFolder}
-            onReauthorizeBackupSink={store.reauthorizeBackupSinkFolder}
-            onDisconnectBackupSink={store.disconnectBackupSinkFolder}
-            onSyncVaultToSinkNow={store.syncVaultBackupsToSinkNow}
-            onDismissPruneWarning={store.dismissPruneSinkWarning}
+            backupSyncStatus={store.backupSyncStatus}
+            pruneSyncWarning={store.pruneSyncWarning}
+            onConnectBackupSync={store.connectBackupSyncFolder}
+            onReauthorizeBackupSync={store.reauthorizeBackupSyncFolder}
+            onDisconnectBackupSync={store.disconnectBackupSyncFolder}
+            onSyncVaultToSyncNow={store.syncVaultBackupsToSyncNow}
+            onDismissPruneWarning={store.dismissPruneSyncWarning}
           />
               )}
             </Suspense>

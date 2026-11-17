@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ensureEs2018Globals } from '../../utils/es2018Shims';
+import {
+  ensureEs2018Globals,
+  readBlobAsArrayBuffer,
+  readBlobAsText,
+} from '../../utils/es2018Shims';
 import {
   applyPwaUpdateNow,
   attachControllerChangeReloadGuard,
@@ -49,6 +53,72 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
         ['b', 'two'],
       ])
     ).toEqual({ a: 1, b: 'two' });
+  });
+
+  it('installs non-enumerable Blob.prototype.arrayBuffer/text and String.prototype.trimStart/trimEnd shims and reads via FileReader when native methods are absent', async () => {
+    function FakeBlob(this: any, bytes: number[]) {
+      this._bytes = bytes;
+    }
+    const fakeStringProto: Record<string, any> = {};
+    const FakeString: any = function () {};
+    FakeString.prototype = fakeStringProto;
+
+    const mockHost: Record<string, any> = {
+      Promise,
+      Object: { fromEntries: Object.fromEntries },
+      Blob: FakeBlob,
+      String: FakeString,
+    };
+
+    ensureEs2018Globals(mockHost);
+
+    expect(typeof FakeBlob.prototype.arrayBuffer).toBe('function');
+    expect(typeof FakeBlob.prototype.text).toBe('function');
+    expect(Object.keys(FakeBlob.prototype)).not.toContain('arrayBuffer');
+    expect(Object.keys(FakeBlob.prototype)).not.toContain('text');
+    expect(typeof fakeStringProto.trimStart).toBe('function');
+    expect(typeof fakeStringProto.trimEnd).toBe('function');
+    expect(fakeStringProto.trimStart.call('  \nhello ')).toBe('hello ');
+    expect(fakeStringProto.trimEnd.call(' hello\t  ')).toBe(' hello');
+
+    // Mock ES2018 FileReader (no Blob.prototype.arrayBuffer or .text natively)
+    class MockFileReader {
+      public result: ArrayBuffer | string | null = null;
+      public error: Error | null = null;
+      public onload: (() => void) | null = null;
+      public onerror: (() => void) | null = null;
+      public onabort: (() => void) | null = null;
+
+      readAsArrayBuffer(blob: any) {
+        const bytes: number[] = blob._bytes || [];
+        this.result = new Uint8Array(bytes).buffer;
+        queueMicrotask(() => this.onload?.());
+      }
+
+      readAsText(blob: any) {
+        const bytes: number[] = blob._bytes || [];
+        this.result = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+
+    vi.stubGlobal('FileReader', MockFileReader);
+    try {
+      const legacyBlob = new (FakeBlob as any)([72, 105, 33]); // "Hi!"
+      const buf = await readBlobAsArrayBuffer(legacyBlob);
+      expect(Array.from(new Uint8Array(buf))).toEqual([72, 105, 33]);
+
+      const txt = await readBlobAsText(legacyBlob);
+      expect(txt).toBe('Hi!');
+
+      // Also verify the shimmed prototype methods delegate without recursion
+      const protoBuf = await legacyBlob.arrayBuffer();
+      const protoTxt = await legacyBlob.text();
+      expect(Array.from(new Uint8Array(protoBuf))).toEqual([72, 105, 33]);
+      expect(protoTxt).toBe('Hi!');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

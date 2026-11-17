@@ -42,7 +42,8 @@ import { BarnDatabaseSnapshot, BarnSettings, generateUuid, nowIsoUtc } from '../
 import { isSampleTestingId } from '../core/sampleData';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
-import { pushBackupPayloadToSinkFolder } from './localSyncChannels';
+import { pushBackupPayloadToSyncFolder } from './localSyncChannels';
+import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 import { isQuotaExceededError } from './storageProtection';
 
 export type OpfsNamespace = 'tmp' | 'backups' | 'archives';
@@ -102,34 +103,40 @@ const VAULT_INDEX_FILE = 'vault-index.json';
 const ARCHIVES_INDEX_FILE = 'archives-index.json';
 const CANARY_PROBE_FILE = 'canary-probe.json';
 
-export interface OpfsPruneSinkWarning {
+export interface OpfsPruneSyncWarning {
   count: number;
   lastFileName: string;
   kind: VaultBackupKind;
   reason: 'not_configured' | 'permission_required' | 'write_failed' | 'unsupported';
+  retained?: boolean;
   timestampIso: string;
   message: string;
 }
 
-export function readOpfsPruneSinkWarning(): OpfsPruneSinkWarning | null {
+export function readOpfsPruneSyncWarning(): OpfsPruneSyncWarning | null {
   if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(OPFS_PRUNE_WARNING_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<OpfsPruneSinkWarning>;
+    const parsed = JSON.parse(raw) as Partial<OpfsPruneSyncWarning>;
     if (!parsed || typeof parsed !== 'object' || typeof parsed.lastFileName !== 'string') {
       return null;
     }
+    const reason =
+      parsed.reason === 'permission_required' ||
+      parsed.reason === 'write_failed' ||
+      parsed.reason === 'unsupported'
+        ? parsed.reason
+        : 'not_configured';
     return {
       count: Number(parsed.count) || 1,
       lastFileName: parsed.lastFileName,
       kind: (parsed.kind as VaultBackupKind) || 'manual',
-      reason:
-        parsed.reason === 'permission_required' ||
-        parsed.reason === 'write_failed' ||
-        parsed.reason === 'unsupported'
-          ? parsed.reason
-          : 'not_configured',
+      reason,
+      retained:
+        typeof parsed.retained === 'boolean'
+          ? parsed.retained
+          : reason === 'permission_required' || reason === 'write_failed',
       timestampIso: String(parsed.timestampIso || ''),
       message: String(parsed.message || ''),
     };
@@ -138,7 +145,7 @@ export function readOpfsPruneSinkWarning(): OpfsPruneSinkWarning | null {
   }
 }
 
-export function clearOpfsPruneSinkWarning(): void {
+export function clearOpfsPruneSyncWarning(): void {
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.removeItem(OPFS_PRUNE_WARNING_KEY);
@@ -147,29 +154,36 @@ export function clearOpfsPruneSinkWarning(): void {
   }
 }
 
-function recordOpfsPruneSinkWarning(
+function recordOpfsPruneSyncWarning(
   newCount: number,
   lastItem: VaultBackupMetadata,
-  reason: OpfsPruneSinkWarning['reason']
+  reason: OpfsPruneSyncWarning['reason'],
+  options?: { retained?: boolean }
 ): void {
   if (newCount <= 0) return;
-  const existing = readOpfsPruneSinkWarning();
-  const totalCount = (existing?.count || 0) + newCount;
+  const retained =
+    options?.retained ?? (reason === 'permission_required' || reason === 'write_failed');
+  const existing = readOpfsPruneSyncWarning();
+  const totalCount =
+    existing && existing.reason === reason ? (existing.count || 0) + newCount : newCount;
   const reasonNote =
     reason === 'permission_required'
-      ? 'Connected Backup Sink folder needs re-authorization'
+      ? 'Connected Backup Sync folder needs re-authorization'
       : reason === 'write_failed'
-      ? 'Backup Sink folder write failed'
+      ? 'Backup Sync folder write failed'
       : reason === 'unsupported'
       ? 'This browser cannot persist folder sync handles automatically'
-      : 'No Backup Sink folder is connected';
-  const next: OpfsPruneSinkWarning = {
+      : 'No Backup Sync folder is connected';
+  const next: OpfsPruneSyncWarning = {
     count: totalCount,
     lastFileName: lastItem.fileName,
     kind: lastItem.kind,
     reason,
+    retained,
     timestampIso: nowIsoUtc(),
-    message: `${totalCount} aging local backup(s) rolled off storage without an off-device sync copy (${reasonNote}). Connect a sync folder or download a manual backup.`,
+    message: retained
+      ? `${totalCount} expiring local backup(s) could not offload (${reasonNote}) and were retained locally until sync succeeds. Re-authorize your Backup Sync folder or export a manual backup.`
+      : `${totalCount} aging local backup(s) rolled off storage without an off-device sync copy (${reasonNote}). Connect a sync folder or download a manual backup.`,
   };
   if (typeof localStorage !== 'undefined') {
     try {
@@ -181,7 +195,9 @@ function recordOpfsPruneSinkWarning(
   logDiagnosticEvent({
     level: 'warn',
     category: 'storage',
-    message: `Pruned ${newCount} expiring OPFS backup(s) without sink offload (${reason}): ${lastItem.fileName}`,
+    message: retained
+      ? `Retained ${newCount} expiring OPFS backup(s) locally after Backup Sync offload failed (${reason}): ${lastItem.fileName}`
+      : `Pruned ${newCount} expiring OPFS backup(s) without sync offload (${reason}): ${lastItem.fileName}`,
   });
 }
 
@@ -310,7 +326,7 @@ async function readOpfsFileText(
   try {
     const fh = await dir.getFileHandle(fileName, { create: false });
     const file = await fh.getFile();
-    return await file.text();
+    return await readBlobAsText(file);
   } catch {
     return null;
   }
@@ -323,7 +339,7 @@ async function readOpfsFileBytes(
   try {
     const fh = await dir.getFileHandle(fileName, { create: false });
     const file = await fh.getFile();
-    const buf = await file.arrayBuffer();
+    const buf = await readBlobAsArrayBuffer(file);
     return new Uint8Array(buf);
   } catch {
     return null;
@@ -650,35 +666,57 @@ async function enforceVaultRetention(
   }
 
   if (deleteItems.length > 0) {
-    let unbackedCount = 0;
-    let lastUnbackedItem: VaultBackupMetadata | null = null;
-    let lastReason: OpfsPruneSinkWarning['reason'] = 'not_configured';
+    let prunedUnbackedCount = 0;
+    let lastPrunedItem: VaultBackupMetadata | null = null;
+    let lastPrunedReason: OpfsPruneSyncWarning['reason'] = 'not_configured';
+
+    let retainedCount = 0;
+    let lastRetainedItem: VaultBackupMetadata | null = null;
+    let lastRetainedReason: OpfsPruneSyncWarning['reason'] = 'permission_required';
 
     for (const item of deleteItems) {
       const payloadBytes = await readOpfsFileBytes(backupsDir, item.fileName);
       const offloadResult = beforePrune
         ? await beforePrune(item, payloadBytes)
         : payloadBytes
-        ? await pushBackupPayloadToSinkFolder(item.fileName, payloadBytes)
+        ? await pushBackupPayloadToSyncFolder(item.fileName, payloadBytes)
         : { ok: false, skippedReason: 'write_failed' as const };
 
       if (!offloadResult.ok) {
-        unbackedCount++;
-        lastUnbackedItem = item;
-        lastReason = offloadResult.skippedReason || 'not_configured';
+        const reason = offloadResult.skippedReason || 'not_configured';
+        if (
+          payloadBytes &&
+          (reason === 'permission_required' || reason === 'write_failed')
+        ) {
+          // Retain expiring local OPFS backup when a configured sync folder fails temporarily
+          keepSet.add(item.key);
+          retainedCount++;
+          lastRetainedItem = item;
+          lastRetainedReason = reason;
+          continue;
+        }
+        prunedUnbackedCount++;
+        lastPrunedItem = item;
+        lastPrunedReason = reason;
       } else {
         logDiagnosticEvent({
           level: 'info',
           category: 'storage',
-          message: `Synced expiring OPFS backup "${item.fileName}" to Backup Sink Folder before local prune`,
+          message: `Synced expiring OPFS backup "${item.fileName}" to Backup Sync Folder before local prune`,
         });
       }
 
       await removeOpfsEntrySafe(backupsDir, item.fileName);
     }
 
-    if (unbackedCount > 0 && lastUnbackedItem) {
-      recordOpfsPruneSinkWarning(unbackedCount, lastUnbackedItem, lastReason);
+    if (retainedCount > 0 && lastRetainedItem) {
+      recordOpfsPruneSyncWarning(retainedCount, lastRetainedItem, lastRetainedReason, {
+        retained: true,
+      });
+    } else if (prunedUnbackedCount > 0 && lastPrunedItem) {
+      recordOpfsPruneSyncWarning(prunedUnbackedCount, lastPrunedItem, lastPrunedReason, {
+        retained: false,
+      });
     }
   }
 
@@ -687,7 +725,9 @@ async function enforceVaultRetention(
     .sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
 }
 
-export async function flushOpfsBackupsToSinkFolder(): Promise<{
+export async function flushOpfsBackupsToSyncFolder(options?: {
+  policyOverride?: Partial<TierStoragePolicy>;
+}): Promise<{
   pushed: number;
   failed: number;
   skippedReason?: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed';
@@ -699,13 +739,15 @@ export async function flushOpfsBackupsToSinkFolder(): Promise<{
     let pushed = 0;
     let failed = 0;
     let lastReason: 'unsupported' | 'not_configured' | 'permission_required' | 'write_failed' | undefined;
+    const pushedKeys = new Set<string>();
 
     for (const item of items) {
       const bytes = await readOpfsFileBytes(backupsDir, item.fileName);
       if (!bytes) continue;
-      const res = await pushBackupPayloadToSinkFolder(item.fileName, bytes);
+      const res = await pushBackupPayloadToSyncFolder(item.fileName, bytes);
       if (res.ok) {
         pushed++;
+        pushedKeys.add(item.key);
       } else {
         failed++;
         lastReason = res.skippedReason;
@@ -719,7 +761,20 @@ export async function flushOpfsBackupsToSinkFolder(): Promise<{
       }
     }
     if (pushed > 0 && failed === 0) {
-      clearOpfsPruneSinkWarning();
+      clearOpfsPruneSyncWarning();
+      const policy = resolveEffectiveStoragePolicy(options?.policyOverride);
+      const nextList = await enforceVaultRetention(
+        backupsDir,
+        items,
+        policy,
+        async (item) =>
+          pushedKeys.has(item.key)
+            ? { ok: true }
+            : { ok: false, skippedReason: 'write_failed' }
+      );
+      if (nextList.length !== items.length) {
+        await writeVaultIndex(backupsDir, nextList);
+      }
     }
     return { pushed, failed, skippedReason: lastReason };
   });

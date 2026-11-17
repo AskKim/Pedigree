@@ -26,6 +26,7 @@ import {
 import { ArchivedHerdIndexEntry, VAULT_KIND_LABELS } from '../core/backupVault';
 import { WipedStorageRecoveryContext } from '../storage/opfsStorage';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
+import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 
 interface WipedStorageRecoveryModalProps {
   context: WipedStorageRecoveryContext | null;
@@ -105,14 +106,14 @@ export function WipedStorageRecoveryModal({
           setErrorMsg(check.error);
           return;
         }
-        await onImportJsonReplace(await file.text());
+        await onImportJsonReplace(await readBlobAsText(file));
       } else if (lower.endsWith('.zip')) {
         const check = validateUploadFileSize(file.name, file.size, MAX_ZIP_ARCHIVE_BYTES, 'ZIP backup');
         if (!check.ok) {
           setErrorMsg(check.error);
           return;
         }
-        const buf = await file.arrayBuffer();
+        const buf = await readBlobAsArrayBuffer(file);
         await onImportArchiveReplace(new Uint8Array(buf), file.name);
       } else if (lower.endsWith('.sqlite') || lower.endsWith('.db') || lower.endsWith('.sqlite3')) {
         const check = validateUploadFileSize(file.name, file.size, MAX_SQLITE_DB_BYTES, 'SQLite database');
@@ -120,7 +121,7 @@ export function WipedStorageRecoveryModal({
           setErrorMsg(check.error);
           return;
         }
-        const buf = await file.arrayBuffer();
+        const buf = await readBlobAsArrayBuffer(file);
         await onImportSqlite(new Uint8Array(buf));
       } else {
         setErrorMsg('Please choose a .JSON, .ZIP, or .SQLITE backup file.');

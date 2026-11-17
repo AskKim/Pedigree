@@ -192,7 +192,7 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     workloadProfile:
       'Up to ~1,000 records. Heavy .ZIP imports, large raw DB restores, or high-res photos will likely freeze or crash the tab.',
     cautionNotice:
-      'Below minimum hardware requirements. Tight vault retention (2 monthly · 3 manual · 1 rolling IDB) and thumbnail-light mirrors are enforced; connect a Backup Sink Folder or export backups off-device before heavy imports.',
+      'Below minimum hardware requirements. Tight vault retention (2 monthly · 3 manual · 1 rolling IDB) and thumbnail-light mirrors are enforced; connect a Backup Sync Folder or export backups off-device before heavy imports.',
     maxRecommendedRecords: 1000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,
@@ -214,7 +214,7 @@ export const DEVICE_CAPABILITY_TIERS: Record<DeviceCapabilityTierNumber, DeviceT
     workloadProfile:
       'Up to ~3,000 records (~4–5 base animals, 8-gen trees, ~25% compact photos).',
     cautionNotice:
-      'Low-memory device detected. Keep local records under ~3,000, use Compact photos, and keep a Backup Sink Folder or off-device export synced (vault trims locally to 3 monthly · 5 manual copies).',
+      'Low-memory device detected. Keep local records under ~3,000, use Compact photos, and keep a Backup Sync Folder or off-device export synced (vault trims locally to 3 monthly · 5 manual copies).',
     maxRecommendedRecords: 3000,
     recommendedImagePreset: 'compact',
     recommendedDefaultGenerations: 3,

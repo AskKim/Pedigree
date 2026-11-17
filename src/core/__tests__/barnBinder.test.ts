@@ -378,4 +378,87 @@ describe('barnBinder — printable human-readable species binders & automatic ZI
       ]);
     }
   });
+
+  it('strips SVG and malformed data URLs from primary pedigree and gallery photo slots while keeping safe raster images', () => {
+    const safePng =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const svgPayload =
+      'data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9ImFsZXJ0KDEpIj48L3N2Zz4=';
+    const breakoutPayload =
+      'data:image/png;base64,iVBOR" onerror="alert(1)';
+
+    const snap = makeEmptySnapshot({
+      speciesProfiles: [makeSpeciesProfile('Rabbit')],
+      animals: [
+        makeAnimal('a-svg', { name: 'Vector Buck', species: 'Rabbit' }),
+        makeAnimal('a-safe', { name: 'Raster Doe', species: 'Rabbit' }),
+      ],
+      animalPhotos: [
+        {
+          id: 'ph-svg',
+          species: 'Rabbit',
+          animalId: 'a-svg',
+          isPrimary: true,
+          sortOrder: 0,
+          caption: 'SVG payload attempt',
+          originalFileName: 'bad.svg',
+          mimeType: 'image/svg+xml',
+          width: 100,
+          height: 100,
+          originalBytes: 100,
+          storedBytes: 100,
+          thumbnailDataUrl: svgPayload,
+          dataUrl: svgPayload,
+          createdAt: '2026-10-01T00:00:00Z',
+          updatedAt: '2026-10-01T00:00:00Z',
+        },
+        {
+          id: 'ph-breakout',
+          species: 'Rabbit',
+          animalId: 'a-svg',
+          isPrimary: false,
+          sortOrder: 1,
+          caption: 'Attribute injection attempt',
+          originalFileName: 'bad.png',
+          mimeType: 'image/png',
+          width: 100,
+          height: 100,
+          originalBytes: 100,
+          storedBytes: 100,
+          thumbnailDataUrl: breakoutPayload,
+          dataUrl: breakoutPayload,
+          createdAt: '2026-10-01T00:01:00Z',
+          updatedAt: '2026-10-01T00:01:00Z',
+        },
+        {
+          id: 'ph-safe',
+          species: 'Rabbit',
+          animalId: 'a-safe',
+          isPrimary: true,
+          sortOrder: 0,
+          caption: 'Safe PNG',
+          originalFileName: 'good.png',
+          mimeType: 'image/png',
+          width: 100,
+          height: 100,
+          originalBytes: 100,
+          storedBytes: 100,
+          thumbnailDataUrl: safePng,
+          dataUrl: safePng,
+          createdAt: '2026-10-01T00:02:00Z',
+          updatedAt: '2026-10-01T00:02:00Z',
+        },
+      ],
+    });
+
+    const html = generateSpeciesBarnBinderHtml(snap, 'Rabbit', {
+      includePhotos: true,
+    });
+    expect(html).not.toContain('data:image/svg+xml');
+    expect(html).not.toContain('onerror=');
+    expect(html).not.toContain(svgPayload);
+    expect(html).not.toContain(breakoutPayload);
+    expect(html).toContain(`src="${safePng}"`);
+  });
 });
+

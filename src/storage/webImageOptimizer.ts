@@ -28,6 +28,7 @@ import {
   resolveImageOptimizationPreset,
 } from '../core/imageOptimizationSpec';
 import { StagedImportedPhoto } from '../core/importers/importerTypes';
+import { readBlobAsArrayBuffer } from '../utils/es2018Shims';
 import {
   isSvgImageInput,
   MAX_IMAGE_PIXEL_DIMENSION,
@@ -174,7 +175,7 @@ export async function optimizeImageBlob(
   if (!sizeCheck.ok) {
     throw new Error(sizeCheck.error);
   }
-  const headBytes = new Uint8Array(await blob.slice(0, 512).arrayBuffer());
+  const headBytes = new Uint8Array(await readBlobAsArrayBuffer(blob.slice(0, 512)));
   if (isSvgImageInput(blob.type, originalFileName, headBytes)) {
     throw new Error(
       `SVG image "${originalFileName || 'image.svg'}" cannot be imported as a raster animal photo. Please upload a JPG, PNG, WebP, or GIF image.`

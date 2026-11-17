@@ -10,15 +10,18 @@ import {
 } from '../../core/backupVault';
 import { getTierStoragePolicy } from '../../core/deviceCapability';
 import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
-import { setBackupSinkHandleForTest } from '../localSyncChannels';
 import {
-  clearOpfsPruneSinkWarning,
+  getPersistedBackupSyncStatus,
+  setBackupSyncHandleForTest,
+} from '../localSyncChannels';
+import {
+  clearOpfsPruneSyncWarning,
   clearPriorUseSentinel,
   deleteOpfsHerdArchive,
   deleteOpfsVaultBackup,
   detectReturningUserWipedStorage,
   dumpRawRecordsToOpfsRecoveryBackup,
-  flushOpfsBackupsToSinkFolder,
+  flushOpfsBackupsToSyncFolder,
   isOpfsSupported,
   listOpfsHerdArchives,
   listOpfsVaultBackups,
@@ -34,7 +37,7 @@ import {
   OpfsFileHandle,
   OpfsWritableStream,
   readOpfsHerdArchiveBlob,
-  readOpfsPruneSinkWarning,
+  readOpfsPruneSyncWarning,
   readOpfsVaultBackupBlob,
   runOpfsExportCanary,
   saveOpfsHerdArchive,
@@ -201,9 +204,10 @@ function installLocalStorageShim() {
 
 afterEach(() => {
   setOpfsRootResolverForTest(null);
-  setBackupSinkHandleForTest(null);
-  clearOpfsPruneSinkWarning();
+  setBackupSyncHandleForTest(null);
+  clearOpfsPruneSyncWarning();
   clearPriorUseSentinel();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -491,20 +495,20 @@ describe('opfsStorage concurrency locks, active /tmp protection, binary dump com
   });
 });
 
-describe('opfsStorage Phase B: Tier 1/2 caps, pre-prune sink offload, mixed .vault.zip/.json self-heal & canary cooldown', () => {
-  it('enforces Tier 1 retention caps and offloads expiring backups to connected Backup Sink before pruning', async () => {
+describe('opfsStorage Phase B: Tier 1/2 caps, pre-prune sync offload, mixed .vault.zip/.json self-heal & canary cooldown', () => {
+  it('enforces Tier 1 retention caps and offloads expiring backups to connected Backup Sync before pruning', async () => {
     installLocalStorageShim();
     const opfsMock = createInMemoryOpfsMock();
     setOpfsRootResolverForTest(async () => opfsMock.rootHandle);
 
-    const sinkMock = createInMemoryOpfsMock();
-    setBackupSinkHandleForTest({
+    const syncMock = createInMemoryOpfsMock();
+    setBackupSyncHandleForTest({
       kind: 'directory',
       name: 'CloudSyncFolder',
       queryPermission: async () => 'granted',
       requestPermission: async () => 'granted',
       getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
-        sinkMock.rootHandle.getDirectoryHandle(name, opts),
+        syncMock.rootHandle.getDirectoryHandle(name, opts),
     });
 
     const tier1Policy = getTierStoragePolicy(1);
@@ -526,33 +530,190 @@ describe('opfsStorage Phase B: Tier 1/2 caps, pre-prune sink offload, mixed .vau
     expect(listed.filter((b) => b.kind === 'manual')).toHaveLength(tier1Policy.manualCap);
 
     // Expiring files must have been pushed into `<SyncFolder>/pedigree-vault-archive/` before deletion
-    const archiveDirNode = sinkMock.rootNode.dirs.get('pedigree-vault-archive');
+    const archiveDirNode = syncMock.rootNode.dirs.get('pedigree-vault-archive');
     expect(archiveDirNode).toBeDefined();
     expect(archiveDirNode!.files.size).toBe(2);
-    expect(readOpfsPruneSinkWarning()).toBeNull();
+    expect(readOpfsPruneSyncWarning()).toBeNull();
 
-    // Disconnect sink & push past cap -> records actionable prune warning; flushing after reconnect clears it
-    setBackupSinkHandleForTest(null);
+    // Disconnect sync folder & push past cap -> FIFO prunes unbacked copy and records prune warning; flushing after reconnect clears it
+    setBackupSyncHandleForTest(null);
     await saveOpfsVaultBackup(snap, {
       kind: 'manual',
       note: 'Unbacked overflow',
       policyOverride: tier1Policy,
     });
-    const warn = readOpfsPruneSinkWarning();
+    const warn = readOpfsPruneSyncWarning();
     expect(warn).not.toBeNull();
     expect(warn!.count).toBeGreaterThanOrEqual(1);
+    expect(warn!.retained).toBe(false);
 
-    setBackupSinkHandleForTest({
+    setBackupSyncHandleForTest({
       kind: 'directory',
       name: 'CloudSyncFolder',
       queryPermission: async () => 'granted',
       requestPermission: async () => 'granted',
       getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
-        sinkMock.rootHandle.getDirectoryHandle(name, opts),
+        syncMock.rootHandle.getDirectoryHandle(name, opts),
     });
-    const flushRes = await flushOpfsBackupsToSinkFolder();
+    const flushRes = await flushOpfsBackupsToSyncFolder({ policyOverride: tier1Policy });
     expect(flushRes.pushed).toBe(tier1Policy.manualCap);
-    expect(readOpfsPruneSinkWarning()).toBeNull();
+    expect(readOpfsPruneSyncWarning()).toBeNull();
+  });
+
+  it('retains expiring local OPFS backups on permission_required and write_failed, then flushes & trims cleanly after re-auth', async () => {
+    installLocalStorageShim();
+    const opfsMock = createInMemoryOpfsMock();
+    setOpfsRootResolverForTest(async () => opfsMock.rootHandle);
+
+    const syncMock = createInMemoryOpfsMock();
+    let permState: 'granted' | 'prompt' = 'prompt';
+    setBackupSyncHandleForTest({
+      kind: 'directory',
+      name: 'NeedsReauthFolder',
+      queryPermission: async () => permState,
+      requestPermission: async () => permState,
+      getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
+        syncMock.rootHandle.getDirectoryHandle(name, opts),
+    });
+
+    const tier1Policy = getTierStoragePolicy(1);
+    const snap = buildFullPredefinedSampleSnapshot();
+
+    // Exceed manualCap while permission is 'prompt' -> expiring backup must be RETAINED in OPFS!
+    for (let i = 0; i < tier1Policy.manualCap + 1; i++) {
+      await saveOpfsVaultBackup(snap, {
+        kind: 'manual',
+        note: `Pending Auth #${i + 1}`,
+        policyOverride: tier1Policy,
+      });
+    }
+
+    const whilePromptList = await listOpfsVaultBackups();
+    expect(whilePromptList.filter((b) => b.kind === 'manual')).toHaveLength(tier1Policy.manualCap + 1);
+    const promptWarn = readOpfsPruneSyncWarning();
+    expect(promptWarn).not.toBeNull();
+    expect(promptWarn!.reason).toBe('permission_required');
+    expect(promptWarn!.retained).toBe(true);
+
+    // Also test write_failed retains expiring local backups instead of deleting them
+    clearOpfsPruneSyncWarning();
+    setBackupSyncHandleForTest({
+      kind: 'directory',
+      name: 'BrokenDiskFolder',
+      queryPermission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      getDirectoryHandle: async () => {
+        throw new Error('EIO: simulated sync folder I/O failure');
+      },
+    });
+    await saveOpfsVaultBackup(snap, {
+      kind: 'manual',
+      note: 'Write Failed Overflow',
+      policyOverride: tier1Policy,
+    });
+    const whileWriteFailList = await listOpfsVaultBackups();
+    expect(whileWriteFailList.filter((b) => b.kind === 'manual')).toHaveLength(
+      tier1Policy.manualCap + 2
+    );
+    const writeFailWarn = readOpfsPruneSyncWarning();
+    expect(writeFailWarn?.reason).toBe('write_failed');
+    expect(writeFailWarn?.retained).toBe(true);
+
+    // Once user re-authorizes & flushes with tier1Policy, all retained items push cleanly and local OPFS trims to cap
+    permState = 'granted';
+    setBackupSyncHandleForTest({
+      kind: 'directory',
+      name: 'NeedsReauthFolder',
+      queryPermission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      getDirectoryHandle: (name: string, opts?: { create?: boolean }) =>
+        syncMock.rootHandle.getDirectoryHandle(name, opts),
+    });
+
+    const flushRes = await flushOpfsBackupsToSyncFolder({ policyOverride: tier1Policy });
+    expect(flushRes.pushed).toBe(tier1Policy.manualCap + 2);
+    expect(flushRes.failed).toBe(0);
+    expect(readOpfsPruneSyncWarning()).toBeNull();
+
+    const afterFlushList = await listOpfsVaultBackups();
+    expect(afterFlushList.filter((b) => b.kind === 'manual')).toHaveLength(tier1Policy.manualCap);
+    const archiveDirNode = syncMock.rootNode.dirs.get('pedigree-vault-archive');
+    expect(archiveDirNode!.files.size).toBe(tier1Policy.manualCap + 2);
+  });
+
+  it('migrates legacy pedigree.backupSinkMeta.v1 localStorage key and backup_sink_folder IDB handle transparently', async () => {
+    const lsStore = installLocalStorageShim();
+    lsStore.set(
+      'pedigree.backupSinkMeta.v1',
+      JSON.stringify({
+        folderName: 'Legacy Sync Drive',
+        configuredAtIso: '2025-01-02T03:04:05.000Z',
+        lastPushFileName: 'old-vault.vault.zip',
+        lastPushAtIso: '2025-01-03T04:05:06.000Z',
+      })
+    );
+
+    const handlesMap = new Map<string, any>([
+      [
+        'backup_sink_folder',
+        {
+          key: 'backup_sink_folder',
+          folderName: 'Legacy Sync Drive',
+          configuredAtIso: '2025-01-02T03:04:05.000Z',
+          handle: {
+            kind: 'directory',
+            name: 'Legacy Sync Drive',
+            queryPermission: async () => 'granted',
+            requestPermission: async () => 'granted',
+          },
+        },
+      ],
+    ]);
+
+    vi.stubGlobal('window', {
+      showDirectoryPicker: async () => {
+        throw new Error('Not called during status read');
+      },
+    });
+    vi.stubGlobal('indexedDB', {
+      open() {
+        const req: any = { result: null, error: null };
+        queueMicrotask(() => {
+          req.result = {
+            close() {},
+            transaction() {
+              const tx: any = {
+                onabort: null,
+                objectStore() {
+                  return {
+                    get(k: string) {
+                      const gReq: any = { result: undefined, onsuccess: null, onerror: null };
+                      queueMicrotask(() => {
+                        gReq.result = handlesMap.get(k);
+                        gReq.onsuccess?.();
+                      });
+                      return gReq;
+                    },
+                  };
+                },
+              };
+              return tx;
+            },
+          };
+          req.onsuccess?.();
+        });
+        return req;
+      },
+    });
+
+    const status = await getPersistedBackupSyncStatus();
+    expect(status.supported).toBe(true);
+    expect(status.configured).toBe(true);
+    expect(status.folderName).toBe('Legacy Sync Drive');
+    expect(status.permissionState).toBe('granted');
+    expect(status.lastPushFileName).toBe('old-vault.vault.zip');
+    expect(lsStore.has('pedigree.backupSyncMeta.v1')).toBe(true);
+    expect(lsStore.has('pedigree.backupSinkMeta.v1')).toBe(false);
   });
 
   it('self-heals vault-index.json across mixed .vault.zip and legacy .json files and caps recovery_dump entries', async () => {

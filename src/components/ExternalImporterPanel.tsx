@@ -29,6 +29,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { readBlobAsArrayBuffer } from '../utils/es2018Shims';
 import { analyzeBarnAnimalConflicts } from '../core/animalConflicts';
 import {
   DeviceCapabilityAssessment,
@@ -279,7 +280,7 @@ export function ExternalImporterPanel({
       const additions: RawArchiveInput[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const f = fileList[i];
-        const buf = await f.arrayBuffer();
+        const buf = await readBlobAsArrayBuffer(f);
         additions.push({
           fileName: f.name,
           bytes: new Uint8Array(buf),
