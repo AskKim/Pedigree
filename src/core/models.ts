@@ -381,6 +381,89 @@ export interface SpeciesMilestoneTemplate {
   priority: TaskPriority;
 }
 
+export interface BreedMilestoneOffsetOverride {
+  label: string;
+  daysOffset: number;
+}
+
+export interface BreedScheduleOverride {
+  breed: string;
+  gestationDays?: number;
+  weanDaysAfterBirth?: number;
+  rebreedDaysAfterBirth?: number;
+  maturityDays?: number;
+  milestoneOverrides?: BreedMilestoneOffsetOverride[];
+}
+
+export function normalizeBreedScheduleOverrides(raw: unknown): BreedScheduleOverride[] {
+  if (!Array.isArray(raw)) return [];
+  const byBreedKey = new Map<string, BreedScheduleOverride>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const breed = typeof obj.breed === 'string' ? obj.breed.trim().slice(0, 120) : '';
+    if (!breed) continue;
+
+    const cleanPosInt = (val: unknown, max: number): number | undefined => {
+      if (val === undefined || val === null || val === '') return undefined;
+      const n = Number(val);
+      if (!Number.isFinite(n) || n <= 0) return undefined;
+      return Math.min(max, Math.max(1, Math.round(n)));
+    };
+    const cleanNonNegInt = (val: unknown, max: number): number | undefined => {
+      if (val === undefined || val === null || val === '') return undefined;
+      const n = Number(val);
+      if (!Number.isFinite(n) || n < 0) return undefined;
+      return Math.min(max, Math.round(n));
+    };
+
+    const gestationDays = cleanPosInt(obj.gestationDays, 750);
+    const weanDaysAfterBirth = cleanPosInt(obj.weanDaysAfterBirth, 600);
+    const rebreedDaysAfterBirth = cleanNonNegInt(obj.rebreedDaysAfterBirth, 600);
+    const maturityDays = cleanPosInt(obj.maturityDays, 1500);
+
+    let milestoneOverrides: BreedMilestoneOffsetOverride[] | undefined;
+    if (Array.isArray(obj.milestoneOverrides)) {
+      const byLabelKey = new Map<string, BreedMilestoneOffsetOverride>();
+      for (const mo of obj.milestoneOverrides) {
+        if (!mo || typeof mo !== 'object' || Array.isArray(mo)) continue;
+        const mObj = mo as Record<string, unknown>;
+        const label = typeof mObj.label === 'string' ? mObj.label.trim().slice(0, 120) : '';
+        const daysNum = Number(mObj.daysOffset);
+        if (!label || !Number.isFinite(daysNum) || daysNum < 0) continue;
+        byLabelKey.set(label.toLowerCase(), {
+          label,
+          daysOffset: Math.min(700, Math.round(daysNum)),
+        });
+      }
+      if (byLabelKey.size > 0) {
+        milestoneOverrides = Array.from(byLabelKey.values());
+      }
+    }
+
+    if (
+      gestationDays === undefined &&
+      weanDaysAfterBirth === undefined &&
+      rebreedDaysAfterBirth === undefined &&
+      maturityDays === undefined &&
+      (!milestoneOverrides || milestoneOverrides.length === 0)
+    ) {
+      continue;
+    }
+
+    const clean: BreedScheduleOverride = { breed };
+    if (gestationDays !== undefined) clean.gestationDays = gestationDays;
+    if (weanDaysAfterBirth !== undefined) clean.weanDaysAfterBirth = weanDaysAfterBirth;
+    if (rebreedDaysAfterBirth !== undefined) clean.rebreedDaysAfterBirth = rebreedDaysAfterBirth;
+    if (maturityDays !== undefined) clean.maturityDays = maturityDays;
+    if (milestoneOverrides && milestoneOverrides.length > 0) {
+      clean.milestoneOverrides = milestoneOverrides;
+    }
+    byBreedKey.set(breed.toLowerCase(), clean);
+  }
+  return Array.from(byBreedKey.values()).sort((a, b) => a.breed.localeCompare(b.breed));
+}
+
 /**
  * Livestock species biological schedule, sex/offspring terminology, and Master Task List templates.
  */
@@ -402,6 +485,7 @@ export interface SpeciesProfile {
   offspringLabel: string;
   exampleBreeds: string[];
   milestones: SpeciesMilestoneTemplate[];
+  breedOverrides?: BreedScheduleOverride[];
   _rev?: number;
   createdAt: string;
   updatedAt: string;

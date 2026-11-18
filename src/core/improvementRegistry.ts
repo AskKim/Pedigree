@@ -1572,6 +1572,290 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `clearLocalSyncAndBackupReminderState` wired across resets and Replace restores plus metadata-only photo/migration outbox emissions in `src/hooks/useBarnStore.ts`, and keep empty-src placeholders in `AnimalPhotoGallery.tsx` and `HerdScreen.tsx`.',
     ],
   },
+  {
+    id: 'IMP-026',
+    title: 'Clock-Skew Consistency & Archive Export Double-Tap Locks',
+    category: 'backup-safety',
+    source: 'session',
+    summary:
+      'Aligns upgrade-gate HTTP Date skew capture (`recordServerDateHeaderSkew`), core `nowEpochMs()` fallback defaults, and Settings folder/background pause timestamps (`getAdjustedNowMs()`) when device clocks drift, and guards all 4 backup/archive exports (`handleDownloadTimestampedFullBackup`, `handleDownloadDatabaseOnlyBackup`, `handleDownloadCompleteZip`, `handleDownloadPhotosOnlyZip`) plus heavy-ZIP caution and reset backup buttons with synchronous `archiveExportLock` (`useAsyncSubmitLock`).',
+    userIntent:
+      'Enforce clock-skew compensation consistently across upgrade checks and Settings timestamps while eliminating the <16ms double-tap race on heavy archive and backup exports.',
+    files: [
+      'src/core/upgradeGate.ts',
+      'src/storage/pwaUpdateManager.ts',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/storage/__tests__/passphraseAndClockSkew.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/upgradeGate.ts',
+        requiredSubstrings: ['nowEpochMs', 'computeHttpDateClockSkewMs'],
+        rationale: 'Upgrade-gate HTTP Date skew calculation must default to clock-skew-aware nowEpochMs().',
+      },
+      {
+        filePath: 'src/storage/pwaUpdateManager.ts',
+        requiredSubstrings: ['recordServerDateHeaderSkew', 'getAdjustedNowIsoUtc'],
+        rationale: 'Version/status manifest checks must propagate HTTP Date skew and record adjusted timestamps.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['archiveExportLock', 'getAdjustedNowMs', 'archiveExportLock.runLocked'],
+        rationale: 'Archive/backup exports must lock synchronously against double-tap and record skew-adjusted pause timestamps.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `nowEpochMs` default inside `computeHttpDateClockSkewMs` in `src/core/upgradeGate.ts`.',
+      'Keep `recordServerDateHeaderSkew` and `getAdjustedNowIsoUtc` in `src/storage/pwaUpdateManager.ts`.',
+      'Keep `archiveExportLock = useAsyncSubmitLock()` wrapping all 4 export handlers and disabling export/caution/reset buttons in `src/components/SettingsAndSyncScreen.tsx`, plus `getAdjustedNowMs()` for `pausedAtMs`.',
+    ],
+  },
+  {
+    id: 'IMP-027',
+    title: 'True Lazy 2–3 Gen SQLite/OPFS Pedigree Fetching & ES2018 Windowed List Virtualization',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Keeps initial interactive pedigree charts bounded to Gen 0–3 while probing and lazily fetching Gen 4+ and OPFS `/archives` offloaded ancestors on branch expand or pre-print hydration via cycle-safe SQLite BFS (`queryPedigreeNeighborhood`, `queryPedigreeBranchAncestorsExist`) and a 256-entry LRU ancestor cache (`pedigreeAncestorCacheRef`); and replaces unbounded/static-slice lists in `BreedingScreen`, `HerdScreen`, and `ReportsScreen` with a zero-dependency ES2018 scroll window virtualizer (`useVirtualWindow`).',
+    userIntent:
+      'Reduce mobile RAM and DOM overhead by fetching Gen 4+ / archived pedigree ancestors lazily from SQLite/OPFS and virtualizing large Breeding, Herd, and Reports lists.',
+    files: [
+      'src/utils/useVirtualWindow.ts',
+      'src/utils/__tests__/virtualWindow.test.ts',
+      'src/storage/storageAdapter.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/storage/__tests__/pedigreeLazyFetch.test.ts',
+      'src/core/pedigreeCalculator.ts',
+      'src/core/__tests__/pedigreeCalculator.test.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/BreedingScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/ReportsScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/utils/useVirtualWindow.ts',
+        requiredSubstrings: ['computeVirtualWindow', 'useVirtualWindow', 'ResizeObserver'],
+        rationale: 'Zero-dependency ES2018 scroll virtualizer must remain intact with guarded ResizeObserver cleanup.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: ['queryPedigreeNeighborhood', 'queryPedigreeBranchAncestorsExist', 'mapAnimalRow'],
+        rationale: 'SQLite adapter must provide cycle-safe bounded BFS pedigree queries and lightweight branch-existence probes.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: ['loadPedigreeNeighborhood', 'checkPedigreeBranchesHaveAncestors', 'pedigreeAncestorCacheRef'],
+        rationale: 'Barn store must cache lazily fetched SQLite/OPFS pedigree ancestors in a bounded LRU map.',
+      },
+      {
+        filePath: 'src/core/pedigreeCalculator.ts',
+        requiredSubstrings: ['hasKnownAncestors', 'externalKnownBranches'],
+        rationale: 'Branch summaries must surface externally detected Gen 4+ ancestors before full depth is loaded in RAM.',
+      },
+      {
+        filePath: 'src/components/PedigreeScreen.tsx',
+        requiredSubstrings: ['gen0To3BaseMap', 'fetchAndMergeBranchAncestors', 'handleOpenPrintModal'],
+        rationale: 'Pedigree screen must scope initial tree to Gen 0–3 and hydrate Gen 4+ on branch expand or print.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: ['useVirtualWindow', 'breedingVirtual', 'ledgerStatusFilter'],
+        rationale: 'Breeding & litter ledger must filter and virtualize large pairing histories cleanly.',
+      },
+      {
+        filePath: 'src/components/HerdScreen.tsx',
+        requiredSubstrings: ['useVirtualWindow', 'herdVirtual', 'HERD_PAGE_SIZE'],
+        rationale: 'Herd roster list must virtualize rows via useVirtualWindow with HERD_PAGE_SIZE pre-layout fallback.',
+      },
+      {
+        filePath: 'src/components/ReportsScreen.tsx',
+        requiredSubstrings: ['useVirtualWindow', 'reportVirtual', 'windowedRows'],
+        rationale: 'Reports table must virtualize displayed rows while exporting full filtered sets to CSV and Print.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `src/utils/useVirtualWindow.ts` and `queryPedigreeNeighborhood` / `queryPedigreeBranchAncestorsExist` in `src/storage/webSqliteAdapter.ts`.',
+      'Keep `loadPedigreeNeighborhood`, `checkPedigreeBranchesHaveAncestors`, and `pedigreeAncestorCacheRef` in `src/hooks/useBarnStore.ts` wired through `src/App.tsx` to `src/components/PedigreeScreen.tsx`.',
+      'Keep `useVirtualWindow` integration in `BreedingScreen.tsx`, `HerdScreen.tsx`, and `ReportsScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-028',
+    title: 'Cage / Pen Capacity Warnings & Quick Occupant Assignment',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Compares active, junior, and unarchived/non-offloaded retired occupants per species against `CageLocation.capacity` via pure single-pass evaluators (`evaluateCageOccupancy`, `evaluateSpeciesCagesOccupancy`, `evaluateCageAssignmentCapacityWarning`), surfaces over-capacity welfare alerts on `HomeSpeciesScreen` and `SpeciesDashboardScreen` and in printed Barn Binder housing tables (`barnBinder.ts`), adds inline cage capacity/section editing and 1-click quick occupant assignment/unassignment (`assignAnimalToCage`) on Cages & Pens cards, and displays soft confirmation warnings in both Quick Assign and `AnimalEditorModal` before exceeding capacity.',
+    userIntent:
+      'Compare current animal occupants against CageLocation.capacity (e.g., 3/2 over capacity), allow one-click occupant assignment from housing cards, and warn before exceeding capacity.',
+    files: [
+      'src/core/barnAlerts.ts',
+      'src/core/barnBinder.ts',
+      'src/core/__tests__/barnAlerts.test.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/components/AnimalEditorModal.tsx',
+      'src/components/HomeSpeciesScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/barnAlerts.ts',
+        requiredSubstrings: [
+          'isCageOccupyingAnimal',
+          'evaluateCageOccupancy',
+          'evaluateSpeciesCagesOccupancy',
+          'evaluateCageAssignmentCapacityWarning',
+        ],
+        rationale:
+          'Pure occupancy counting and capacity warning evaluation must remain in pure TS core with species isolation.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: ['assignAnimalToCage'],
+        rationale:
+          'Store must expose queued FIFO assignAnimalToCage mutation updating _rev and syncOutbox.',
+      },
+      {
+        filePath: 'src/components/SpeciesDashboardScreen.tsx',
+        requiredSubstrings: [
+          'cagesOccupancySummary',
+          'handleQuickAssignSelect',
+          'pendingCageAssignConfirm',
+          'onAssignAnimalToCage',
+        ],
+        rationale:
+          'Cages & Pens cards must show occupancy ratios, quick occupant assignment/unassignment, inline edit, and over-capacity alerts.',
+      },
+      {
+        filePath: 'src/components/AnimalEditorModal.tsx',
+        requiredSubstrings: [
+          'liveCageCapacityWarning',
+          'pendingCapacityWarning',
+          'checkCapacityThenSave',
+        ],
+        rationale:
+          'Animal editor must display live cage occupancy feedback and soft confirmation before saving an over-capacity assignment.',
+      },
+      {
+        filePath: 'src/components/HomeSpeciesScreen.tsx',
+        requiredSubstrings: ['evaluateSpeciesCagesOccupancy', 'shouldShowOverCapacityAlert'],
+        rationale:
+          'Home species cards must surface an actionable alert when any species cage exceeds capacity.',
+      },
+      {
+        filePath: 'src/core/barnBinder.ts',
+        requiredSubstrings: ['(over capacity)'],
+        rationale:
+          'Printable Barn Binder cage table must show occupancy/capacity ratios and over-capacity markers.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep pure cage occupancy & assignment warning evaluators in `src/core/barnAlerts.ts` and tests in `src/core/__tests__/barnAlerts.test.ts`.',
+      'Keep `assignAnimalToCage` in `src/hooks/useBarnStore.ts` passed to `<SpeciesDashboardScreen onAssignAnimalToCage={store.assignAnimalToCage} />` in `src/App.tsx`.',
+      'Keep live ratio displays, over-capacity alerts, quick assign/unassign, and soft capacity confirmations in `SpeciesDashboardScreen.tsx`, `AnimalEditorModal.tsx`, `HomeSpeciesScreen.tsx`, and `barnBinder.ts`.',
+    ],
+  },
+  {
+    id: 'IMP-029',
+    title:
+      'Breeding Lab & Master Task List Refinements (Post-Birth Recalculation, Quick Checkoffs & Breed Overrides)',
+    category: 'species-ux',
+    source: 'session',
+    userIntent:
+      'Recalculate post-birth tasks to the actual birth date when births arrive early or late, support one-click Palpation/Birth Check checkoffs with automatic Missed task cleanup, and allow optional per-breed gestation/weaning/milestone overrides.',
+    summary:
+      'Adds BreedScheduleOverride support (with case-insensitive dam-first, sire-fallback resolution via resolveEffectiveSpeciesProfileForBreeding and SQLite/sync/JSON preservation), adds pure post-birth task evaluation & recalculation (evaluateStalePostBirthTasksForBreeding, recalculatePostBirthTasksForBreeding) plus pending Missed cleanup (getPendingBreedingCleanupTasks) in taskMaster.ts, exposes recalculateBreedingPostBirthTasks & completeBreedingTaskWithOutcome in useBarnStore.ts, and adds UI controls in SpeciesEditorModal, BreedingScreen, and SpeciesDashboardScreen.',
+    files: [
+      'src/core/models.ts',
+      'src/core/taskMaster.ts',
+      'src/core/__tests__/taskMaster.test.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/core/syncAndExports.ts',
+      'src/core/syncOutbox.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+      'src/components/SpeciesEditorModal.tsx',
+      'src/components/BreedingScreen.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/models.ts',
+        requiredSubstrings: [
+          'BreedScheduleOverride',
+          'normalizeBreedScheduleOverrides',
+          'breedOverrides',
+        ],
+        rationale:
+          'SpeciesProfile must carry optional BreedScheduleOverride entries normalized deterministically in pure TypeScript.',
+      },
+      {
+        filePath: 'src/core/taskMaster.ts',
+        requiredSubstrings: [
+          'resolveEffectiveSpeciesProfileForBreeding',
+          'recalculatePostBirthTasksForBreeding',
+          'getPendingBreedingCleanupTasks',
+          'isPalpationTask',
+          'isBirthCheckTask',
+        ],
+        rationale:
+          'Breed override resolution, AFTER_BIRTH task date recalculation, and Missed breeding task cleanup helpers must remain pure and reusable.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: ['breed_overrides_json'],
+        rationale:
+          'SQLite schema and migrations must persist species breedOverrides across reloads.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'recalculateBreedingPostBirthTasks',
+          'completeBreedingTaskWithOutcome',
+        ],
+        rationale:
+          'Store must expose queued FIFO mutations for post-birth task recalculation and one-click breeding task outcome checkoffs with cleanup.',
+      },
+      {
+        filePath: 'src/components/SpeciesEditorModal.tsx',
+        requiredSubstrings: [
+          'Per-Breed Schedule Overrides',
+          'handleSaveBreedOverride',
+        ],
+        rationale:
+          'Species Editor must allow configuring optional per-breed gestation, weaning, rebreed, maturity, and milestone day overrides.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: [
+          'onRecalculatePostBirthTasks',
+          'outcomeStalePostBirth',
+          'outcomeMissedCleanupCount',
+        ],
+        rationale:
+          'Breeding Lab must resolve breed overrides in previews, offer one-tap post-birth chore shifting, and surface automatic Missed cleanup notice.',
+      },
+      {
+        filePath: 'src/components/SpeciesDashboardScreen.tsx',
+        requiredSubstrings: [
+          'onCompleteBreedingTask',
+          'isPalpationTask',
+          'isBirthCheckTask',
+        ],
+        rationale:
+          'Species Hub task list must support one-click Palpation & Birth Check checkoffs and inline post-birth chore shifting on active pairings.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep BreedScheduleOverride & normalizeBreedScheduleOverrides in `src/core/models.ts` and pure helpers in `src/core/taskMaster.ts` with tests in `src/core/__tests__/taskMaster.test.ts`.',
+      'Keep `breed_overrides_json` persisted in `src/storage/webSqliteAdapter.ts` and normalized in `src/core/syncAndExports.ts` and `src/core/syncOutbox.ts`.',
+      'Keep `recalculateBreedingPostBirthTasks` and `completeBreedingTaskWithOutcome` in `src/hooks/useBarnStore.ts` wired through `src/App.tsx` to `SpeciesDashboardScreen.tsx`, `BreedingScreen.tsx`, and `SpeciesEditorModal.tsx`.',
+    ],
+  },
 ];
 
 /**

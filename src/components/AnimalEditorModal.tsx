@@ -18,8 +18,13 @@ import {
   isOverrideConfirmationValid,
 } from '../core/animalConflicts';
 import {
+  CageAssignmentCapacityWarning,
   evaluateAnimalActiveWithdrawal,
+  evaluateCageAssignmentCapacityWarning,
+  evaluateSpeciesCagesOccupancy,
   evaluateWithdrawalDispositionWarning,
+  isCageOccupyingAnimal,
+  normalizeCageLabelKey,
   WithdrawalDispositionWarning,
 } from '../core/barnAlerts';
 import {
@@ -145,6 +150,8 @@ export function AnimalEditorModal({
   } | null>(null);
   const [pendingWithdrawalWarning, setPendingWithdrawalWarning] =
     useState<WithdrawalDispositionWarning | null>(null);
+  const [pendingCapacityWarning, setPendingCapacityWarning] =
+    useState<CageAssignmentCapacityWarning | null>(null);
   const [rememberAutoOffload, setRememberAutoOffload] = useState(false);
   const [offloadingNow, setOffloadingNow] = useState(false);
   const submitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
@@ -308,6 +315,54 @@ export function AnimalEditorModal({
   const herdById = useMemo(
     () => buildSpeciesHerdMap(speciesAnimals, speciesProfile.name),
     [speciesAnimals, speciesProfile.name]
+  );
+
+  const cagesOccupancySummary = useMemo(
+    () => evaluateSpeciesCagesOccupancy(speciesCages, speciesAnimals, speciesProfile.name),
+    [speciesCages, speciesAnimals, speciesProfile.name]
+  );
+
+  const matchedCageEval = useMemo(() => {
+    const key = normalizeCageLabelKey(cageLocation);
+    return key ? cagesOccupancySummary.byLabelKey.get(key) ?? null : null;
+  }, [cagesOccupancySummary, cageLocation]);
+
+  const wasAlreadyOccupyingTargetCage = useMemo(() => {
+    if (!initialAnimal) return false;
+    if (!isCageOccupyingAnimal(initialAnimal)) return false;
+    const initialKey = normalizeCageLabelKey(initialAnimal.cageLocation);
+    const targetKey = normalizeCageLabelKey(cageLocation);
+    return Boolean(initialKey && targetKey && initialKey === targetKey);
+  }, [initialAnimal, cageLocation]);
+
+  const willOccupyAfterSave = isCageOccupyingAnimal({
+    status,
+    archived,
+    offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
+  });
+
+  const liveCageCapacityWarning = useMemo(
+    () =>
+      evaluateCageAssignmentCapacityWarning({
+        targetCageLabel: cageLocation,
+        cages: speciesCages,
+        animals: speciesAnimals,
+        speciesName: speciesProfile.name,
+        animalId: initialAnimal?.id,
+        animalName: name,
+        wasAlreadyOccupyingTargetCage,
+        willOccupyAfterSave,
+      }),
+    [
+      cageLocation,
+      speciesCages,
+      speciesAnimals,
+      speciesProfile.name,
+      initialAnimal?.id,
+      name,
+      wasAlreadyOccupyingTargetCage,
+      willOccupyAfterSave,
+    ]
   );
 
   const archivedParentCount = useMemo(
@@ -543,6 +598,7 @@ export function AnimalEditorModal({
   const executeSave = async () => {
     setSubmitGuardError(null);
     setPendingWithdrawalWarning(null);
+    setPendingCapacityWarning(null);
     await submitLock.runLocked(async () => {
       const reconciled = reconcileCarrierTraitLists(
         suspectedCarrierOf,
@@ -638,6 +694,16 @@ export function AnimalEditorModal({
     });
   };
 
+  const checkCapacityThenSave = async () => {
+    setPendingWithdrawalWarning(null);
+    if (liveCageCapacityWarning?.wouldExceed) {
+      setSubmitGuardError(null);
+      setPendingCapacityWarning(liveCageCapacityWarning);
+      return;
+    }
+    await executeSave();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -663,11 +729,12 @@ export function AnimalEditorModal({
     });
     if (dispositionWarning) {
       setSubmitGuardError(null);
+      setPendingCapacityWarning(null);
       setPendingWithdrawalWarning(dispositionWarning);
       return;
     }
 
-    await executeSave();
+    await checkCapacityThenSave();
   };
 
   return (
@@ -953,6 +1020,7 @@ export function AnimalEditorModal({
                   const next = e.target.value as AnimalStatus;
                   setStatus(next);
                   setPendingWithdrawalWarning(null);
+                  setPendingCapacityWarning(null);
                   if (next === 'Deceased' || next === 'Sold') {
                     setArchived(true);
                   }
@@ -1139,7 +1207,10 @@ export function AnimalEditorModal({
               <input
                 type="checkbox"
                 checked={archived}
-                onChange={(e) => setArchived(e.target.checked)}
+                onChange={(e) => {
+                  setArchived(e.target.checked);
+                  setPendingCapacityWarning(null);
+                }}
                 className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
               />
               <span>
@@ -1303,14 +1374,42 @@ export function AnimalEditorModal({
                 list="cage-suggestions"
                 placeholder="e.g. Hutch R-07"
                 value={cageLocation}
-                onChange={(e) => setCageLocation(e.target.value)}
+                onChange={(e) => {
+                  setCageLocation(e.target.value);
+                  setPendingCapacityWarning(null);
+                }}
                 className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm font-mono"
               />
               <datalist id="cage-suggestions">
-                {speciesCages.map((c) => (
-                  <option key={c.id} value={c.label} />
-                ))}
+                {speciesCages.map((c) => {
+                  const evalItem = cagesOccupancySummary.byCageId.get(c.id);
+                  return (
+                    <option key={c.id} value={c.label}>
+                      {evalItem ? `${c.label} (${evalItem.ratioLabel})` : c.label}
+                    </option>
+                  );
+                })}
               </datalist>
+              {matchedCageEval && (
+                <div
+                  className={`mt-1 text-[11px] font-mono tabular-nums flex items-center gap-1 ${
+                    liveCageCapacityWarning?.wouldExceed || matchedCageEval.isOverCapacity
+                      ? 'text-[var(--barn-danger)] font-semibold'
+                      : matchedCageEval.isAtCapacity
+                        ? 'text-[var(--barn-terracotta)] font-medium'
+                        : 'text-[var(--barn-muted)]'
+                  }`}
+                >
+                  {(liveCageCapacityWarning?.wouldExceed || matchedCageEval.isOverCapacity) && (
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>
+                    {liveCageCapacityWarning?.wouldExceed
+                      ? `${matchedCageEval.cage.label}: ${matchedCageEval.ratioLabel} — saving puts at ${liveCageCapacityWarning.projectedOccupantCount}/${liveCageCapacityWarning.capacity} (over capacity)`
+                      : `${matchedCageEval.cage.label}: ${matchedCageEval.ratioLabel}`}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -2120,10 +2219,50 @@ export function AnimalEditorModal({
                 <button
                   type="button"
                   disabled={submitLock.isSubmitting}
-                  onClick={() => void executeSave()}
+                  onClick={() => void checkCapacityThenSave()}
                   className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
                 >
                   {submitLock.isSubmitting ? 'Saving...' : 'Confirm Withdrawal Hold & Save'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {pendingCapacityWarning && (
+            <div
+              role="alert"
+              className="p-4 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] space-y-3 text-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle
+                  className="w-5 h-5 text-[var(--barn-danger)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="space-y-1">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    {pendingCapacityWarning.headline}
+                  </div>
+                  <p className="text-[var(--barn-ink)] leading-relaxed">
+                    {pendingCapacityWarning.detail}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => setPendingCapacityWarning(null)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55"
+                >
+                  Keep Editing
+                </button>
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => void executeSave()}
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
+                >
+                  {submitLock.isSubmitting ? 'Saving...' : 'Confirm Over-Capacity & Save'}
                 </button>
               </div>
             </div>

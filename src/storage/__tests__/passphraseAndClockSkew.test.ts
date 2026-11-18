@@ -23,12 +23,15 @@ import {
   parseDeltaFileTextAsync,
 } from '../localSyncChannels';
 import { createOutboxOperation } from '../../core/syncOutbox';
-import { BarnTask } from '../../core/models';
+import { BarnTask, getCoreClockSkewMs, nowIsoUtc } from '../../core/models';
+import { formatTimestampedBackupSlug } from '../../core/syncAndExports';
 import { pushTasksToGoogleCalendar } from '../../utils/googleCalendarClient';
+import { fetchUpgradeGateDecision, resetPwaUpdateManagerForTests } from '../pwaUpdateManager';
 
 describe('Stage B storage & network resilience (IMP-023)', () => {
   afterEach(() => {
     resetConnectivityStateForTests();
+    resetPwaUpdateManagerForTests();
     vi.restoreAllMocks();
   });
 
@@ -42,6 +45,7 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
       const skew = recordServerDateHeaderSkew(serverDateHeader, localFixedNow);
       expect(skew).toBe(15 * 60_000);
       expect(getRecordedClockSkewMs()).toBe(15 * 60_000);
+      expect(getCoreClockSkewMs()).toBe(15 * 60_000);
 
       const snap = getConnectivitySnapshot();
       expect(snap.clockDriftWarning).toBe(true);
@@ -52,6 +56,58 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
 
       const adjustedMs = Date.parse(getAdjustedNowIsoUtc());
       expect(Math.abs(adjustedMs - (Date.now() + 15 * 60_000))).toBeLessThan(2000);
+      const coreNowMs = Date.parse(nowIsoUtc());
+      expect(Math.abs(coreNowMs - (Date.now() + 15 * 60_000))).toBeLessThan(2000);
+    });
+
+    it('propagates HTTP Date skew from uncached upgrade-gate manifest checks and aligns backup slugs', async () => {
+      resetConnectivityStateForTests();
+      vi.useFakeTimers();
+      try {
+        const deviceClockMs = Date.parse('2026-06-01T12:00:00.000Z');
+        vi.setSystemTime(deviceClockMs);
+        const serverDate = 'Mon, 01 Jun 2026 13:30:00 GMT'; // +90 minutes ahead
+
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.includes('version.json')) {
+              return new Response(
+                JSON.stringify({
+                  appVersion: '0.1.0-prealpha.1',
+                  schemaVersion: 6,
+                  minDirectUpgradeSchema: 1,
+                }),
+                {
+                  status: 200,
+                  headers: {
+                    'content-type': 'application/json',
+                    date: serverDate,
+                  },
+                }
+              );
+            }
+            return new Response(
+              JSON.stringify({ allowUpdates: true, revokedVersions: [] }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          })
+        );
+
+        await fetchUpgradeGateDecision();
+        expect(getRecordedClockSkewMs()).toBe(90 * 60_000);
+        expect(getCoreClockSkewMs()).toBe(90 * 60_000);
+
+        const slug = formatTimestampedBackupSlug();
+        const expectedHour = String(new Date(Date.parse('2026-06-01T13:30:00.000Z')).getHours()).padStart(2, '0');
+        expect(slug).toContain(`-${expectedHour}30`);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('keeps clockDriftWarning false when drift is under 5 minutes', () => {

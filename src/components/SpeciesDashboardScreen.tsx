@@ -11,6 +11,7 @@
 
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   ArrowRightLeft,
@@ -18,27 +19,37 @@ import {
   ArrowUpToLine,
   BookOpen,
   CalendarPlus,
+  Check,
   CheckSquare,
   Download,
+  Edit3,
   GripVertical,
   Link2,
   Loader2,
   Pin,
   Plus,
+  RefreshCw,
   Settings,
   ShieldAlert,
   SlidersHorizontal,
   Square,
   StickyNote,
   Trash2,
+  UserPlus,
+  X,
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import {
   AnimalWithdrawalEvaluation,
   buildWithdrawalByAnimalMap,
+  CageAssignmentCapacityWarning,
+  evaluateCageAssignmentCapacityWarning,
   evaluateShowWithdrawalConflicts,
+  evaluateSpeciesCagesOccupancy,
   evaluateSpeciesNeedsAttentionAlert,
+  isCageOccupyingAnimal,
+  normalizeCageLabelKey,
   ShowWithdrawalConflictEvaluation,
 } from '../core/barnAlerts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
@@ -46,6 +57,7 @@ import {
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
+  BreedingRecord,
   CageLocation,
   formatBreedingStatusForSpecies,
   formatReadableDate,
@@ -69,7 +81,17 @@ import {
   generateSpeciesBarnBinderHtml,
   SpeciesBackupReason,
 } from '../core/syncAndExports';
-import { ActiveSpeciesData, WorkspaceRoute } from '../hooks/useBarnStore';
+import {
+  evaluateStalePostBirthTasksForBreeding,
+  isBirthCheckTask,
+  isPalpationTask,
+  resolveEffectiveSpeciesProfileForBreeding,
+} from '../core/taskMaster';
+import {
+  ActiveSpeciesData,
+  BreedingTaskCheckoffAction,
+  WorkspaceRoute,
+} from '../hooks/useBarnStore';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
@@ -85,10 +107,18 @@ interface SpeciesDashboardScreenProps {
   onNavigate: (route: WorkspaceRoute) => void;
   onOpenAnimal: (animalId: string) => void;
   onToggleTask: (task: BarnTask) => Promise<boolean | void> | void;
+  onCompleteBreedingTask?: (
+    task: BarnTask,
+    outcome: BreedingTaskCheckoffAction
+  ) => Promise<boolean | void> | void;
+  onRecalculatePostBirthTasks?: (breedingId: string) => Promise<boolean | void> | void;
   onSaveTask: (draft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
   onDeleteTask: (id: string) => void;
-  onSaveCage: (draft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
+  onSaveCage: (
+    draft: Omit<CageLocation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => Promise<boolean | void> | void;
   onDeleteCage: (id: string) => void;
+  onAssignAnimalToCage?: (animalId: string, nextCageLabel: string) => Promise<boolean | void> | void;
   onSaveShow: (draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
   onDeleteShow: (id: string) => void;
   onSeedSpeciesSample: (speciesName: string) => void;
@@ -131,10 +161,13 @@ export function SpeciesDashboardScreen({
   onNavigate,
   onOpenAnimal,
   onToggleTask,
+  onCompleteBreedingTask,
+  onRecalculatePostBirthTasks,
   onSaveTask,
   onDeleteTask,
   onSaveCage,
   onDeleteCage,
+  onAssignAnimalToCage,
   onSaveShow,
   onDeleteShow,
   onSeedSpeciesSample,
@@ -277,10 +310,21 @@ export function SpeciesDashboardScreen({
   const [taskDueIso, setTaskDueIso] = useState(today);
   const [taskAnimalId, setTaskAnimalId] = useState('');
 
-  // Cage form state
+  // Cage form & quick-assignment state
   const [cageLabel, setCageLabel] = useState('');
   const [cageSection, setCageSection] = useState('Main Row');
   const [cageCapacity, setCageCapacity] = useState('1');
+  const [editingCageId, setEditingCageId] = useState<string | null>(null);
+  const [editingCageLabel, setEditingCageLabel] = useState('');
+  const [editingCageSection, setEditingCageSection] = useState('');
+  const [editingCageCapacity, setEditingCageCapacity] = useState('1');
+  const [pendingCageAssignConfirm, setPendingCageAssignConfirm] = useState<{
+    cageId: string;
+    cageLabel: string;
+    animalId: string;
+    animalName: string;
+    warning: CageAssignmentCapacityWarning;
+  } | null>(null);
 
   // Show form state
   const [showName, setShowName] = useState('');
@@ -304,14 +348,62 @@ export function SpeciesDashboardScreen({
   const cageSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
   const showSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
   const taskToggleLock = useAsyncKeyedLock();
+  const breedingRecalcLock = useAsyncKeyedLock();
+  const cageAssignLock = useAsyncKeyedLock();
+
+  // Inline quick breeding checkoff state for Birth Check tasks
+  const [activeBirthCheckoffTaskId, setActiveBirthCheckoffTaskId] = useState<string | null>(null);
+  const [quickBirthDateIso, setQuickBirthDateIso] = useState(today);
+  const [quickLiveCount, setQuickLiveCount] = useState('0');
+  const [quickStillbornCount, setQuickStillbornCount] = useState('0');
+  const [quickShiftPostBirth, setQuickShiftPostBirth] = useState(true);
+
+  useEffect(() => {
+    setActiveBirthCheckoffTaskId(null);
+  }, [speciesProfile.name]);
 
   const activeBreedingStock = animals.filter((a) => a.status === 'Active' && !a.archived).length;
-  const activeGestations = breedings.filter((b) =>
-    ['Planned', 'Bred', 'Palpated Positive', 'Born'].includes(b.status)
+  const activeGestations = useMemo(
+    () =>
+      breedings.filter((b) =>
+        ['Planned', 'Bred', 'Palpated Positive', 'Born'].includes(b.status)
+      ),
+    [breedings]
   );
+  const breedingById = useMemo(
+    () => new Map<string, BreedingRecord>(breedings.map((b) => [b.id, b])),
+    [breedings]
+  );
+  const stalePostBirthByBreedingId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const b of activeGestations) {
+      if (!b.actualBirthDateIso || b.status === 'Missed') continue;
+      const dam = herdById.get(b.damId);
+      const sire = herdById.get(b.sireId);
+      const effectiveSp = resolveEffectiveSpeciesProfileForBreeding(
+        speciesProfile,
+        dam,
+        sire
+      ).profile;
+      const { staleEntries } = evaluateStalePostBirthTasksForBreeding(tasks, b, effectiveSp);
+      if (staleEntries.length > 0) {
+        counts.set(b.id, staleEntries.length);
+      }
+    }
+    return counts;
+  }, [activeGestations, herdById, speciesProfile, tasks]);
+
   const openTasksCount = tasks.filter((t) => !t.completed).length;
   const upcomingShows = shows.filter((s) => !s.eventDateIso || s.eventDateIso >= today);
   const attentionAlert = evaluateSpeciesNeedsAttentionAlert(animals, speciesProfile.name);
+  const cagesOccupancySummary = useMemo(
+    () => evaluateSpeciesCagesOccupancy(cages, animals, speciesProfile.name),
+    [cages, animals, speciesProfile.name]
+  );
+  const assignableAnimals = useMemo(
+    () => animals.filter((a) => isCageOccupyingAnimal(a)),
+    [animals]
+  );
 
   const visibleTasks = tasks.filter((t) => (taskFilter === 'open' ? !t.completed : t.completed));
 
@@ -346,13 +438,83 @@ export function SpeciesDashboardScreen({
         species: speciesProfile.name,
         label: cageLabel.trim(),
         section: cageSection.trim(),
-        capacity: Math.max(1, Number(cageCapacity) || 1),
+        capacity: Math.max(1, Math.round(Number(cageCapacity) || 1)),
         notes: '',
       });
       if (saved !== false) {
         setCageLabel('');
         setShowNewCageForm(false);
       }
+    });
+  };
+
+  const handleSaveEditedCage = async (cage: CageLocation) => {
+    const cleanLabel = editingCageLabel.trim();
+    if (!cleanLabel) return;
+    await cageAssignLock.runKeyLocked(`edit:${cage.id}`, async () => {
+      const saved = await onSaveCage({
+        id: cage.id,
+        species: cage.species,
+        label: cleanLabel,
+        section: editingCageSection.trim(),
+        capacity: Math.max(1, Math.round(Number(editingCageCapacity) || 1)),
+        notes: cage.notes || '',
+      });
+      if (saved !== false) {
+        setEditingCageId(null);
+        if (pendingCageAssignConfirm?.cageId === cage.id) {
+          setPendingCageAssignConfirm(null);
+        }
+      }
+    });
+  };
+
+  const handleQuickAssignSelect = async (cage: CageLocation, animalId: string) => {
+    if (!animalId || !onAssignAnimalToCage) return;
+    const animal = assignableAnimals.find((a) => a.id === animalId);
+    if (!animal) return;
+    const warning = evaluateCageAssignmentCapacityWarning({
+      targetCageLabel: cage.label,
+      cages,
+      animals,
+      speciesName: speciesProfile.name,
+      animalId: animal.id,
+      animalName: animal.name,
+      wasAlreadyOccupyingTargetCage: false,
+      willOccupyAfterSave: true,
+    });
+    if (warning?.wouldExceed) {
+      setPendingCageAssignConfirm({
+        cageId: cage.id,
+        cageLabel: cage.label,
+        animalId: animal.id,
+        animalName: animal.name,
+        warning,
+      });
+      return;
+    }
+    setPendingCageAssignConfirm(null);
+    await cageAssignLock.runKeyLocked(cage.id, async () => {
+      await onAssignAnimalToCage(animal.id, cage.label);
+    });
+  };
+
+  const handleConfirmOverCapacityAssign = async () => {
+    if (!pendingCageAssignConfirm || !onAssignAnimalToCage) return;
+    const { cageId, cageLabel: targetLabel, animalId } = pendingCageAssignConfirm;
+    await cageAssignLock.runKeyLocked(cageId, async () => {
+      await onAssignAnimalToCage(animalId, targetLabel);
+      setPendingCageAssignConfirm(null);
+    });
+  };
+
+  const handleUnassignFromCage = async (cageId: string, animalId: string) => {
+    if (!onAssignAnimalToCage) return;
+    if (pendingCageAssignConfirm?.cageId === cageId) {
+      setPendingCageAssignConfirm(null);
+    }
+    await cageAssignLock.runKeyLocked(`unassign:${animalId}`, async () => {
+      await onAssignAnimalToCage(animalId, '');
     });
   };
 
@@ -945,6 +1107,52 @@ export function SpeciesDashboardScreen({
         </section>
       )}
 
+      {/* Over-Capacity Housing Welfare Alert */}
+      {cagesOccupancySummary.shouldShowOverCapacityAlert && (
+        <section
+          role="status"
+          aria-label={`${speciesProfile.name} cages over capacity`}
+          className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] rounded-2xl p-4 sm:p-5 space-y-2.5"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <AlertTriangle
+                className="w-5 h-5 text-[var(--barn-danger)] mt-0.5 shrink-0"
+                aria-hidden="true"
+              />
+              <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+                  {cagesOccupancySummary.totalOverCapacityCount}{' '}
+                  {speciesProfile.name}{' '}
+                  {cagesOccupancySummary.totalOverCapacityCount === 1 ? 'Cage / Pen' : 'Cages / Pens'}{' '}
+                  Over Capacity
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)]">
+                  {cagesOccupancySummary.overCapacityCages
+                    .slice(0, 4)
+                    .map((ev) => `${ev.cage.label} (${ev.ratioLabel})`)
+                    .join(' · ')}
+                  {cagesOccupancySummary.overCapacityCages.length > 4
+                    ? ` · +${cagesOccupancySummary.overCapacityCages.length - 4} more`
+                    : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const el = document.getElementById('species-cages-block');
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-danger)]/50 text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              Review Cages
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Main Reorderable Subunit Blocks */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1215,129 +1423,333 @@ export function SpeciesDashboardScreen({
                           breedings,
                           speciesProfiles: [speciesProfile],
                         });
+                        const linkedBreeding = t.linkedBreedingId
+                          ? breedingById.get(t.linkedBreedingId)
+                          : undefined;
+                        const canQuickCheckoff =
+                          !t.completed &&
+                          Boolean(onCompleteBreedingTask) &&
+                          Boolean(linkedBreeding && linkedBreeding.status !== 'Missed') &&
+                          (isPalpationTask(t) || isBirthCheckTask(t));
+                        const isRowBusy = taskToggleLock.isKeyLocked(t.id);
+                        const isBirthTrayOpen =
+                          canQuickCheckoff &&
+                          isBirthCheckTask(t) &&
+                          activeBirthCheckoffTaskId === t.id;
+
                         return (
                           <div
                             key={t.id}
                             id={`barn-task-${t.id}`}
-                            className={`flex items-center justify-between gap-2 sm:gap-3 py-3 first:pt-1 last:pb-1 transition-colors ${
+                            className={`py-3 first:pt-1 last:pb-1 space-y-2 transition-colors ${
                               isHighlighted
                                 ? 'rounded-xl px-2.5 -mx-2.5 bg-[var(--barn-sage)]/10 ring-2 ring-[var(--barn-sage)]'
                                 : ''
                             }`}
                           >
-                            <div className="flex items-start gap-2.5 min-w-0">
-                              <button
-                                type="button"
-                                disabled={taskToggleLock.isKeyLocked(t.id)}
-                                onClick={() => {
-                                  if (isHighlighted) onClearHighlightedTask?.();
-                                  void taskToggleLock.runKeyLocked(t.id, () => onToggleTask(t));
-                                }}
-                                aria-label={
-                                  t.completed
-                                    ? `Mark ${displayTitle} open`
-                                    : `Complete ${displayTitle}`
-                                }
-                                className="min-h-[40px] min-w-[40px] -ml-2 rounded-lg flex items-center justify-center text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] shrink-0 disabled:opacity-60"
-                              >
-                                {t.completed ? (
-                                  <CheckSquare className="w-5 h-5" />
-                                ) : (
-                                  <Square className="w-5 h-5" />
-                                )}
-                              </button>
-                              <div className="min-w-0 pt-1">
-                                <div
-                                  className={`text-sm font-medium ${
-                                    t.completed ? 'line-through text-[var(--barn-muted)]' : ''
-                                  }`}
+                            <div className="flex items-start justify-between gap-2 sm:gap-3">
+                              <div className="flex items-start gap-2.5 min-w-0">
+                                <button
+                                  type="button"
+                                  disabled={isRowBusy}
+                                  onClick={() => {
+                                    if (isHighlighted) onClearHighlightedTask?.();
+                                    void taskToggleLock.runKeyLocked(t.id, () => onToggleTask(t));
+                                  }}
+                                  aria-label={
+                                    t.completed
+                                      ? `Mark ${displayTitle} open`
+                                      : `Complete ${displayTitle}`
+                                  }
+                                  className="min-h-[40px] min-w-[40px] -ml-2 rounded-lg flex items-center justify-center text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] shrink-0 disabled:opacity-60"
                                 >
-                                  {displayTitle}
-                                </div>
-                                <div className="text-xs text-[var(--barn-muted)] mt-0.5 flex flex-wrap items-center gap-1.5">
-                                  <span>{t.category}</span>
-                                  <span aria-hidden="true">·</span>
-                                  <span
-                                    className={
-                                      isOverdue
-                                        ? 'text-[var(--barn-danger)] font-medium font-mono tabular-nums'
-                                        : 'font-mono tabular-nums'
-                                    }
+                                  {t.completed ? (
+                                    <CheckSquare className="w-5 h-5" />
+                                  ) : (
+                                    <Square className="w-5 h-5" />
+                                  )}
+                                </button>
+                                <div className="min-w-0 pt-1">
+                                  <div
+                                    className={`text-sm font-medium ${
+                                      t.completed ? 'line-through text-[var(--barn-muted)]' : ''
+                                    }`}
                                   >
-                                    {t.dueDateIso
-                                      ? `${isOverdue ? 'Overdue: ' : 'Due '}${formatReadableDate(
-                                          t.dueDateIso
-                                        )}`
-                                      : 'No due date'}
-                                  </span>
-                                  {t.priority === 'High' && (
-                                    <>
-                                      <span aria-hidden="true">·</span>
-                                      <span className="text-[var(--barn-terracotta)] font-medium">
-                                        High priority
-                                      </span>
-                                    </>
-                                  )}
-                                  {t.linkedAnimalId && (
-                                    <>
-                                      <span aria-hidden="true">·</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => onOpenAnimal(t.linkedAnimalId)}
-                                        className="underline hover:text-[var(--barn-ink)]"
-                                      >
-                                        {t.linkedAnimalName || 'View animal'}
-                                      </button>
-                                    </>
-                                  )}
-                                  {isHighlighted && (
-                                    <>
-                                      <span aria-hidden="true">·</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => onClearHighlightedTask?.()}
-                                        className="text-[var(--barn-sage)] font-semibold underline"
-                                      >
-                                        Opened from calendar (dismiss)
-                                      </button>
-                                    </>
+                                    {displayTitle}
+                                  </div>
+                                  <div className="text-xs text-[var(--barn-muted)] mt-0.5 flex flex-wrap items-center gap-1.5">
+                                    <span>{t.category}</span>
+                                    <span aria-hidden="true">·</span>
+                                    <span
+                                      className={
+                                        isOverdue
+                                          ? 'text-[var(--barn-danger)] font-medium font-mono tabular-nums'
+                                          : 'font-mono tabular-nums'
+                                      }
+                                    >
+                                      {t.dueDateIso
+                                        ? `${isOverdue ? 'Overdue: ' : 'Due '}${formatReadableDate(
+                                            t.dueDateIso
+                                          )}`
+                                        : 'No due date'}
+                                    </span>
+                                    {t.priority === 'High' && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <span className="text-[var(--barn-terracotta)] font-medium">
+                                          High priority
+                                        </span>
+                                      </>
+                                    )}
+                                    {t.linkedAnimalId && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => onOpenAnimal(t.linkedAnimalId)}
+                                          className="underline hover:text-[var(--barn-ink)]"
+                                        >
+                                          {t.linkedAnimalName || 'View animal'}
+                                        </button>
+                                      </>
+                                    )}
+                                    {isHighlighted && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => onClearHighlightedTask?.()}
+                                          className="text-[var(--barn-sage)] font-semibold underline"
+                                        >
+                                          Opened from calendar (dismiss)
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+
+                                  {canQuickCheckoff && onCompleteBreedingTask && linkedBreeding && (
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                      {isPalpationTask(t) ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            disabled={isRowBusy}
+                                            onClick={() =>
+                                              void taskToggleLock.runKeyLocked(t.id, () =>
+                                                onCompleteBreedingTask(t, {
+                                                  kind: 'palpated_positive',
+                                                })
+                                              )
+                                            }
+                                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/50 text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1 disabled:opacity-55 whitespace-nowrap"
+                                          >
+                                            <Check className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                                            Palpated +
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={isRowBusy}
+                                            onClick={() =>
+                                              void taskToggleLock.runKeyLocked(t.id, () =>
+                                                onCompleteBreedingTask(t, { kind: 'missed' })
+                                              )
+                                            }
+                                            className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-terracotta)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 disabled:opacity-55 whitespace-nowrap"
+                                          >
+                                            <X className="w-3.5 h-3.5" aria-hidden="true" />
+                                            Missed / Open
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <button
+                                            type="button"
+                                            disabled={isRowBusy}
+                                            aria-expanded={isBirthTrayOpen}
+                                            onClick={() => {
+                                              if (isBirthTrayOpen) {
+                                                setActiveBirthCheckoffTaskId(null);
+                                              } else {
+                                                setActiveBirthCheckoffTaskId(t.id);
+                                                setQuickBirthDateIso(
+                                                  linkedBreeding.actualBirthDateIso || today
+                                                );
+                                                setQuickLiveCount(
+                                                  String(linkedBreeding.liveCount || 0)
+                                                );
+                                                setQuickStillbornCount(
+                                                  String(linkedBreeding.stillbornCount || 0)
+                                                );
+                                                setQuickShiftPostBirth(true);
+                                              }
+                                            }}
+                                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/50 text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1 disabled:opacity-55 whitespace-nowrap"
+                                          >
+                                            <Check className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                                            Log {speciesProfile.birthEventLabel}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={isRowBusy}
+                                            onClick={() =>
+                                              void taskToggleLock.runKeyLocked(t.id, () =>
+                                                onCompleteBreedingTask(t, { kind: 'missed' })
+                                              )
+                                            }
+                                            className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-terracotta)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 disabled:opacity-55 whitespace-nowrap"
+                                          >
+                                            <X className="w-3.5 h-3.5" aria-hidden="true" />
+                                            Missed / Open
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               </div>
+
+                              <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+                                {t.dueDateIso && onExportTaskToCalendar && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onExportTaskToCalendar(t)}
+                                    title="Add chore to system calendar (.ICS)"
+                                    aria-label={`Add ${displayTitle} to system calendar`}
+                                    className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                                  >
+                                    <CalendarPlus className="w-4 h-4" />
+                                  </button>
+                                )}
+                                {onCopyTaskAppLink && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onCopyTaskAppLink(t)}
+                                    title="Copy direct app link for calendar event"
+                                    aria-label={`Copy app link for ${displayTitle}`}
+                                    className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                                  >
+                                    <Link2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (activeBirthCheckoffTaskId === t.id) {
+                                      setActiveBirthCheckoffTaskId(null);
+                                    }
+                                    onDeleteTask(t.id);
+                                  }}
+                                  aria-label={`Delete chore ${displayTitle}`}
+                                  className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </div>
 
-                            <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
-                              {t.dueDateIso && onExportTaskToCalendar && (
-                                <button
-                                  type="button"
-                                  onClick={() => onExportTaskToCalendar(t)}
-                                  title="Add chore to system calendar (.ICS)"
-                                  aria-label={`Add ${displayTitle} to system calendar`}
-                                  className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
-                                >
-                                  <CalendarPlus className="w-4 h-4" />
-                                </button>
-                              )}
-                              {onCopyTaskAppLink && (
-                                <button
-                                  type="button"
-                                  onClick={() => onCopyTaskAppLink(t)}
-                                  title="Copy direct app link for calendar event"
-                                  aria-label={`Copy app link for ${displayTitle}`}
-                                  className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
-                                >
-                                  <Link2 className="w-4 h-4" />
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => onDeleteTask(t.id)}
-                                aria-label={`Delete chore ${displayTitle}`}
-                                className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                            {isBirthTrayOpen && onCompleteBreedingTask && (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  void taskToggleLock.runKeyLocked(t.id, async () => {
+                                    const res = await onCompleteBreedingTask(t, {
+                                      kind: 'birth_recorded',
+                                      actualBirthDateIso: quickBirthDateIso || today,
+                                      liveCount: Math.max(0, Math.round(Number(quickLiveCount) || 0)),
+                                      stillbornCount: Math.max(
+                                        0,
+                                        Math.round(Number(quickStillbornCount) || 0)
+                                      ),
+                                      shiftPostBirthTasks: quickShiftPostBirth,
+                                    });
+                                    if (res !== false) {
+                                      setActiveBirthCheckoffTaskId(null);
+                                    }
+                                  });
+                                }}
+                                className="ml-8 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs"
                               >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                  <div>
+                                    <label
+                                      htmlFor={`${baseId}-qb-date-${t.id}`}
+                                      className="block text-[11px] text-[var(--barn-muted)] mb-1"
+                                    >
+                                      {speciesProfile.birthEventLabel} Date
+                                    </label>
+                                    <input
+                                      id={`${baseId}-qb-date-${t.id}`}
+                                      type="date"
+                                      required
+                                      value={quickBirthDateIso}
+                                      onChange={(e) => setQuickBirthDateIso(e.target.value)}
+                                      className="w-full min-h-[36px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label
+                                      htmlFor={`${baseId}-qb-live-${t.id}`}
+                                      className="block text-[11px] text-[var(--barn-muted)] mb-1"
+                                    >
+                                      Live Born
+                                    </label>
+                                    <input
+                                      id={`${baseId}-qb-live-${t.id}`}
+                                      type="number"
+                                      min={0}
+                                      value={quickLiveCount}
+                                      onChange={(e) => setQuickLiveCount(e.target.value)}
+                                      className="w-full min-h-[36px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label
+                                      htmlFor={`${baseId}-qb-still-${t.id}`}
+                                      className="block text-[11px] text-[var(--barn-muted)] mb-1"
+                                    >
+                                      Stillborn
+                                    </label>
+                                    <input
+                                      id={`${baseId}-qb-still-${t.id}`}
+                                      type="number"
+                                      min={0}
+                                      value={quickStillbornCount}
+                                      onChange={(e) => setQuickStillbornCount(e.target.value)}
+                                      className="w-full min-h-[36px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                                    />
+                                  </div>
+                                </div>
+                                <label className="flex items-center gap-2 text-[11px] text-[var(--barn-muted)] cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={quickShiftPostBirth}
+                                    onChange={(e) => setQuickShiftPostBirth(e.target.checked)}
+                                    className="accent-[var(--barn-sage)]"
+                                  />
+                                  Shift pending weaning/rebreed chores to actual date
+                                </label>
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={isRowBusy}
+                                    onClick={() => setActiveBirthCheckoffTaskId(null)}
+                                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="submit"
+                                    disabled={isRowBusy}
+                                    className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+                                  >
+                                    {isRowBusy && (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                                    )}
+                                    Save &amp; Complete
+                                  </button>
+                                </div>
+                              </form>
+                            )}
                           </div>
                         );
                       })}
@@ -1394,27 +1806,56 @@ export function SpeciesDashboardScreen({
                   ) : (
                     <>
                       <div className="divide-y divide-[var(--barn-border)]">
-                      {activeGestations.map((b) => (
-                        <div key={b.id} className="py-3.5 first:pt-1 last:pb-1 space-y-1">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-sm">
-                              {b.damName} × {b.sireName}
+                      {activeGestations.map((b) => {
+                        const staleCount = stalePostBirthByBreedingId.get(b.id) ?? 0;
+                        return (
+                          <div key={b.id} className="py-3.5 first:pt-1 last:pb-1 space-y-1.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-medium text-sm">
+                                {b.damName} × {b.sireName}
+                              </div>
+                              <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)] font-medium">
+                                {formatBreedingStatusForSpecies(b.status, speciesProfile)} · COI{' '}
+                                {b.projectedCoiPercent.toFixed(2)}%
+                              </span>
                             </div>
-                            <span className="text-xs font-mono tabular-nums text-[var(--barn-sage)] font-medium">
-                              {formatBreedingStatusForSpecies(b.status, speciesProfile)} · COI{' '}
-                              {b.projectedCoiPercent.toFixed(2)}%
-                            </span>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
+                                Bred {formatReadableDate(b.bredDateIso)} ·{' '}
+                                {b.actualBirthDateIso
+                                  ? `${speciesProfile.birthEventLabel}: ${formatReadableDate(
+                                      b.actualBirthDateIso
+                                    )}`
+                                  : `Expected ${speciesProfile.birthEventLabel}: ${formatReadableDate(
+                                      b.expectedDueDateIso
+                                    )}`}
+                                {b.liveCount > 0
+                                  ? ` · ${b.liveCount} live ${speciesProfile.offspringLabel}s`
+                                  : ''}
+                              </div>
+                              {staleCount > 0 && onRecalculatePostBirthTasks && (
+                                <button
+                                  type="button"
+                                  disabled={breedingRecalcLock.isKeyLocked(b.id)}
+                                  onClick={() =>
+                                    void breedingRecalcLock.runKeyLocked(b.id, () =>
+                                      onRecalculatePostBirthTasks(b.id)
+                                    )
+                                  }
+                                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1 disabled:opacity-55 whitespace-nowrap"
+                                >
+                                  {breedingRecalcLock.isKeyLocked(b.id) ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3 text-[var(--barn-sage)]" aria-hidden="true" />
+                                  )}
+                                  Shift {staleCount} Post-Birth Chore{staleCount === 1 ? '' : 's'}
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
-                            Bred {formatReadableDate(b.bredDateIso)} · Expected{' '}
-                            {speciesProfile.birthEventLabel}:{' '}
-                            {formatReadableDate(b.expectedDueDateIso)}
-                            {b.liveCount > 0
-                              ? ` · ${b.liveCount} live ${speciesProfile.offspringLabel}s`
-                              : ''}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                       </div>
                     </>
                   )}
@@ -1424,7 +1865,12 @@ export function SpeciesDashboardScreen({
 
             if (blockId === 'cages') {
               return (
-                <section key={blockId} {...dragProps} className={cardClass}>
+                <section
+                  id="species-cages-block"
+                  key={blockId}
+                  {...dragProps}
+                  className={cardClass}
+                >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="flex items-start gap-1.5 min-w-0">
                       <span
@@ -1444,7 +1890,12 @@ export function SpeciesDashboardScreen({
                           </span>
                         </div>
                         <p className="text-xs text-[var(--barn-muted)]">
-                          Live cage occupancy from {speciesProfile.name.toLowerCase()} records
+                          Live cage occupancy &amp; quick occupant assignment
+                          {cagesOccupancySummary.shouldShowOverCapacityAlert && (
+                            <span className="ml-1.5 font-semibold text-[var(--barn-danger)] font-mono tabular-nums">
+                              · {cagesOccupancySummary.totalOverCapacityCount} over capacity
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -1481,7 +1932,7 @@ export function SpeciesDashboardScreen({
                         <input
                           type="number"
                           min={1}
-                          max={50}
+                          max={999}
                           value={cageCapacity}
                           onChange={(e) => setCageCapacity(e.target.value)}
                           aria-label="Cage capacity"
@@ -1523,38 +1974,284 @@ export function SpeciesDashboardScreen({
                   {cages.length === 0 ? (
                     <p className="text-sm text-[var(--barn-muted)]">No locations added yet.</p>
                   ) : (
-                    <div className="divide-y divide-[var(--barn-border)] max-h-72 overflow-y-auto">
+                    <div className="divide-y divide-[var(--barn-border)] max-h-[28rem] overflow-y-auto">
                       {cages.map((c) => {
-                        const occupants = animals.filter(
-                          (a) =>
-                            !a.archived &&
-                            a.cageLocation.trim().toLowerCase() === c.label.trim().toLowerCase() &&
-                            (a.status === 'Active' ||
-                              a.status === 'Junior' ||
-                              a.status === 'Retired')
+                        const evalItem = cagesOccupancySummary.byCageId.get(c.id);
+                        const occupants = evalItem?.occupants ?? [];
+                        const capacity = evalItem?.capacity ?? Math.max(1, Number(c.capacity) || 1);
+                        const isOverCapacity = evalItem?.isOverCapacity ?? false;
+                        const isAtCapacity = evalItem?.isAtCapacity ?? false;
+                        const ratioLabel =
+                          evalItem?.ratioLabel ?? `${occupants.length}/${capacity}`;
+
+                        const cageKey = normalizeCageLabelKey(c.label);
+                        const candidateAnimals = assignableAnimals.filter(
+                          (a) => normalizeCageLabelKey(a.cageLocation) !== cageKey
                         );
+                        const unassignedCandidates = candidateAnimals.filter(
+                          (a) => !a.cageLocation.trim()
+                        );
+                        const otherCageCandidates = candidateAnimals.filter(
+                          (a) => Boolean(a.cageLocation.trim())
+                        );
+
+                        const isEditingThisCage = editingCageId === c.id;
+                        const isAssignBusy = cageAssignLock.isKeyLocked(c.id);
+                        const isEditBusy = cageAssignLock.isKeyLocked(`edit:${c.id}`);
+                        const pendingConfirmForCage =
+                          pendingCageAssignConfirm?.cageId === c.id
+                            ? pendingCageAssignConfirm
+                            : null;
+
                         return (
-                          <div
-                            key={c.id}
-                            className="flex items-center justify-between gap-2 py-2.5 text-xs"
-                          >
-                            <div className="min-w-0">
-                              <div className="font-mono font-semibold text-sm">{c.label}</div>
-                              <div className="text-[var(--barn-muted)] truncate">
-                                {c.section || 'Barn'} ·{' '}
-                                {occupants.length > 0
-                                  ? occupants.map((o) => `${o.name} (${o.tattoo})`).join(', ')
-                                  : 'Open / Unassigned'}
+                          <div key={c.id} className="py-3 space-y-2 text-xs">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <span className="font-mono font-semibold text-sm text-[var(--barn-ink)]">
+                                    {c.label}
+                                  </span>
+                                  <span className="text-[var(--barn-muted)]">
+                                    · {c.section || 'Barn'} ·
+                                  </span>
+                                  <span
+                                    className={`font-mono tabular-nums inline-flex items-center gap-1 ${
+                                      isOverCapacity
+                                        ? 'font-semibold text-[var(--barn-danger)]'
+                                        : isAtCapacity
+                                          ? 'font-semibold text-[var(--barn-terracotta)]'
+                                          : 'text-[var(--barn-muted)]'
+                                    }`}
+                                  >
+                                    {isOverCapacity && (
+                                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                    )}
+                                    {ratioLabel}
+                                  </span>
+                                </div>
+
+                                {occupants.length > 0 ? (
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[var(--barn-ink)]">
+                                    {occupants.map((occ) => {
+                                      const unassignBusy = cageAssignLock.isKeyLocked(
+                                        `unassign:${occ.id}`
+                                      );
+                                      return (
+                                        <span
+                                          key={occ.id}
+                                          className="inline-flex items-center gap-1 rounded-md border border-[var(--barn-border)] bg-[var(--barn-canvas)] px-2 py-0.5"
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => onOpenAnimal(occ.id)}
+                                            className="font-medium hover:text-[var(--barn-sage)] hover:underline text-left"
+                                          >
+                                            {occ.name}
+                                            {occ.tattoo ? (
+                                              <span className="font-mono text-[11px] text-[var(--barn-muted)] ml-1">
+                                                ({occ.tattoo})
+                                              </span>
+                                            ) : null}
+                                          </button>
+                                          {onAssignAnimalToCage && (
+                                            <button
+                                              type="button"
+                                              disabled={unassignBusy}
+                                              onClick={() => void handleUnassignFromCage(c.id, occ.id)}
+                                              aria-label={`Remove ${occ.name} from ${c.label}`}
+                                              title={`Remove ${occ.name} from ${c.label}`}
+                                              className="min-h-[22px] min-w-[22px] rounded text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center disabled:opacity-45"
+                                            >
+                                              <X className="w-3 h-3" aria-hidden="true" />
+                                            </button>
+                                          )}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <div className="text-[var(--barn-muted)]">Open / Unassigned</div>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (isEditingThisCage) {
+                                      setEditingCageId(null);
+                                    } else {
+                                      setEditingCageId(c.id);
+                                      setEditingCageLabel(c.label);
+                                      setEditingCageSection(c.section || '');
+                                      setEditingCageCapacity(String(capacity));
+                                    }
+                                  }}
+                                  aria-label={`Edit ${c.label} capacity or section`}
+                                  title="Edit capacity or section"
+                                  className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (editingCageId === c.id) setEditingCageId(null);
+                                    if (pendingCageAssignConfirm?.cageId === c.id) {
+                                      setPendingCageAssignConfirm(null);
+                                    }
+                                    onDeleteCage(c.id);
+                                  }}
+                                  aria-label={`Remove location ${c.label}`}
+                                  title={`Remove ${c.label}`}
+                                  className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                </button>
                               </div>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => onDeleteCage(c.id)}
-                              aria-label={`Remove location ${c.label}`}
-                              className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+
+                            {isEditingThisCage && (
+                              <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                  <input
+                                    type="text"
+                                    aria-label={`Edit label for ${c.label}`}
+                                    value={editingCageLabel}
+                                    onChange={(e) => setEditingCageLabel(e.target.value)}
+                                    placeholder="Label"
+                                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono"
+                                  />
+                                  <input
+                                    type="text"
+                                    aria-label={`Edit section for ${c.label}`}
+                                    value={editingCageSection}
+                                    onChange={(e) => setEditingCageSection(e.target.value)}
+                                    placeholder="Section"
+                                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                                  />
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={999}
+                                    aria-label={`Edit capacity for ${c.label}`}
+                                    value={editingCageCapacity}
+                                    onChange={(e) => setEditingCageCapacity(e.target.value)}
+                                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                                  />
+                                </div>
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={isEditBusy}
+                                    onClick={() => setEditingCageId(null)}
+                                    className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isEditBusy || !editingCageLabel.trim()}
+                                    onClick={() => void handleSaveEditedCage(c)}
+                                    className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1 disabled:opacity-55"
+                                  >
+                                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                                    {isEditBusy ? 'Saving...' : 'Save'}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {onAssignAnimalToCage && candidateAnimals.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="relative flex-1 min-w-[200px] max-w-sm">
+                                  <UserPlus
+                                    className="w-3.5 h-3.5 text-[var(--barn-muted)] pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
+                                    aria-hidden="true"
+                                  />
+                                  <select
+                                    aria-label={`Assign animal to ${c.label}`}
+                                    disabled={isAssignBusy}
+                                    value=""
+                                    onChange={(e) => {
+                                      const picked = e.target.value;
+                                      if (picked) {
+                                        void handleQuickAssignSelect(c, picked);
+                                      }
+                                    }}
+                                    className="w-full min-h-[36px] pl-8 pr-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs text-[var(--barn-ink)] disabled:opacity-55"
+                                  >
+                                    <option value="">
+                                      {isAssignBusy
+                                        ? 'Assigning...'
+                                        : isOverCapacity || isAtCapacity
+                                          ? `Quick assign to ${c.label} (at/over capacity)...`
+                                          : `Quick assign animal to ${c.label}...`}
+                                    </option>
+                                    {unassignedCandidates.length > 0 && (
+                                      <optgroup label="Unassigned Animals">
+                                        {unassignedCandidates.map((a) => (
+                                          <option key={a.id} value={a.id}>
+                                            {a.name}
+                                            {a.tattoo ? ` (${a.tattoo})` : ''}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                    {otherCageCandidates.length > 0 && (
+                                      <optgroup label="Move from Another Cage">
+                                        {otherCageCandidates.map((a) => (
+                                          <option key={a.id} value={a.id}>
+                                            {a.name}
+                                            {a.tattoo ? ` (${a.tattoo})` : ''} — in {a.cageLocation}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                  </select>
+                                </div>
+                              </div>
+                            )}
+
+                            {pendingConfirmForCage && (
+                              <div
+                                role="alert"
+                                className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] space-y-2 text-xs"
+                              >
+                                <div className="flex items-start gap-2">
+                                  <AlertTriangle
+                                    className="w-4 h-4 text-[var(--barn-danger)] mt-0.5 shrink-0"
+                                    aria-hidden="true"
+                                  />
+                                  <div className="space-y-0.5">
+                                    <div className="font-semibold text-[var(--barn-ink)]">
+                                      {pendingConfirmForCage.warning.headline}
+                                    </div>
+                                    <p className="text-[var(--barn-muted)]">
+                                      {pendingConfirmForCage.warning.detail}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={isAssignBusy}
+                                    onClick={() => setPendingCageAssignConfirm(null)}
+                                    className="min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isAssignBusy}
+                                    onClick={() => void handleConfirmOverCapacityAssign()}
+                                    className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
+                                  >
+                                    {isAssignBusy ? 'Assigning...' : 'Assign Anyway'}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}

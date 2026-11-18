@@ -10,6 +10,7 @@
  */
 
 import { CURRENT_BACKUP_SCHEMA_VERSION } from './backupVault';
+import { nowEpochMs } from './models';
 
 export const CURRENT_APP_VERSION = '0.1.0-prealpha.1';
 
@@ -206,7 +207,7 @@ export function evaluateUpgradeGate(params: {
 
 export function computeHttpDateClockSkewMs(
   serverDateHeader: string | null | undefined,
-  localNowMs: number = Date.now()
+  localNowMs: number = nowEpochMs()
 ): number | null {
   if (!serverDateHeader || typeof serverDateHeader !== 'string') return null;
   const parsedMs = Date.parse(serverDateHeader);

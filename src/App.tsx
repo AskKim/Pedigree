@@ -1051,10 +1051,13 @@ export default function App() {
               setRoute('herd');
             }}
             onToggleTask={store.toggleTaskCompleted}
+            onCompleteBreedingTask={store.completeBreedingTaskWithOutcome}
+            onRecalculatePostBirthTasks={store.recalculateBreedingPostBirthTasks}
             onSaveTask={store.saveTask}
             onDeleteTask={store.deleteTask}
             onSaveCage={store.saveCage}
             onDeleteCage={store.deleteCage}
+            onAssignAnimalToCage={store.assignAnimalToCage}
             onSaveShow={store.saveShow}
             onDeleteShow={store.deleteShow}
             onSeedSpeciesSample={store.seedSpeciesSampleData}
@@ -1172,6 +1175,9 @@ export default function App() {
             settings={snapshot.settings}
             onLogBreeding={(params) => store.logBreedingWithCascade(params)}
             onUpdateOutcome={(existing, patch) => store.updateBreedingOutcome(existing, patch)}
+            onRecalculatePostBirthTasks={(breedingId) =>
+              store.recalculateBreedingPostBirthTasks(breedingId)
+            }
             onDeleteBreeding={(id) => {
               void store.deleteBreeding(id);
             }}
@@ -1205,6 +1211,8 @@ export default function App() {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
+            onLoadPedigreeNeighborhood={store.loadPedigreeNeighborhood}
+            onCheckPedigreeBranchesHaveAncestors={store.checkPedigreeBranchesHaveAncestors}
           />
         )}
 

@@ -261,5 +261,28 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
     expect(branch0Expanded.hiddenKnownAncestorsCount).toBe(1);
     expect(branch0Expanded.branchSummaries.get('3:0')?.isExpanded).toBe(true);
     expect(branch0Expanded.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(0);
+    expect(branch0Expanded.branchSummaries.get('3:0')?.hasKnownAncestors).toBe(true);
+  });
+
+  it('surfaces hasKnownAncestors for externalKnownBranches even before Gen 4+ animals are loaded into memory', () => {
+    const gen3Sire = makeAnimal('g3-0', { sex: 'Male', sireId: 'g4-lazy-unfetched' });
+    const gen2Sire = makeAnimal('g2-0', { sex: 'Male', sireId: 'g3-0' });
+    const gen1Sire = makeAnimal('g1-0', { sex: 'Male', sireId: 'g2-0' });
+    const subject = makeAnimal('subj-lazy', { sex: 'Female', sireId: 'g1-0' });
+
+    // Only Gen 0–3 exist in the base map initially
+    const gen0To3Herd = buildSpeciesHerdMap([gen3Sire, gen2Sire, gen1Sire, subject], 'Rabbit');
+    const slots = buildPedigreeSlots(subject, gen0To3Herd, 5, makeSpeciesProfile('Rabbit'));
+
+    const withoutExternal = buildPedigreeBranchViewport(slots, 5, new Set());
+    expect(withoutExternal.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(0);
+    expect(withoutExternal.branchSummaries.get('3:0')?.hasKnownAncestors).toBe(false);
+
+    // SQLite/OPFS probe indicates Branch 0 (3:0) has deeper ancestors
+    const withExternal = buildPedigreeBranchViewport(slots, 5, new Set(), new Set([0]));
+    expect(withExternal.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(0);
+    expect(withExternal.branchSummaries.get('3:0')?.hasKnownAncestors).toBe(true);
+    expect(withExternal.branchSummaries.get('3:1')?.hasKnownAncestors).toBe(false);
   });
 });
+

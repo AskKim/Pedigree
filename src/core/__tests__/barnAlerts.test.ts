@@ -4,18 +4,22 @@ import {
   buildTaskAlertGroupSignature,
   buildWithdrawalByAnimalMap,
   evaluateAnimalActiveWithdrawal,
+  evaluateCageAssignmentCapacityWarning,
+  evaluateCageOccupancy,
   evaluateShowWithdrawalConflicts,
   evaluateSpeciesActiveWithdrawalsAlert,
   evaluateSpeciesArrivingBabiesAlert,
+  evaluateSpeciesCagesOccupancy,
   evaluateSpeciesDueTasksAlert,
   evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
   evaluateWithdrawalDispositionWarning,
   formatArrivalTimingLabel,
   getGestationSoonWindowDays,
+  isCageOccupyingAnimal,
   resolveCareLogWithdrawalClearDateIso,
 } from '../barnAlerts';
-import { BarnTask, BreedingRecord, CareLog } from '../models';
+import { BarnTask, BreedingRecord, CageLocation, CareLog } from '../models';
 import { makeAnimal, makeSpeciesProfile } from './testFixtures';
 
 function makeTask(id: string, overrides: Partial<BarnTask> = {}): BarnTask {
@@ -392,4 +396,174 @@ describe('barnAlerts — active medication withdrawal countdowns & safety warnin
     expect(clearDayShow.conflicts).toHaveLength(0);
   });
 });
+
+function makeCage(id: string, overrides: Partial<CageLocation> = {}): CageLocation {
+  return {
+    id,
+    species: 'Rabbit',
+    label: `Hutch ${id}`,
+    section: 'Row A',
+    capacity: 2,
+    notes: '',
+    createdAt: '2026-11-01T10:00:00.000Z',
+    updatedAt: '2026-11-01T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('barnAlerts — cage / pen occupancy & capacity welfare warnings', () => {
+  it('counts only Active, Junior, and unarchived Retired animals as occupants with species & trimmed label matching', () => {
+    const cageR1 = makeCage('r1', { label: 'Hutch R-01', capacity: 2 });
+    const cageR2 = makeCage('r2', { label: 'Hutch R-02', capacity: 2 });
+    const cageR3 = makeCage('r3', { label: 'Hutch R-03', capacity: 2 });
+    const cageGoat = makeCage('g1', { species: 'Goat', label: 'Hutch R-01', capacity: 2 });
+
+    const animals = [
+      // R-01: 3 occupants vs capacity 2 -> 3/2 over capacity
+      makeAnimal('a1', { name: 'Clover', cageLocation: ' hutch r-01 ', status: 'Active' }),
+      makeAnimal('a2', { name: 'Maple', cageLocation: 'HUTCH R-01', status: 'Junior' }),
+      makeAnimal('a3', { name: 'Bramble', cageLocation: 'Hutch R-01', status: 'Retired' }),
+      // Excluded non-occupants in R-01:
+      makeAnimal('a4', { name: 'Sold Doe', cageLocation: 'Hutch R-01', status: 'Sold' }),
+      makeAnimal('a5', { name: 'Dead Buck', cageLocation: 'Hutch R-01', status: 'Deceased' }),
+      makeAnimal('a6', { name: 'Archived Doe', cageLocation: 'Hutch R-01', status: 'Archived' }),
+      makeAnimal('a7', {
+        name: 'Flagged Archived',
+        cageLocation: 'Hutch R-01',
+        status: 'Active',
+        archived: true,
+      }),
+      makeAnimal('a8', {
+        name: 'Offloaded Stub',
+        cageLocation: 'Hutch R-01',
+        status: 'Retired',
+        offloadedArchiveKey: 'a8.archive.zip',
+      }),
+      // Different species sharing label must not leak into Rabbit cage
+      makeAnimal('g1-kid', { species: 'Goat', name: 'Kid', cageLocation: 'Hutch R-01', status: 'Active' }),
+      // R-02: 2/2 full
+      makeAnimal('b1', { name: 'Oak', cageLocation: 'Hutch R-02', status: 'Active' }),
+      makeAnimal('b2', { name: 'Pine', cageLocation: 'Hutch R-02', status: 'Active' }),
+      // R-03: 0/2 empty
+    ];
+
+    expect(isCageOccupyingAnimal(animals[0])).toBe(true);
+    expect(isCageOccupyingAnimal(animals[3])).toBe(false);
+    expect(isCageOccupyingAnimal(animals[7])).toBe(false);
+
+    const singleEval = evaluateCageOccupancy(cageR1, animals);
+    expect(singleEval.occupantCount).toBe(3);
+    expect(singleEval.status).toBe('over_capacity');
+    expect(singleEval.isOverCapacity).toBe(true);
+    expect(singleEval.overBy).toBe(1);
+    expect(singleEval.ratioLabel).toBe('3/2 over capacity');
+    expect(singleEval.occupants.map((a) => a.name)).toEqual(['Bramble', 'Clover', 'Maple']);
+
+    const summary = evaluateSpeciesCagesOccupancy([cageR1, cageR2, cageR3, cageGoat], animals, 'Rabbit');
+    expect(summary.evaluations).toHaveLength(3);
+    expect(summary.shouldShowOverCapacityAlert).toBe(true);
+    expect(summary.totalOverCapacityCount).toBe(1);
+    expect(summary.overCapacityExtraAnimalsCount).toBe(1);
+    expect(summary.byCageId.get('r2')?.status).toBe('full');
+    expect(summary.byCageId.get('r2')?.ratioLabel).toBe('2/2 full');
+    expect(summary.byCageId.get('r3')?.status).toBe('empty');
+    expect(summary.byCageId.get('r3')?.ratioLabel).toBe('0/2');
+  });
+
+  it('triggers assignment capacity warning only when newly exceeding CageLocation.capacity', () => {
+    const cage = makeCage('c1', { label: 'Pen A', capacity: 2 });
+    const animals = [
+      makeAnimal('a1', { name: 'Alpha', cageLocation: 'Pen A', status: 'Active' }),
+      makeAnimal('a2', { name: 'Bravo', cageLocation: 'Pen A', status: 'Active' }),
+      makeAnimal('a3', { name: 'Charlie', cageLocation: '', status: 'Active' }),
+      makeAnimal('a4', { name: 'Delta', cageLocation: 'Pen A', status: 'Sold' }),
+    ];
+
+    // 1) Assigning into open 1/2 cage -> null (reaches 2/2 exact capacity, not exceeding)
+    expect(
+      evaluateCageAssignmentCapacityWarning({
+        targetCageLabel: 'Pen A',
+        cages: [cage],
+        animals: [animals[0], animals[2]],
+        speciesName: 'Rabbit',
+        animalId: 'a3',
+        animalName: 'Charlie',
+        wasAlreadyOccupyingTargetCage: false,
+        willOccupyAfterSave: true,
+      })
+    ).toBeNull();
+
+    // 2) Assigning a 3rd active animal into 2/2 full Pen A -> wouldExceed: true (3/2)
+    const exceedWarn = evaluateCageAssignmentCapacityWarning({
+      targetCageLabel: 'Pen A',
+      cages: [cage],
+      animals,
+      speciesName: 'Rabbit',
+      animalId: 'a3',
+      animalName: 'Charlie',
+      wasAlreadyOccupyingTargetCage: false,
+      willOccupyAfterSave: true,
+    });
+    expect(exceedWarn).not.toBeNull();
+    expect(exceedWarn?.wouldExceed).toBe(true);
+    expect(exceedWarn?.projectedOccupantCount).toBe(3);
+    expect(exceedWarn?.overBy).toBe(1);
+    expect(exceedWarn?.headline).toContain('3/2 over capacity');
+
+    // 3) Reactivating a Sold animal already labeled with Pen A when Pen A already has 2 active animals -> wouldExceed: true
+    const reactivateWarn = evaluateCageAssignmentCapacityWarning({
+      targetCageLabel: 'Pen A',
+      cages: [cage],
+      animals,
+      speciesName: 'Rabbit',
+      animalId: 'a4',
+      animalName: 'Delta',
+      wasAlreadyOccupyingTargetCage: false,
+      willOccupyAfterSave: true,
+    });
+    expect(reactivateWarn?.wouldExceed).toBe(true);
+    expect(reactivateWarn?.projectedOccupantCount).toBe(3);
+
+    // 4) Editing an animal already occupying an over-capacity cage without moving -> passive (wouldExceed: false)
+    const overAnimals = [...animals.slice(0, 2), { ...animals[2], cageLocation: 'Pen A' }];
+    const passiveWarn = evaluateCageAssignmentCapacityWarning({
+      targetCageLabel: 'Pen A',
+      cages: [cage],
+      animals: overAnimals,
+      speciesName: 'Rabbit',
+      animalId: 'a1',
+      animalName: 'Alpha',
+      wasAlreadyOccupyingTargetCage: true,
+      willOccupyAfterSave: true,
+    });
+    expect(passiveWarn?.wouldExceed).toBe(false);
+    expect(passiveWarn?.alreadyOverCapacity).toBe(true);
+
+    // 5) Retiring / marking Sold inside full cage or using unregistered free-text cage -> null
+    expect(
+      evaluateCageAssignmentCapacityWarning({
+        targetCageLabel: 'Pen A',
+        cages: [cage],
+        animals,
+        speciesName: 'Rabbit',
+        animalId: 'a3',
+        animalName: 'Charlie',
+        wasAlreadyOccupyingTargetCage: false,
+        willOccupyAfterSave: false,
+      })
+    ).toBeNull();
+
+    expect(
+      evaluateCageAssignmentCapacityWarning({
+        targetCageLabel: 'Unregistered Pasture',
+        cages: [cage],
+        animals,
+        speciesName: 'Rabbit',
+        animalId: 'a3',
+        animalName: 'Charlie',
+      })
+    ).toBeNull();
+  });
+});
+
 

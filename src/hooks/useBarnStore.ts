@@ -53,6 +53,7 @@ import {
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeIgnoredConflicts,
   normalizeRufusLevel,
@@ -134,7 +135,12 @@ import {
   SyncEntityType,
   SyncOperation,
 } from '../core/syncOutbox';
-import { generateCascadedTasksForBreeding } from '../core/taskMaster';
+import {
+  generateCascadedTasksForBreeding,
+  getPendingBreedingCleanupTasks,
+  recalculatePostBirthTasksForBreeding,
+  resolveEffectiveSpeciesProfileForBreeding,
+} from '../core/taskMaster';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { resolveThemeCssVariables } from '../core/themePalette';
 import {
@@ -261,6 +267,19 @@ export type WorkspaceRoute =
   | 'memo'
   | 'settings';
 
+export type BreedingTaskCheckoffAction =
+  | { kind: 'palpated_positive' }
+  | { kind: 'missed'; notes?: string }
+  | {
+      kind: 'birth_recorded';
+      actualBirthDateIso: string;
+      liveCount: number;
+      stillbornCount: number;
+      fosteredCount?: number;
+      shiftPostBirthTasks?: boolean;
+      notes?: string;
+    };
+
 export interface ActiveSpeciesData {
   speciesProfile: SpeciesProfile;
   animals: Animal[];
@@ -295,6 +314,8 @@ export function useBarnStore() {
     return new BoundedPhotoDataCache(budget.maxEntries, budget.maxBytes);
   });
   const photoCacheRef = useRef<BoundedPhotoDataCache>(initialPhotoCache);
+  const pedigreeAncestorCacheRef = useRef<Map<string, Animal>>(new Map());
+  const loadedPedigreeArchiveKeysRef = useRef<Set<string>>(new Set());
   const snapshotRef = useRef<BarnDatabaseSnapshot | null>(null);
   const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const backgroundMaintenanceInFlightRef = useRef<boolean>(false);
@@ -1017,8 +1038,162 @@ export function useBarnStore() {
     [hydrateSnapshotForExport, refreshVaultAndArchives]
   );
 
+  const loadPedigreeNeighborhood = useCallback(
+    async (rootIds: string[], maxDepth: number): Promise<Animal[]> => {
+      const cleanRoots = Array.from(
+        new Set(rootIds.filter((id) => typeof id === 'string' && id.trim().length > 0))
+      );
+      if (cleanRoots.length === 0) return [];
+      const boundedDepth = Math.min(6, Math.max(0, Math.floor(maxDepth)));
+      const adapter = adapterRef.current;
+
+      const resolvedMap = new Map<string, Animal>();
+      if (adapter?.queryPedigreeNeighborhood) {
+        const rows = await adapter.queryPedigreeNeighborhood(cleanRoots, boundedDepth);
+        for (const a of rows) {
+          resolvedMap.set(a.id, a);
+        }
+      } else {
+        const all = snapshotRef.current?.animals ?? [];
+        const byId = new Map<string, Animal>(all.map((a) => [a.id, a]));
+        const visited = new Set<string>();
+        let frontier = cleanRoots;
+        for (let depth = 0; depth <= boundedDepth && frontier.length > 0; depth++) {
+          const nextFrontier: string[] = [];
+          for (const id of frontier) {
+            if (visited.has(id)) continue;
+            visited.add(id);
+            const found = byId.get(id);
+            if (!found) continue;
+            resolvedMap.set(found.id, found);
+            if (depth < boundedDepth) {
+              if (found.sireId && !visited.has(found.sireId)) nextFrontier.push(found.sireId);
+              if (found.damId && !visited.has(found.damId)) nextFrontier.push(found.damId);
+            }
+          }
+          frontier = nextFrontier;
+        }
+      }
+
+      // Hydrate any offloaded OPFS /archives ancestor stubs lazily from cache or OPFS
+      const cache = pedigreeAncestorCacheRef.current;
+      const walkCacheParents = () => {
+        let extraFrontier: string[] = [];
+        for (const a of resolvedMap.values()) {
+          if (a.sireId && !resolvedMap.has(a.sireId)) extraFrontier.push(a.sireId);
+          if (a.damId && !resolvedMap.has(a.damId)) extraFrontier.push(a.damId);
+        }
+        for (let step = 0; step < boundedDepth && extraFrontier.length > 0; step++) {
+          const nextExtra: string[] = [];
+          for (const pid of extraFrontier) {
+            if (resolvedMap.has(pid)) continue;
+            const cachedParent = cache.get(pid);
+            if (cachedParent) {
+              // Refresh LRU position
+              cache.delete(pid);
+              cache.set(pid, cachedParent);
+              resolvedMap.set(cachedParent.id, cachedParent);
+              if (cachedParent.sireId && !resolvedMap.has(cachedParent.sireId)) {
+                nextExtra.push(cachedParent.sireId);
+              }
+              if (cachedParent.damId && !resolvedMap.has(cachedParent.damId)) {
+                nextExtra.push(cachedParent.damId);
+              }
+            }
+          }
+          extraFrontier = nextExtra;
+        }
+      };
+
+      walkCacheParents();
+
+      const candidateArchiveKeys = new Set<string>();
+      for (const a of resolvedMap.values()) {
+        if (!a.offloadedArchiveKey) continue;
+        const missingParent =
+          (a.sireId && !resolvedMap.has(a.sireId)) ||
+          (a.damId && !resolvedMap.has(a.damId));
+        if (
+          missingParent ||
+          !loadedPedigreeArchiveKeysRef.current.has(a.offloadedArchiveKey)
+        ) {
+          candidateArchiveKeys.add(a.offloadedArchiveKey);
+        }
+      }
+      if (candidateArchiveKeys.size > 0 && isOpfsSupported()) {
+        for (const archiveKey of candidateArchiveKeys) {
+          loadedPedigreeArchiveKeysRef.current.add(archiveKey);
+          try {
+            const loaded = await loadOpfsHerdArchive(
+              archiveKey,
+              snapshotRef.current?.settings
+            );
+            if (loaded?.unpacked?.animals) {
+              for (const archAnimal of loaded.unpacked.animals) {
+                if (cache.has(archAnimal.id)) cache.delete(archAnimal.id);
+                cache.set(archAnimal.id, archAnimal);
+                while (cache.size > 256) {
+                  const oldest = cache.keys().next().value;
+                  if (oldest !== undefined) cache.delete(oldest);
+                  else break;
+                }
+              }
+            }
+          } catch {
+            // Best-effort archive hydration; stub remains safely usable
+          }
+        }
+        walkCacheParents();
+      }
+
+      // Keep bounded LRU cache synced with fresh records
+      for (const a of resolvedMap.values()) {
+        if (cache.has(a.id)) cache.delete(a.id);
+        cache.set(a.id, a);
+        while (cache.size > 256) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+          else break;
+        }
+      }
+
+      return Array.from(resolvedMap.values());
+    },
+    []
+  );
+
+  const checkPedigreeBranchesHaveAncestors = useCallback(
+    async (animalIds: string[]): Promise<Record<string, boolean>> => {
+      const cleanIds = Array.from(
+        new Set(animalIds.filter((id) => typeof id === 'string' && id.trim().length > 0))
+      );
+      if (cleanIds.length === 0) return {};
+      const adapter = adapterRef.current;
+      if (adapter?.queryPedigreeBranchAncestorsExist) {
+        return adapter.queryPedigreeBranchAncestorsExist(cleanIds);
+      }
+      const byId = new Map<string, Animal>(
+        (snapshotRef.current?.animals ?? []).map((a) => [a.id, a])
+      );
+      const out: Record<string, boolean> = {};
+      for (const id of cleanIds) {
+        const a = byId.get(id);
+        out[id] = Boolean(
+          a &&
+            ((a.sireId && byId.has(a.sireId)) ||
+              (a.damId && byId.has(a.damId)) ||
+              a.offloadedArchiveKey)
+        );
+      }
+      return out;
+    },
+    []
+  );
+
   const reloadFromAdapter = useCallback(async () => {
     const fresh = await adapterRef.current!.loadSnapshot({ lightweightPhotos: true });
+    pedigreeAncestorCacheRef.current.clear();
+    loadedPedigreeArchiveKeysRef.current.clear();
     snapshotRef.current = fresh;
     setSnapshot(fresh);
     void refreshStorageStatus();
@@ -1034,6 +1209,8 @@ export function useBarnStore() {
       loadAllSyncConflictsFromIdb().catch(() => syncConflictsRef.current),
     ]);
     photoCacheRef.current?.clear();
+    pedigreeAncestorCacheRef.current.clear();
+    loadedPedigreeArchiveKeysRef.current.clear();
     snapshotRef.current = fresh;
     setSnapshot(fresh);
     setPedigreeGenerations(fresh.settings.defaultGenerations);
@@ -1398,6 +1575,7 @@ export function useBarnStore() {
               defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
               memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
               memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
+              breedOverrides: normalizeBreedScheduleOverrides(profile.breedOverrides),
               _rev: rev,
               createdAt: profile.createdAt || existing.createdAt || ts,
               updatedAt: ts,
@@ -1505,6 +1683,7 @@ export function useBarnStore() {
               defaultAnimalPrefix: (profile.defaultAnimalPrefix || '').trim(),
               memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
               memoUpdatedAt: profile.memoUpdatedAt ?? '',
+              breedOverrides: normalizeBreedScheduleOverrides(profile.breedOverrides),
               _rev: rev,
               createdAt: profile.createdAt || ts,
               updatedAt: ts,
@@ -2622,6 +2801,60 @@ export function useBarnStore() {
     [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
+  const assignAnimalToCage = useCallback(
+    async (animalId: string, nextCageLabel: string): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        const target = currentSnapshot?.animals.find((a) => a.id === animalId);
+        if (!target || target.offloadedArchiveKey) return false;
+        const cleanLabel = nextCageLabel.trim();
+        if (target.cageLocation.trim() === cleanLabel) return true;
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(target.id, target._rev);
+        const updated: Animal = {
+          ...target,
+          cageLocation: cleanLabel,
+          _rev: rev,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveAnimal(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'animal',
+              previous: target,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(
+            cleanLabel
+              ? `Assigned ${target.name} to ${cleanLabel}.`
+              : `Removed ${target.name} from cage assignment.`
+          );
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`assign ${target.name} to cage`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
   /**
    * Logs a new breeding or updates an existing breeding, and automatically runs the
    * Master Task List engine to cascade species-appropriate barn tasks on creation.
@@ -2695,6 +2928,11 @@ export function useBarnStore() {
         sp.name
       );
       const coi = calculatePairingCoi(resolvedSire.id, resolvedDam.id, herdMap).coiPercent;
+      const { profile: effectiveSp } = resolveEffectiveSpeciesProfileForBreeding(
+        sp,
+        resolvedDam,
+        resolvedSire
+      );
 
       const breeding: BreedingRecord = {
         id: generateUuid(),
@@ -2704,7 +2942,7 @@ export function useBarnStore() {
         sireName: resolvedSire.name,
         damName: resolvedDam.name,
         bredDateIso: params.bredDateIso,
-        expectedDueDateIso: addDaysIso(params.bredDateIso, sp.gestationDays),
+        expectedDueDateIso: addDaysIso(params.bredDateIso, effectiveSp.gestationDays),
         actualBirthDateIso: '',
         projectedCoiPercent: Math.round(coi * 100) / 100,
         liveCount: 0,
@@ -2756,7 +2994,7 @@ export function useBarnStore() {
         let cascaded: BarnTask[] = [];
         let taskCount = 0;
         if (params.autoScheduleChores) {
-          cascaded = generateCascadedTasksForBreeding(breeding, sp).map((t) => ({
+          cascaded = generateCascadedTasksForBreeding(breeding, effectiveSp).map((t) => ({
             ...t,
             _rev: 1,
           }));
@@ -2870,6 +3108,7 @@ export function useBarnStore() {
         notes: string;
         registerJuniorCount: number;
         offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
+        shiftPostBirthTasksToActualDate?: boolean;
       }
     ): Promise<boolean> => {
       return enqueueStoreMutation(async () => {
@@ -2877,6 +3116,9 @@ export function useBarnStore() {
       if (!currentSnapshot) return false;
       const ts = getAdjustedNowIsoUtc();
       const sp = resolveSpeciesProfile(existing.species, currentSnapshot.speciesProfiles);
+      const sire = currentSnapshot.animals.find((a) => a.id === existing.sireId);
+      const dam = currentSnapshot.animals.find((a) => a.id === existing.damId);
+      const { profile: effectiveSp } = resolveEffectiveSpeciesProfileForBreeding(sp, dam, sire);
       const ops: SyncOperation[] = [];
 
       try {
@@ -2886,8 +3128,6 @@ export function useBarnStore() {
           ? Math.min(16, requestedDrafts.length)
           : Math.min(16, Math.max(0, patch.registerJuniorCount));
         if (effectiveCount > 0) {
-          const sire = currentSnapshot.animals.find((a) => a.id === existing.sireId);
-          const dam = currentSnapshot.animals.find((a) => a.id === existing.damId);
           const createdJuniors: Animal[] = [];
           for (let i = 1; i <= effectiveCount; i++) {
             const draftItem = requestedDrafts?.[i - 1];
@@ -2999,18 +3239,400 @@ export function useBarnStore() {
             recordRev: breedingRev,
           })
         );
+
+        let clearedTaskCount = 0;
+        let shiftedTaskCount = 0;
+
+        if (patch.status === 'Missed') {
+          const pendingCleanup = getPendingBreedingCleanupTasks(
+            currentSnapshot.tasks,
+            existing.id,
+            effectiveSp
+          );
+          if (pendingCleanup.length > 0) {
+            await adapterRef.current!.deleteTasksBatch(pendingCleanup.map((t) => t.id));
+            clearedTaskCount = pendingCleanup.length;
+            for (const ct of pendingCleanup) {
+              ops.push(
+                createOutboxOperation({
+                  entityType: 'task',
+                  entityUuid: ct.id,
+                  deviceId,
+                  logicalCounter: allocateNextLogicalCounter(),
+                  fieldName: '__delete__',
+                  newValue: true,
+                  timestamp: ts,
+                  recordRev: nextEntityRev(ct.id, ct._rev),
+                })
+              );
+            }
+          }
+        } else if (
+          patch.shiftPostBirthTasksToActualDate &&
+          (patch.status === 'Born' || patch.status === 'Weaned') &&
+          patch.actualBirthDateIso
+        ) {
+          const prevTaskById = new Map(currentSnapshot.tasks.map((t) => [t.id, t]));
+          const { updatedTasks } = recalculatePostBirthTasksForBreeding(
+            currentSnapshot.tasks,
+            updated,
+            effectiveSp,
+            ts,
+            patch.actualBirthDateIso
+          );
+          if (updatedTasks.length > 0) {
+            const revAligned = updatedTasks.map((nextTask) => {
+              const prevTask = prevTaskById.get(nextTask.id);
+              const rev = nextEntityRev(nextTask.id, prevTask?._rev);
+              return { ...nextTask, _rev: rev };
+            });
+            await adapterRef.current!.saveTasksBatch(revAligned);
+            shiftedTaskCount = revAligned.length;
+            for (const nextTask of revAligned) {
+              const prevTask = prevTaskById.get(nextTask.id);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'task',
+                  previous: prevTask,
+                  next: nextTask,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: nextTask._rev,
+                })
+              );
+            }
+          }
+        }
+
         await recordOutboxOps(ops);
         await reloadFromAdapter();
-        notify(
+        const extraNotes: string[] = [];
+        if (clearedTaskCount > 0) {
+          extraNotes.push(`cleared ${clearedTaskCount} pending barn chore${clearedTaskCount === 1 ? '' : 's'}`);
+        }
+        if (shiftedTaskCount > 0) {
+          extraNotes.push(`shifted ${shiftedTaskCount} post-birth chore${shiftedTaskCount === 1 ? '' : 's'} to ${patch.actualBirthDateIso}`);
+        }
+        const baseMsg =
           effectiveCount > 0
-            ? `Litter updated & ${effectiveCount} ${sp.offspringLabel.toLowerCase()} records created.`
-            : 'Litter outcome saved.'
+            ? `Litter updated & ${effectiveCount} ${sp.offspringLabel.toLowerCase()} records created`
+            : 'Litter outcome saved';
+        notify(
+          extraNotes.length > 0 ? `${baseMsg} (${extraNotes.join('; ')}).` : `${baseMsg}.`
         );
         return true;
       } catch (err) {
         reportPersistenceFailure('save litter outcome', err);
         return false;
       }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const recalculateBreedingPostBirthTasks = useCallback(
+    async (breedingId: string): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) return false;
+        const breeding = currentSnapshot.breedings.find((b) => b.id === breedingId);
+        if (!breeding || !breeding.actualBirthDateIso || breeding.status === 'Missed') {
+          notify('Record an actual birth date before recalculating post-birth chores.');
+          return false;
+        }
+        const ts = getAdjustedNowIsoUtc();
+        const sp = resolveSpeciesProfile(breeding.species, currentSnapshot.speciesProfiles);
+        const sire = currentSnapshot.animals.find((a) => a.id === breeding.sireId);
+        const dam = currentSnapshot.animals.find((a) => a.id === breeding.damId);
+        const { profile: effectiveSp } = resolveEffectiveSpeciesProfileForBreeding(sp, dam, sire);
+
+        const prevTaskById = new Map(currentSnapshot.tasks.map((t) => [t.id, t]));
+        const { updatedTasks } = recalculatePostBirthTasksForBreeding(
+          currentSnapshot.tasks,
+          breeding,
+          effectiveSp,
+          ts
+        );
+        if (updatedTasks.length === 0) {
+          notify('Post-birth chores already match the actual birth date.');
+          return true;
+        }
+
+        try {
+          const revAligned = updatedTasks.map((nextTask) => {
+            const prevTask = prevTaskById.get(nextTask.id);
+            const rev = nextEntityRev(nextTask.id, prevTask?._rev);
+            return { ...nextTask, _rev: rev };
+          });
+          await adapterRef.current!.saveTasksBatch(revAligned);
+          const ops: SyncOperation[] = [];
+          for (const nextTask of revAligned) {
+            const prevTask = prevTaskById.get(nextTask.id);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'task',
+                previous: prevTask,
+                next: nextTask,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: nextTask._rev,
+              })
+            );
+          }
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(
+            `Shifted ${revAligned.length} post-birth chore${
+              revAligned.length === 1 ? '' : 's'
+            } to ${breeding.actualBirthDateIso}.`
+          );
+          return true;
+        } catch (err) {
+          reportPersistenceFailure('recalculate post-birth chores', err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const completeBreedingTaskWithOutcome = useCallback(
+    async (
+      task: BarnTask,
+      outcome: BreedingTaskCheckoffAction
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) return false;
+        const ts = getAdjustedNowIsoUtc();
+        const ops: SyncOperation[] = [];
+
+        try {
+          const taskRev = nextEntityRev(task.id, task._rev);
+          const completedTask: BarnTask = {
+            ...task,
+            completed: true,
+            _rev: taskRev,
+            updatedAt: ts,
+          };
+          await adapterRef.current!.saveTask(completedTask);
+          ops.push(
+            ...diffEntityFieldsToOperations({
+              entityType: 'task',
+              previous: task,
+              next: completedTask,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: taskRev,
+            })
+          );
+
+          const breeding = task.linkedBreedingId
+            ? currentSnapshot.breedings.find((b) => b.id === task.linkedBreedingId)
+            : undefined;
+
+          if (!breeding) {
+            await recordOutboxOps(ops);
+            await reloadFromAdapter();
+            notify('Chore marked complete.');
+            return true;
+          }
+
+          const sp = resolveSpeciesProfile(breeding.species, currentSnapshot.speciesProfiles);
+          const sire = currentSnapshot.animals.find((a) => a.id === breeding.sireId);
+          const dam = currentSnapshot.animals.find((a) => a.id === breeding.damId);
+          const { profile: effectiveSp } = resolveEffectiveSpeciesProfileForBreeding(sp, dam, sire);
+
+          if (outcome.kind === 'palpated_positive') {
+            const nextStatus: BreedingRecord['status'] =
+              breeding.status === 'Planned' || breeding.status === 'Bred'
+                ? 'Palpated Positive'
+                : breeding.status;
+            const breedingRev = nextEntityRev(breeding.id, breeding._rev);
+            const updatedBreeding: BreedingRecord = {
+              ...breeding,
+              status: nextStatus,
+              _rev: breedingRev,
+              updatedAt: ts,
+            };
+            await adapterRef.current!.saveBreeding(updatedBreeding);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'breeding',
+                previous: breeding,
+                next: updatedBreeding,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: breedingRev,
+              })
+            );
+            await recordOutboxOps(ops);
+            await reloadFromAdapter();
+            notify(`Palpation confirmed positive for ${breeding.damName} × ${breeding.sireName}.`);
+            return true;
+          }
+
+          if (outcome.kind === 'missed') {
+            const breedingRev = nextEntityRev(breeding.id, breeding._rev);
+            const nextNotes = outcome.notes?.trim()
+              ? [breeding.notes, outcome.notes.trim()].filter(Boolean).join(' · ')
+              : breeding.notes;
+            const updatedBreeding: BreedingRecord = {
+              ...breeding,
+              status: 'Missed',
+              notes: nextNotes,
+              _rev: breedingRev,
+              updatedAt: ts,
+            };
+            await adapterRef.current!.saveBreeding(updatedBreeding);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'breeding',
+                previous: breeding,
+                next: updatedBreeding,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: breedingRev,
+              })
+            );
+
+            const pendingCleanup = getPendingBreedingCleanupTasks(
+              currentSnapshot.tasks,
+              breeding.id,
+              effectiveSp,
+              [task.id]
+            );
+            if (pendingCleanup.length > 0) {
+              await adapterRef.current!.deleteTasksBatch(pendingCleanup.map((t) => t.id));
+              for (const ct of pendingCleanup) {
+                ops.push(
+                  createOutboxOperation({
+                    entityType: 'task',
+                    entityUuid: ct.id,
+                    deviceId,
+                    logicalCounter: allocateNextLogicalCounter(),
+                    fieldName: '__delete__',
+                    newValue: true,
+                    timestamp: ts,
+                    recordRev: nextEntityRev(ct.id, ct._rev),
+                  })
+                );
+              }
+            }
+            await recordOutboxOps(ops);
+            await reloadFromAdapter();
+            notify(
+              pendingCleanup.length > 0
+                ? `Marked ${breeding.damName} × ${breeding.sireName} Missed and cleared ${pendingCleanup.length} pending chore${pendingCleanup.length === 1 ? '' : 's'}.`
+                : `Marked ${breeding.damName} × ${breeding.sireName} Missed.`
+            );
+            return true;
+          }
+
+          // outcome.kind === 'birth_recorded'
+          const breedingRev = nextEntityRev(breeding.id, breeding._rev);
+          const nextNotes = outcome.notes?.trim()
+            ? [breeding.notes, outcome.notes.trim()].filter(Boolean).join(' · ')
+            : breeding.notes;
+          const updatedBreeding: BreedingRecord = {
+            ...breeding,
+            status: breeding.status === 'Weaned' ? 'Weaned' : 'Born',
+            actualBirthDateIso: outcome.actualBirthDateIso || breeding.actualBirthDateIso || breeding.expectedDueDateIso,
+            liveCount: Math.max(0, Math.round(outcome.liveCount)),
+            stillbornCount: Math.max(0, Math.round(outcome.stillbornCount)),
+            fosteredCount:
+              outcome.fosteredCount !== undefined
+                ? Math.round(outcome.fosteredCount)
+                : breeding.fosteredCount,
+            notes: nextNotes,
+            _rev: breedingRev,
+            updatedAt: ts,
+          };
+          await adapterRef.current!.saveBreeding(updatedBreeding);
+          ops.push(
+            ...diffEntityFieldsToOperations({
+              entityType: 'breeding',
+              previous: breeding,
+              next: updatedBreeding,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: breedingRev,
+            })
+          );
+
+          let shiftedCount = 0;
+          if (outcome.shiftPostBirthTasks !== false && updatedBreeding.actualBirthDateIso) {
+            const prevTaskById = new Map(currentSnapshot.tasks.map((t) => [t.id, t]));
+            const tasksWithoutCompleted = currentSnapshot.tasks.filter((t) => t.id !== task.id);
+            const { updatedTasks } = recalculatePostBirthTasksForBreeding(
+              tasksWithoutCompleted,
+              updatedBreeding,
+              effectiveSp,
+              ts,
+              updatedBreeding.actualBirthDateIso
+            );
+            if (updatedTasks.length > 0) {
+              const revAligned = updatedTasks.map((nextTask) => {
+                const prevTask = prevTaskById.get(nextTask.id);
+                const rev = nextEntityRev(nextTask.id, prevTask?._rev);
+                return { ...nextTask, _rev: rev };
+              });
+              await adapterRef.current!.saveTasksBatch(revAligned);
+              shiftedCount = revAligned.length;
+              for (const nextTask of revAligned) {
+                const prevTask = prevTaskById.get(nextTask.id);
+                ops.push(
+                  ...diffEntityFieldsToOperations({
+                    entityType: 'task',
+                    previous: prevTask,
+                    next: nextTask,
+                    deviceId,
+                    nextCounter: allocateNextLogicalCounter,
+                    timestamp: ts,
+                    recordRev: nextTask._rev,
+                  })
+                );
+              }
+            }
+          }
+
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(
+            `Logged ${updatedBreeding.liveCount} live / ${updatedBreeding.stillbornCount} stillborn for ${breeding.damName}` +
+              (shiftedCount > 0
+                ? ` & shifted ${shiftedCount} post-birth chore${shiftedCount === 1 ? '' : 's'}.`
+                : '.')
+          );
+          return true;
+        } catch (err) {
+          reportPersistenceFailure('complete breeding outcome chore', err);
+          return false;
+        }
       });
     },
     [
@@ -5338,14 +5960,19 @@ export function useBarnStore() {
     addOptimizedAnimalPhotos,
     loadAnimalPhotoDataUrl,
     hydrateSnapshotForExport,
+    loadPedigreeNeighborhood,
+    checkPedigreeBranchesHaveAncestors,
     setPrimaryAnimalPhoto,
     updateAnimalPhotoCaption,
     deleteAnimalPhoto,
     deleteAnimal,
     saveCage,
     deleteCage,
+    assignAnimalToCage,
     logBreedingWithCascade,
     updateBreedingOutcome,
+    recalculateBreedingPostBirthTasks,
+    completeBreedingTaskWithOutcome,
     deleteBreeding,
     saveTask,
     exportTasksToCalendar,

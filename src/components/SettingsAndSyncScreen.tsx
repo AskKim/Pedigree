@@ -145,6 +145,7 @@ import {
   usePwaUpdateStatus,
 } from '../storage/pwaUpdateManager';
 import {
+  getAdjustedNowMs,
   RollingBackupMeta,
   StorageProtectionStatus,
   useConnectivityStatus,
@@ -401,6 +402,7 @@ export function SettingsAndSyncScreen({
   const sqliteExportLock = useAsyncSubmitLock();
   const csvExportLock = useAsyncSubmitLock();
   const reportExportLock = useAsyncSubmitLock();
+  const archiveExportLock = useAsyncSubmitLock();
   const destructiveResetLock = useAsyncSubmitLock();
   const preUpgradeBackupLock = useAsyncSubmitLock();
   const updateCheckLock = useAsyncSubmitLock();
@@ -526,83 +528,87 @@ export function SettingsAndSyncScreen({
   };
 
   const handleDownloadTimestampedFullBackup = async () => {
-    setImportError(null);
-    if (encryptBackupExport && backupExportPassphrase.length < 4) {
-      setImportError(
-        'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-      );
-      return;
-    }
-    setZipExportBusy('json');
-    try {
-      const exportSnapshot = onHydrateSnapshotForExport
-        ? await onHydrateSnapshotForExport(snapshot)
-        : snapshot;
-      const stampSlug = formatTimestampedBackupSlug();
-      const baseFilename = `community-pedigree-full-backup-${stampSlug}.json`;
-      const rawJson = exportBarnBackupJson(exportSnapshot);
-      const filename = encryptBackupExport
-        ? `community-pedigree-full-backup-${stampSlug}-encrypted.json`
-        : baseFilename;
-      const outputJson = encryptBackupExport
-        ? JSON.stringify(
-            await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-              payloadKind: 'json_backup',
-              originalFileName: baseFilename,
-            }),
-            null,
-            2
-          )
-        : rawJson;
-      await downloadTextFile(filename, outputJson, 'application/json');
-      void recordBackupExport('json', filename);
-      setPortabilityFeedback(
-        `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}JSON backup (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
-      );
-    } catch (err: any) {
-      setImportError(err?.message || 'Could not prepare full JSON backup.');
-    } finally {
-      setZipExportBusy(null);
-    }
+    await archiveExportLock.runLocked(async () => {
+      setImportError(null);
+      if (encryptBackupExport && backupExportPassphrase.length < 4) {
+        setImportError(
+          'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
+        );
+        return;
+      }
+      setZipExportBusy('json');
+      try {
+        const exportSnapshot = onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport(snapshot)
+          : snapshot;
+        const stampSlug = formatTimestampedBackupSlug();
+        const baseFilename = `community-pedigree-full-backup-${stampSlug}.json`;
+        const rawJson = exportBarnBackupJson(exportSnapshot);
+        const filename = encryptBackupExport
+          ? `community-pedigree-full-backup-${stampSlug}-encrypted.json`
+          : baseFilename;
+        const outputJson = encryptBackupExport
+          ? JSON.stringify(
+              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
+                payloadKind: 'json_backup',
+                originalFileName: baseFilename,
+              }),
+              null,
+              2
+            )
+          : rawJson;
+        await downloadTextFile(filename, outputJson, 'application/json');
+        void recordBackupExport('json', filename);
+        setPortabilityFeedback(
+          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}JSON backup (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
+        );
+      } catch (err: any) {
+        setImportError(err?.message || 'Could not prepare full JSON backup.');
+      } finally {
+        setZipExportBusy(null);
+      }
+    });
   };
 
   const handleDownloadDatabaseOnlyBackup = async () => {
-    setImportError(null);
-    if (encryptBackupExport && backupExportPassphrase.length < 4) {
-      setImportError(
-        'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-      );
-      return;
-    }
-    setZipExportBusy('json-light');
-    try {
-      const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
-      const stampSlug = formatTimestampedBackupSlug();
-      const baseFilename = `community-pedigree-records-only-${stampSlug}.json`;
-      const rawJson = exportBarnBackupJson(lightSnapshot);
-      const filename = encryptBackupExport
-        ? `community-pedigree-records-only-${stampSlug}-encrypted.json`
-        : baseFilename;
-      const outputJson = encryptBackupExport
-        ? JSON.stringify(
-            await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-              payloadKind: 'json_backup',
-              originalFileName: baseFilename,
-            }),
-            null,
-            2
-          )
-        : rawJson;
-      await downloadTextFile(filename, outputJson, 'application/json');
-      void recordBackupExport('json', filename);
-      setPortabilityFeedback(
-        `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
-      );
-    } catch (err: any) {
-      setImportError(err?.message || 'Could not prepare records-only JSON backup.');
-    } finally {
-      setZipExportBusy(null);
-    }
+    await archiveExportLock.runLocked(async () => {
+      setImportError(null);
+      if (encryptBackupExport && backupExportPassphrase.length < 4) {
+        setImportError(
+          'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
+        );
+        return;
+      }
+      setZipExportBusy('json-light');
+      try {
+        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
+        const stampSlug = formatTimestampedBackupSlug();
+        const baseFilename = `community-pedigree-records-only-${stampSlug}.json`;
+        const rawJson = exportBarnBackupJson(lightSnapshot);
+        const filename = encryptBackupExport
+          ? `community-pedigree-records-only-${stampSlug}-encrypted.json`
+          : baseFilename;
+        const outputJson = encryptBackupExport
+          ? JSON.stringify(
+              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
+                payloadKind: 'json_backup',
+                originalFileName: baseFilename,
+              }),
+              null,
+              2
+            )
+          : rawJson;
+        await downloadTextFile(filename, outputJson, 'application/json');
+        void recordBackupExport('json', filename);
+        setPortabilityFeedback(
+          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
+        );
+      } catch (err: any) {
+        setImportError(err?.message || 'Could not prepare records-only JSON backup.');
+      } finally {
+        setZipExportBusy(null);
+      }
+    });
   };
 
   const handleExportCsv = async () => {
@@ -641,6 +647,7 @@ export function SettingsAndSyncScreen({
       };
 
   const handleDownloadCompleteZip = async (skipCaution = false) => {
+    if (archiveExportLock.isLockedNow()) return;
     setImportError(null);
     if (encryptBackupExport && backupExportPassphrase.length < 4) {
       setImportError(
@@ -652,43 +659,46 @@ export function SettingsAndSyncScreen({
       setPendingHeavyZipExport('complete');
       return;
     }
-    setPendingHeavyZipExport(null);
-    setZipExportBusy('complete');
-    try {
-      const exportSnapshot = onHydrateSnapshotForExport
-        ? await onHydrateSnapshotForExport(snapshot)
-        : snapshot;
-      const stampSlug = formatTimestampedBackupSlug();
-      const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
-      const baseFilename = `community-pedigree-archive-${stampSlug}.zip`;
-      let finalBytes = archive.bytes;
-      let filename = baseFilename;
-      if (encryptBackupExport) {
-        const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
-          payloadKind: 'zip_archive',
-          originalFileName: baseFilename,
-        });
-        finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-        filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
+    await archiveExportLock.runLocked(async () => {
+      setPendingHeavyZipExport(null);
+      setZipExportBusy('complete');
+      try {
+        const exportSnapshot = onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport(snapshot)
+          : snapshot;
+        const stampSlug = formatTimestampedBackupSlug();
+        const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
+        const baseFilename = `community-pedigree-archive-${stampSlug}.zip`;
+        let finalBytes = archive.bytes;
+        let filename = baseFilename;
+        if (encryptBackupExport) {
+          const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
+            payloadKind: 'zip_archive',
+            originalFileName: baseFilename,
+          });
+          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
+          filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
+        }
+        await downloadBinaryFile(filename, finalBytes, 'application/zip');
+        void recordBackupExport('zip', filename);
+        setPortabilityFeedback(
+          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(finalBytes.byteLength)}).`
+        );
+      } catch (err: any) {
+        const baseMsg = err?.message || 'Could not build Complete Archive (.ZIP).';
+        setImportError(
+          heavyZipGate.requiresConfirmation
+            ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
+            : baseMsg
+        );
+      } finally {
+        setZipExportBusy(null);
       }
-      await downloadBinaryFile(filename, finalBytes, 'application/zip');
-      void recordBackupExport('zip', filename);
-      setPortabilityFeedback(
-        `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(finalBytes.byteLength)}).`
-      );
-    } catch (err: any) {
-      const baseMsg = err?.message || 'Could not build Complete Archive (.ZIP).';
-      setImportError(
-        heavyZipGate.requiresConfirmation
-          ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
-          : baseMsg
-      );
-    } finally {
-      setZipExportBusy(null);
-    }
+    });
   };
 
   const handleDownloadPhotosOnlyZip = async (skipCaution = false) => {
+    if (archiveExportLock.isLockedNow()) return;
     setImportError(null);
     if (allPhotos.length === 0) {
       setImportError('No animal photos stored yet to archive.');
@@ -704,39 +714,41 @@ export function SettingsAndSyncScreen({
       setPendingHeavyZipExport('photos');
       return;
     }
-    setPendingHeavyZipExport(null);
-    setZipExportBusy('photos');
-    try {
-      const exportSnapshot = onHydrateSnapshotForExport
-        ? await onHydrateSnapshotForExport(snapshot)
-        : snapshot;
-      const stampSlug = formatTimestampedBackupSlug();
-      const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
-      const baseFilename = `community-pedigree-photos-${stampSlug}.zip`;
-      let finalBytes = archive.bytes;
-      let filename = baseFilename;
-      if (encryptBackupExport) {
-        const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
-          payloadKind: 'zip_archive',
-          originalFileName: baseFilename,
-        });
-        finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-        filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
+    await archiveExportLock.runLocked(async () => {
+      setPendingHeavyZipExport(null);
+      setZipExportBusy('photos');
+      try {
+        const exportSnapshot = onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport(snapshot)
+          : snapshot;
+        const stampSlug = formatTimestampedBackupSlug();
+        const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
+        const baseFilename = `community-pedigree-photos-${stampSlug}.zip`;
+        let finalBytes = archive.bytes;
+        let filename = baseFilename;
+        if (encryptBackupExport) {
+          const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
+            payloadKind: 'zip_archive',
+            originalFileName: baseFilename,
+          });
+          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
+          filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
+        }
+        await downloadBinaryFile(filename, finalBytes, 'application/zip');
+        setPortabilityFeedback(
+          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
+        );
+      } catch (err: any) {
+        const baseMsg = err?.message || 'Could not build Photos-Only (.ZIP) archive.';
+        setImportError(
+          heavyZipGate.requiresConfirmation
+            ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
+            : baseMsg
+        );
+      } finally {
+        setZipExportBusy(null);
       }
-      await downloadBinaryFile(filename, finalBytes, 'application/zip');
-      setPortabilityFeedback(
-        `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
-      );
-    } catch (err: any) {
-      const baseMsg = err?.message || 'Could not build Photos-Only (.ZIP) archive.';
-      setImportError(
-        heavyZipGate.requiresConfirmation
-          ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
-          : baseMsg
-      );
-    } finally {
-      setZipExportBusy(null);
-    }
+    });
   };
 
   const isSqliteUnavailable =
@@ -1080,7 +1092,7 @@ export function SettingsAndSyncScreen({
           registerPausedBackgroundJob({
             taskId: 'directory_sync',
             label: 'Folder Sync',
-            pausedAtMs: Date.now(),
+            pausedAtMs: getAdjustedNowMs(),
             severity: 'severity',
             severityReason: reasonMsg,
             resumeHandler: () => executeResumeDirectorySync(true),
@@ -1113,7 +1125,7 @@ export function SettingsAndSyncScreen({
         registerPausedBackgroundJob({
           taskId: 'directory_sync',
           label: 'Folder Sync',
-          pausedAtMs: Date.now(),
+          pausedAtMs: getAdjustedNowMs(),
           severity: err.severityIssue ? 'severity' : 'minor',
           severityReason: err.severityIssue ?? undefined,
           resumeHandler: () => executeResumeDirectorySync(Boolean(err.severityIssue)),
@@ -1131,7 +1143,7 @@ export function SettingsAndSyncScreen({
         registerPausedBackgroundJob({
           taskId: 'directory_sync',
           label: 'Folder Sync',
-          pausedAtMs: Date.now(),
+          pausedAtMs: getAdjustedNowMs(),
           severity: 'severity',
           severityReason: msg,
           resumeHandler: () => executeResumeDirectorySync(false),
@@ -1192,7 +1204,7 @@ export function SettingsAndSyncScreen({
           registerPausedBackgroundJob({
             taskId: 'directory_sync',
             label: 'Folder Sync',
-            pausedAtMs: Date.now(),
+            pausedAtMs: getAdjustedNowMs(),
             severity: hasSeverity ? 'severity' : 'minor',
             severityReason: err.severityIssue ?? undefined,
             resumeHandler: () => executeResumeDirectorySync(hasSeverity),
@@ -2991,7 +3003,8 @@ export function SettingsAndSyncScreen({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button
                   type="button"
-                  disabled={zipExportBusy !== null}
+                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
+                  aria-busy={zipExportBusy === 'complete'}
                   onClick={() => void handleDownloadCompleteZip()}
                   title="Includes database JSON, organized animal photos, and printable Barn Binder .HTM per species"
                   className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
@@ -3004,7 +3017,12 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  disabled={allPhotos.length === 0 || zipExportBusy !== null}
+                  disabled={
+                    allPhotos.length === 0 ||
+                    zipExportBusy !== null ||
+                    archiveExportLock.isSubmitting
+                  }
+                  aria-busy={zipExportBusy === 'photos'}
                   onClick={() => void handleDownloadPhotosOnlyZip()}
                   title={
                     allPhotos.length === 0
@@ -3041,7 +3059,8 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  disabled={zipExportBusy !== null}
+                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
+                  aria-busy={zipExportBusy === 'json'}
                   onClick={() => void handleDownloadTimestampedFullBackup()}
                   className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                 >
@@ -3053,7 +3072,8 @@ export function SettingsAndSyncScreen({
 
                 <button
                   type="button"
-                  disabled={zipExportBusy !== null}
+                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
+                  aria-busy={zipExportBusy === 'json-light'}
                   onClick={() => void handleDownloadDatabaseOnlyBackup()}
                   title="Saves all herd, pedigree, breeding, and care logs as compact .JSON without loading full-resolution photos into memory"
                   className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
@@ -3133,6 +3153,7 @@ export function SettingsAndSyncScreen({
                   <div className="flex flex-wrap items-center gap-2 pt-0.5">
                     <button
                       type="button"
+                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
                       onClick={() => {
                         const kind = pendingHeavyZipExport;
                         setPendingHeavyZipExport(null);
@@ -3142,27 +3163,29 @@ export function SettingsAndSyncScreen({
                           void handleDownloadPhotosOnlyZip(true);
                         }
                       }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold disabled:opacity-60"
                     >
                       Try .ZIP Export Anyway
                     </button>
                     <button
                       type="button"
+                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
                       onClick={() => {
                         setPendingHeavyZipExport(null);
                         void handleDownloadDatabaseOnlyBackup();
                       }}
-                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-60"
                     >
                       Database Only (.JSON, Skip Photos)
                     </button>
                     <button
                       type="button"
+                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
                       onClick={() => {
                         setPendingHeavyZipExport(null);
                         void handleDownloadTimestampedFullBackup();
                       }}
-                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold"
+                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold disabled:opacity-60"
                     >
                       Full .JSON Backup (With Photos)
                     </button>
@@ -3641,8 +3664,9 @@ export function SettingsAndSyncScreen({
                   )}
                   <button
                     type="button"
+                    disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
                     onClick={handleDownloadTimestampedFullBackup}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-60"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
                     Download Timestamped Backup First
@@ -3721,8 +3745,9 @@ export function SettingsAndSyncScreen({
                   )}
                   <button
                     type="button"
+                    disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
                     onClick={handleDownloadTimestampedFullBackup}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-60"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
                     Download Timestamped Backup First

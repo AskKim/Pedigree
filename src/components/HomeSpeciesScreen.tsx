@@ -33,6 +33,7 @@ import {
   buildWithdrawalByAnimalMap,
   evaluateSpeciesActiveWithdrawalsAlert,
   evaluateSpeciesArrivingBabiesAlert,
+  evaluateSpeciesCagesOccupancy,
   evaluateSpeciesDueTasksAlert,
   evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
@@ -190,6 +191,11 @@ export function HomeSpeciesScreen({
         const memoAlert = evaluateSpeciesMemoReminderAlert(sp, {
           dismissedSignature: snapshot.settings.dismissedMemoAlertSignatures?.[spKey],
         });
+        const cagesOccupancy = evaluateSpeciesCagesOccupancy(
+          snapshot.cages,
+          snapshot.animals,
+          sp.name
+        );
 
         return {
           sp,
@@ -201,6 +207,7 @@ export function HomeSpeciesScreen({
           attentionAlert,
           withdrawalAlert,
           memoAlert,
+          cagesOccupancy,
         };
       }),
     [
@@ -209,6 +216,7 @@ export function HomeSpeciesScreen({
       snapshot.settings.dismissedMemoAlertSignatures,
       snapshot.breedings,
       snapshot.animals,
+      snapshot.cages,
       snapshot.careLogs,
       activeTasks,
       today,
@@ -597,6 +605,7 @@ export function HomeSpeciesScreen({
                 attentionAlert,
                 withdrawalAlert,
                 memoAlert,
+                cagesOccupancy,
               },
               index
             ) => {
@@ -837,6 +846,47 @@ export function HomeSpeciesScreen({
                           className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap shrink-0"
                         >
                           Review
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Over-Capacity Housing Welfare Alert */}
+                  {cagesOccupancy.shouldShowOverCapacityAlert && (
+                    <div
+                      role="status"
+                      className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] space-y-2 text-xs"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <AlertTriangle
+                            className="w-4 h-4 text-[var(--barn-danger)] mt-0.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+                              {cagesOccupancy.totalOverCapacityCount}{' '}
+                              {cagesOccupancy.totalOverCapacityCount === 1
+                                ? 'Cage Over Capacity'
+                                : 'Cages Over Capacity'}
+                            </div>
+                            <div className="text-[11px] text-[var(--barn-muted)] truncate font-mono tabular-nums">
+                              {cagesOccupancy.overCapacityCages
+                                .slice(0, 2)
+                                .map((ev) => `${ev.cage.label} (${ev.ratioLabel})`)
+                                .join(' · ')}
+                              {cagesOccupancy.overCapacityCages.length > 2
+                                ? ` +${cagesOccupancy.overCapacityCages.length - 2} more`
+                                : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenSpecies(sp.name, 'dashboard')}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-danger)]/50 text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap shrink-0"
+                        >
+                          Inspect Cages
                         </button>
                       </div>
                     </div>

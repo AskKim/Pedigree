@@ -74,6 +74,10 @@ interface PedigreeScreenProps {
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
+  onLoadPedigreeNeighborhood?: (rootIds: string[], maxDepth: number) => Promise<Animal[]>;
+  onCheckPedigreeBranchesHaveAncestors?: (
+    animalIds: string[]
+  ) => Promise<Record<string, boolean>>;
 }
 
 const MIN_TREE_ZOOM = 0.2;
@@ -98,6 +102,8 @@ export function PedigreeScreen({
   onIgnoreConflicts,
   onRestoreConflictAlert,
   onLoadFullPhoto,
+  onLoadPedigreeNeighborhood,
+  onCheckPedigreeBranchesHaveAncestors,
 }: PedigreeScreenProps) {
   const {
     speciesProfile,
@@ -111,6 +117,12 @@ export function PedigreeScreen({
 
   const [zoom, setZoom] = useState<number>(1);
   const [expandedGen3Branches, setExpandedGen3Branches] = useState<Set<number>>(() => new Set());
+  const [lazyAncestorsById, setLazyAncestorsById] = useState<Map<string, Animal>>(() => new Map());
+  const [externalKnownGen4Branches, setExternalKnownGen4Branches] = useState<Set<number>>(
+    () => new Set()
+  );
+  const [loadingGen3Branches, setLoadingGen3Branches] = useState<Set<number>>(() => new Set());
+  const [printHydrating, setPrintHydrating] = useState<boolean>(false);
   const [linkingSlot, setLinkingSlot] = useState<PedigreeSlot | null>(null);
   const [includeArchivedInLink, setIncludeArchivedInLink] = useState(false);
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
@@ -255,36 +267,222 @@ export function PedigreeScreen({
     }
   };
 
+  // Build an immediate 0..3 generation map so unexpanded Gen 4+ ancestors are never traversed eagerly
+  const gen0To3BaseMap = useMemo(() => {
+    if (!subject) return herdById;
+    if (!onLoadPedigreeNeighborhood) return herdById;
+    const map = new Map<string, Animal>();
+    const frontier: string[] = [subject.id];
+    const visited = new Set<string>();
+    for (let depth = 0; depth <= 3 && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      for (let i = 0; i < frontier.length; i++) {
+        const id = frontier[i];
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+        const rec = herdById.get(id) ?? lazyAncestorsById.get(id);
+        if (!rec) continue;
+        map.set(rec.id, rec);
+        if (depth < 3) {
+          if (rec.sireId && !visited.has(rec.sireId)) next.push(rec.sireId);
+          if (rec.damId && !visited.has(rec.damId)) next.push(rec.damId);
+        }
+      }
+      frontier.length = 0;
+      for (let i = 0; i < next.length; i++) frontier.push(next[i]);
+    }
+    return map;
+  }, [subject, herdById, lazyAncestorsById, onLoadPedigreeNeighborhood]);
+
+  // Scoped pedigree lookup merges Gen 0..3 neighborhood with lazily fetched Gen 4+ / archived records
+  const activePedigreeMap = useMemo(() => {
+    if (!onLoadPedigreeNeighborhood) return herdById;
+    if (lazyAncestorsById.size === 0) return gen0To3BaseMap;
+    const merged = new Map<string, Animal>(gen0To3BaseMap);
+    lazyAncestorsById.forEach((animal, id) => {
+      merged.set(id, herdById.get(id) ?? animal);
+    });
+    return merged;
+  }, [gen0To3BaseMap, lazyAncestorsById, herdById, onLoadPedigreeNeighborhood]);
+
+  // Fetch immediate Gen 0..3 neighborhood & probe whether Gen-3 nodes have deeper SQLite/OPFS ancestors
+  useEffect(() => {
+    if (!subject) {
+      setLazyAncestorsById(new Map());
+      setExternalKnownGen4Branches(new Set());
+      return;
+    }
+    let cancelled = false;
+
+    const hydrateImmediateAndProbe = async () => {
+      if (onLoadPedigreeNeighborhood) {
+        try {
+          const rows = await onLoadPedigreeNeighborhood([subject.id], 3);
+          if (cancelled) return;
+          setLazyAncestorsById((prev) => {
+            const next = new Map(prev);
+            for (const a of rows) {
+              next.set(a.id, a);
+            }
+            return next;
+          });
+        } catch {
+          // Safe fallback to gen0To3BaseMap
+        }
+      }
+
+      if (generations >= 4 && onCheckPedigreeBranchesHaveAncestors) {
+        const g3Slots = buildPedigreeSlots(subject, gen0To3BaseMap, 3, speciesProfile).filter(
+          (sl) => sl.generation === 3 && sl.animal
+        );
+        const g3Ids = g3Slots.map((sl) => sl.animal!.id);
+        if (g3Ids.length === 0) {
+          if (!cancelled) setExternalKnownGen4Branches(new Set());
+          return;
+        }
+        try {
+          const existsMap = await onCheckPedigreeBranchesHaveAncestors(g3Ids);
+          if (cancelled) return;
+          const knownSet = new Set<number>();
+          for (const sl of g3Slots) {
+            if (sl.animal && existsMap[sl.animal.id]) {
+              knownSet.add(sl.slotIndex);
+            }
+          }
+          setExternalKnownGen4Branches(knownSet);
+        } catch {
+          if (!cancelled) setExternalKnownGen4Branches(new Set());
+        }
+      } else if (!cancelled) {
+        setExternalKnownGen4Branches(new Set());
+      }
+    };
+
+    void hydrateImmediateAndProbe();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    subject?.id,
+    generations,
+    speciesProfile.name,
+    animals.length,
+    onLoadPedigreeNeighborhood,
+    onCheckPedigreeBranchesHaveAncestors,
+  ]);
+
   const slots = useMemo(() => {
     if (!subject) return [];
-    return buildPedigreeSlots(subject, herdById, generations, speciesProfile);
-  }, [subject, herdById, generations, speciesProfile]);
+    return buildPedigreeSlots(subject, activePedigreeMap, generations, speciesProfile);
+  }, [subject, activePedigreeMap, generations, speciesProfile]);
 
   useEffect(() => {
     setExpandedGen3Branches(new Set());
+    setLazyAncestorsById(new Map());
+    setLoadingGen3Branches(new Set());
   }, [subject?.id, generations, speciesProfile.name]);
 
   const branchViewport = useMemo(
-    () => buildPedigreeBranchViewport(slots, generations, expandedGen3Branches),
-    [slots, generations, expandedGen3Branches]
+    () =>
+      buildPedigreeBranchViewport(
+        slots,
+        generations,
+        expandedGen3Branches,
+        externalKnownGen4Branches
+      ),
+    [slots, generations, expandedGen3Branches, externalKnownGen4Branches]
   );
 
-  const toggleGen3Branch = useCallback((branchIndex: number) => {
-    setExpandedGen3Branches((prev) => {
-      const next = new Set(prev);
-      if (next.has(branchIndex)) {
-        next.delete(branchIndex);
-      } else {
-        next.add(branchIndex);
+  const fetchAndMergeBranchAncestors = useCallback(
+    async (branchIndices: number[]) => {
+      if (!subject || !onLoadPedigreeNeighborhood || generations < 4 || branchIndices.length === 0) {
+        return;
       }
-      return next;
-    });
-  }, []);
-
-  const branchesWithKnownGen4 = useMemo(
-    () => (generations >= 4 ? getGen3BranchesWithKnownAncestors(slots) : []),
-    [slots, generations]
+      const targetRoots: string[] = [];
+      for (const bIdx of branchIndices) {
+        const g3Slot = slots.find((sl) => sl.generation === 3 && sl.slotIndex === bIdx);
+        if (g3Slot?.animal?.id) {
+          targetRoots.push(g3Slot.animal.id);
+        }
+      }
+      if (targetRoots.length === 0) return;
+      setLoadingGen3Branches((prev) => {
+        const next = new Set(prev);
+        for (const b of branchIndices) next.add(b);
+        return next;
+      });
+      try {
+        const fetched = await onLoadPedigreeNeighborhood(
+          targetRoots,
+          Math.max(1, generations - 3)
+        );
+        setLazyAncestorsById((prev) => {
+          const next = new Map(prev);
+          for (const a of fetched) next.set(a.id, a);
+          return next;
+        });
+      } finally {
+        setLoadingGen3Branches((prev) => {
+          const next = new Set(prev);
+          for (const b of branchIndices) next.delete(b);
+          return next;
+        });
+      }
+    },
+    [subject, onLoadPedigreeNeighborhood, generations, slots]
   );
+
+  const toggleGen3Branch = useCallback(
+    (branchIndex: number) => {
+      const willExpand = !expandedGen3Branches.has(branchIndex);
+      setExpandedGen3Branches((prev) => {
+        const next = new Set(prev);
+        if (next.has(branchIndex)) {
+          next.delete(branchIndex);
+        } else {
+          next.add(branchIndex);
+        }
+        return next;
+      });
+      if (willExpand) {
+        void fetchAndMergeBranchAncestors([branchIndex]);
+      }
+    },
+    [expandedGen3Branches, fetchAndMergeBranchAncestors]
+  );
+
+  const branchesWithKnownGen4 = useMemo(() => {
+    if (generations < 4) return [];
+    const combined = new Set<number>(getGen3BranchesWithKnownAncestors(slots));
+    externalKnownGen4Branches.forEach((b) => combined.add(b));
+    return Array.from(combined).sort((a, b) => a - b);
+  }, [slots, generations, externalKnownGen4Branches]);
+
+  const handleExpandBranchesBatch = useCallback(
+    (branchIndices: number[]) => {
+      setExpandedGen3Branches(new Set(branchIndices));
+      void fetchAndMergeBranchAncestors(branchIndices);
+    },
+    [fetchAndMergeBranchAncestors]
+  );
+
+  const handleOpenPrintModal = useCallback(async () => {
+    if (!subject) return;
+    if (onLoadPedigreeNeighborhood && generations >= 4) {
+      setPrintHydrating(true);
+      try {
+        const fullRows = await onLoadPedigreeNeighborhood([subject.id], generations);
+        setLazyAncestorsById((prev) => {
+          const next = new Map(prev);
+          for (const a of fullRows) next.set(a.id, a);
+          return next;
+        });
+      } finally {
+        setPrintHydrating(false);
+      }
+    }
+    setShowPrintModal(true);
+  }, [subject, onLoadPedigreeNeighborhood, generations]);
 
   const coi = subject ? coiByAnimalId.get(subject.id) : null;
 
@@ -873,11 +1071,13 @@ export function PedigreeScreen({
 
             <button
               type="button"
-              onClick={() => setShowPrintModal(true)}
-              className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              disabled={printHydrating}
+              aria-busy={printHydrating}
+              onClick={() => void handleOpenPrintModal()}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
             >
               <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-              Export .HTM / Print PDF
+              {printHydrating ? 'Loading Ancestors...' : 'Export .HTM / Print PDF'}
             </button>
             <PedigreePrintNotice compact />
             <ColorGeneticsNotice compact />
@@ -1017,7 +1217,7 @@ export function PedigreeScreen({
                 {branchesWithKnownGen4.length > 0 && expandedGen3Branches.size < branchesWithKnownGen4.length && (
                   <button
                     type="button"
-                    onClick={() => setExpandedGen3Branches(new Set(branchesWithKnownGen4))}
+                    onClick={() => handleExpandBranchesBatch(branchesWithKnownGen4)}
                     className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-sage)]/55 bg-[var(--barn-sage-tint)] text-[11px] font-semibold text-[var(--barn-ink)] hover:opacity-90 whitespace-nowrap"
                   >
                     Expand Known Gen 4+ ({branchesWithKnownGen4.length})
@@ -1025,11 +1225,13 @@ export function PedigreeScreen({
                 )}
                 <button
                   type="button"
-                  onClick={() =>
-                    setExpandedGen3Branches((prev) =>
-                      prev.size === 8 ? new Set() : new Set([0, 1, 2, 3, 4, 5, 6, 7])
-                    )
-                  }
+                  onClick={() => {
+                    if (expandedGen3Branches.size === 8) {
+                      setExpandedGen3Branches(new Set());
+                    } else {
+                      handleExpandBranchesBatch([0, 1, 2, 3, 4, 5, 6, 7]);
+                    }
+                  }}
                   className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
                 >
                   {expandedGen3Branches.size === 8 ? 'Collapse Gen 4+' : 'Expand All Gen 4+'}
@@ -1324,11 +1526,13 @@ export function PedigreeScreen({
                 const btnLeft = g3Box.x + cardWidth + 8;
                 const btnTop = g3Box.y + cardHeight / 2 - 14;
                 const g3Name = g3Box.slot.animal?.name || g3Box.slot.roleLabel;
+                const isBranchLoading = loadingGen3Branches.has(summary.branchIndex);
                 return (
                   <button
                     key={`branch-toggle-${summary.branchIndex}`}
                     type="button"
                     aria-expanded={summary.isExpanded}
+                    aria-busy={isBranchLoading}
                     onClick={() => toggleGen3Branch(summary.branchIndex)}
                     onFocus={(e) =>
                       e.currentTarget.scrollIntoView?.({
@@ -1339,12 +1543,16 @@ export function PedigreeScreen({
                     title={
                       summary.isExpanded
                         ? `Collapse Gen 4–${generations} ancestors behind ${g3Name}`
-                        : `Expand Gen 4–${generations} ancestors behind ${g3Name} (${summary.hiddenKnownAncestors} known of ${summary.hiddenTotalSlots} slots)`
+                        : summary.hasKnownAncestors
+                        ? `Expand Gen 4–${generations} ancestors behind ${g3Name}`
+                        : `Expand Gen 4–${generations} slots behind ${g3Name} (${summary.hiddenTotalSlots} slots)`
                     }
                     aria-label={
                       summary.isExpanded
                         ? `Collapse generation 4 plus ancestors for ${g3Name}`
-                        : `Expand generation 4 plus ancestors for ${g3Name}: ${summary.hiddenKnownAncestors} known`
+                        : `Expand generation 4 plus ancestors for ${g3Name}${
+                            summary.hasKnownAncestors ? ': known ancestors' : ''
+                          }`
                     }
                     style={{
                       left: `${btnLeft}px`,
@@ -1353,15 +1561,19 @@ export function PedigreeScreen({
                     className={`absolute h-[28px] px-2 rounded-lg border text-[10px] font-semibold font-mono whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--barn-sage)] ${
                       summary.isExpanded
                         ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-transparent'
-                        : summary.hiddenKnownAncestors > 0
+                        : summary.hasKnownAncestors
                         ? 'bg-[var(--barn-sage-tint)] text-[var(--barn-ink)] border-[var(--barn-sage)] hover:opacity-90'
                         : 'bg-[var(--barn-surface)] text-[var(--barn-muted)] border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
                     }`}
                   >
-                    {summary.isExpanded
+                    {isBranchLoading
+                      ? 'Loading...'
+                      : summary.isExpanded
                       ? 'Hide −'
                       : summary.hiddenKnownAncestors > 0
                       ? `+${summary.hiddenKnownAncestors} known`
+                      : summary.hasKnownAncestors
+                      ? '+ Gen 4+'
                       : `+${summary.hiddenTotalSlots}`}
                   </button>
                 );
@@ -1591,7 +1803,12 @@ export function PedigreeScreen({
           filename={`pedigree-${subject.tattoo || subject.id}-${generations}gen.htm`}
           htmlContent={generateEvansHtmPedigree(
             subject,
-            allAnimals,
+            Array.from(
+              new Map<string, Animal>([
+                ...Array.from(lazyAncestorsById.entries()),
+                ...allAnimals.map((a): [string, Animal] => [a.id, a]),
+              ]).values()
+            ),
             speciesProfiles,
             settings,
             generations,

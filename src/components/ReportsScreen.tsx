@@ -50,6 +50,7 @@ import {
   REPORT_AUDIENCE_FILTERS,
   ReportAudienceFilter,
 } from '../core/reportGenerators';
+import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { downloadTextFile } from '../utils/webFileActions';
 import { PrintPreviewModal } from './PrintPreviewModal';
 
@@ -94,24 +95,11 @@ export function ReportsScreen({
   const [dateToIso, setDateToIso] = useState<string>('');
   const [subjectAnimalId, setSubjectAnimalId] = useState<string>('');
   const [tableSearch, setTableSearch] = useState<string>('');
-  const [visibleRowLimit, setVisibleRowLimit] = useState<number>(100);
   const [printPreview, setPrintPreview] = useState<{
     title: string;
     filename: string;
     html: string;
   } | null>(null);
-
-  useEffect(() => {
-    setVisibleRowLimit(100);
-  }, [
-    selectedReportId,
-    selectedSpeciesName,
-    tableSearch,
-    dateFromIso,
-    dateToIso,
-    audienceFilter,
-    subjectAnimalId,
-  ]);
 
   useEffect(() => {
     const matchesActive = speciesProfiles.some((sp) => sp.name === activeSpeciesName);
@@ -218,6 +206,33 @@ export function ReportsScreen({
       )
     );
   }, [activeReport, tableSearch]);
+
+  const reportVirtual = useVirtualWindow({
+    itemCount: displayedRows.length,
+    estimateSize: 44,
+    overscan: 10,
+    initialFallbackCount: 40,
+    resetKey: `${selectedSpeciesName}::${selectedReportId}::${tableSearch}::${dateFromIso}::${dateToIso}::${audienceFilter}::${subjectAnimalId}`,
+  });
+
+  const windowedRows = useMemo(
+    () =>
+      displayedRows.length > 0 &&
+      reportVirtual.windowRange.endIndex >= reportVirtual.windowRange.startIndex
+        ? displayedRows.slice(
+            reportVirtual.windowRange.startIndex,
+            reportVirtual.windowRange.endIndex + 1
+          )
+        : [],
+    [
+      displayedRows,
+      reportVirtual.windowRange.startIndex,
+      reportVirtual.windowRange.endIndex,
+    ]
+  );
+
+  const reportTableColCount =
+    (activeReport?.columns.length ?? 0) + (onOpenAnimal ? 1 : 0);
 
   const handleSelectSpecies = (name: string) => {
     setSelectedSpeciesName(name);
@@ -698,104 +713,136 @@ export function ReportsScreen({
 
             {/* Interactive Tabular Output */}
             {displayedRows.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75">
-                      {activeReport.columns.map((col) => (
-                        <th
-                          key={col.key}
-                          scope="col"
-                          className={`px-3 py-2.5 font-semibold text-[var(--barn-muted)] whitespace-nowrap ${
-                            col.align === 'right' ? 'text-right' : 'text-left'
-                          }`}
-                        >
-                          {col.label}
-                        </th>
-                      ))}
-                      {onOpenAnimal && (
-                        <th
-                          scope="col"
-                          className="px-3 py-2.5 font-semibold text-[var(--barn-muted)] text-right whitespace-nowrap"
-                        >
-                          Record
-                        </th>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[var(--barn-border)]/70">
-                    {displayedRows.slice(0, visibleRowLimit).map((row) => {
-                      const rowBg =
-                        row.highlightTone === 'danger'
-                          ? 'bg-red-500/5 hover:bg-red-500/10'
-                          : row.highlightTone === 'warning'
-                          ? 'bg-[var(--barn-terracotta-tint)]/35 hover:bg-[var(--barn-terracotta-tint)]/55'
-                          : row.highlightTone === 'success'
-                          ? 'bg-[var(--barn-sage-tint)]/25 hover:bg-[var(--barn-sage-tint)]/45'
-                          : 'hover:bg-[var(--barn-canvas)]/60';
-                      return (
-                        <tr key={row.id} className={`${rowBg} transition-colors`}>
-                          {activeReport.columns.map((col) => {
-                            const val = row.cells[col.key] ?? '';
-                            return (
-                              <td
-                                key={col.key}
-                                className={`px-3 py-2.5 align-top ${
-                                  col.align === 'right'
-                                    ? 'text-right font-mono tabular-nums whitespace-nowrap'
-                                    : 'text-left'
-                                }`}
-                              >
-                                {String(val)}
-                              </td>
-                            );
-                          })}
-                          {onOpenAnimal && (
-                            <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                              {row.animalId ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenAnimal(row.animalId!)}
-                                  className="inline-flex items-center gap-0.5 text-[11px] font-medium text-[var(--barn-sage)] hover:underline"
-                                >
-                                  Open
-                                  <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
-                                </button>
-                              ) : (
-                                <span className="text-[var(--barn-muted)]">&mdash;</span>
-                              )}
-                            </td>
-                          )}
+              <div>
+                <div
+                  ref={reportVirtual.scrollContainerRef}
+                  className="max-h-[65vh] overflow-auto"
+                >
+                  <table className="w-full border-collapse text-xs">
+                    <thead className="sticky top-0 z-10 bg-[var(--barn-surface)] shadow-[0_1px_0_var(--barn-border)]">
+                      <tr className="border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/90">
+                        {activeReport.columns.map((col) => (
+                          <th
+                            key={col.key}
+                            scope="col"
+                            className={`px-3 py-2.5 font-semibold text-[var(--barn-muted)] whitespace-nowrap ${
+                              col.align === 'right' ? 'text-right' : 'text-left'
+                            }`}
+                          >
+                            {col.label}
+                          </th>
+                        ))}
+                        {onOpenAnimal && (
+                          <th
+                            scope="col"
+                            className="px-3 py-2.5 font-semibold text-[var(--barn-muted)] text-right whitespace-nowrap"
+                          >
+                            Record
+                          </th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[var(--barn-border)]/70">
+                      {reportVirtual.windowRange.paddingTop > 0 && (
+                        <tr aria-hidden="true">
+                          <td
+                            colSpan={reportTableColCount}
+                            style={{
+                              height: `${reportVirtual.windowRange.paddingTop}px`,
+                              padding: 0,
+                              border: 0,
+                            }}
+                          />
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                {displayedRows.length > visibleRowLimit && (
-                  <div className="px-4 py-3 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/45 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="text-[var(--barn-muted)]">
-                      Showing <span className="font-mono tabular-nums font-medium">{visibleRowLimit}</span> of{' '}
-                      <span className="font-mono tabular-nums font-medium">{displayedRows.length}</span> rows
-                      {' '}(CSV &amp; Print include all rows)
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setVisibleRowLimit((n) => n + 100)}
-                        className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] font-medium"
-                      >
-                        Show Next 100 Rows
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setVisibleRowLimit(displayedRows.length)}
-                        className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
-                      >
-                        Show All ({displayedRows.length})
-                      </button>
-                    </div>
-                  </div>
-                )}
+                      )}
+                      {windowedRows.map((row, localIdx) => {
+                        const rowIndex = reportVirtual.windowRange.startIndex + localIdx;
+                        const rowBg =
+                          row.highlightTone === 'danger'
+                            ? 'bg-red-500/5 hover:bg-red-500/10'
+                            : row.highlightTone === 'warning'
+                            ? 'bg-[var(--barn-terracotta-tint)]/35 hover:bg-[var(--barn-terracotta-tint)]/55'
+                            : row.highlightTone === 'success'
+                            ? 'bg-[var(--barn-sage-tint)]/25 hover:bg-[var(--barn-sage-tint)]/45'
+                            : 'hover:bg-[var(--barn-canvas)]/60';
+                        return (
+                          <tr
+                            key={row.id}
+                            ref={reportVirtual.measureRowRef(rowIndex)}
+                            className={`${rowBg} transition-colors`}
+                          >
+                            {activeReport.columns.map((col) => {
+                              const val = row.cells[col.key] ?? '';
+                              return (
+                                <td
+                                  key={col.key}
+                                  className={`px-3 py-2.5 align-top ${
+                                    col.align === 'right'
+                                      ? 'text-right font-mono tabular-nums whitespace-nowrap'
+                                      : 'text-left'
+                                  }`}
+                                >
+                                  {String(val)}
+                                </td>
+                              );
+                            })}
+                            {onOpenAnimal && (
+                              <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                                {row.animalId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onOpenAnimal(row.animalId!)}
+                                    className="inline-flex items-center gap-0.5 text-[11px] font-medium text-[var(--barn-sage)] hover:underline"
+                                  >
+                                    Open
+                                    <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
+                                  </button>
+                                ) : (
+                                  <span className="text-[var(--barn-muted)]">&mdash;</span>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                      {reportVirtual.windowRange.paddingBottom > 0 && (
+                        <tr aria-hidden="true">
+                          <td
+                            colSpan={reportTableColCount}
+                            style={{
+                              height: `${reportVirtual.windowRange.paddingBottom}px`,
+                              padding: 0,
+                              border: 0,
+                            }}
+                          />
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-4 py-2.5 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/45 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="text-[var(--barn-muted)]">
+                    Viewing{' '}
+                    <span className="font-mono tabular-nums font-medium">
+                      {reportVirtual.windowRange.startIndex + 1}–
+                      {reportVirtual.windowRange.endIndex + 1}
+                    </span>{' '}
+                    of{' '}
+                    <span className="font-mono tabular-nums font-medium">
+                      {displayedRows.length}
+                    </span>{' '}
+                    rows (CSV &amp; Print include all rows)
+                  </span>
+                  {reportVirtual.windowRange.startIndex > 0 && (
+                    <button
+                      type="button"
+                      onClick={reportVirtual.scrollToTop}
+                      className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] font-medium"
+                    >
+                      Back to Top
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="p-8 text-center space-y-3">

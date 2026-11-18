@@ -14,14 +14,108 @@
 
 import {
   addDaysIso,
+  Animal,
   BarnTask,
+  BreedScheduleOverride,
   BreedingRecord,
   generateUuid,
   MilestoneRelativeTo,
+  normalizeBreedScheduleOverrides,
   nowIsoUtc,
   SpeciesMilestoneTemplate,
   SpeciesProfile,
 } from './models';
+
+export interface ResolvedBreedSchedule {
+  profile: SpeciesProfile;
+  matchedBreed?: string;
+  matchedOverride?: BreedScheduleOverride;
+}
+
+/**
+ * Overlays optional per-breed biological & milestone offset overrides onto a `SpeciesProfile`
+ * without mutating the source species configuration. Matches breed names case-insensitively.
+ */
+export function resolveEffectiveSpeciesProfileForBreed(
+  speciesProfile: SpeciesProfile,
+  breedName?: string
+): ResolvedBreedSchedule {
+  const cleanBreed = (breedName || '').trim();
+  const overrides = normalizeBreedScheduleOverrides(speciesProfile.breedOverrides);
+  if (!cleanBreed || overrides.length === 0) {
+    return { profile: speciesProfile };
+  }
+
+  const targetKey = cleanBreed.toLowerCase();
+  const matched = overrides.find((ov) => ov.breed.trim().toLowerCase() === targetKey);
+  if (!matched) {
+    return { profile: speciesProfile };
+  }
+
+  const milestoneOffsetMap = new Map<string, number>();
+  for (const mo of matched.milestoneOverrides ?? []) {
+    const labelKey = mo.label.trim().toLowerCase();
+    if (labelKey) {
+      milestoneOffsetMap.set(labelKey, mo.daysOffset);
+    }
+  }
+
+  const nextMilestones = speciesProfile.milestones.map((rule) => {
+    const overrideOffset = milestoneOffsetMap.get(rule.label.trim().toLowerCase());
+    if (overrideOffset === undefined) return rule;
+    return {
+      ...rule,
+      daysOffset: overrideOffset,
+    };
+  });
+
+  const effectiveProfile: SpeciesProfile = {
+    ...speciesProfile,
+    gestationDays:
+      matched.gestationDays && matched.gestationDays > 0
+        ? matched.gestationDays
+        : speciesProfile.gestationDays,
+    weanDaysAfterBirth:
+      matched.weanDaysAfterBirth && matched.weanDaysAfterBirth > 0
+        ? matched.weanDaysAfterBirth
+        : speciesProfile.weanDaysAfterBirth,
+    rebreedDaysAfterBirth:
+      matched.rebreedDaysAfterBirth !== undefined && matched.rebreedDaysAfterBirth >= 0
+        ? matched.rebreedDaysAfterBirth
+        : speciesProfile.rebreedDaysAfterBirth,
+    maturityDays:
+      matched.maturityDays && matched.maturityDays > 0
+        ? matched.maturityDays
+        : speciesProfile.maturityDays,
+    milestones: nextMilestones,
+  };
+
+  return {
+    profile: effectiveProfile,
+    matchedBreed: matched.breed,
+    matchedOverride: matched,
+  };
+}
+
+/**
+ * Resolves the effective schedule for a breeding pairing, checking the Dam's breed first
+ * (since gestation, birth prep, and weaning center on the dam), then falling back to Sire's breed.
+ */
+export function resolveEffectiveSpeciesProfileForBreeding(
+  speciesProfile: SpeciesProfile,
+  dam?: Pick<Animal, 'breed'> | null,
+  sire?: Pick<Animal, 'breed'> | null
+): ResolvedBreedSchedule {
+  if (dam?.breed) {
+    const damResolved = resolveEffectiveSpeciesProfileForBreed(speciesProfile, dam.breed);
+    if (damResolved.matchedOverride) return damResolved;
+  }
+  if (sire?.breed) {
+    const sireResolved = resolveEffectiveSpeciesProfileForBreed(speciesProfile, sire.breed);
+    if (sireResolved.matchedOverride) return sireResolved;
+  }
+  return { profile: speciesProfile };
+}
 
 /**
  * Computes the ISO `YYYY-MM-DD` due date for a single `SpeciesMilestoneTemplate`
@@ -145,4 +239,178 @@ export function generateCascadedTasksForBreeding(
   }
 
   return tasks.sort((a, b) => a.dueDateIso.localeCompare(b.dueDateIso));
+}
+
+/**
+ * Returns the `AFTER_BIRTH` days offset if `task` corresponds to an `AFTER_BIRTH` milestone
+ * rule, Weaning chore, or Rebreed readiness check on `effectiveProfile`, otherwise `null`.
+ */
+export function identifyPostBirthTaskOffset(
+  task: Pick<BarnTask, 'title' | 'category'>,
+  effectiveProfile: SpeciesProfile
+): number | null {
+  const cleanTitle = (task.title || '').trim();
+  const titleLower = cleanTitle.toLowerCase();
+
+  if (
+    task.category === 'Weaning' &&
+    effectiveProfile.weanDaysAfterBirth > 0 &&
+    (titleLower.startsWith(`wean ${effectiveProfile.offspringLabel.toLowerCase()}s:`) ||
+      titleLower.startsWith('wean '))
+  ) {
+    return effectiveProfile.weanDaysAfterBirth;
+  }
+
+  if (
+    task.category === 'Rebreed' &&
+    effectiveProfile.rebreedDaysAfterBirth > 0 &&
+    titleLower.startsWith('rebreed readiness check:')
+  ) {
+    return effectiveProfile.rebreedDaysAfterBirth;
+  }
+
+  for (const rule of effectiveProfile.milestones) {
+    if (rule.relativeTo !== 'AFTER_BIRTH') continue;
+    const rulePrefix = `${rule.label.trim().toLowerCase()}:`;
+    if (task.category === rule.category && titleLower.startsWith(rulePrefix)) {
+      return rule.daysOffset;
+    }
+  }
+
+  return null;
+}
+
+export interface StalePostBirthTaskEntry {
+  task: BarnTask;
+  offsetDays: number;
+  expectedDueDateIso: string;
+}
+
+/**
+ * Identifies uncompleted `AFTER_BIRTH` tasks linked to `breeding.id` whose due dates do not
+ * match `actualBirthDateIso + offsetDays`.
+ */
+export function evaluateStalePostBirthTasksForBreeding(
+  tasks: BarnTask[],
+  breeding: Pick<BreedingRecord, 'id' | 'actualBirthDateIso' | 'status'>,
+  effectiveProfile: SpeciesProfile,
+  candidateBirthDateIso?: string
+): {
+  anchorDateIso: string;
+  staleEntries: StalePostBirthTaskEntry[];
+} {
+  const anchorDateIso = (candidateBirthDateIso ?? breeding.actualBirthDateIso ?? '').trim();
+  if (!anchorDateIso || breeding.status === 'Missed') {
+    return { anchorDateIso: '', staleEntries: [] };
+  }
+
+  const staleEntries: StalePostBirthTaskEntry[] = [];
+  for (const task of tasks) {
+    if (task.completed || task.linkedBreedingId !== breeding.id) continue;
+    const offsetDays = identifyPostBirthTaskOffset(task, effectiveProfile);
+    if (offsetDays === null) continue;
+    const targetDueDateIso = addDaysIso(anchorDateIso, offsetDays);
+    if (!targetDueDateIso) continue;
+    if (task.dueDateIso !== targetDueDateIso) {
+      staleEntries.push({
+        task,
+        offsetDays,
+        expectedDueDateIso: targetDueDateIso,
+      });
+    }
+  }
+  return { anchorDateIso, staleEntries };
+}
+
+/**
+ * Recalculates due dates for uncompleted `AFTER_BIRTH` tasks linked to `breeding.id`
+ * anchored to `breeding.actualBirthDateIso` (or optional override birth date).
+ * Leaves completed tasks, `AFTER_BRED`, `BEFORE_BIRTH`, and unrelated chores untouched.
+ */
+export function recalculatePostBirthTasksForBreeding(
+  tasks: BarnTask[],
+  breeding: BreedingRecord,
+  effectiveProfile: SpeciesProfile,
+  timestampIso: string = nowIsoUtc(),
+  overrideActualBirthDateIso?: string
+): {
+  updatedTasks: BarnTask[];
+  shiftedCount: number;
+} {
+  const { staleEntries } = evaluateStalePostBirthTasksForBreeding(
+    tasks,
+    breeding,
+    effectiveProfile,
+    overrideActualBirthDateIso
+  );
+  if (staleEntries.length === 0) {
+    return { updatedTasks: [], shiftedCount: 0 };
+  }
+
+  const updatedTasks: BarnTask[] = staleEntries.map(({ task, expectedDueDateIso }) => {
+    const prevRev =
+      typeof task._rev === 'number' && Number.isFinite(task._rev) && task._rev >= 0
+        ? Math.floor(task._rev)
+        : 0;
+    return {
+      ...task,
+      dueDateIso: expectedDueDateIso,
+      _rev: prevRev + 1,
+      updatedAt: timestampIso,
+    };
+  });
+
+  return {
+    updatedTasks,
+    shiftedCount: updatedTasks.length,
+  };
+}
+
+/** Returns true when a task is a breeding-linked Palpation checkoff task. */
+export function isPalpationTask(task: Pick<BarnTask, 'category' | 'linkedBreedingId'>): boolean {
+  return Boolean(task.linkedBreedingId) && task.category === 'Palpation';
+}
+
+/** Returns true when a task is a breeding-linked Birth Check checkoff task. */
+export function isBirthCheckTask(task: Pick<BarnTask, 'category' | 'linkedBreedingId'>): boolean {
+  return Boolean(task.linkedBreedingId) && task.category === 'Birth Check';
+}
+
+/**
+ * Returns uncompleted downstream nestbox, birth-check, weaning, rebreed, and before/after-birth
+ * milestone tasks linked to `breedingId` that should be cleared when a breeding is marked `Missed`/Open.
+ * Preserves already completed tasks and any excluded task IDs.
+ */
+export function getPendingBreedingCleanupTasks(
+  tasks: BarnTask[],
+  breedingId: string,
+  effectiveProfile: SpeciesProfile,
+  excludeTaskIds: string[] = []
+): BarnTask[] {
+  if (!breedingId) return [];
+  const excluded = new Set(excludeTaskIds);
+  const cleanupMilestonePrefixes = new Set(
+    effectiveProfile.milestones
+      .filter((m) => m.relativeTo === 'BEFORE_BIRTH' || m.relativeTo === 'AFTER_BIRTH')
+      .map((m) => `${m.label.trim().toLowerCase()}:`)
+  );
+
+  return tasks.filter((t) => {
+    if (t.completed || t.linkedBreedingId !== breedingId || excluded.has(t.id)) {
+      return false;
+    }
+    if (
+      t.category === 'Nestbox' ||
+      t.category === 'Birth Check' ||
+      t.category === 'Weaning' ||
+      t.category === 'Rebreed'
+    ) {
+      return true;
+    }
+    const lowerTitle = (t.title || '').trim().toLowerCase();
+    for (const prefix of cleanupMilestonePrefixes) {
+      if (lowerTitle.startsWith(prefix)) return true;
+    }
+    return false;
+  });
 }

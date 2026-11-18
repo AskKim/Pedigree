@@ -10,9 +10,12 @@
 import { Download, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import {
+  BreedMilestoneOffsetOverride,
+  BreedScheduleOverride,
   generateUuid,
   isSameSpecies,
   MilestoneRelativeTo,
+  normalizeBreedScheduleOverrides,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   SpeciesMilestoneTemplate,
@@ -123,6 +126,9 @@ export function SpeciesEditorModal({
       ? [...initialProfile.milestones]
       : DEFAULT_CUSTOM_MILESTONES.map((m) => ({ ...m }))
   );
+  const [breedOverrides, setBreedOverrides] = useState<BreedScheduleOverride[]>(() =>
+    normalizeBreedScheduleOverrides(initialProfile?.breedOverrides)
+  );
 
   // Draft milestone rule inputs
   const [ruleLabel, setRuleLabel] = useState('');
@@ -130,7 +136,29 @@ export function SpeciesEditorModal({
   const [ruleDays, setRuleDays] = useState('3');
   const [ruleCategory, setRuleCategory] = useState<TaskCategory>('Care');
   const [rulePriority, setRulePriority] = useState<TaskPriority>('High');
+
+  // Draft per-breed override inputs
+  const [overrideBreed, setOverrideBreed] = useState('');
+  const [overrideGestation, setOverrideGestation] = useState('');
+  const [overrideWean, setOverrideWean] = useState('');
+  const [overrideRebreed, setOverrideRebreed] = useState('');
+  const [overrideMaturity, setOverrideMaturity] = useState('');
+  const [overrideMilestoneOffsets, setOverrideMilestoneOffsets] = useState<Record<string, string>>(
+    {}
+  );
+  const [overrideError, setOverrideError] = useState('');
+
   const [errorMsg, setErrorMsg] = useState('');
+
+  const clearBreedOverrideDraft = () => {
+    setOverrideBreed('');
+    setOverrideGestation('');
+    setOverrideWean('');
+    setOverrideRebreed('');
+    setOverrideMaturity('');
+    setOverrideMilestoneOffsets({});
+    setOverrideError('');
+  };
 
   const resetToCustomBlank = () => {
     setCreationMode('custom');
@@ -148,6 +176,8 @@ export function SpeciesEditorModal({
     setOffspringLabel('Offspring');
     setBreedsCsv('');
     setMilestones(DEFAULT_CUSTOM_MILESTONES.map((m) => ({ ...m })));
+    setBreedOverrides([]);
+    clearBreedOverrideDraft();
   };
 
   const applyPreset = (presetName: string) => {
@@ -169,6 +199,8 @@ export function SpeciesEditorModal({
     setOffspringLabel(preset.offspringLabel);
     setBreedsCsv(preset.exampleBreeds.join(', '));
     setMilestones(preset.milestones.map((m) => ({ ...m })));
+    setBreedOverrides(normalizeBreedScheduleOverrides(preset.breedOverrides));
+    clearBreedOverrideDraft();
   };
 
   const handleAddMilestone = () => {
@@ -186,6 +218,76 @@ export function SpeciesEditorModal({
     ]);
     setRuleLabel('');
   };
+
+  const loadBreedOverrideIntoDraft = (ov: BreedScheduleOverride) => {
+    setOverrideBreed(ov.breed);
+    setOverrideGestation(ov.gestationDays ? String(ov.gestationDays) : '');
+    setOverrideWean(ov.weanDaysAfterBirth ? String(ov.weanDaysAfterBirth) : '');
+    setOverrideRebreed(
+      ov.rebreedDaysAfterBirth !== undefined ? String(ov.rebreedDaysAfterBirth) : ''
+    );
+    setOverrideMaturity(ov.maturityDays ? String(ov.maturityDays) : '');
+    const nextOffsets: Record<string, string> = {};
+    for (const mo of ov.milestoneOverrides ?? []) {
+      const matchingRule = milestones.find(
+        (m) => m.label.trim().toLowerCase() === mo.label.trim().toLowerCase()
+      );
+      nextOffsets[matchingRule ? matchingRule.label : mo.label] = String(mo.daysOffset);
+    }
+    setOverrideMilestoneOffsets(nextOffsets);
+    setOverrideError('');
+  };
+
+  const handleSaveBreedOverride = () => {
+    const cleanBreed = overrideBreed.trim();
+    if (!cleanBreed) {
+      setOverrideError('Enter a breed name before saving a breed override.');
+      return;
+    }
+
+    const milestoneOverrides: BreedMilestoneOffsetOverride[] = [];
+    for (const rule of milestones) {
+      const rawVal = (overrideMilestoneOffsets[rule.label] ?? '').trim();
+      if (!rawVal) continue;
+      const parsed = Number(rawVal);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        milestoneOverrides.push({
+          label: rule.label,
+          daysOffset: Math.min(700, Math.round(parsed)),
+        });
+      }
+    }
+
+    const candidate: BreedScheduleOverride = {
+      breed: cleanBreed,
+      gestationDays: overrideGestation.trim() ? Number(overrideGestation) : undefined,
+      weanDaysAfterBirth: overrideWean.trim() ? Number(overrideWean) : undefined,
+      rebreedDaysAfterBirth: overrideRebreed.trim() ? Number(overrideRebreed) : undefined,
+      maturityDays: overrideMaturity.trim() ? Number(overrideMaturity) : undefined,
+      milestoneOverrides: milestoneOverrides.length > 0 ? milestoneOverrides : undefined,
+    };
+
+    const validated = normalizeBreedScheduleOverrides([candidate]);
+    if (validated.length === 0) {
+      setOverrideError(
+        'Enter at least one gestation, weaning, rebreed, maturity, or milestone day override.'
+      );
+      return;
+    }
+
+    const savedItem = validated[0];
+    setBreedOverrides((prev) => {
+      const key = savedItem.breed.toLowerCase();
+      const filtered = prev.filter((item) => item.breed.trim().toLowerCase() !== key);
+      return normalizeBreedScheduleOverrides([...filtered, savedItem]);
+    });
+    clearBreedOverrideDraft();
+  };
+
+  const breedSuggestions = breedsCsv
+    .split(',')
+    .map((b) => b.trim())
+    .filter(Boolean);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -232,6 +334,7 @@ export function SpeciesEditorModal({
         offspringLabel: offspringLabel.trim() || 'Offspring',
         exampleBreeds: parsedBreeds,
         milestones,
+        breedOverrides: normalizeBreedScheduleOverrides(breedOverrides),
         createdAt: initialProfile?.createdAt || ts,
         updatedAt: ts,
       });
@@ -671,6 +774,249 @@ export function SpeciesEditorModal({
               <Plus className="w-3.5 h-3.5" />
               Add Custom Date Rule
             </button>
+          </div>
+
+          <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">
+                Per-Breed Schedule Overrides ({breedOverrides.length})
+              </h3>
+              <span className="text-xs text-[var(--barn-muted)]">
+                Optional day offsets by breed (e.g. dwarf vs. giant lines) — blank inherits species default
+              </span>
+            </div>
+
+            {breedOverrides.length > 0 && (
+              <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl">
+                {breedOverrides.map((ov) => {
+                  const summaryParts: string[] = [];
+                  if (ov.gestationDays !== undefined) summaryParts.push(`Gestation ${ov.gestationDays}d`);
+                  if (ov.weanDaysAfterBirth !== undefined) summaryParts.push(`Wean +${ov.weanDaysAfterBirth}d`);
+                  if (ov.rebreedDaysAfterBirth !== undefined) summaryParts.push(`Rebreed +${ov.rebreedDaysAfterBirth}d`);
+                  if (ov.maturityDays !== undefined) summaryParts.push(`Maturity ${ov.maturityDays}d`);
+                  for (const mo of ov.milestoneOverrides ?? []) {
+                    summaryParts.push(`${mo.label}: ${mo.daysOffset}d`);
+                  }
+                  return (
+                    <div
+                      key={ov.breed}
+                      className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{ov.breed}</div>
+                        <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
+                          {summaryParts.join(' · ')}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => loadBreedOverrideIntoDraft(ov)}
+                          className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setBreedOverrides((prev) =>
+                              prev.filter(
+                                (item) =>
+                                  item.breed.trim().toLowerCase() !== ov.breed.trim().toLowerCase()
+                              )
+                            )
+                          }
+                          aria-label={`Remove ${ov.breed} override`}
+                          className="min-h-[34px] min-w-[34px] rounded-lg hover:bg-[var(--barn-subtle)] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] flex items-center justify-center"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+              {overrideError && (
+                <div
+                  role="alert"
+                  className="text-xs font-medium text-[var(--barn-danger)]"
+                >
+                  {overrideError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-2.5">
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor={`${baseId}-override-breed`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Breed / Variety Name
+                  </label>
+                  <input
+                    id={`${baseId}-override-breed`}
+                    type="text"
+                    list={`${baseId}-breed-suggestions`}
+                    placeholder="e.g. Netherland Dwarf, Flemish Giant"
+                    value={overrideBreed}
+                    onChange={(e) => {
+                      setOverrideBreed(e.target.value);
+                      if (overrideError) setOverrideError('');
+                    }}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                  {breedSuggestions.length > 0 && (
+                    <datalist id={`${baseId}-breed-suggestions`}>
+                      {breedSuggestions.map((b) => (
+                        <option key={b} value={b} />
+                      ))}
+                    </datalist>
+                  )}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor={`${baseId}-override-gestation`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Gestation (d)
+                  </label>
+                  <input
+                    id={`${baseId}-override-gestation`}
+                    type="number"
+                    min={1}
+                    max={750}
+                    placeholder={`${gestationDays || 31}d`}
+                    value={overrideGestation}
+                    onChange={(e) => setOverrideGestation(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor={`${baseId}-override-wean`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Wean (+d)
+                  </label>
+                  <input
+                    id={`${baseId}-override-wean`}
+                    type="number"
+                    min={1}
+                    max={600}
+                    placeholder={`${weanDays || 42}d`}
+                    value={overrideWean}
+                    onChange={(e) => setOverrideWean(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor={`${baseId}-override-rebreed`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Rebreed (+d)
+                  </label>
+                  <input
+                    id={`${baseId}-override-rebreed`}
+                    type="number"
+                    min={0}
+                    max={600}
+                    placeholder={`${rebreedDays || 28}d`}
+                    value={overrideRebreed}
+                    onChange={(e) => setOverrideRebreed(e.target.value)}
+                    className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-override-maturity`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Maturity Cutoff (d, opt.)
+                  </label>
+                  <input
+                    id={`${baseId}-override-maturity`}
+                    type="number"
+                    min={14}
+                    max={1500}
+                    placeholder={maturityDays ? `${maturityDays}d` : 'Inherit'}
+                    value={overrideMaturity}
+                    onChange={(e) => setOverrideMaturity(e.target.value)}
+                    className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                  />
+                </div>
+              </div>
+
+              {milestones.length > 0 && (
+                <div className="space-y-1.5 pt-1 border-t border-[var(--barn-border)]/70">
+                  <div className="text-[11px] font-medium text-[var(--barn-muted)]">
+                    Milestone Day Offsets (leave blank to inherit species default)
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {milestones.map((rule, mIdx) => (
+                      <div key={`${rule.label}-${mIdx}`} className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor={`${baseId}-override-ms-${mIdx}`}
+                          className="text-xs text-[var(--barn-ink)] truncate"
+                          title={`${rule.label} (${describeMilestoneOffset(rule.relativeTo, rule.daysOffset, birthEventLabel || 'Birth')})`}
+                        >
+                          {rule.label}
+                        </label>
+                        <input
+                          id={`${baseId}-override-ms-${mIdx}`}
+                          type="number"
+                          min={0}
+                          max={700}
+                          placeholder={`${rule.daysOffset}d`}
+                          value={overrideMilestoneOffsets[rule.label] ?? ''}
+                          onChange={(e) =>
+                            setOverrideMilestoneOffsets((prev) => ({
+                              ...prev,
+                              [rule.label]: e.target.value,
+                            }))
+                          }
+                          className="w-20 shrink-0 min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums text-right"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveBreedOverride}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Save Breed Override
+                </button>
+                {(overrideBreed ||
+                  overrideGestation ||
+                  overrideWean ||
+                  overrideRebreed ||
+                  overrideMaturity ||
+                  Object.values(overrideMilestoneOffsets).some(Boolean)) && (
+                  <button
+                    type="button"
+                    onClick={clearBreedOverrideDraft}
+                    className="min-h-[36px] px-2.5 py-1 text-xs text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+                  >
+                    Clear Draft
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           {confirmRemoveSpecies && initialProfile && onDelete && (

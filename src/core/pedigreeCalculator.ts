@@ -623,6 +623,7 @@ export interface PedigreeGen3BranchSummary {
   isExpanded: boolean;
   hiddenTotalSlots: number;
   hiddenKnownAncestors: number;
+  hasKnownAncestors: boolean;
 }
 
 export interface PedigreeBranchViewportResult {
@@ -652,7 +653,8 @@ export function getGen3BranchIndex(generation: number, slotIndex: number): numbe
 export function buildPedigreeBranchViewport(
   slots: PedigreeSlot[],
   maxGeneration: number,
-  expandedGen3Branches: ReadonlySet<number>
+  expandedGen3Branches: ReadonlySet<number>,
+  externalKnownBranches?: ReadonlySet<number>
 ): PedigreeBranchViewportResult {
   const branchTotals = new Array<number>(8).fill(0);
   const branchKnowns = new Array<number>(8).fill(0);
@@ -672,12 +674,15 @@ export function buildPedigreeBranchViewport(
   if (maxGeneration >= 4) {
     for (let b = 0; b < 8; b++) {
       const isExpanded = expandedGen3Branches.has(b);
+      const hasExternal = Boolean(externalKnownBranches?.has(b));
+      const knownCount = branchKnowns[b];
       branchSummaries.set(`3:${b}`, {
         branchIndex: b,
         slotKey: `3:${b}`,
         isExpanded,
         hiddenTotalSlots: isExpanded ? 0 : branchTotals[b],
-        hiddenKnownAncestors: isExpanded ? 0 : branchKnowns[b],
+        hiddenKnownAncestors: isExpanded ? 0 : knownCount,
+        hasKnownAncestors: knownCount > 0 || hasExternal,
       });
     }
   }

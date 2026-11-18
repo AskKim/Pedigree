@@ -54,6 +54,12 @@ export interface StorageAdapter {
   /** Loads full-resolution `dataUrl` strings for specific photo IDs (or all photos if omitted). */
   loadAnimalPhotoDataUrlsBatch?(photoIds?: string[]): Promise<Record<string, string>>;
 
+  /** Queries a bounded BFS pedigree neighborhood (up to `maxDepth` ancestor generations) directly from SQLite. */
+  queryPedigreeNeighborhood?(rootIds: string[], maxDepth: number): Promise<Animal[]>;
+
+  /** Checks which animal IDs have at least one recorded sire/dam or offloaded archive in SQLite. */
+  queryPedigreeBranchAncestorsExist?(animalIds: string[]): Promise<Record<string, boolean>>;
+
   /** Replaces the entire local database with a new snapshot (used for Backup Import / Merge / Seed). */
   replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void>;
 

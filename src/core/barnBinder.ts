@@ -10,6 +10,7 @@
  * standalone `.HTM` files, automatic `.ZIP` backups, and React Native / Expo.
  */
 
+import { isCageOccupyingAnimal, normalizeCageLabelKey } from './barnAlerts';
 import {
   analyzeAnimalCarrierLineage,
   formatClearedProofBadge,
@@ -919,13 +920,21 @@ export function generateSpeciesBarnBinderHtml(
                   <tbody>
                     ${speciesCages
                       .map((cage) => {
-                        const occupants = activeAnimals.filter(
-                          (a) => a.cageLocation.trim().toLowerCase() === cage.label.trim().toLowerCase()
-                        );
+                        const cageKey = normalizeCageLabelKey(cage.label);
+                        const occupants = cageKey
+                          ? activeAnimals.filter(
+                              (a) =>
+                                isCageOccupyingAnimal(a) &&
+                                normalizeCageLabelKey(a.cageLocation) === cageKey
+                            )
+                          : [];
+                        const capacity = Math.max(1, Number(cage.capacity) || 1);
+                        const ratioText = `${occupants.length}/${capacity}`;
+                        const isOver = occupants.length > capacity;
                         return `<tr>
                           <td><strong>${escapeHtml(cage.label)}</strong></td>
                           <td>${escapeHtml(cage.section || 'Main')}</td>
-                          <td class="mono">${cage.capacity}</td>
+                          <td class="mono">${escapeHtml(ratioText)}${isOver ? ' <strong>(over capacity)</strong>' : ''}</td>
                           <td>${occupants.length > 0 ? escapeHtml(occupants.map((o) => `${o.name}${o.tattoo ? ` (${o.tattoo})` : ''}`).join(', ')) : '<span class="muted">Vacant</span>'}</td>
                           <td>${escapeHtml(cage.notes || '—')}</td>
                         </tr>`;

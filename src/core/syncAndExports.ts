@@ -35,6 +35,7 @@ import {
   millisToDateIso,
   normalizeAnimalStatus,
   normalizeBiologicalSex,
+  normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
   normalizeIgnoredConflicts,
@@ -190,6 +191,7 @@ export function mergeBarnSnapshots(
       ...sp,
       memoText: sanitizeSpeciesMemo(sp.memoText),
       memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
+      breedOverrides: normalizeBreedScheduleOverrides(sp.breedOverrides),
     });
   }
   for (const incSp of incoming.speciesProfiles) {
@@ -197,12 +199,14 @@ export function mergeBarnSnapshots(
     const prev = speciesByName.get(key);
     const cleanIncText = sanitizeSpeciesMemo(incSp.memoText);
     const cleanIncMemoTs = typeof incSp.memoUpdatedAt === 'string' ? incSp.memoUpdatedAt : '';
+    const cleanIncOverrides = normalizeBreedScheduleOverrides(incSp.breedOverrides);
 
     if (!prev) {
       speciesByName.set(key, {
         ...incSp,
         memoText: cleanIncText,
         memoUpdatedAt: cleanIncMemoTs,
+        breedOverrides: cleanIncOverrides,
       });
       continue;
     }
@@ -218,7 +222,12 @@ export function mergeBarnSnapshots(
       : { memoText: prevText, memoUpdatedAt: prevMemoTs };
 
     if ((incSp.updatedAt || '') > (prev.updatedAt || '')) {
-      speciesByName.set(key, { ...incSp, id: prev.id, ...winnerMemo });
+      speciesByName.set(key, {
+        ...incSp,
+        id: prev.id,
+        ...winnerMemo,
+        breedOverrides: cleanIncOverrides,
+      });
     } else {
       speciesByName.set(key, { ...prev, ...winnerMemo });
     }
@@ -625,6 +634,20 @@ export function parseBarnBackupJson(
                     priority: (m.priority as TaskPriority) || 'Normal',
                   }))
                 : [],
+              breedOverrides: normalizeBreedScheduleOverrides(
+                Array.isArray(item.breedOverrides)
+                  ? item.breedOverrides.filter(isObj).map((ov: any) => ({
+                      ...ov,
+                      breed: sanitizeSingleLineText(ov.breed, 120),
+                      milestoneOverrides: Array.isArray(ov.milestoneOverrides)
+                        ? ov.milestoneOverrides.filter(isObj).map((mo: any) => ({
+                            label: sanitizeSingleLineText(mo.label, 120),
+                            daysOffset: mo.daysOffset,
+                          }))
+                        : undefined,
+                    }))
+                  : []
+              ),
               createdAt: typeof item.createdAt === 'string' && item.createdAt ? item.createdAt : ts,
               updatedAt: typeof item.updatedAt === 'string' && item.updatedAt ? item.updatedAt : ts,
             };

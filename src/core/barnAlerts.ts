@@ -16,6 +16,7 @@ import {
   Animal,
   BarnTask,
   BreedingRecord,
+  CageLocation,
   CareLog,
   doesAnimalNeedAttention,
   formatReadableDate,
@@ -631,5 +632,247 @@ export function evaluateShowWithdrawalConflicts(
     hasConflict: conflicts.length > 0,
   };
 }
+
+// ============================================================================
+// Cage / Pen Occupancy & Welfare Capacity Alerts
+// ============================================================================
+
+export type CageOccupancyStatus = 'empty' | 'available' | 'full' | 'over_capacity';
+
+export interface CageOccupancyEvaluation {
+  cage: CageLocation;
+  capacity: number;
+  occupants: Animal[];
+  occupantCount: number;
+  status: CageOccupancyStatus;
+  isOverCapacity: boolean;
+  isAtCapacity: boolean;
+  overBy: number;
+  availableSpots: number;
+  ratioLabel: string;
+}
+
+export interface SpeciesCagesOccupancySummary {
+  evaluations: CageOccupancyEvaluation[];
+  overCapacityCages: CageOccupancyEvaluation[];
+  totalOverCapacityCount: number;
+  overCapacityExtraAnimalsCount: number;
+  byCageId: Map<string, CageOccupancyEvaluation>;
+  byLabelKey: Map<string, CageOccupancyEvaluation>;
+  shouldShowOverCapacityAlert: boolean;
+}
+
+export interface CageAssignmentCapacityWarning {
+  cage: CageLocation;
+  capacity: number;
+  currentOccupantCount: number;
+  projectedOccupantCount: number;
+  overBy: number;
+  wouldExceed: boolean;
+  alreadyInTargetCage: boolean;
+  alreadyOverCapacity: boolean;
+  headline: string;
+  detail: string;
+}
+
+/**
+ * Normalizes a cage/pen label for case-insensitive trimmed matching.
+ */
+export function normalizeCageLabelKey(label?: string | null): string {
+  return typeof label === 'string' ? label.trim().toLowerCase() : '';
+}
+
+/**
+ * Returns true when an animal currently occupies physical housing space
+ * (Active, Junior, or unarchived/non-offloaded Retired stock; excludes Sold, Deceased, Archived, and OPFS stubs).
+ */
+export function isCageOccupyingAnimal(
+  animal: Partial<Pick<Animal, 'status' | 'archived' | 'offloadedArchiveKey'>> | null | undefined
+): boolean {
+  if (!animal) return false;
+  if (animal.archived || animal.offloadedArchiveKey) return false;
+  return animal.status === 'Active' || animal.status === 'Junior' || animal.status === 'Retired';
+}
+
+function buildCageOccupancyEvaluation(
+  cage: CageLocation,
+  occupants: Animal[]
+): CageOccupancyEvaluation {
+  const capacity = Math.max(1, Math.round(Number(cage.capacity) || 1));
+  const sortedOccupants = [...occupants].sort(
+    (a, b) =>
+      (a.name || '').localeCompare(b.name || '') ||
+      (a.tattoo || '').localeCompare(b.tattoo || '')
+  );
+  const occupantCount = sortedOccupants.length;
+  const isOverCapacity = occupantCount > capacity;
+  const isAtCapacity = occupantCount === capacity;
+  const overBy = Math.max(0, occupantCount - capacity);
+  const availableSpots = Math.max(0, capacity - occupantCount);
+  const status: CageOccupancyStatus = isOverCapacity
+    ? 'over_capacity'
+    : isAtCapacity
+      ? 'full'
+      : occupantCount === 0
+        ? 'empty'
+        : 'available';
+  const ratioLabel = isOverCapacity
+    ? `${occupantCount}/${capacity} over capacity`
+    : isAtCapacity
+      ? `${occupantCount}/${capacity} full`
+      : `${occupantCount}/${capacity}`;
+
+  return {
+    cage,
+    capacity,
+    occupants: sortedOccupants,
+    occupantCount,
+    status,
+    isOverCapacity,
+    isAtCapacity,
+    overBy,
+    availableSpots,
+    ratioLabel,
+  };
+}
+
+/**
+ * Evaluates current occupancy vs configured `capacity` for a single `CageLocation`.
+ */
+export function evaluateCageOccupancy(
+  cage: CageLocation,
+  animals: readonly Animal[]
+): CageOccupancyEvaluation {
+  const labelKey = normalizeCageLabelKey(cage.label);
+  const occupants = labelKey
+    ? animals.filter(
+        (a) =>
+          isSameSpecies(a.species, cage.species) &&
+          isCageOccupyingAnimal(a) &&
+          normalizeCageLabelKey(a.cageLocation) === labelKey
+      )
+    : [];
+  return buildCageOccupancyEvaluation(cage, occupants);
+}
+
+/**
+ * Evaluates occupancy and capacity compliance across all `CageLocation` records for one species in O(C + A).
+ */
+export function evaluateSpeciesCagesOccupancy(
+  cages: readonly CageLocation[],
+  animals: readonly Animal[],
+  speciesName: string
+): SpeciesCagesOccupancySummary {
+  const occupantsByLabelKey = new Map<string, Animal[]>();
+  for (const animal of animals) {
+    if (!isSameSpecies(animal.species, speciesName)) continue;
+    if (!isCageOccupyingAnimal(animal)) continue;
+    const key = normalizeCageLabelKey(animal.cageLocation);
+    if (!key) continue;
+    let bucket = occupantsByLabelKey.get(key);
+    if (!bucket) {
+      bucket = [];
+      occupantsByLabelKey.set(key, bucket);
+    }
+    bucket.push(animal);
+  }
+
+  const evaluations: CageOccupancyEvaluation[] = [];
+  const overCapacityCages: CageOccupancyEvaluation[] = [];
+  const byCageId = new Map<string, CageOccupancyEvaluation>();
+  const byLabelKey = new Map<string, CageOccupancyEvaluation>();
+  let overCapacityExtraAnimalsCount = 0;
+
+  for (const cage of cages) {
+    if (!isSameSpecies(cage.species, speciesName)) continue;
+    const key = normalizeCageLabelKey(cage.label);
+    const occupants = key ? occupantsByLabelKey.get(key) ?? [] : [];
+    const evalItem = buildCageOccupancyEvaluation(cage, occupants);
+    evaluations.push(evalItem);
+    byCageId.set(cage.id, evalItem);
+    if (key && !byLabelKey.has(key)) {
+      byLabelKey.set(key, evalItem);
+    }
+    if (evalItem.isOverCapacity) {
+      overCapacityCages.push(evalItem);
+      overCapacityExtraAnimalsCount += evalItem.overBy;
+    }
+  }
+
+  return {
+    evaluations,
+    overCapacityCages,
+    totalOverCapacityCount: overCapacityCages.length,
+    overCapacityExtraAnimalsCount,
+    byCageId,
+    byLabelKey,
+    shouldShowOverCapacityAlert: overCapacityCages.length > 0,
+  };
+}
+
+/**
+ * Evaluates whether assigning, moving, or reactivating an animal into `targetCageLabel`
+ * will exceed the matching `CageLocation.capacity`.
+ */
+export function evaluateCageAssignmentCapacityWarning(params: {
+  targetCageLabel: string;
+  cages: readonly CageLocation[];
+  animals: readonly Animal[];
+  speciesName: string;
+  animalId?: string;
+  animalName?: string;
+  wasAlreadyOccupyingTargetCage?: boolean;
+  willOccupyAfterSave?: boolean;
+}): CageAssignmentCapacityWarning | null {
+  if (params.willOccupyAfterSave === false) return null;
+
+  const targetKey = normalizeCageLabelKey(params.targetCageLabel);
+  if (!targetKey) return null;
+
+  const matchedCage = params.cages.find(
+    (c) =>
+      isSameSpecies(c.species, params.speciesName) &&
+      normalizeCageLabelKey(c.label) === targetKey
+  );
+  if (!matchedCage) return null;
+
+  const evaluation = evaluateCageOccupancy(matchedCage, params.animals);
+  const otherOccupants = params.animalId
+    ? evaluation.occupants.filter((o) => o.id !== params.animalId)
+    : evaluation.occupants;
+
+  const alreadyInTargetCage =
+    params.wasAlreadyOccupyingTargetCage ??
+    Boolean(params.animalId && evaluation.occupants.some((o) => o.id === params.animalId));
+
+  const projectedOccupantCount = otherOccupants.length + 1;
+  const overBy = Math.max(0, projectedOccupantCount - evaluation.capacity);
+  if (overBy <= 0) return null;
+
+  const wouldExceed = !alreadyInTargetCage;
+  const safeName = (params.animalName || '').trim() || 'This animal';
+
+  const headline = wouldExceed
+    ? `Cage Capacity Warning — ${matchedCage.label} (${projectedOccupantCount}/${evaluation.capacity} over capacity)`
+    : `${matchedCage.label} Over Capacity (${evaluation.ratioLabel})`;
+
+  const detail = wouldExceed
+    ? `Assigning ${safeName} to ${matchedCage.label} puts ${matchedCage.label} over its configured capacity of ${evaluation.capacity} (${projectedOccupantCount}/${evaluation.capacity}).`
+    : `${matchedCage.label} currently holds ${evaluation.occupantCount} animals against a capacity of ${evaluation.capacity}.`;
+
+  return {
+    cage: matchedCage,
+    capacity: evaluation.capacity,
+    currentOccupantCount: evaluation.occupantCount,
+    projectedOccupantCount,
+    overBy,
+    wouldExceed,
+    alreadyInTargetCage,
+    alreadyOverCapacity: evaluation.isOverCapacity,
+    headline,
+    detail,
+  };
+}
+
 
 

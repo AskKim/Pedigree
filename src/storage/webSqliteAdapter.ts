@@ -25,6 +25,8 @@ import {
   CageLocation,
   CareLog,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
+  normalizeAnimalStatus,
+  normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
   normalizeIgnoredConflicts,
@@ -61,6 +63,7 @@ import {
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 import { SnapshotLoadOptions, StorageAdapter } from './storageAdapter';
 import {
+  getAdjustedNowIsoUtc,
   isQuotaExceededError,
   listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
@@ -119,6 +122,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     offspring_label TEXT NOT NULL,
     example_breeds_json TEXT NOT NULL,
     milestones_json TEXT NOT NULL,
+    breed_overrides_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -473,6 +477,7 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE species_profiles ADD COLUMN memo_text TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE species_profiles ADD COLUMN maturity_days INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE species_profiles ADD COLUMN breed_overrides_json TEXT NOT NULL DEFAULT '[]';",
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE animals ADD COLUMN ignored_conflicts_json TEXT NOT NULL DEFAULT '[]';",
@@ -1186,87 +1191,22 @@ export class WebSqliteAdapter implements StorageAdapter {
             `species_profiles(${String(r.name)}).milestones_json`
           )
         ),
+        breedOverrides: normalizeBreedScheduleOverrides(
+          safeArray(
+            this.safeParseJson(
+              r.breed_overrides_json || '[]',
+              [],
+              `species_profiles(${String(r.name)}).breed_overrides_json`
+            )
+          )
+        ),
         createdAt: String(r.created_at),
         updatedAt: String(r.updated_at),
       };
     });
 
-    const animals: Animal[] = runQuery('SELECT * FROM animals ORDER BY name ASC').map(
-      (r) => {
-        const animalLabel = String(r.name || r.id || 'unknown');
-        const suspectedRaw = this.safeParseJson<unknown>(
-          r.suspected_carrier_of_json || '[]',
-          [],
-          `animals(${animalLabel}).suspected_carrier_of_json`
-        );
-        const confirmedRaw = this.safeParseJson<unknown>(
-          r.confirmed_carrier_of_json || '[]',
-          [],
-          `animals(${animalLabel}).confirmed_carrier_of_json`
-        );
-        const clearedRaw = this.safeParseJson<unknown>(
-          r.cleared_carrier_of_json || '[]',
-          [],
-          `animals(${animalLabel}).cleared_carrier_of_json`
-        );
-        const carriers = reconcileCarrierTraitLists(suspectedRaw, confirmedRaw, clearedRaw);
-        return {
-          id: String(r.id),
-          tattoo: String(r.tattoo),
-          name: String(r.name),
-          species: String(r.species),
-          breed: String(r.breed),
-          variety: String(r.variety),
-          sex: (r.sex as any) || 'Unknown',
-          status: (r.status as any) || 'Active',
-          archived: Number(r.archived) === 1,
-          needsAttention: Number(r.needs_attention) === 1,
-          ignoredConflicts: normalizeIgnoredConflicts(
-            this.safeParseJson(
-              r.ignored_conflicts_json || '[]',
-              [],
-              `animals(${animalLabel}).ignored_conflicts_json`
-            )
-          ),
-          birthDateIso: String(r.birth_date_iso),
-          weightGrams: finiteNonNeg(r.weight_grams, 0),
-          genotype: safeArray(
-            this.safeParseJson(
-              r.genotype_json || '[]',
-              [],
-              `animals(${animalLabel}).genotype_json`
-            )
-          ),
-          genotypeRaw: String(r.genotype_raw),
-          rufusLevel: normalizeRufusLevel(r.rufus_level),
-          suspectedCarrierOf: carriers.suspectedCarrierOf,
-          confirmedCarrierOf: carriers.confirmedCarrierOf,
-          clearedCarrierOf: carriers.clearedCarrierOf,
-          registrationNumber: String(r.registration_number),
-          grandChampionNumber: String(r.grand_champion_number),
-          legsCount: finiteNonNeg(r.legs_count, 0),
-          cageLocation: String(r.cage_location),
-          breederName: String(r.breeder_name),
-          ownerName: String(r.owner_name),
-          ownershipType: normalizeOwnershipType(r.ownership_type, 'Owned'),
-          culled: Number(r.culled) === 1,
-          cullDateIso: String(r.cull_date_iso || ''),
-          cullReason: String(r.cull_reason || ''),
-          deceasedDateIso: String(r.deceased_date_iso || ''),
-          deathCause: String(r.death_cause || ''),
-          soldDateIso: String(r.sold_date_iso || ''),
-          salePriceCents: finiteNonNeg(r.sale_price_cents, 0),
-          purchaseCostCents: finiteNonNeg(r.purchase_cost_cents, 0),
-          buyerName: String(r.buyer_name || ''),
-          sireId: String(r.sire_id),
-          damId: String(r.dam_id),
-          notes: String(r.notes),
-          offloadedArchiveKey: r.offloaded_archive_key ? String(r.offloaded_archive_key) : undefined,
-          offloadedAtIso: r.offloaded_at_iso ? String(r.offloaded_at_iso) : undefined,
-          createdAt: String(r.created_at),
-          updatedAt: String(r.updated_at),
-        };
-      }
+    const animals: Animal[] = runQuery('SELECT * FROM animals ORDER BY name ASC').map((r) =>
+      this.mapAnimalRow(r, finiteNonNeg, safeArray)
     );
 
     const photoQuerySql = options?.lightweightPhotos
@@ -1491,6 +1431,265 @@ export class WebSqliteAdapter implements StorageAdapter {
     return out;
   }
 
+  private mapAnimalRow(
+    r: Record<string, any>,
+    finiteNonNeg?: (raw: unknown, fallback?: number) => number,
+    safeArray?: <T>(val: unknown) => T[]
+  ): Animal {
+    const sanitizeNonNeg =
+      finiteNonNeg ??
+      ((raw: unknown, fallback = 0): number => {
+        if (raw === null || raw === undefined || raw === '') return fallback;
+        const num = Number(raw);
+        return Number.isFinite(num) && num >= 0 ? num : fallback;
+      });
+    const toSafeArray =
+      safeArray ?? (<T>(val: unknown): T[] => (Array.isArray(val) ? (val as T[]) : []));
+
+    const animalLabel = String(r.name || r.id || 'unknown');
+    const suspectedRaw = this.safeParseJson<unknown>(
+      r.suspected_carrier_of_json || '[]',
+      [],
+      `animals(${animalLabel}).suspected_carrier_of_json`
+    );
+    const confirmedRaw = this.safeParseJson<unknown>(
+      r.confirmed_carrier_of_json || '[]',
+      [],
+      `animals(${animalLabel}).confirmed_carrier_of_json`
+    );
+    const clearedRaw = this.safeParseJson<unknown>(
+      r.cleared_carrier_of_json || '[]',
+      [],
+      `animals(${animalLabel}).cleared_carrier_of_json`
+    );
+    const carriers = reconcileCarrierTraitLists(suspectedRaw, confirmedRaw, clearedRaw);
+    const rawSex = String(r.sex || 'Unknown');
+    const sex: Animal['sex'] =
+      rawSex === 'Male' || rawSex === 'Female' ? rawSex : 'Unknown';
+    const status: Animal['status'] = normalizeAnimalStatus(r.status);
+
+    return {
+      id: String(r.id),
+      tattoo: String(r.tattoo),
+      name: String(r.name),
+      species: String(r.species),
+      breed: String(r.breed),
+      variety: String(r.variety),
+      sex,
+      status,
+      archived: Number(r.archived) === 1,
+      needsAttention: Number(r.needs_attention) === 1,
+      ignoredConflicts: normalizeIgnoredConflicts(
+        this.safeParseJson(
+          r.ignored_conflicts_json || '[]',
+          [],
+          `animals(${animalLabel}).ignored_conflicts_json`
+        )
+      ),
+      birthDateIso: String(r.birth_date_iso),
+      weightGrams: sanitizeNonNeg(r.weight_grams, 0),
+      genotype: toSafeArray(
+        this.safeParseJson(
+          r.genotype_json || '[]',
+          [],
+          `animals(${animalLabel}).genotype_json`
+        )
+      ),
+      genotypeRaw: String(r.genotype_raw),
+      rufusLevel: normalizeRufusLevel(r.rufus_level),
+      suspectedCarrierOf: carriers.suspectedCarrierOf,
+      confirmedCarrierOf: carriers.confirmedCarrierOf,
+      clearedCarrierOf: carriers.clearedCarrierOf,
+      registrationNumber: String(r.registration_number),
+      grandChampionNumber: String(r.grand_champion_number),
+      legsCount: sanitizeNonNeg(r.legs_count, 0),
+      cageLocation: String(r.cage_location),
+      breederName: String(r.breeder_name),
+      ownerName: String(r.owner_name),
+      ownershipType: normalizeOwnershipType(r.ownership_type, 'Owned'),
+      culled: Number(r.culled) === 1,
+      cullDateIso: String(r.cull_date_iso || ''),
+      cullReason: String(r.cull_reason || ''),
+      deceasedDateIso: String(r.deceased_date_iso || ''),
+      deathCause: String(r.death_cause || ''),
+      soldDateIso: String(r.sold_date_iso || ''),
+      salePriceCents: sanitizeNonNeg(r.sale_price_cents, 0),
+      purchaseCostCents: sanitizeNonNeg(r.purchase_cost_cents, 0),
+      buyerName: String(r.buyer_name || ''),
+      sireId: String(r.sire_id),
+      damId: String(r.dam_id),
+      notes: String(r.notes),
+      offloadedArchiveKey: r.offloaded_archive_key ? String(r.offloaded_archive_key) : undefined,
+      offloadedAtIso: r.offloaded_at_iso ? String(r.offloaded_at_iso) : undefined,
+      createdAt: String(r.created_at),
+      updatedAt: String(r.updated_at),
+    };
+  }
+
+  async queryPedigreeNeighborhood(rootIds: string[], maxDepth: number): Promise<Animal[]> {
+    const cleanRoots = Array.from(new Set(rootIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+    if (cleanRoots.length === 0) return [];
+    const boundedDepth = Math.min(6, Math.max(0, Math.floor(maxDepth)));
+    await this.syncFromPersistedStorageIfStale();
+
+    const MAX_RECORDS = 256;
+    const collected: Animal[] = [];
+    const visited = new Set<string>();
+    let frontier = cleanRoots;
+
+    if (!this.db) {
+      const byId = new Map<string, Animal>();
+      for (const a of this.fallbackSnapshot?.animals ?? []) {
+        byId.set(a.id, a);
+      }
+      for (let depth = 0; depth <= boundedDepth && frontier.length > 0 && collected.length < MAX_RECORDS; depth++) {
+        const nextFrontier: string[] = [];
+        for (const id of frontier) {
+          if (visited.has(id) || collected.length >= MAX_RECORDS) continue;
+          visited.add(id);
+          const found = byId.get(id);
+          if (!found) continue;
+          collected.push(found);
+          if (depth < boundedDepth) {
+            if (found.sireId && !visited.has(found.sireId)) nextFrontier.push(found.sireId);
+            if (found.damId && !visited.has(found.damId)) nextFrontier.push(found.damId);
+          }
+        }
+        frontier = nextFrontier;
+      }
+      return collected;
+    }
+
+    for (let depth = 0; depth <= boundedDepth && frontier.length > 0 && collected.length < MAX_RECORDS; depth++) {
+      const batchToFetch: string[] = [];
+      for (const id of frontier) {
+        if (!visited.has(id)) {
+          visited.add(id);
+          batchToFetch.push(id);
+        }
+      }
+      if (batchToFetch.length === 0) break;
+
+      const nextFrontier: string[] = [];
+      for (let i = 0; i < batchToFetch.length; i += 64) {
+        if (collected.length >= MAX_RECORDS) break;
+        const chunk = batchToFetch.slice(i, i + 64);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const stmt = this.db.prepare(
+          `SELECT * FROM animals WHERE id IN (${placeholders})`
+        );
+        try {
+          stmt.bind(chunk);
+          while (stmt.step()) {
+            if (collected.length >= MAX_RECORDS) break;
+            const animal = this.mapAnimalRow(stmt.getAsObject());
+            collected.push(animal);
+            if (depth < boundedDepth) {
+              if (animal.sireId && !visited.has(animal.sireId)) nextFrontier.push(animal.sireId);
+              if (animal.damId && !visited.has(animal.damId)) nextFrontier.push(animal.damId);
+            }
+          }
+        } finally {
+          stmt.free();
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    return collected;
+  }
+
+  async queryPedigreeBranchAncestorsExist(
+    animalIds: string[]
+  ): Promise<Record<string, boolean>> {
+    const out: Record<string, boolean> = {};
+    const cleanIds = Array.from(new Set(animalIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+    if (cleanIds.length === 0) return out;
+    await this.syncFromPersistedStorageIfStale();
+
+    if (!this.db) {
+      const byId = new Map<string, Animal>();
+      for (const a of this.fallbackSnapshot?.animals ?? []) {
+        byId.set(a.id, a);
+      }
+      for (const id of cleanIds) {
+        const a = byId.get(id);
+        if (!a) {
+          out[id] = false;
+          continue;
+        }
+        out[id] = Boolean(
+          (a.sireId && byId.has(a.sireId)) ||
+            (a.damId && byId.has(a.damId)) ||
+            a.offloadedArchiveKey
+        );
+      }
+      return out;
+    }
+
+    const parentRefs: Array<{ id: string; sireId: string; damId: string; archivedKey: string }> = [];
+    const candidateParentIds = new Set<string>();
+
+    for (let i = 0; i < cleanIds.length; i += 64) {
+      const chunk = cleanIds.slice(i, i + 64);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const stmt = this.db.prepare(
+        `SELECT id, sire_id, dam_id, offloaded_archive_key FROM animals WHERE id IN (${placeholders})`
+      );
+      try {
+        stmt.bind(chunk);
+        while (stmt.step()) {
+          const r = stmt.getAsObject() as {
+            id?: unknown;
+            sire_id?: unknown;
+            dam_id?: unknown;
+            offloaded_archive_key?: unknown;
+          };
+          const id = String(r.id || '');
+          const sireId = String(r.sire_id || '');
+          const damId = String(r.dam_id || '');
+          const archivedKey = String(r.offloaded_archive_key || '');
+          if (id) {
+            parentRefs.push({ id, sireId, damId, archivedKey });
+            if (sireId) candidateParentIds.add(sireId);
+            if (damId) candidateParentIds.add(damId);
+          }
+        }
+      } finally {
+        stmt.free();
+      }
+    }
+
+    const existingParents = new Set<string>();
+    const parentIdArr = Array.from(candidateParentIds);
+    for (let i = 0; i < parentIdArr.length; i += 64) {
+      const chunk = parentIdArr.slice(i, i + 64);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const stmt = this.db.prepare(
+        `SELECT id FROM animals WHERE id IN (${placeholders})`
+      );
+      try {
+        stmt.bind(chunk);
+        while (stmt.step()) {
+          const r = stmt.getAsObject() as { id?: unknown };
+          const pid = String(r.id || '');
+          if (pid) existingParents.add(pid);
+        }
+      } finally {
+        stmt.free();
+      }
+    }
+
+    for (const ref of parentRefs) {
+      out[ref.id] = Boolean(
+        (ref.sireId && existingParents.has(ref.sireId)) ||
+          (ref.damId && existingParents.has(ref.damId)) ||
+          ref.archivedKey
+      );
+    }
+    return out;
+  }
+
   async replaceSnapshot(snapshot: BarnDatabaseSnapshot): Promise<void> {
     return withCrossTabLock(DB_WRITE_LOCK_NAME, () =>
       this.replaceSnapshotLocked(snapshot, 'replaceSnapshot')
@@ -1604,8 +1803,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, breed_overrides_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
@@ -1624,6 +1823,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         sp.offspringLabel,
         JSON.stringify(sp.exampleBreeds),
         JSON.stringify(sp.milestones),
+        JSON.stringify(normalizeBreedScheduleOverrides(sp.breedOverrides)),
         sp.createdAt,
         sp.updatedAt,
       ]

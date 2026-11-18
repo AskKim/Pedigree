@@ -8,7 +8,7 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { AlertTriangle, Loader2, Trash2, UserPlus } from 'lucide-react';
+import { AlertTriangle, Loader2, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   findLitterOffspringTattooConflicts,
@@ -42,10 +42,16 @@ import {
   UltrasoundResult,
 } from '../core/models';
 import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
-import { generateCascadedTasksForBreeding } from '../core/taskMaster';
+import {
+  evaluateStalePostBirthTasksForBreeding,
+  generateCascadedTasksForBreeding,
+  getPendingBreedingCleanupTasks,
+  resolveEffectiveSpeciesProfileForBreeding,
+} from '../core/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
-import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -82,8 +88,10 @@ interface BreedingScreenProps {
       notes: string;
       registerJuniorCount: number;
       offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
+      shiftPostBirthTasksToActualDate?: boolean;
     }
   ) => Promise<boolean | void> | void;
+  onRecalculatePostBirthTasks?: (breedingId: string) => Promise<boolean | void> | void;
   onDeleteBreeding: (id: string) => void;
 }
 
@@ -92,11 +100,14 @@ export function BreedingScreen({
   settings,
   onLogBreeding,
   onUpdateOutcome,
+  onRecalculatePostBirthTasks,
   onDeleteBreeding,
 }: BreedingScreenProps) {
-  const { speciesProfile, animals, herdById, breedings } = activeData;
+  const { speciesProfile, animals, herdById, breedings, tasks } = activeData;
   const baseId = useId();
   const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
+  const [ledgerQuery, setLedgerQuery] = useState('');
+  const [ledgerStatusFilter, setLedgerStatusFilter] = useState<'all' | BreedingStatus>('all');
 
   const archivedCount = useMemo(
     () => animals.filter((a) => isAnimalArchived(a)).length,
@@ -157,7 +168,49 @@ export function BreedingScreen({
     setQuickSireName('');
     setQuickAddDam(females.length === 0);
     setQuickDamName('');
+    setLedgerQuery('');
+    setLedgerStatusFilter('all');
   }, [speciesProfile.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filteredBreedings = useMemo(() => {
+    const q = ledgerQuery.trim().toLowerCase();
+    return breedings.filter((b) => {
+      if (ledgerStatusFilter !== 'all' && b.status !== ledgerStatusFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        b.damName.toLowerCase().includes(q) ||
+        b.sireName.toLowerCase().includes(q) ||
+        b.status.toLowerCase().includes(q) ||
+        b.bredDateIso.toLowerCase().includes(q) ||
+        (b.notes || '').toLowerCase().includes(q)
+      );
+    });
+  }, [breedings, ledgerStatusFilter, ledgerQuery]);
+
+  const breedingVirtual = useVirtualWindow({
+    itemCount: filteredBreedings.length,
+    estimateSize: 96,
+    overscan: 6,
+    initialFallbackCount: 25,
+    resetKey: `${speciesProfile.name}::${ledgerStatusFilter}::${ledgerQuery}`,
+  });
+  const windowedBreedings = useMemo(
+    () =>
+      filteredBreedings.length > 0 &&
+      breedingVirtual.windowRange.endIndex >= breedingVirtual.windowRange.startIndex
+        ? filteredBreedings.slice(
+            breedingVirtual.windowRange.startIndex,
+            breedingVirtual.windowRange.endIndex + 1
+          )
+        : [],
+    [
+      filteredBreedings,
+      breedingVirtual.windowRange.startIndex,
+      breedingVirtual.windowRange.endIndex,
+    ]
+  );
 
   // Outcome modal state
   const [editingRecord, setEditingRecord] = useState<BreedingRecord | null>(null);
@@ -183,8 +236,10 @@ export function BreedingScreen({
   const [outOffspringDrafts, setOutOffspringDrafts] = useState<LitterOffspringDraft[]>([]);
   const [outOverrideInput, setOutOverrideInput] = useState('');
   const [outConflictError, setOutConflictError] = useState<string | null>(null);
+  const [outShiftPostBirthTasks, setOutShiftPostBirthTasks] = useState(true);
   const breedingSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
   const outcomeSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const recalcTasksLock = useAsyncKeyedLock();
 
   const idLabels = useMemo(
     () => getSpeciesIdentifierLabels(speciesProfile.name),
@@ -290,8 +345,14 @@ export function BreedingScreen({
     return analyzePairingCarrierRisks(selectedSire, selectedDam, herdById);
   }, [selectedSire, selectedDam, herdById]);
 
+  const resolvedSchedule = useMemo(
+    () => resolveEffectiveSpeciesProfileForBreeding(speciesProfile, effectiveDam, effectiveSire),
+    [speciesProfile, effectiveDam, effectiveSire]
+  );
+
   const previewTasks = useMemo(() => {
     if (!effectiveSire || !effectiveDam || !bredDateIso) return [];
+    const effectiveProfile = resolvedSchedule.profile;
     const mockBreeding: BreedingRecord = {
       id: 'preview',
       species: speciesProfile.name,
@@ -300,7 +361,7 @@ export function BreedingScreen({
       sireName: effectiveSire.name,
       damName: effectiveDam.name,
       bredDateIso,
-      expectedDueDateIso: addDaysIso(bredDateIso, speciesProfile.gestationDays),
+      expectedDueDateIso: addDaysIso(bredDateIso, effectiveProfile.gestationDays),
       actualBirthDateIso: '',
       projectedCoiPercent: coiAnalysis?.coiPercent ?? 0,
       liveCount: 0,
@@ -313,16 +374,72 @@ export function BreedingScreen({
       createdAt: '',
       updatedAt: '',
     };
-    const rawTasks = generateCascadedTasksForBreeding(mockBreeding, speciesProfile);
+    const rawTasks = generateCascadedTasksForBreeding(mockBreeding, effectiveProfile);
     return rawTasks.map((pt) => ({
       ...pt,
       displayTitle: formatSystemTaskTitle(pt, settings?.calendarSync, {
         animals: [effectiveSire, effectiveDam],
         breedings: [mockBreeding],
-        speciesProfiles: [speciesProfile],
+        speciesProfiles: [effectiveProfile],
       }),
     }));
-  }, [effectiveSire, effectiveDam, bredDateIso, speciesProfile, coiAnalysis, status, settings]);
+  }, [
+    effectiveSire,
+    effectiveDam,
+    bredDateIso,
+    speciesProfile.name,
+    resolvedSchedule.profile,
+    coiAnalysis,
+    status,
+    settings,
+  ]);
+
+  const stalePostBirthByBreedingId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const b of breedings) {
+      if (!b.actualBirthDateIso || b.status === 'Missed') continue;
+      const dam = herdById.get(b.damId);
+      const sire = herdById.get(b.sireId);
+      const effectiveSp = resolveEffectiveSpeciesProfileForBreeding(
+        speciesProfile,
+        dam,
+        sire
+      ).profile;
+      const { staleEntries } = evaluateStalePostBirthTasksForBreeding(tasks, b, effectiveSp);
+      if (staleEntries.length > 0) {
+        counts.set(b.id, staleEntries.length);
+      }
+    }
+    return counts;
+  }, [breedings, herdById, speciesProfile, tasks]);
+
+  const editingEffectiveProfile = useMemo(() => {
+    if (!editingRecord) return speciesProfile;
+    const dam = herdById.get(editingRecord.damId);
+    const sire = herdById.get(editingRecord.sireId);
+    return resolveEffectiveSpeciesProfileForBreeding(speciesProfile, dam, sire).profile;
+  }, [editingRecord, herdById, speciesProfile]);
+
+  const outcomeStalePostBirth = useMemo(() => {
+    if (!editingRecord || (outStatus !== 'Born' && outStatus !== 'Weaned') || !outBirthIso) {
+      return { anchorDateIso: '', staleEntries: [] };
+    }
+    return evaluateStalePostBirthTasksForBreeding(
+      tasks,
+      editingRecord,
+      editingEffectiveProfile,
+      outBirthIso
+    );
+  }, [editingRecord, outStatus, outBirthIso, tasks, editingEffectiveProfile]);
+
+  const outcomeMissedCleanupCount = useMemo(() => {
+    if (!editingRecord || outStatus !== 'Missed') return 0;
+    return getPendingBreedingCleanupTasks(
+      tasks,
+      editingRecord.id,
+      editingEffectiveProfile
+    ).length;
+  }, [editingRecord, outStatus, tasks, editingEffectiveProfile]);
 
   const canSubmitBreeding =
     (usingQuickSire ? Boolean(quickSireName.trim()) : Boolean(selectedSire)) &&
@@ -392,6 +509,7 @@ export function BreedingScreen({
     setOutOffspringDrafts([]);
     setOutOverrideInput('');
     setOutConflictError(null);
+    setOutShiftPostBirthTasks(true);
   };
 
   const syncOffspringDraftCount = (rawValue: string) => {
@@ -460,6 +578,8 @@ export function BreedingScreen({
           regCount > 0 && outOffspringDrafts.length > 0
             ? outOffspringDrafts.map(({ name, tattoo, sex }) => ({ name, tattoo, sex }))
             : undefined,
+        shiftPostBirthTasksToActualDate:
+          outShiftPostBirthTasks && outcomeStalePostBirth.staleEntries.length > 0,
       });
       if (ok === false) {
         setOutConflictError(
@@ -726,7 +846,14 @@ export function BreedingScreen({
               <span>
                 <strong>Auto-cascade {previewTasks.length} Master Task List chores</strong> (Expected{' '}
                 {speciesProfile.birthEventLabel}:{' '}
-                {formatReadableDate(addDaysIso(bredDateIso, speciesProfile.gestationDays))})
+                {formatReadableDate(addDaysIso(bredDateIso, resolvedSchedule.profile.gestationDays))})
+                {resolvedSchedule.matchedBreed && (
+                  <span className="block text-[11px] text-[var(--barn-sage)] font-medium mt-0.5">
+                    Using {resolvedSchedule.matchedBreed} schedule override (
+                    {resolvedSchedule.profile.gestationDays}d gestation, +
+                    {resolvedSchedule.profile.weanDaysAfterBirth}d wean)
+                  </span>
+                )}
               </span>
             </label>
 
@@ -1063,71 +1190,192 @@ export function BreedingScreen({
 
       {/* Species Breeding & Litter History Ledger */}
       <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
-        <div className="space-y-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <h2 className="font-display text-lg font-semibold">
             {speciesProfile.name} Breeding &amp; {speciesProfile.birthEventLabel} Ledger (
-            {breedings.length})
+            {filteredBreedings.length}
+            {filteredBreedings.length !== breedings.length ? ` of ${breedings.length}` : ''})
           </h2>
+          {breedings.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 sm:w-56">
+                <Search
+                  className="w-3.5 h-3.5 text-[var(--barn-muted)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  aria-hidden="true"
+                />
+                <input
+                  type="text"
+                  value={ledgerQuery}
+                  onChange={(e) => setLedgerQuery(e.target.value)}
+                  placeholder="Search parent, date, notes..."
+                  aria-label="Filter breeding ledger"
+                  className="w-full min-h-[38px] pl-8 pr-8 py-1.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                />
+                {ledgerQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setLedgerQuery('')}
+                    aria-label="Clear breeding search"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[28px] min-w-[28px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-ink)] flex items-center justify-center"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+              <select
+                aria-label="Filter breeding status"
+                value={ledgerStatusFilter}
+                onChange={(e) => setLedgerStatusFilter(e.target.value as 'all' | BreedingStatus)}
+                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-medium"
+              >
+                <option value="all">All Statuses</option>
+                {BREEDING_STATUSES.map((st) => (
+                  <option key={st} value={st}>
+                    {formatBreedingStatusForSpecies(st, speciesProfile)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {breedings.length === 0 ? (
           <p className="text-sm text-[var(--barn-muted)]">
             No {speciesProfile.name.toLowerCase()} pairings recorded yet.
           </p>
+        ) : filteredBreedings.length === 0 ? (
+          <div className="py-6 text-center space-y-2">
+            <p className="text-sm text-[var(--barn-muted)]">
+              No {speciesProfile.name.toLowerCase()} pairings matched your filter.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setLedgerQuery('');
+                setLedgerStatusFilter('all');
+              }}
+              className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+            >
+              Reset Ledger Filter
+            </button>
+          </div>
         ) : (
-          <div className="divide-y divide-[var(--barn-border)]">
-            {breedings.map((b) => (
-              <div
-                key={b.id}
-                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-              >
-                <div className="space-y-1">
-                  <div className="text-sm font-semibold">
-                    {b.damName} × {b.sireName}{' '}
-                    <span className="text-xs font-normal text-[var(--barn-muted)]">
-                      · {formatBreedingStatusForSpecies(b.status, speciesProfile)} · COI{' '}
-                      {b.projectedCoiPercent.toFixed(2)}%
-                    </span>
-                  </div>
-                  <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
-                    Bred {formatReadableDate(b.bredDateIso)} · Due{' '}
-                    {formatReadableDate(b.ultrasoundProjectedDueIso || b.expectedDueDateIso)}
-                    {b.ultrasoundProjectedDueIso ? ' (US est.)' : ''}
-                    {b.ultrasoundResult
-                      ? ` · Scan: ${b.ultrasoundResult}${b.ultrasoundFetalCount ? ` (${b.ultrasoundFetalCount})` : ''}`
-                      : ''}
-                    {b.actualBirthDateIso
-                      ? ` · ${speciesProfile.birthEventLabel}: ${formatReadableDate(b.actualBirthDateIso)}`
-                      : ''}
-                    {b.liveCount > 0 || b.stillbornCount > 0
-                      ? ` · ${b.liveCount} live / ${b.stillbornCount} stillborn / ${b.weanedCount} weaned`
-                      : ''}
-                    {(b.serviceFeeCents ?? 0) > 0 && b.serviceFeeDirection && b.serviceFeeDirection !== 'none'
-                      ? ` · Fee ${b.serviceFeeDirection}: ${formatCurrencyCents(b.serviceFeeCents, resolvedCurrency)}`
-                      : ''}
-                  </div>
-                  {b.notes && <div className="text-xs text-[var(--barn-muted)]">{b.notes}</div>}
-                </div>
+          <div className="space-y-2">
+            <div
+              ref={breedingVirtual.scrollContainerRef}
+              className="max-h-[70vh] overflow-y-auto pr-1"
+            >
+              {breedingVirtual.windowRange.paddingTop > 0 && (
+                <div
+                  aria-hidden="true"
+                  style={{ height: `${breedingVirtual.windowRange.paddingTop}px` }}
+                />
+              )}
+              <div className="divide-y divide-[var(--barn-border)]">
+                {windowedBreedings.map((b, localIdx) => {
+                  const rowIndex = breedingVirtual.windowRange.startIndex + localIdx;
+                  return (
+                    <div
+                      key={b.id}
+                      ref={breedingVirtual.measureRowRef(rowIndex)}
+                      className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="text-sm font-semibold">
+                          {b.damName} × {b.sireName}{' '}
+                          <span className="text-xs font-normal text-[var(--barn-muted)]">
+                            · {formatBreedingStatusForSpecies(b.status, speciesProfile)} · COI{' '}
+                            {b.projectedCoiPercent.toFixed(2)}%
+                          </span>
+                        </div>
+                        <div className="text-xs text-[var(--barn-muted)] font-mono tabular-nums">
+                          Bred {formatReadableDate(b.bredDateIso)} · Due{' '}
+                          {formatReadableDate(b.ultrasoundProjectedDueIso || b.expectedDueDateIso)}
+                          {b.ultrasoundProjectedDueIso ? ' (US est.)' : ''}
+                          {b.ultrasoundResult
+                            ? ` · Scan: ${b.ultrasoundResult}${b.ultrasoundFetalCount ? ` (${b.ultrasoundFetalCount})` : ''}`
+                            : ''}
+                          {b.actualBirthDateIso
+                            ? ` · ${speciesProfile.birthEventLabel}: ${formatReadableDate(b.actualBirthDateIso)}`
+                            : ''}
+                          {b.liveCount > 0 || b.stillbornCount > 0
+                            ? ` · ${b.liveCount} live / ${b.stillbornCount} stillborn / ${b.weanedCount} weaned`
+                            : ''}
+                          {(b.serviceFeeCents ?? 0) > 0 &&
+                          b.serviceFeeDirection &&
+                          b.serviceFeeDirection !== 'none'
+                            ? ` · Fee ${b.serviceFeeDirection}: ${formatCurrencyCents(b.serviceFeeCents, resolvedCurrency)}`
+                            : ''}
+                        </div>
+                        {b.notes && <div className="text-xs text-[var(--barn-muted)]">{b.notes}</div>}
+                      </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => openOutcomeModal(b)}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
-                  >
-                    Log {speciesProfile.birthEventLabel} / Counts
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteBreeding(b.id)}
-                    aria-label="Delete breeding record"
-                    className="min-h-[38px] min-w-[38px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        {onRecalculatePostBirthTasks &&
+                          (stalePostBirthByBreedingId.get(b.id) ?? 0) > 0 && (
+                            <button
+                              type="button"
+                              disabled={recalcTasksLock.isKeyLocked(b.id)}
+                              onClick={() =>
+                                void recalcTasksLock.runKeyLocked(b.id, () =>
+                                  onRecalculatePostBirthTasks(b.id)
+                                )
+                              }
+                              className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-55"
+                            >
+                              {recalcTasksLock.isKeyLocked(b.id) ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                              )}
+                              Shift {stalePostBirthByBreedingId.get(b.id)} Post-Birth Chore
+                              {stalePostBirthByBreedingId.get(b.id) === 1 ? '' : 's'}
+                            </button>
+                          )}
+                        <button
+                          type="button"
+                          onClick={() => openOutcomeModal(b)}
+                          className="min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                        >
+                          Log {speciesProfile.birthEventLabel} / Counts
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteBreeding(b.id)}
+                          aria-label="Delete breeding record"
+                          className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+              {breedingVirtual.windowRange.paddingBottom > 0 && (
+                <div
+                  aria-hidden="true"
+                  style={{ height: `${breedingVirtual.windowRange.paddingBottom}px` }}
+                />
+              )}
+            </div>
+            {filteredBreedings.length > 0 && (
+              <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--barn-muted)]">
+                <span className="font-mono tabular-nums">
+                  Showing {breedingVirtual.windowRange.startIndex + 1}–
+                  {breedingVirtual.windowRange.endIndex + 1} of {filteredBreedings.length} pairings
+                </span>
+                {breedingVirtual.windowRange.startIndex > 0 && (
+                  <button
+                    type="button"
+                    onClick={breedingVirtual.scrollToTop}
+                    className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
+                  >
+                    Back to Top
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -1198,6 +1446,36 @@ export function BreedingScreen({
                 />
               </div>
             </div>
+
+            {outcomeStalePostBirth.staleEntries.length > 0 && (
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/50 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={outShiftPostBirthTasks}
+                  onChange={(e) => setOutShiftPostBirthTasks(e.target.checked)}
+                  className="mt-0.5 accent-[var(--barn-sage)]"
+                />
+                <span>
+                  <strong>
+                    Shift {outcomeStalePostBirth.staleEntries.length} uncompleted post-birth chore
+                    {outcomeStalePostBirth.staleEntries.length === 1 ? '' : 's'}
+                  </strong>{' '}
+                  (weaning, rebreed &amp; post-birth milestones) to{' '}
+                  <span className="font-mono font-semibold">
+                    {formatReadableDate(outBirthIso)}
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {outStatus === 'Missed' && outcomeMissedCleanupCount > 0 && (
+              <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)]/70 text-xs text-[var(--barn-ink)]">
+                Saving as <strong>Missed</strong> will automatically clear{' '}
+                <strong className="font-mono">{outcomeMissedCleanupCount}</strong> pending
+                nestbox, {speciesProfile.birthEventLabel.toLowerCase()}, weaning, and rebreed
+                chore{outcomeMissedCleanupCount === 1 ? '' : 's'} linked to this pairing.
+              </div>
+            )}
 
             <div className="grid grid-cols-4 gap-2 text-xs">
               <div>

@@ -25,6 +25,7 @@ import {
   CageLocation,
   CareLog,
   generateUuid,
+  normalizeBreedScheduleOverrides,
   nowIsoUtc,
   ShowEvent,
   SpeciesProfile,
@@ -590,6 +591,7 @@ export function mergeDeltaOperations(
           ...sp,
           memoText: sanitizeSpeciesMemo(sp.memoText),
           memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
+          breedOverrides: normalizeBreedScheduleOverrides(sp.breedOverrides),
         }))
         .sort(
           (a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name)

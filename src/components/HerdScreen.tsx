@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import { useVirtualWindow } from '../utils/useVirtualWindow';
 import {
   AnimalWithdrawalEvaluation,
   buildWithdrawalByAnimalMap,
@@ -225,7 +226,6 @@ export function HerdScreen({
   const [carrierTraitQuery, setCarrierTraitQuery] = useState('');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
-  const [visibleLimit, setVisibleLimit] = useState(HERD_PAGE_SIZE);
   const [migrationModalState, setMigrationModalState] = useState<{
     mode: 'single' | 'multi-select';
     animalIds: string[];
@@ -237,7 +237,6 @@ export function HerdScreen({
     setMigrationModalState(null);
     setCarrierFilterMode('all');
     setCarrierTraitQuery('');
-    setVisibleLimit(HERD_PAGE_SIZE);
   }, [speciesProfile.name]);
 
   useEffect(() => {
@@ -254,10 +253,6 @@ export function HerdScreen({
       onConsumeWithdrawalFocus?.();
     }
   }, [requestedWithdrawalFocusNonce, onConsumeWithdrawalFocus]);
-
-  useEffect(() => {
-    setVisibleLimit(HERD_PAGE_SIZE);
-  }, [filterKey, sortBy, query, carrierFilterMode, carrierTraitQuery]);
 
   const [editingAnimal, setEditingAnimal] = useState<Animal | null>(null);
   const [showAnimalModal, setShowAnimalModal] = useState(false);
@@ -528,9 +523,28 @@ export function HerdScreen({
     [activeAnimal, carrierAnalysisById]
   );
 
+  const herdVirtual = useVirtualWindow({
+    itemCount: filteredAnimals.length,
+    estimateSize: 80,
+    overscan: 8,
+    initialFallbackCount: HERD_PAGE_SIZE,
+    resetKey: `${speciesProfile.name}::${filterKey}::${sortBy}::${query}::${carrierFilterMode}::${carrierTraitQuery}`,
+  });
+
   const visibleAnimals = useMemo(
-    () => filteredAnimals.slice(0, visibleLimit),
-    [filteredAnimals, visibleLimit]
+    () =>
+      filteredAnimals.length > 0 &&
+      herdVirtual.windowRange.endIndex >= herdVirtual.windowRange.startIndex
+        ? filteredAnimals.slice(
+            herdVirtual.windowRange.startIndex,
+            herdVirtual.windowRange.endIndex + 1
+          )
+        : [],
+    [
+      filteredAnimals,
+      herdVirtual.windowRange.startIndex,
+      herdVirtual.windowRange.endIndex,
+    ]
   );
 
   const checkedIdSet = useMemo(() => new Set(checkedIds), [checkedIds]);
@@ -2029,197 +2043,217 @@ export function HerdScreen({
                   </div>
                 </div>
 
-                <div className="divide-y divide-[var(--barn-border)]">
-                  {visibleAnimals.map((a) => {
-                    const isChecked = checkedIdSet.has(a.id);
-                    const isArch = isAnimalArchived(a);
-                    const coi = coiByAnimalId.get(a.id);
-                    const coverPhoto = primaryPhotoByAnimalId.get(a.id);
-                    const photoCount = photosByAnimalId.get(a.id)?.length || 0;
-                    const sexColor =
-                      a.sex === 'Male'
-                        ? 'text-[var(--barn-slate)]'
-                        : a.sex === 'Female'
-                        ? 'text-[var(--barn-terracotta)]'
-                        : 'text-[var(--barn-muted)]';
+                <div
+                  ref={herdVirtual.scrollContainerRef}
+                  className="max-h-[72vh] overflow-y-auto"
+                >
+                  {herdVirtual.windowRange.paddingTop > 0 && (
+                    <div
+                      aria-hidden="true"
+                      style={{ height: `${herdVirtual.windowRange.paddingTop}px` }}
+                    />
+                  )}
+                  <div className="divide-y divide-[var(--barn-border)]">
+                    {visibleAnimals.map((a, localIdx) => {
+                      const rowIndex = herdVirtual.windowRange.startIndex + localIdx;
+                      const isChecked = checkedIdSet.has(a.id);
+                      const isArch = isAnimalArchived(a);
+                      const coi = coiByAnimalId.get(a.id);
+                      const coverPhoto = primaryPhotoByAnimalId.get(a.id);
+                      const photoCount = photosByAnimalId.get(a.id)?.length || 0;
+                      const sexColor =
+                        a.sex === 'Male'
+                          ? 'text-[var(--barn-slate)]'
+                          : a.sex === 'Female'
+                          ? 'text-[var(--barn-terracotta)]'
+                          : 'text-[var(--barn-muted)]';
 
-                    return (
-                      <div
-                        key={a.id}
-                        className={`flex items-center gap-2 px-4 py-3 transition-colors ${
-                          isChecked
-                            ? 'bg-[var(--barn-sage-tint)]/60'
-                            : 'hover:bg-[var(--barn-subtle)]/40'
-                        }`}
-                      >
-                        <label
-                          className="min-h-[40px] min-w-[36px] flex items-center justify-center cursor-pointer shrink-0"
-                          onClick={(e) => e.stopPropagation()}
+                      return (
+                        <div
+                          key={a.id}
+                          ref={herdVirtual.measureRowRef(rowIndex)}
+                          className={`flex items-center gap-2 px-4 py-3 transition-colors ${
+                            isChecked
+                              ? 'bg-[var(--barn-sage-tint)]/60'
+                              : 'hover:bg-[var(--barn-subtle)]/40'
+                          }`}
                         >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => toggleChecked(a.id)}
-                            aria-label={`Select ${a.name}`}
-                            className="w-4 h-4 accent-[var(--barn-sage)]"
-                          />
-                        </label>
+                          <label
+                            className="min-h-[44px] min-w-[40px] flex items-center justify-center cursor-pointer shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleChecked(a.id)}
+                              aria-label={`Select ${a.name}`}
+                              className="w-4 h-4 accent-[var(--barn-sage)]"
+                            />
+                          </label>
 
-                        <button
-                          type="button"
-                          onClick={() => onSelectAnimal(a.id)}
-                          className="flex-1 text-left flex items-center justify-between gap-3 min-w-0"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="relative w-10 h-10 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
-                              {coverPhoto && (coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl) ? (
-                                <img
-                                  src={coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl}
-                                  alt={a.name}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <span className={`font-display text-sm font-semibold ${sexColor}`}>
-                                  {(a.name || '?').charAt(0).toUpperCase()}
-                                </span>
-                              )}
-                              {photoCount > 1 && (
-                                <span className="absolute bottom-0 right-0 px-1 rounded-tl-md bg-black/75 text-white font-mono text-[9px] leading-tight">
-                                  {photoCount}
-                                </span>
-                              )}
-                            </div>
+                          <button
+                            type="button"
+                            onClick={() => onSelectAnimal(a.id)}
+                            className="flex-1 text-left flex items-center justify-between gap-3 min-w-0 min-h-[44px]"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="relative w-10 h-10 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
+                                {coverPhoto && (coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl) ? (
+                                  <img
+                                    src={coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl}
+                                    alt={a.name}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <span className={`font-display text-sm font-semibold ${sexColor}`}>
+                                    {(a.name || '?').charAt(0).toUpperCase()}
+                                  </span>
+                                )}
+                                {photoCount > 1 && (
+                                  <span className="absolute bottom-0 right-0 px-1 rounded-tl-md bg-black/75 text-white font-mono text-[9px] leading-tight">
+                                    {photoCount}
+                                  </span>
+                                )}
+                              </div>
 
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                <span className="font-medium text-sm truncate">{a.name}</span>
-                                {a.tattoo && (
-                                  <span className="font-mono text-xs text-[var(--barn-muted)] shrink-0">
-                                    {a.tattoo}
-                                  </span>
-                                )}
-                                {isArch && (
-                                  <span className="text-[11px] font-medium text-[var(--barn-muted)] shrink-0">
-                                    · Archived
-                                  </span>
-                                )}
-                                {doesAnimalNeedAttention(a) && (
-                                  <span className="text-[11px] font-semibold text-[var(--barn-terracotta)] shrink-0">
-                                    · Needs Attention
-                                  </span>
-                                )}
-                                {(() => {
-                                  const rowWithdrawal = withdrawalByAnimalId.get(a.id);
-                                  if (!rowWithdrawal?.isActive) return null;
-                                  return (
-                                    <span
-                                      title={`Medication: ${rowWithdrawal.medicationSummary}`}
-                                      className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0 font-mono tabular-nums"
-                                    >
-                                      · <ShieldAlert className="w-3 h-3" aria-hidden="true" />
-                                      Withdrawal: {rowWithdrawal.shortCountdownLabel} (clears{' '}
-                                      {formatReadableDate(rowWithdrawal.clearDateIso)})
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <span className="font-medium text-sm truncate">{a.name}</span>
+                                  {a.tattoo && (
+                                    <span className="font-mono text-xs text-[var(--barn-muted)] shrink-0">
+                                      {a.tattoo}
                                     </span>
-                                  );
-                                })()}
-                                {(() => {
-                                  const rowConflict = conflictsByAnimalId.get(a.id);
-                                  if (!rowConflict?.hasAnyConflict) return null;
-                                  if (rowConflict.hasActiveConflict) {
+                                  )}
+                                  {isArch && (
+                                    <span className="text-[11px] font-medium text-[var(--barn-muted)] shrink-0">
+                                      · Archived
+                                    </span>
+                                  )}
+                                  {doesAnimalNeedAttention(a) && (
+                                    <span className="text-[11px] font-semibold text-[var(--barn-terracotta)] shrink-0">
+                                      · Needs Attention
+                                    </span>
+                                  )}
+                                  {(() => {
+                                    const rowWithdrawal = withdrawalByAnimalId.get(a.id);
+                                    if (!rowWithdrawal?.isActive) return null;
+                                    return (
+                                      <span
+                                        title={`Medication: ${rowWithdrawal.medicationSummary}`}
+                                        className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0 font-mono tabular-nums"
+                                      >
+                                        · <ShieldAlert className="w-3 h-3" aria-hidden="true" />
+                                        Withdrawal: {rowWithdrawal.shortCountdownLabel} (clears{' '}
+                                        {formatReadableDate(rowWithdrawal.clearDateIso)})
+                                      </span>
+                                    );
+                                  })()}
+                                  {(() => {
+                                    const rowConflict = conflictsByAnimalId.get(a.id);
+                                    if (!rowConflict?.hasAnyConflict) return null;
+                                    if (rowConflict.hasActiveConflict) {
+                                      return (
+                                        <span
+                                          title={rowConflict.headlineReasons.join('; ')}
+                                          className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0"
+                                        >
+                                          · <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                                          Conflict Alert
+                                        </span>
+                                      );
+                                    }
                                     return (
                                       <span
                                         title={rowConflict.headlineReasons.join('; ')}
-                                        className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0"
+                                        className="text-[11px] font-medium text-[var(--barn-terracotta)]/80 inline-flex items-center gap-1 shrink-0"
                                       >
                                         · <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                                        Conflict Alert
+                                        Soft Warning (Ignored)
                                       </span>
                                     );
+                                  })()}
+                                </div>
+                                <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
+                                  <span className={`font-medium ${sexColor}`}>
+                                    {formatSexForSpecies(a.sex, speciesProfile)}
+                                  </span>{' '}
+                                  · {a.breed} {a.variety} · {a.status}
+                                  {normalizeOwnershipType(a.ownershipType) !== 'Owned'
+                                    ? ` · ${normalizeOwnershipType(a.ownershipType)}`
+                                    : ''}
+                                  {a.culled ? ' · Flagged Cull' : ''}
+                                  {a.offloadedArchiveKey ? ' · Offloaded Stub' : ''}
+                                  {a.cageLocation ? ` · ${a.cageLocation}` : ''}
+                                </div>
+                                {(() => {
+                                  const rowAnalysis = carrierAnalysisById.get(a.id);
+                                  const parts: string[] = [];
+                                  if (a.rufusLevel) parts.push(`Rufus: ${a.rufusLevel} (in dev)`);
+                                  if (rowAnalysis?.confirmed.length) {
+                                    parts.push(`Conf: ${rowAnalysis.confirmed.join(', ')}`);
                                   }
+                                  if (rowAnalysis?.suspected.length) {
+                                    parts.push(`Susp: ${rowAnalysis.suspected.join(', ')}`);
+                                  }
+                                  if (rowAnalysis?.lineagePotential.length) {
+                                    parts.push(
+                                      `Lineage: ${rowAnalysis.lineagePotential
+                                        .map((l) => l.trait)
+                                        .join(', ')}`
+                                    );
+                                  }
+                                  if (rowAnalysis?.cleared.length) {
+                                    parts.push(
+                                      `Cleared: ${rowAnalysis.cleared.map((c) => c.trait).join(', ')}`
+                                    );
+                                  }
+                                  if (parts.length === 0) return null;
                                   return (
-                                    <span
-                                      title={rowConflict.headlineReasons.join('; ')}
-                                      className="text-[11px] font-medium text-[var(--barn-terracotta)]/80 inline-flex items-center gap-1 shrink-0"
-                                    >
-                                      · <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                                      Soft Warning (Ignored)
-                                    </span>
+                                    <div className="text-[11px] text-[var(--barn-terracotta)] mt-0.5 truncate">
+                                      {parts.join(' · ')}
+                                    </div>
                                   );
                                 })()}
                               </div>
-                              <div className="text-xs text-[var(--barn-muted)] mt-0.5 truncate">
-                                <span className={`font-medium ${sexColor}`}>
-                                  {formatSexForSpecies(a.sex, speciesProfile)}
-                                </span>{' '}
-                                · {a.breed} {a.variety} · {a.status}
-                                {normalizeOwnershipType(a.ownershipType) !== 'Owned'
-                                  ? ` · ${normalizeOwnershipType(a.ownershipType)}`
-                                  : ''}
-                                {a.culled ? ' · Flagged Cull' : ''}
-                                {a.offloadedArchiveKey ? ' · Offloaded Stub' : ''}
-                                {a.cageLocation ? ` · ${a.cageLocation}` : ''}
-                              </div>
-                              {(() => {
-                                const rowAnalysis = carrierAnalysisById.get(a.id);
-                                const parts: string[] = [];
-                                if (a.rufusLevel) parts.push(`Rufus: ${a.rufusLevel} (in dev)`);
-                                if (rowAnalysis?.confirmed.length) {
-                                  parts.push(`Conf: ${rowAnalysis.confirmed.join(', ')}`);
-                                }
-                                if (rowAnalysis?.suspected.length) {
-                                  parts.push(`Susp: ${rowAnalysis.suspected.join(', ')}`);
-                                }
-                                if (rowAnalysis?.lineagePotential.length) {
-                                  parts.push(
-                                    `Lineage: ${rowAnalysis.lineagePotential
-                                      .map((l) => l.trait)
-                                      .join(', ')}`
-                                  );
-                                }
-                                if (rowAnalysis?.cleared.length) {
-                                  parts.push(
-                                    `Cleared: ${rowAnalysis.cleared.map((c) => c.trait).join(', ')}`
-                                  );
-                                }
-                                if (parts.length === 0) return null;
-                                return (
-                                  <div className="text-[11px] text-[var(--barn-terracotta)] mt-0.5 truncate">
-                                    {parts.join(' · ')}
-                                  </div>
-                                );
-                              })()}
                             </div>
-                          </div>
 
-                          <div className="text-right shrink-0 font-mono tabular-nums">
-                            <div className="text-xs font-medium">
-                              {formatWeight(a.weightGrams, effectiveWeightUnit)}
+                            <div className="text-right shrink-0 font-mono tabular-nums">
+                              <div className="text-xs font-medium">
+                                {formatWeight(a.weightGrams, effectiveWeightUnit)}
+                              </div>
+                              <div className="text-[11px] text-[var(--barn-muted)]">
+                                COI {(coi?.coiPercent ?? 0).toFixed(1)}% ·{' '}
+                                {coi?.knownAncestorsIn3Gen ?? 0}/14
+                              </div>
                             </div>
-                            <div className="text-[11px] text-[var(--barn-muted)]">
-                              COI {(coi?.coiPercent ?? 0).toFixed(1)}% ·{' '}
-                              {coi?.knownAncestorsIn3Gen ?? 0}/14
-                            </div>
-                          </div>
-                        </button>
-                      </div>
-                    );
-                  })}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {herdVirtual.windowRange.paddingBottom > 0 && (
+                    <div
+                      aria-hidden="true"
+                      style={{ height: `${herdVirtual.windowRange.paddingBottom}px` }}
+                    />
+                  )}
                 </div>
 
-                {filteredAnimals.length > visibleAnimals.length && (
-                  <div className="px-4 py-3 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/50 flex items-center justify-between gap-3 text-xs">
-                    <span className="text-[var(--barn-muted)] font-mono tabular-nums">
-                      Showing {visibleAnimals.length} of {filteredAnimals.length}
-                    </span>
+                <div className="px-4 py-2.5 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/50 flex items-center justify-between gap-3 text-xs">
+                  <span className="text-[var(--barn-muted)] font-mono tabular-nums">
+                    Viewing {herdVirtual.windowRange.startIndex + 1}–
+                    {herdVirtual.windowRange.endIndex + 1} of {filteredAnimals.length}
+                  </span>
+                  {herdVirtual.windowRange.startIndex > 0 && (
                     <button
                       type="button"
-                      onClick={() => setVisibleLimit((n) => n + HERD_PAGE_SIZE)}
-                      className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                      onClick={herdVirtual.scrollToTop}
+                      className="min-h-[36px] px-3 py-1 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
                     >
-                      Show More ({Math.min(HERD_PAGE_SIZE, filteredAnimals.length - visibleAnimals.length)})
+                      Back to Top
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </>
             )}
           </div>
