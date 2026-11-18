@@ -7,7 +7,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getTierStoragePolicy } from '../core/deviceCapability';
-import { BarnDatabaseSnapshot, nowIsoUtc } from '../core/models';
+import {
+  BarnDatabaseSnapshot,
+  getCoreClockSkewMs,
+  nowEpochMs,
+  nowIsoUtc,
+  setCoreClockSkewMs,
+} from '../core/models';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
@@ -68,7 +74,7 @@ export function isQuotaExceededError(err: unknown): boolean {
 }
 
 export async function requestPersistentStorage(): Promise<StorageProtectionStatus> {
-  const checkedAtIso = nowIsoUtc();
+  const checkedAtIso = getAdjustedNowIsoUtc();
   if (typeof navigator === 'undefined' || !navigator.storage) {
     return {
       supported: false,
@@ -118,7 +124,7 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
 }
 
 export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
-  const checkedAtIso = nowIsoUtc();
+  const checkedAtIso = getAdjustedNowIsoUtc();
   if (typeof navigator === 'undefined' || !navigator.storage) {
     return {
       supported: false,
@@ -257,8 +263,8 @@ export async function saveRollingSnapshotBackup(
       : snapshot;
 
     const entry: StoredRollingBackup = {
-      key: `rolling-${Date.now()}`,
-      savedAtIso: nowIsoUtc(),
+      key: `rolling-${getAdjustedNowMs()}`,
+      savedAtIso: getAdjustedNowIsoUtc(),
       animalCount: targetSnapshot.animals.length,
       photoCount: (targetSnapshot.animalPhotos ?? []).length,
       speciesCount: targetSnapshot.speciesProfiles.length,
@@ -480,6 +486,7 @@ let probeStatusState: ConnectivityStatusSnapshot['probeStatus'] = 'idle';
 let probeDetailState = '';
 let lastProbeAtIsoState: string | null = null;
 let clockSkewMsState: number | null = readPersistedClockSkewMs();
+setCoreClockSkewMs(clockSkewMsState);
 const connectivityListeners = new Set<() => void>();
 let browserConnectivityHooksAttached = false;
 
@@ -501,11 +508,14 @@ export function getRecordedClockSkewMs(): number | null {
 export function getAdjustedNowMs(): number {
   const skew = clockSkewMsState;
   if (skew === null || !Number.isFinite(skew)) return Date.now();
-  return Date.now() + skew;
+  return nowEpochMs();
 }
 
 export function getAdjustedNowIsoUtc(): string {
-  return new Date(getAdjustedNowMs()).toISOString();
+  if (clockSkewMsState !== getCoreClockSkewMs()) {
+    setCoreClockSkewMs(clockSkewMsState);
+  }
+  return nowIsoUtc();
 }
 
 export function formatClockSkewHuman(skewMs: number | null | undefined): string {
@@ -530,6 +540,7 @@ export function recordServerDateHeaderSkew(
   if (!Number.isFinite(parsedServerMs) || parsedServerMs <= 0) return null;
   const skewMs = parsedServerMs - localNowMs;
   clockSkewMsState = skewMs;
+  setCoreClockSkewMs(skewMs);
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(CLOCK_SKEW_STORAGE_KEY, String(Math.round(skewMs)));
@@ -599,6 +610,7 @@ export function resetConnectivityStateForTests(): void {
   probeDetailState = '';
   lastProbeAtIsoState = null;
   clockSkewMsState = null;
+  setCoreClockSkewMs(0);
   connectivityListeners.clear();
   try {
     if (typeof localStorage !== 'undefined') {
@@ -625,7 +637,7 @@ export async function probeNetworkConnectivity(options?: {
   if (!snapBefore.navigatorOnline) {
     probeStatusState = 'unreachable';
     probeDetailState = 'Browser reports no network interface connection.';
-    lastProbeAtIsoState = nowIsoUtc();
+    lastProbeAtIsoState = getAdjustedNowIsoUtc();
     notifyConnectivityListeners();
     return getConnectivitySnapshot();
   }
@@ -684,7 +696,7 @@ export async function probeNetworkConnectivity(options?: {
     if (timer !== null) {
       clearTimeout(timer);
     }
-    lastProbeAtIsoState = nowIsoUtc();
+    lastProbeAtIsoState = getAdjustedNowIsoUtc();
     notifyConnectivityListeners();
   }
 

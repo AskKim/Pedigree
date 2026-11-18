@@ -9,7 +9,7 @@
  * baseline presets (`New Zealand Red -> A_ B_ C_ D_ ee ww`, etc.) when editing Rabbits.
  */
 
-import { AlertCircle, AlertTriangle, Camera, Loader2, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Camera, Loader2, ShieldAlert, Trash2, X } from 'lucide-react';
 import React, { useId, useMemo, useRef, useState } from 'react';
 import {
   findAllSpeciesDuplicateTattooPeers,
@@ -17,6 +17,11 @@ import {
   findSameSexDuplicateTattooCollisions,
   isOverrideConfirmationValid,
 } from '../core/animalConflicts';
+import {
+  evaluateAnimalActiveWithdrawal,
+  evaluateWithdrawalDispositionWarning,
+  WithdrawalDispositionWarning,
+} from '../core/barnAlerts';
 import {
   extractHomozygousCoatClearances,
   getAnimalCarrierDisclosures,
@@ -45,10 +50,12 @@ import {
   AnimalStatus,
   BiologicalSex,
   CageLocation,
+  CareLog,
   CLEARED_CARRIER_PROOF_LABELS,
   ClearedCarrierProofType,
   ClearedCarrierRecord,
   doesAnimalNeedAttention,
+  formatReadableDate,
   formatSexForSpecies,
   formatWeightInputValue,
   getSpeciesIdentifierLabels,
@@ -90,6 +97,7 @@ interface AnimalEditorModalProps {
   speciesProfile: SpeciesProfile;
   speciesAnimals: Animal[];
   speciesCages: CageLocation[];
+  animalCareLogs?: CareLog[];
   preferredUnit: WeightUnit;
   currencyCode?: string;
   optimizationPresetId?: ImageOptimizationPresetId;
@@ -113,6 +121,7 @@ export function AnimalEditorModal({
   speciesProfile,
   speciesAnimals,
   speciesCages,
+  animalCareLogs,
   preferredUnit,
   currencyCode,
   optimizationPresetId,
@@ -134,9 +143,19 @@ export function AnimalEditorModal({
     animalName: string;
     status: AnimalStatus;
   } | null>(null);
+  const [pendingWithdrawalWarning, setPendingWithdrawalWarning] =
+    useState<WithdrawalDispositionWarning | null>(null);
   const [rememberAutoOffload, setRememberAutoOffload] = useState(false);
   const [offloadingNow, setOffloadingNow] = useState(false);
   const submitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+
+  const activeWithdrawal = useMemo(
+    () =>
+      initialAnimal?.id && animalCareLogs && animalCareLogs.length > 0
+        ? evaluateAnimalActiveWithdrawal(animalCareLogs, initialAnimal.id)
+        : null,
+    [initialAnimal?.id, animalCareLogs]
+  );
 
   const [tattoo, setTattoo] = useState(initialAnimal?.tattoo || '');
   const [name, setName] = useState(() => {
@@ -521,24 +540,9 @@ export function AnimalEditorModal({
     return Math.round(parsed * 100);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    if (sexChangeMismatchError) {
-      setSubmitGuardError(sexChangeMismatchError);
-      return;
-    }
-    if (requiresDuplicateOverrideOnCreate && !overrideConfirmed) {
-      setSubmitGuardError(
-        `This ${idLabels.shortLabel.toLowerCase()} already belongs to another ${formatSexForSpecies(
-          sex,
-          speciesProfile
-        ).toLowerCase()} in your ${speciesProfile.name} herd. Use a unique ${idLabels.shortLabel.toLowerCase()} or type "override" below to save anyway.`
-      );
-      overrideInputRef.current?.focus();
-      return;
-    }
+  const executeSave = async () => {
     setSubmitGuardError(null);
+    setPendingWithdrawalWarning(null);
     await submitLock.runLocked(async () => {
       const reconciled = reconcileCarrierTraitLists(
         suspectedCarrierOf,
@@ -632,6 +636,38 @@ export function AnimalEditorModal({
 
       onClose();
     });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    if (sexChangeMismatchError) {
+      setSubmitGuardError(sexChangeMismatchError);
+      return;
+    }
+    if (requiresDuplicateOverrideOnCreate && !overrideConfirmed) {
+      setSubmitGuardError(
+        `This ${idLabels.shortLabel.toLowerCase()} already belongs to another ${formatSexForSpecies(
+          sex,
+          speciesProfile
+        ).toLowerCase()} in your ${speciesProfile.name} herd. Use a unique ${idLabels.shortLabel.toLowerCase()} or type "override" below to save anyway.`
+      );
+      overrideInputRef.current?.focus();
+      return;
+    }
+
+    const dispositionWarning = evaluateWithdrawalDispositionWarning(activeWithdrawal, {
+      animalName: name.trim() || initialAnimal?.name || '',
+      isNewlySold: status === 'Sold' && initialAnimal?.status !== 'Sold',
+      isNewlyCulled: culled && !initialAnimal?.culled,
+    });
+    if (dispositionWarning) {
+      setSubmitGuardError(null);
+      setPendingWithdrawalWarning(dispositionWarning);
+      return;
+    }
+
+    await executeSave();
   };
 
   return (
@@ -916,6 +952,7 @@ export function AnimalEditorModal({
                 onChange={(e) => {
                   const next = e.target.value as AnimalStatus;
                   setStatus(next);
+                  setPendingWithdrawalWarning(null);
                   if (next === 'Deceased' || next === 'Sold') {
                     setArchived(true);
                   }
@@ -1150,6 +1187,7 @@ export function AnimalEditorModal({
                 onChange={(e) => {
                   const checked = e.target.checked;
                   setCulled(checked);
+                  setPendingWithdrawalWarning(null);
                   if (checked && !cullDateIso) {
                     setCullDateIso(todayDateIso());
                   }
@@ -2025,6 +2063,71 @@ export function AnimalEditorModal({
               </div>
             )}
           </div>
+
+          {activeWithdrawal?.isActive &&
+            !pendingWithdrawalWarning &&
+            ((status === 'Sold' && initialAnimal?.status !== 'Sold') ||
+              (culled && !initialAnimal?.culled)) && (
+              <div
+                role="status"
+                className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)]/75 border border-[var(--barn-terracotta)]/70 flex items-start gap-2.5 text-xs"
+              >
+                <ShieldAlert
+                  className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="space-y-0.5">
+                  <div className="font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+                    Active Medication Withdrawal ({activeWithdrawal.countdownLabel} · clears{' '}
+                    {formatReadableDate(activeWithdrawal.clearDateIso)})
+                  </div>
+                  <p className="text-[var(--barn-muted)]">
+                    Medications: <strong className="text-[var(--barn-ink)]">{activeWithdrawal.medicationSummary}</strong>.
+                    You will be asked to confirm before saving this change.
+                  </p>
+                </div>
+              </div>
+            )}
+
+          {pendingWithdrawalWarning && (
+            <div
+              role="alert"
+              className="p-4 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-3 text-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <ShieldAlert
+                  className="w-5 h-5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="space-y-1">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    {pendingWithdrawalWarning.headline}
+                  </div>
+                  <p className="text-[var(--barn-ink)] leading-relaxed">
+                    {pendingWithdrawalWarning.detail}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => setPendingWithdrawalWarning(null)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55"
+                >
+                  Keep Editing
+                </button>
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => void executeSave()}
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
+                >
+                  {submitLock.isSubmitting ? 'Saving...' : 'Confirm Withdrawal Hold & Save'}
+                </button>
+              </div>
+            </div>
+          )}
 
           {submitGuardError && (
             <div

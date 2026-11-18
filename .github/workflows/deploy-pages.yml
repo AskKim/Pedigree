@@ -22,6 +22,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # IMPORTANT: GitHub Pages deployment STRICTLY REQUIRES Bun (oven-sh/setup-bun).
+      # Previous attempts switching this workflow from Bun to npm broke GitHub Pages builds.
+      # Do NOT replace Bun with npm/Node in this workflow.
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
@@ -46,10 +49,26 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
-      - name: Build subpath-safe production bundle
+      - name: Build subpath-safe production bundle (Bun CLI --base)
         env:
-          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-        run: bun run build
+          NODE_ENV: production
+        run: |
+          BASE_PATH="${{ steps.pages.outputs.base_path }}"
+          if [ -z "$BASE_PATH" ]; then
+            BASE_PATH="/"
+          fi
+          case "$BASE_PATH" in
+            */) ;;
+            *) BASE_PATH="${BASE_PATH}/" ;;
+          esac
+          bun run build --base="$BASE_PATH"
+          grep -q '"start_url":"./"' dist/manifest.webmanifest
+          grep -q '"scope":"./"' dist/manifest.webmanifest
+          grep -q '"id":"./"' dist/manifest.webmanifest
+          if [ "$BASE_PATH" != "/" ]; then
+            grep -q "${BASE_PATH}assets/" dist/index.html
+            grep -q "${BASE_PATH}manifest.webmanifest" dist/index.html
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

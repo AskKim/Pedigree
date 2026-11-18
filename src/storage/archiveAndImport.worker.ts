@@ -20,14 +20,18 @@ import {
 } from '../core/backupArchive';
 import type { ImporterRunOptions, RawArchiveInput } from '../core/importers/importerTypes';
 import { getPlatformImporterById } from '../core/importers/registry';
-import type { BarnDatabaseSnapshot, BarnSettings } from '../core/models';
+import {
+  type BarnDatabaseSnapshot,
+  type BarnSettings,
+  setCoreClockSkewMs,
+} from '../core/models';
 import {
   buildSupportBundleZipArchive,
   type SupportBundleBuildParams,
 } from '../core/supportBundle';
 import type { SpeciesBackupReason } from '../core/syncAndExports';
 
-export type ArchiveWorkerRequest =
+export type ArchiveWorkerRequest = (
   | {
       id: string;
       kind: 'buildCompleteBackupZip';
@@ -72,7 +76,8 @@ export type ArchiveWorkerRequest =
       fileName: string;
       currentSnapshot: BarnDatabaseSnapshot;
       encrypted?: boolean;
-    };
+    }
+) & { clockSkewMs?: number };
 
 export type ArchiveWorkerResponse =
   | {
@@ -94,6 +99,7 @@ const workerScope = self as unknown as {
 workerScope.onmessage = (event: MessageEvent<ArchiveWorkerRequest>) => {
   const req = event.data;
   if (!req || !req.id) return;
+  setCoreClockSkewMs(req.clockSkewMs ?? 0);
 
   try {
     if (req.kind === 'buildCompleteBackupZip') {

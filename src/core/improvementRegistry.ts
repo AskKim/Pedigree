@@ -402,9 +402,20 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         requiredSubstrings: ['"test": "vitest run"', '"verify:improvements": "tsx scripts/verify-improvements.ts"'],
         rationale: 'Standard npm scripts power local & CI verification.',
       },
+      {
+        filePath: '.github/workflows/deploy-pages.yml',
+        requiredSubstrings: ['oven-sh/setup-bun', 'bun run build --base='],
+        rationale: 'GitHub Pages deployment strictly requires Bun and passes dynamic --base on CLI.',
+      },
+      {
+        filePath: 'vite.config.ts',
+        requiredSubstrings: ["scope: './'", "start_url: './'", "id: './'"],
+        rationale: 'Relative PWA manifest fields ensure installability on both root (/) and GitHub Pages subpaths (/Pedigree/).',
+      },
     ],
     restorePlaybook: [
       "Keep `const basePath = '/'`, `hmr: false`, and `watch: null` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH` or `process.env.DISABLE_HMR`.",
+      'Keep relative `id`, `scope`, and `start_url` (`./`) in `VitePWA` manifest and keep `.github/workflows/deploy-pages.yml` strictly on Bun passing `--base=...` via CLI.',
       'Do not add `VITE_BASE_PATH` or `DISABLE_HMR` to `.env.example`.',
       'Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.',
     ],
@@ -1304,8 +1315,8 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
       {
         filePath: 'vite.config.ts',
-        requiredSubstrings: ['navigateFallbackDenylist: [/^\\/api\\//, /^\\/version\\.json/, /^\\/status\\.json/]'],
-        rationale: 'Service worker navigation fallback must never intercept or precache uncached version.json / status.json manifests.',
+        requiredSubstrings: ['navigateFallbackDenylist: [/^\\/api\\//, /\\/version\\.json$/, /\\/status\\.json$/]'],
+        rationale: 'Service worker navigation fallback must never intercept or precache uncached version.json / status.json manifests on root or subpaths.',
       },
     ],
     restorePlaybook: [
@@ -1422,6 +1433,143 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep pure modules `src/core/photoMaintenance.ts`, `src/core/archiveInspector.ts`, `src/core/encryptedExport.ts`, `_rev` logic in `src/core/syncOutbox.ts`, and `buildDeterministicGoogleCalendarEventId` in `src/core/calendarExport.ts`.',
       'Keep `src/storage/passphraseCrypto.ts`, clock-skew compensation in `src/storage/storageProtection.ts`, encrypted delta/directory sync in `src/storage/localSyncChannels.ts`, off-thread inspection in `src/storage/offThreadWorkerClient.ts`, and `inspectRawSqliteBytes` in `src/storage/webSqliteAdapter.ts`.',
       'Keep Stage B store handlers in `src/hooks/useBarnStore.ts`, `409` PUT retry in `src/utils/googleCalendarClient.ts`, and UI mounts in `DiagnosticsAndSupportPanel.tsx`, `SettingsAndSyncScreen.tsx`, and `App.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-024',
+    title: 'Active Medication Withdrawal Countdown & Livestock Safety Alerts',
+    category: 'alerts-home',
+    source: 'session',
+    summary:
+      'Surfaces active CareLog medication withdrawal periods (`withdrawalClearDateIso` / `dateIso + withdrawalDays`, cleared on the clear date itself) via an O(L) withdrawal map across Home species cards (session-closable), Herd roster rows, single-animal profiles, and Withdrawal filter/sort controls, and triggers non-blocking soft confirmation warnings before saving Sold/Culled dispositions or Show entries whose event date overlaps withdrawal.',
+    userIntent:
+      'Surface active care-log withdrawal periods on Herd cards and Home alerts and trigger soft confirmation warnings before marking an animal under active withdrawal for sale, meat/cull processing, or show exhibition.',
+    files: [
+      'src/core/barnAlerts.ts',
+      'src/core/__tests__/barnAlerts.test.ts',
+      'src/components/HomeSpeciesScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/AnimalEditorModal.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/App.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/barnAlerts.ts',
+        requiredSubstrings: [
+          'buildWithdrawalByAnimalMap',
+          'evaluateSpeciesActiveWithdrawalsAlert',
+          'evaluateWithdrawalDispositionWarning',
+          'evaluateShowWithdrawalConflicts',
+        ],
+        rationale:
+          'Pure withdrawal countdown evaluator and safety conflict helpers must remain intact and DOM-free.',
+      },
+      {
+        filePath: 'src/components/HomeSpeciesScreen.tsx',
+        requiredSubstrings: [
+          'evaluateSpeciesActiveWithdrawalsAlert',
+          'onDismissWithdrawalAlert',
+        ],
+        rationale: 'Home species cards must surface closable session-scoped withdrawal safety alerts.',
+      },
+      {
+        filePath: 'src/components/HerdScreen.tsx',
+        requiredSubstrings: ['buildWithdrawalByAnimalMap', 'withdrawal_soonest', 'Withdrawal ('],
+        rationale:
+          'HerdScreen must display active withdrawal countdowns, filter tab, sort, and profile alert banner.',
+      },
+      {
+        filePath: 'src/components/AnimalEditorModal.tsx',
+        requiredSubstrings: ['evaluateWithdrawalDispositionWarning', 'pendingWithdrawalWarning'],
+        rationale:
+          'AnimalEditorModal must require soft confirmation before saving Sold or Flagged-for-Cull stock under active withdrawal.',
+      },
+      {
+        filePath: 'src/components/SpeciesDashboardScreen.tsx',
+        requiredSubstrings: ['evaluateShowWithdrawalConflicts', 'pendingShowWithdrawalWarning'],
+        rationale:
+          'Show entry form must warn when selected animals have medication withdrawals overlapping eventDateIso.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['dismissedWithdrawalSpecies', 'requestedHerdWithdrawalNonce'],
+        rationale: 'Root shell tracks session-scoped Home withdrawal dismissal and Herd filter navigation.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep pure withdrawal functions (`buildWithdrawalByAnimalMap`, `evaluateAnimalActiveWithdrawal`, `evaluateSpeciesActiveWithdrawalsAlert`, `evaluateWithdrawalDispositionWarning`, `evaluateShowWithdrawalConflicts`) in `src/core/barnAlerts.ts`.',
+      'Keep session-scoped `dismissedWithdrawalSpecies` in `src/App.tsx` wired to `HomeSpeciesScreen.tsx` and `HerdScreen.tsx`.',
+      'Keep Herd withdrawal filter/sort/countdown badges in `HerdScreen.tsx` passing `animalCareLogs` into `AnimalEditorModal.tsx`, and keep show-date overlap checks in `SpeciesDashboardScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-025',
+    title: 'Sync Outbox Alignment, Metadata-Only Photo Sync & Reset State Cleanup',
+    category: 'diagnostics-sync',
+    source: 'session',
+    summary:
+      'Queues metadata-only photo operations (stripping image blobs so large photos travel exclusively via .ZIP backups) and full cross-species migration snapshot diffs with bumped `_rev` counters into the delta outbox, hydrates missing blobs onto metadata-only photo placeholders during .ZIP/.JSON merges without clobbering newer edits, guards UI galleries against empty image URLs, and wipes `sync_outbox`, `sync_conflicts`, `sync_checkpoints`, plus backup reminder keys (`pedigree.lastBackupMeta.v1`, `pedigree.backupReminderSnoozedUntil.v1`) on factory resets and full Replace restores.',
+    userIntent:
+      'Align Folder/Delta Sync outbox mutations for photo actions and cross-species migrations while guaranteeing stale P2P sync queues, conflict logs, and backup reminders never leak across factory resets or full Replace restores.',
+    files: [
+      'src/core/syncOutbox.ts',
+      'src/core/speciesMigration.ts',
+      'src/core/backupArchive.ts',
+      'src/core/syncAndExports.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/AnimalPhotoGallery.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/core/__tests__/stageBResilience.test.ts',
+      'src/storage/__tests__/crossTabLockAndReload.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/syncOutbox.ts',
+        requiredSubstrings: ['stripPhotoBlobsForSync', 'diffSnapshotsToSyncOperations'],
+        rationale:
+          'Sync outbox must strip binary blobs on photo creates and support snapshot diffing for bulk migrations.',
+      },
+      {
+        filePath: 'src/core/speciesMigration.ts',
+        requiredSubstrings: ['bumpRecordRevision'],
+        rationale:
+          'Cross-species migration must advance `_rev` counters on every migrated or created record.',
+      },
+      {
+        filePath: 'src/core/backupArchive.ts',
+        requiredSubstrings: ['existingHasBlob', 'incHasBlob'],
+        rationale:
+          'Photos-Only ZIP merge must hydrate blobs onto metadata-only photo placeholders without overwriting newer metadata.',
+      },
+      {
+        filePath: 'src/core/syncAndExports.ts',
+        requiredSubstrings: ['mergeAnimalPhotosWithBlobPreservation'],
+        rationale:
+          'Barn snapshot merges must rehydrate blobs onto metadata-only photos without losing existing local blobs.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'clearLocalSyncAndBackupReminderState',
+          'clearAllSyncStateInIdb',
+          'stripPhotoBlobsForSync',
+          'diffSnapshotsToSyncOperations',
+        ],
+        rationale:
+          'Store must clear sync/backup-reminder state on resets/replaces and enqueue metadata-only photo & migration outbox ops.',
+      },
+      {
+        filePath: 'src/components/AnimalPhotoGallery.tsx',
+        requiredSubstrings: ['p.thumbnailDataUrl || p.dataUrl'],
+        rationale:
+          'Photo gallery must avoid rendering broken <img src=""> tags for metadata-only synced photo placeholders.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `stripPhotoBlobsForSync`, `diffSnapshotsToSyncOperations`, and metadata-only `photo` `__create__` handling in `src/core/syncOutbox.ts`.',
+      'Keep `bumpRecordRevision` calls in `src/core/speciesMigration.ts` and blob-preserving merge helpers in `src/core/backupArchive.ts` and `src/core/syncAndExports.ts`.',
+      'Keep `clearLocalSyncAndBackupReminderState` wired across resets and Replace restores plus metadata-only photo/migration outbox emissions in `src/hooks/useBarnStore.ts`, and keep empty-src placeholders in `AnimalPhotoGallery.tsx` and `HerdScreen.tsx`.',
     ],
   },
 ];

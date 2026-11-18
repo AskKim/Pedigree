@@ -13,10 +13,15 @@ vi.mock('sql.js/dist/sql-wasm.wasm?url', () => ({
 }));
 
 import {
+  appendSyncConflictsToIdb,
   appendSyncOperationsToIdb,
+  clearAllSyncStateInIdb,
   DB_WRITE_EPOCH_LS_KEY,
+  loadAllSyncConflictsFromIdb,
   loadAllSyncOperationsFromIdb,
+  loadSyncCheckpointFromIdb,
   publishCrossTabDbCommit,
+  saveSyncCheckpointToIdb,
   subscribeCrossTabDbCommits,
   TAB_SYNC_CHANNEL_NAME,
 } from '../localSyncChannels';
@@ -464,5 +469,53 @@ describe('Cross-Tab Web Locks, Stale WASM Reload & Silent Commit Sync', () => {
     const counters = allOps.map((o) => o.logical_counter).sort((a, b) => a - b);
     expect(counters).toEqual([1, 2]);
     expect(maxConcurrency.get('community_pedigree_sync_outbox_v1')).toBe(1);
+  });
+
+  it('wipes sync_outbox, sync_conflicts, and sync_checkpoints cleanly via clearAllSyncStateInIdb', async () => {
+    installSharedIdbAndWebLocks();
+
+    await appendSyncOperationsToIdb([
+      {
+        op_id: 'op-reset-1',
+        device_id: 'dev-a',
+        logical_counter: 1,
+        timestamp: '2026-06-01T12:00:00.000Z',
+        entity_type: 'animal',
+        entity_uuid: 'ani-1',
+        field_name: 'name',
+        new_value: 'Stale Name',
+      },
+    ]);
+    await appendSyncConflictsToIdb([
+      {
+        conflict_id: 'conf-1',
+        entity_type: 'animal',
+        entity_uuid: 'ani-1',
+        entity_label: 'Stale',
+        field_name: 'name',
+        winning_value: 'A',
+        winning_device_id: 'dev-a',
+        winning_timestamp: '2026-06-01T12:00:00.000Z',
+        losing_value: 'B',
+        losing_device_id: 'dev-b',
+        losing_timestamp: '2026-06-01T11:59:00.000Z',
+        detected_at: '2026-06-01T12:01:00.000Z',
+        resolved: false,
+      },
+    ]);
+    await saveSyncCheckpointToIdb({
+      taskId: 'directory_sync',
+      folderName: 'BarnSync',
+      phase: 'writing_delta',
+      peerFilesRead: 1,
+      incomingOpsQueued: 2,
+      updatedAtIso: '2026-06-01T12:02:00.000Z',
+    });
+
+    await clearAllSyncStateInIdb();
+
+    expect(await loadAllSyncOperationsFromIdb()).toEqual([]);
+    expect(await loadAllSyncConflictsFromIdb()).toEqual([]);
+    expect(await loadSyncCheckpointFromIdb('directory_sync')).toBeNull();
   });
 });

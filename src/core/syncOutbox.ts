@@ -220,6 +220,118 @@ export function diffEntityFieldsToOperations<T extends { id: string; _rev?: numb
   return ops;
 }
 
+/**
+ * Strips base64 image payloads from an `AnimalPhoto` so delta/folder sync queues
+ * only lightweight photo metadata while large image blobs travel via `.ZIP` backups.
+ */
+export function stripPhotoBlobsForSync(photo: AnimalPhoto): AnimalPhoto {
+  return {
+    ...photo,
+    dataUrl: '',
+    thumbnailDataUrl: '',
+  };
+}
+
+/**
+ * Computes field-level and create/delete `SyncOperation` entries across all synced
+ * snapshot collections when transitioning from `previous` to `next` (for bulk operations
+ * such as cross-species migrations). Photo diffs always ignore image blob fields.
+ */
+export function diffSnapshotsToSyncOperations(params: {
+  previous: BarnDatabaseSnapshot;
+  next: BarnDatabaseSnapshot;
+  deviceId: string;
+  nextCounter: () => number;
+  timestamp?: string;
+  includeSettings?: boolean;
+}): SyncOperation[] {
+  const ts = params.timestamp || nowIsoUtc();
+  const ops: SyncOperation[] = [];
+
+  const diffCollection = <T extends { id: string; _rev?: number }>(
+    entityType: Exclude<SyncEntityType, 'settings'>,
+    prevList: T[],
+    nextList: T[]
+  ) => {
+    const prevById = new Map<string, T>(prevList.map((item) => [item.id, item]));
+    const nextById = new Map<string, T>(nextList.map((item) => [item.id, item]));
+    const ignoreFields =
+      entityType === 'photo' ? ['dataUrl', 'thumbnailDataUrl'] : undefined;
+
+    for (const nextItem of nextList) {
+      const prevItem = prevById.get(nextItem.id);
+      const safeNext =
+        !prevItem && entityType === 'photo'
+          ? (stripPhotoBlobsForSync(nextItem as unknown as AnimalPhoto) as unknown as T)
+          : nextItem;
+      const rev =
+        typeof nextItem._rev === 'number' && Number.isFinite(nextItem._rev)
+          ? Math.floor(nextItem._rev)
+          : bumpRecordRevision(prevItem);
+
+      ops.push(
+        ...diffEntityFieldsToOperations({
+          entityType,
+          previous: prevItem,
+          next: safeNext,
+          deviceId: params.deviceId,
+          nextCounter: params.nextCounter,
+          ignoreFields,
+          timestamp: ts,
+          recordRev: rev,
+        })
+      );
+    }
+
+    for (const prevItem of prevList) {
+      if (!nextById.has(prevItem.id)) {
+        ops.push(
+          createOutboxOperation({
+            entityType,
+            entityUuid: prevItem.id,
+            deviceId: params.deviceId,
+            logicalCounter: params.nextCounter(),
+            fieldName: '__delete__',
+            newValue: true,
+            timestamp: ts,
+            recordRev: bumpRecordRevision(prevItem),
+          })
+        );
+      }
+    }
+  };
+
+  diffCollection('species', params.previous.speciesProfiles, params.next.speciesProfiles);
+  diffCollection('animal', params.previous.animals, params.next.animals);
+  diffCollection('photo', params.previous.animalPhotos ?? [], params.next.animalPhotos ?? []);
+  diffCollection('cage', params.previous.cages, params.next.cages);
+  diffCollection('breeding', params.previous.breedings, params.next.breedings);
+  diffCollection('task', params.previous.tasks, params.next.tasks);
+  diffCollection('careLog', params.previous.careLogs, params.next.careLogs);
+  diffCollection('show', params.previous.shows, params.next.shows);
+
+  if (params.includeSettings) {
+    ops.push(
+      ...diffEntityFieldsToOperations({
+        entityType: 'settings',
+        previous: params.previous.settings,
+        next: params.next.settings,
+        deviceId: params.deviceId,
+        nextCounter: params.nextCounter,
+        ignoreFields: [
+          'lastBackupMeta',
+          'backupReminderSnoozedUntilMs',
+          'autoOffloadRetiredToOpfs',
+        ],
+        timestamp: ts,
+        recordRev: bumpRecordRevision(params.previous.settings),
+      })
+    );
+  }
+
+  return ops;
+}
+
 export interface DeltaMergeResult {
   nextSnapshot: BarnDatabaseSnapshot;
   mergedOperations: SyncOperation[];
@@ -383,10 +495,24 @@ export function mergeDeltaOperations(
             clone._rev = Math.max(Number(clone._rev) || 0, Math.floor(op.record_rev));
           }
           if (op.entity_type === 'photo') {
-            const safeData = sanitizeSafeRasterImageDataUrl(clone.dataUrl);
-            if (!safeData) return;
-            clone.dataUrl = safeData;
-            clone.thumbnailDataUrl = sanitizeSafeRasterImageDataUrl(clone.thumbnailDataUrl) || safeData;
+            const rawData = typeof clone.dataUrl === 'string' ? clone.dataUrl.trim() : '';
+            const rawThumb =
+              typeof clone.thumbnailDataUrl === 'string' ? clone.thumbnailDataUrl.trim() : '';
+            if (rawData) {
+              const safeData = sanitizeSafeRasterImageDataUrl(rawData);
+              if (!safeData) return;
+              clone.dataUrl = safeData;
+              clone.thumbnailDataUrl =
+                (rawThumb ? sanitizeSafeRasterImageDataUrl(rawThumb) : '') || safeData;
+            } else if (rawThumb) {
+              const safeThumb = sanitizeSafeRasterImageDataUrl(rawThumb);
+              if (!safeThumb) return;
+              clone.dataUrl = safeThumb;
+              clone.thumbnailDataUrl = safeThumb;
+            } else {
+              clone.dataUrl = '';
+              clone.thumbnailDataUrl = '';
+            }
           }
           map.set(op.entity_uuid, clone as unknown as T);
         }

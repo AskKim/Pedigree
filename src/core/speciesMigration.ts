@@ -32,6 +32,7 @@ import {
   SpeciesProfile,
 } from './models';
 import { countAllSpeciesRecords } from './sampleData';
+import { bumpRecordRevision } from './syncOutbox';
 
 export interface SpeciesMigrationResult {
   snapshot: BarnDatabaseSnapshot;
@@ -242,6 +243,7 @@ export function resolveOrCreateTargetSpeciesProfile(
         ...preset,
         id: generateUuid(),
         sortOrder: existingProfiles.length,
+        _rev: 1,
         createdAt: ts,
         updatedAt: ts,
       },
@@ -255,6 +257,7 @@ export function resolveOrCreateTargetSpeciesProfile(
       ...resolved,
       id: generateUuid(),
       sortOrder: existingProfiles.length,
+      _rev: 1,
       createdAt: ts,
       updatedAt: ts,
     },
@@ -336,6 +339,7 @@ export function migrateAnimalsToSpecies(
       ? {
           ...a,
           species: targetName,
+          _rev: bumpRecordRevision(a),
           updatedAt: ts,
         }
       : a
@@ -366,7 +370,7 @@ export function migrateAnimalsToSpecies(
       !isSameSpecies(p.species, targetName)
     ) {
       photosMigrated++;
-      return { ...p, species: targetName, updatedAt: ts };
+      return { ...p, species: targetName, _rev: bumpRecordRevision(p), updatedAt: ts };
     }
     return p;
   });
@@ -379,7 +383,7 @@ export function migrateAnimalsToSpecies(
       !isSameSpecies(l.species, targetName)
     ) {
       careLogsMigrated++;
-      return { ...l, species: targetName, updatedAt: ts };
+      return { ...l, species: targetName, _rev: bumpRecordRevision(l), updatedAt: ts };
     }
     return l;
   });
@@ -406,7 +410,7 @@ export function migrateAnimalsToSpecies(
     ) {
       breedingsMigrated++;
       migratedBreedingIds.add(b.id);
-      return { ...b, species: targetName, updatedAt: ts };
+      return { ...b, species: targetName, _rev: bumpRecordRevision(b), updatedAt: ts };
     }
     splitBreedingsCount++;
     return b;
@@ -425,7 +429,7 @@ export function migrateAnimalsToSpecies(
       !isSameSpecies(t.species, targetName)
     ) {
       tasksMigrated++;
-      return { ...t, species: targetName, updatedAt: ts };
+      return { ...t, species: targetName, _rev: bumpRecordRevision(t), updatedAt: ts };
     }
     return t;
   });
@@ -462,7 +466,7 @@ export function migrateAnimalsToSpecies(
       if (!usedCageKeysInTarget.has(labelKey)) {
         usedCageKeysInTarget.add(labelKey);
         cagesMigratedOrAdded++;
-        nextCages.push({ ...c, species: targetName, updatedAt: ts });
+        nextCages.push({ ...c, species: targetName, _rev: bumpRecordRevision(c), updatedAt: ts });
       }
       // If target already had a cage with identical label, omit the duplicate source cage cleanly
       continue;
@@ -481,7 +485,7 @@ export function migrateAnimalsToSpecies(
     if (!stillUsedInSource && !usedCageKeysInTarget.has(labelKey)) {
       usedCageKeysInTarget.add(labelKey);
       cagesMigratedOrAdded++;
-      nextCages.push({ ...c, species: targetName, updatedAt: ts });
+      nextCages.push({ ...c, species: targetName, _rev: bumpRecordRevision(c), updatedAt: ts });
       continue;
     }
 
@@ -492,6 +496,7 @@ export function migrateAnimalsToSpecies(
         ...c,
         id: generateUuid(),
         species: targetName,
+        _rev: 1,
         createdAt: ts,
         updatedAt: ts,
       });
@@ -514,7 +519,7 @@ export function migrateAnimalsToSpecies(
     showsUpdated++;
 
     if (fullSpeciesShow || (remainingEntered.length === 0 && !sourceHasRemainingAnimals)) {
-      return { ...s, species: targetName, updatedAt: ts };
+      return { ...s, species: targetName, _rev: bumpRecordRevision(s), updatedAt: ts };
     }
 
     showsToAppend.push({
@@ -522,12 +527,14 @@ export function migrateAnimalsToSpecies(
       id: generateUuid(),
       species: targetName,
       enteredAnimalIds: movedEntered,
+      _rev: 1,
       createdAt: ts,
       updatedAt: ts,
     });
     return {
       ...s,
       enteredAnimalIds: remainingEntered,
+      _rev: bumpRecordRevision(s),
       updatedAt: ts,
     };
   });

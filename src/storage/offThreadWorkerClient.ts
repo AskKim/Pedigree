@@ -27,7 +27,11 @@ import type {
   RawArchiveInput,
 } from '../core/importers/importerTypes';
 import { getPlatformImporterById } from '../core/importers/registry';
-import type { BarnDatabaseSnapshot, BarnSettings } from '../core/models';
+import {
+  type BarnDatabaseSnapshot,
+  type BarnSettings,
+  getCoreClockSkewMs,
+} from '../core/models';
 import {
   buildSupportBundleZipArchive,
   SupportBundleBuildParams,
@@ -165,7 +169,10 @@ function runInWorker<TResult>(
   if (!worker) return null;
 
   const id = `job-${++jobCounter}-${Date.now().toString(36)}`;
-  const payload = buildPayload(id);
+  const payload: ArchiveWorkerRequest = {
+    ...buildPayload(id),
+    clockSkewMs: getCoreClockSkewMs(),
+  };
 
   return new Promise<TResult>((resolve, reject) => {
     const timer = setTimeout(() => {

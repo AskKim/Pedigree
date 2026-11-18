@@ -42,6 +42,8 @@ self.addEventListener('activate', (event) => {
 }
 
 export default defineConfig(() => {
+  // Hardcoded '/' keeps AI Studio from prompting for VITE_BASE_PATH (IMP-008).
+  // GitHub Pages subpath builds run via Bun in .github/workflows/deploy-pages.yml passing `--base=...` on CLI.
   const basePath = '/';
 
   return {
@@ -60,7 +62,7 @@ export default defineConfig(() => {
           'pwa-maskable-512x512.png',
         ],
         manifest: {
-          id: basePath,
+          id: './',
           name: 'Community Pedigree',
           short_name: 'Pedigree',
           description:
@@ -69,8 +71,8 @@ export default defineConfig(() => {
           background_color: '#141814',
           display: 'standalone',
           orientation: 'any',
-          scope: basePath,
-          start_url: basePath,
+          scope: './',
+          start_url: './',
           icons: [
             {
               src: 'pwa-192x192.png',
@@ -94,7 +96,7 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           navigateFallback: 'index.html',
-          navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/status\.json/],
+          navigateFallbackDenylist: [/^\/api\//, /\/version\.json$/, /\/status\.json$/],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,

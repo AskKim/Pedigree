@@ -12,10 +12,14 @@
  */
 
 import {
+  addDaysIso,
   Animal,
   BarnTask,
   BreedingRecord,
+  CareLog,
   doesAnimalNeedAttention,
+  formatReadableDate,
+  isAnimalArchived,
   isSameSpecies,
   pluralizeSpeciesLabel,
   SpeciesProfile,
@@ -280,4 +284,352 @@ export function evaluateSpeciesMemoReminderAlert(
     shouldShow: !isDismissed,
   };
 }
+
+// ============================================================================
+// Active Medication Withdrawal Countdowns & Livestock Safety Alerts
+// ============================================================================
+
+const ISO_CALENDAR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export interface ActiveWithdrawalLogItem {
+  log: CareLog;
+  medicationLabel: string;
+  clearDateIso: string;
+  daysRemaining: number;
+}
+
+export interface AnimalWithdrawalEvaluation {
+  animalId: string;
+  isActive: boolean;
+  clearDateIso: string;
+  daysRemaining: number;
+  countdownLabel: string;
+  shortCountdownLabel: string;
+  activeLogs: ActiveWithdrawalLogItem[];
+  medicationSummary: string;
+}
+
+export interface SpeciesWithdrawalAnimalItem {
+  animal: Animal;
+  evaluation: AnimalWithdrawalEvaluation;
+}
+
+export interface SpeciesWithdrawalAlertEvaluation {
+  items: SpeciesWithdrawalAnimalItem[];
+  shouldShow: boolean;
+}
+
+export interface WithdrawalDispositionWarning {
+  animalName: string;
+  clearDateIso: string;
+  daysRemaining: number;
+  medicationSummary: string;
+  reasons: Array<'Sold' | 'Flagged for Cull'>;
+  headline: string;
+  detail: string;
+}
+
+export interface ShowWithdrawalConflictItem {
+  animal: Animal;
+  evaluation: AnimalWithdrawalEvaluation;
+}
+
+export interface ShowWithdrawalConflictEvaluation {
+  showDateIso: string;
+  conflicts: ShowWithdrawalConflictItem[];
+  hasConflict: boolean;
+}
+
+/**
+ * Resolves the effective withdrawal clear date (`YYYY-MM-DD`) for a care log.
+ * Uses explicit `withdrawalClearDateIso` first, falling back to `dateIso + withdrawalDays`.
+ */
+export function resolveCareLogWithdrawalClearDateIso(
+  log: Pick<CareLog, 'dateIso' | 'withdrawalDays' | 'withdrawalClearDateIso'>
+): string {
+  const explicit =
+    typeof log.withdrawalClearDateIso === 'string' ? log.withdrawalClearDateIso.trim() : '';
+  if (ISO_CALENDAR_DATE_RE.test(explicit)) {
+    return explicit;
+  }
+  const wDays = Number(log.withdrawalDays) || 0;
+  const dateIso = typeof log.dateIso === 'string' ? log.dateIso.trim() : '';
+  if (wDays > 0 && ISO_CALENDAR_DATE_RE.test(dateIso)) {
+    return addDaysIso(dateIso, Math.round(wDays));
+  }
+  return '';
+}
+
+function buildMedicationLabel(log: CareLog): string {
+  const med = typeof log.medicationName === 'string' ? log.medicationName.trim() : '';
+  if (med) return med;
+  const title = typeof log.title === 'string' ? log.title.trim() : '';
+  if (title && title !== 'Health / Vet') return title;
+  return 'Medication';
+}
+
+function finalizeAnimalWithdrawalEvaluation(
+  animalId: string,
+  activeLogs: ActiveWithdrawalLogItem[]
+): AnimalWithdrawalEvaluation {
+  if (activeLogs.length === 0) {
+    return {
+      animalId,
+      isActive: false,
+      clearDateIso: '',
+      daysRemaining: 0,
+      countdownLabel: '',
+      shortCountdownLabel: '',
+      activeLogs: [],
+      medicationSummary: '',
+    };
+  }
+
+  const sorted = [...activeLogs].sort(
+    (a, b) =>
+      b.clearDateIso.localeCompare(a.clearDateIso) ||
+      (b.log.dateIso || '').localeCompare(a.log.dateIso || '')
+  );
+  const longest = sorted[0];
+  const days = longest.daysRemaining;
+
+  const seenMeds = new Set<string>();
+  const medNames: string[] = [];
+  for (const item of sorted) {
+    const key = item.medicationLabel.toLowerCase();
+    if (!seenMeds.has(key)) {
+      seenMeds.add(key);
+      medNames.push(item.medicationLabel);
+    }
+  }
+
+  return {
+    animalId,
+    isActive: true,
+    clearDateIso: longest.clearDateIso,
+    daysRemaining: days,
+    countdownLabel: `${days} day${days === 1 ? '' : 's'} remaining`,
+    shortCountdownLabel: `${days}d left`,
+    activeLogs: sorted,
+    medicationSummary: medNames.join(', '),
+  };
+}
+
+/**
+ * Builds an O(L) lookup map of animals currently under an active medication withdrawal
+ * relative to `options.todayIso` (defaulting to local today).
+ *
+ * Clear-date boundary rule: animals are considered **cleared on `withdrawalClearDateIso` itself**
+ * (`daysRemaining = diffCalendarDaysIso(todayIso, clearDateIso) > 0` means still in withdrawal).
+ */
+export function buildWithdrawalByAnimalMap(
+  careLogs: readonly CareLog[],
+  options?: {
+    todayIso?: string;
+  }
+): Map<string, AnimalWithdrawalEvaluation> {
+  const referenceIso = options?.todayIso || todayDateIso();
+  const grouped = new Map<string, ActiveWithdrawalLogItem[]>();
+
+  for (const log of careLogs) {
+    if (!log.animalId) continue;
+    const clearDateIso = resolveCareLogWithdrawalClearDateIso(log);
+    if (!clearDateIso) continue;
+
+    const daysRemaining = diffCalendarDaysIso(referenceIso, clearDateIso);
+    if (!Number.isFinite(daysRemaining) || daysRemaining <= 0) continue;
+
+    let bucket = grouped.get(log.animalId);
+    if (!bucket) {
+      bucket = [];
+      grouped.set(log.animalId, bucket);
+    }
+    bucket.push({
+      log,
+      medicationLabel: buildMedicationLabel(log),
+      clearDateIso,
+      daysRemaining,
+    });
+  }
+
+  const result = new Map<string, AnimalWithdrawalEvaluation>();
+  for (const [animalId, items] of grouped.entries()) {
+    result.set(animalId, finalizeAnimalWithdrawalEvaluation(animalId, items));
+  }
+  return result;
+}
+
+/**
+ * Evaluates active medication withdrawal status for a single animal.
+ */
+export function evaluateAnimalActiveWithdrawal(
+  careLogs: readonly CareLog[],
+  animalId: string,
+  options?: {
+    todayIso?: string;
+  }
+): AnimalWithdrawalEvaluation {
+  if (!animalId) {
+    return finalizeAnimalWithdrawalEvaluation('', []);
+  }
+  const referenceIso = options?.todayIso || todayDateIso();
+  const activeItems: ActiveWithdrawalLogItem[] = [];
+
+  for (const log of careLogs) {
+    if (log.animalId !== animalId) continue;
+    const clearDateIso = resolveCareLogWithdrawalClearDateIso(log);
+    if (!clearDateIso) continue;
+    const daysRemaining = diffCalendarDaysIso(referenceIso, clearDateIso);
+    if (!Number.isFinite(daysRemaining) || daysRemaining <= 0) continue;
+    activeItems.push({
+      log,
+      medicationLabel: buildMedicationLabel(log),
+      clearDateIso,
+      daysRemaining,
+    });
+  }
+
+  return finalizeAnimalWithdrawalEvaluation(animalId, activeItems);
+}
+
+/**
+ * Evaluates active medication withdrawal safety alerts for a species card on the Home screen.
+ * Excludes Deceased, Sold, and Archived stock from Home barn alerts (Active, Junior, Retired,
+ * and Flagged-for-Cull animals remain surfaced), and respects session-dismissed species keys.
+ */
+export function evaluateSpeciesActiveWithdrawalsAlert(
+  animals: readonly Animal[],
+  careLogs: readonly CareLog[],
+  speciesName: string,
+  options?: {
+    todayIso?: string;
+    withdrawalByAnimalId?: ReadonlyMap<string, AnimalWithdrawalEvaluation>;
+    dismissedSpeciesKeys?: ReadonlySet<string>;
+  }
+): SpeciesWithdrawalAlertEvaluation {
+  const byAnimal =
+    options?.withdrawalByAnimalId ??
+    buildWithdrawalByAnimalMap(careLogs, { todayIso: options?.todayIso });
+
+  const items: SpeciesWithdrawalAnimalItem[] = [];
+  for (const animal of animals) {
+    if (!isSameSpecies(animal.species, speciesName)) continue;
+    if (animal.status === 'Deceased' || animal.status === 'Sold' || isAnimalArchived(animal)) {
+      continue;
+    }
+    const evaluation = byAnimal.get(animal.id);
+    if (evaluation?.isActive) {
+      items.push({ animal, evaluation });
+    }
+  }
+
+  items.sort(
+    (a, b) =>
+      a.evaluation.daysRemaining - b.evaluation.daysRemaining ||
+      (a.animal.name || '').localeCompare(b.animal.name || '')
+  );
+
+  const speciesKey = speciesName.trim().toLowerCase();
+  const isDismissed = Boolean(options?.dismissedSpeciesKeys?.has(speciesKey));
+
+  return {
+    items,
+    shouldShow: items.length > 0 && !isDismissed,
+  };
+}
+
+/**
+ * Evaluates whether saving an animal as `Sold` or `Flagged for Cull` triggers a soft
+ * medication withdrawal confirmation warning. (Does not trigger for `Deceased` status.)
+ */
+export function evaluateWithdrawalDispositionWarning(
+  evaluation: AnimalWithdrawalEvaluation | null | undefined,
+  params: {
+    animalName: string;
+    isNewlySold: boolean;
+    isNewlyCulled: boolean;
+  }
+): WithdrawalDispositionWarning | null {
+  if (!evaluation?.isActive) return null;
+  if (!params.isNewlySold && !params.isNewlyCulled) return null;
+
+  const reasons: Array<'Sold' | 'Flagged for Cull'> = [];
+  if (params.isNewlySold) reasons.push('Sold');
+  if (params.isNewlyCulled) reasons.push('Flagged for Cull');
+
+  const safeName = params.animalName.trim() || 'This animal';
+  const clearReadable = formatReadableDate(evaluation.clearDateIso);
+  const headline =
+    reasons.length === 2
+      ? `Active Withdrawal Hold — Confirm Sale & Cull`
+      : reasons[0] === 'Sold'
+      ? `Active Withdrawal Hold — Confirm Sale`
+      : `Active Withdrawal Hold — Confirm Cull / Processing`;
+
+  const actionPhrase =
+    reasons.length === 2
+      ? 'marking it Sold and Flagged for Cull'
+      : reasons[0] === 'Sold'
+      ? 'marking it Sold'
+      : 'flagging it for Cull / processing';
+
+  const detail = `${safeName} is still under medication withdrawal (${evaluation.medicationSummary}) until ${clearReadable} (${evaluation.countdownLabel}). Please verify food/sale disclosures before ${actionPhrase}.`;
+
+  return {
+    animalName: safeName,
+    clearDateIso: evaluation.clearDateIso,
+    daysRemaining: evaluation.daysRemaining,
+    medicationSummary: evaluation.medicationSummary,
+    reasons,
+    headline,
+    detail,
+  };
+}
+
+/**
+ * Checks whether any animal selected for a ShowEvent has an active medication withdrawal
+ * overlapping the show's `eventDateIso` (cleared on `withdrawalClearDateIso` itself).
+ */
+export function evaluateShowWithdrawalConflicts(
+  animals: readonly Animal[],
+  selectedAnimalIds: readonly string[],
+  careLogs: readonly CareLog[],
+  showDateIso: string,
+  options?: {
+    withdrawalByAnimalIdOnShowDate?: ReadonlyMap<string, AnimalWithdrawalEvaluation>;
+  }
+): ShowWithdrawalConflictEvaluation {
+  const cleanDate = typeof showDateIso === 'string' ? showDateIso.trim() : '';
+  if (!ISO_CALENDAR_DATE_RE.test(cleanDate) || selectedAnimalIds.length === 0) {
+    return { showDateIso: cleanDate, conflicts: [], hasConflict: false };
+  }
+
+  const byAnimal =
+    options?.withdrawalByAnimalIdOnShowDate ??
+    buildWithdrawalByAnimalMap(careLogs, { todayIso: cleanDate });
+
+  const selectedSet = new Set(selectedAnimalIds);
+  const conflicts: ShowWithdrawalConflictItem[] = [];
+
+  for (const animal of animals) {
+    if (!selectedSet.has(animal.id)) continue;
+    const evaluation = byAnimal.get(animal.id);
+    if (evaluation?.isActive) {
+      conflicts.push({ animal, evaluation });
+    }
+  }
+
+  conflicts.sort(
+    (a, b) =>
+      b.evaluation.daysRemaining - a.evaluation.daysRemaining ||
+      (a.animal.name || '').localeCompare(b.animal.name || '')
+  );
+
+  return {
+    showDateIso: cleanDate,
+    conflicts,
+    hasConflict: conflicts.length > 0,
+  };
+}
+
 

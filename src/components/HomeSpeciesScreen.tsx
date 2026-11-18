@@ -24,11 +24,14 @@ import {
   Download,
   GripVertical,
   Plus,
+  ShieldAlert,
   StickyNote,
   X,
 } from 'lucide-react';
 import React, { useId, useMemo, useState } from 'react';
 import {
+  buildWithdrawalByAnimalMap,
+  evaluateSpeciesActiveWithdrawalsAlert,
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
   evaluateSpeciesMemoReminderAlert,
@@ -39,6 +42,7 @@ import {
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
+  formatReadableDate,
   isAnimalArchived,
   todayDateIso,
 } from '../core/models';
@@ -56,6 +60,9 @@ interface HomeSpeciesScreenProps {
   onIgnoreTaskAlerts: (taskIds: string[]) => void;
   onClearTaskAlertGroup: (speciesName: string, groupSignature: string | string[]) => void;
   onDismissMemoAlert?: (speciesName: string, signature: string) => void;
+  dismissedWithdrawalSpecies?: readonly string[];
+  onDismissWithdrawalAlert?: (speciesName: string) => void;
+  onOpenWithdrawalHerd?: (speciesName: string) => void;
   onToggleTaskCompleted?: (task: BarnTask) => void;
   onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => void;
   onNavigateToAddSpecies: () => void;
@@ -74,6 +81,9 @@ export function HomeSpeciesScreen({
   onIgnoreTaskAlerts,
   onClearTaskAlertGroup,
   onDismissMemoAlert,
+  dismissedWithdrawalSpecies,
+  onDismissWithdrawalAlert,
+  onOpenWithdrawalHerd,
   onToggleTaskCompleted,
   onExportTasksToCalendar,
   onNavigateToAddSpecies,
@@ -131,6 +141,21 @@ export function HomeSpeciesScreen({
     snapshot.careLogs.length +
     snapshot.shows.length;
 
+  const withdrawalByAnimalId = useMemo(
+    () => buildWithdrawalByAnimalMap(snapshot.careLogs, { todayIso: today }),
+    [snapshot.careLogs, today]
+  );
+
+  const dismissedWithdrawalKeySet = useMemo(
+    () =>
+      new Set(
+        (dismissedWithdrawalSpecies || [])
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    [dismissedWithdrawalSpecies]
+  );
+
   const speciesAlertRows = useMemo(
     () =>
       snapshot.speciesProfiles.map((sp) => {
@@ -152,6 +177,16 @@ export function HomeSpeciesScreen({
           todayIso: today,
         });
         const attentionAlert = evaluateSpeciesNeedsAttentionAlert(snapshot.animals, sp.name);
+        const withdrawalAlert = evaluateSpeciesActiveWithdrawalsAlert(
+          snapshot.animals,
+          snapshot.careLogs,
+          sp.name,
+          {
+            todayIso: today,
+            withdrawalByAnimalId,
+            dismissedSpeciesKeys: dismissedWithdrawalKeySet,
+          }
+        );
         const memoAlert = evaluateSpeciesMemoReminderAlert(sp, {
           dismissedSignature: snapshot.settings.dismissedMemoAlertSignatures?.[spKey],
         });
@@ -164,6 +199,7 @@ export function HomeSpeciesScreen({
           showDueTaskAlert,
           arrivingAlert,
           attentionAlert,
+          withdrawalAlert,
           memoAlert,
         };
       }),
@@ -173,9 +209,12 @@ export function HomeSpeciesScreen({
       snapshot.settings.dismissedMemoAlertSignatures,
       snapshot.breedings,
       snapshot.animals,
+      snapshot.careLogs,
       activeTasks,
       today,
       ignoredTaskIdSet,
+      withdrawalByAnimalId,
+      dismissedWithdrawalKeySet,
     ]
   );
 
@@ -556,6 +595,7 @@ export function HomeSpeciesScreen({
                 showDueTaskAlert,
                 arrivingAlert,
                 attentionAlert,
+                withdrawalAlert,
                 memoAlert,
               },
               index
@@ -673,6 +713,65 @@ export function HomeSpeciesScreen({
                       </div>
                     </div>
                   </div>
+
+                  {/* Active Medication Withdrawal Safety Alert (closable until app reload) */}
+                  {withdrawalAlert.shouldShow && (
+                    <div
+                      role="status"
+                      className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-xs"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <ShieldAlert
+                            className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+                              {withdrawalAlert.items.length} Medication Withdrawal Hold
+                              {withdrawalAlert.items.length === 1 ? '' : 's'}
+                            </div>
+                            <div className="text-[11px] text-[var(--barn-muted)] truncate">
+                              {withdrawalAlert.items
+                                .slice(0, 2)
+                                .map(
+                                  (item) =>
+                                    `${item.animal.name} (${item.evaluation.shortCountdownLabel} · clears ${formatReadableDate(item.evaluation.clearDateIso)})`
+                                )
+                                .join(' · ')}
+                              {withdrawalAlert.items.length > 2
+                                ? ` +${withdrawalAlert.items.length - 2} more`
+                                : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenWithdrawalHerd
+                                ? onOpenWithdrawalHerd(sp.name)
+                                : onOpenSpecies(sp.name, 'herd')
+                            }
+                            className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-terracotta)]/50 text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap"
+                          >
+                            View Herd
+                          </button>
+                          {onDismissWithdrawalAlert && (
+                            <button
+                              type="button"
+                              onClick={() => onDismissWithdrawalAlert(sp.name)}
+                              title="Close withdrawal alert until reload"
+                              aria-label={`Close ${sp.name} withdrawal alert`}
+                              className="min-h-[32px] min-w-[32px] rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
+                            >
+                              <X className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Babies About to Arrive Alert (gestation nearly complete) */}
                   {arrivingAlert.shouldShow && (

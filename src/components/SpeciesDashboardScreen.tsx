@@ -26,6 +26,7 @@ import {
   Pin,
   Plus,
   Settings,
+  ShieldAlert,
   SlidersHorizontal,
   Square,
   StickyNote,
@@ -33,7 +34,13 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
-import { evaluateSpeciesNeedsAttentionAlert } from '../core/barnAlerts';
+import {
+  AnimalWithdrawalEvaluation,
+  buildWithdrawalByAnimalMap,
+  evaluateShowWithdrawalConflicts,
+  evaluateSpeciesNeedsAttentionAlert,
+  ShowWithdrawalConflictEvaluation,
+} from '../core/barnAlerts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import {
   BarnDatabaseSnapshot,
@@ -66,6 +73,8 @@ import { ActiveSpeciesData, WorkspaceRoute } from '../hooks/useBarnStore';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+
+const EMPTY_WITHDRAWAL_MAP = new Map<string, AnimalWithdrawalEvaluation>();
 
 interface SpeciesDashboardScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -154,6 +163,7 @@ export function SpeciesDashboardScreen({
     breedings,
     tasks,
     cages,
+    careLogs,
     shows,
     herdById,
     conflictedAnimalCount,
@@ -279,6 +289,16 @@ export function SpeciesDashboardScreen({
   const [showDateIso, setShowDateIso] = useState('');
   const [showDeadlineIso, setShowDeadlineIso] = useState('');
   const [showAnimalIds, setShowAnimalIds] = useState<string[]>([]);
+  const [pendingShowWithdrawalWarning, setPendingShowWithdrawalWarning] =
+    useState<ShowWithdrawalConflictEvaluation | null>(null);
+
+  const showDateWithdrawalByAnimalId = useMemo<Map<string, AnimalWithdrawalEvaluation>>(
+    () =>
+      showNewShowForm && showDateIso
+        ? buildWithdrawalByAnimalMap(careLogs, { todayIso: showDateIso })
+        : EMPTY_WITHDRAWAL_MAP,
+    [showNewShowForm, showDateIso, careLogs]
+  );
 
   const taskSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
   const cageSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
@@ -336,9 +356,9 @@ export function SpeciesDashboardScreen({
     });
   };
 
-  const submitShow = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeSaveShow = async () => {
     if (!showName.trim() || !showDateIso) return;
+    setPendingShowWithdrawalWarning(null);
     await showSubmitLock.runLocked(async () => {
       const saved = await onSaveShow({
         species: speciesProfile.name,
@@ -354,9 +374,27 @@ export function SpeciesDashboardScreen({
         setShowName('');
         setShowLocation('');
         setShowAnimalIds([]);
+        setPendingShowWithdrawalWarning(null);
         setShowNewShowForm(false);
       }
     });
+  };
+
+  const submitShow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!showName.trim() || !showDateIso) return;
+    const conflictEval = evaluateShowWithdrawalConflicts(
+      activeData.activeAnimals,
+      showAnimalIds,
+      careLogs,
+      showDateIso,
+      { withdrawalByAnimalIdOnShowDate: showDateWithdrawalByAnimalId }
+    );
+    if (conflictEval.hasConflict) {
+      setPendingShowWithdrawalWarning(conflictEval);
+      return;
+    }
+    await executeSaveShow();
   };
 
   const speciesSettingsSection = (
@@ -1557,7 +1595,10 @@ export function SpeciesDashboardScreen({
                     <button
                       type="button"
                       aria-expanded={showNewShowForm}
-                      onClick={() => setShowNewShowForm((v) => !v)}
+                      onClick={() => {
+                        setPendingShowWithdrawalWarning(null);
+                        setShowNewShowForm((v) => !v);
+                      }}
                       className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
                     >
                       <Plus className="w-3.5 h-3.5" aria-hidden="true" />
@@ -1615,7 +1656,10 @@ export function SpeciesDashboardScreen({
                           type="date"
                           required
                           value={showDateIso}
-                          onChange={(e) => setShowDateIso(e.target.value)}
+                          onChange={(e) => {
+                            setShowDateIso(e.target.value);
+                            setPendingShowWithdrawalWarning(null);
+                          }}
                           className="w-full min-h-[38px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono"
                         />
                       </div>
@@ -1641,19 +1685,26 @@ export function SpeciesDashboardScreen({
                         <div className="max-h-28 overflow-y-auto space-y-1 border border-[var(--barn-border)] rounded-lg p-2 bg-[var(--barn-canvas)]">
                           {activeData.activeAnimals.map((a) => {
                             const checked = showAnimalIds.includes(a.id);
+                            const wEval = showDateWithdrawalByAnimalId.get(a.id);
                             return (
                               <label key={a.id} className="flex items-center gap-2 cursor-pointer">
                                 <input
                                   type="checkbox"
                                   checked={checked}
-                                  onChange={() =>
+                                  onChange={() => {
+                                    setPendingShowWithdrawalWarning(null);
                                     setShowAnimalIds((prev) =>
                                       checked ? prev.filter((id) => id !== a.id) : [...prev, a.id]
-                                    )
-                                  }
+                                    );
+                                  }}
                                 />
-                                <span>
+                                <span className="min-w-0 truncate">
                                   {a.name} ({a.tattoo})
+                                  {wEval?.isActive && (
+                                    <span className="text-[11px] font-medium text-[var(--barn-terracotta)] ml-1.5 font-mono">
+                                      · Withdrawal clears {formatReadableDate(wEval.clearDateIso)}
+                                    </span>
+                                  )}
                                 </span>
                               </label>
                             );
@@ -1661,11 +1712,59 @@ export function SpeciesDashboardScreen({
                         </div>
                       </div>
                     )}
+                    {pendingShowWithdrawalWarning?.hasConflict && (
+                      <div
+                        role="alert"
+                        className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-xs"
+                      >
+                        <div className="flex items-start gap-2">
+                          <ShieldAlert
+                            className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <div className="space-y-1 min-w-0">
+                            <div className="font-semibold text-[var(--barn-ink)]">
+                              Medication Withdrawal Overlaps Show Date ({formatReadableDate(pendingShowWithdrawalWarning.showDateIso)})
+                            </div>
+                            <p className="text-[var(--barn-muted)]">
+                              {pendingShowWithdrawalWarning.conflicts
+                                .map(
+                                  (c) =>
+                                    `${c.animal.name} (${c.evaluation.medicationSummary}, clears ${formatReadableDate(c.evaluation.clearDateIso)})`
+                                )
+                                .join(' · ')}
+                              . Confirm show rules / health fitness before saving.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            disabled={showSubmitLock.isSubmitting}
+                            onClick={() => setPendingShowWithdrawalWarning(null)}
+                            className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-50"
+                          >
+                            Adjust Selection
+                          </button>
+                          <button
+                            type="button"
+                            disabled={showSubmitLock.isSubmitting}
+                            onClick={() => void executeSaveShow()}
+                            className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-65"
+                          >
+                            {showSubmitLock.isSubmitting ? 'Saving...' : 'Save Show Anyway'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
                         disabled={showSubmitLock.isSubmitting}
-                        onClick={() => setShowNewShowForm(false)}
+                        onClick={() => {
+                          setPendingShowWithdrawalWarning(null);
+                          setShowNewShowForm(false);
+                        }}
                         className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] disabled:opacity-50"
                       >
                         Cancel

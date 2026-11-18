@@ -114,6 +114,8 @@ export default function App() {
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
   const [dismissedCompatBanner, setDismissedCompatBanner] = useState(false);
   const [dismissedClockDriftBanner, setDismissedClockDriftBanner] = useState(false);
+  const [dismissedWithdrawalSpecies, setDismissedWithdrawalSpecies] = useState<string[]>([]);
+  const [requestedHerdWithdrawalNonce, setRequestedHerdWithdrawalNonce] = useState(0);
   const [hasOpenModal, setHasOpenModal] = useState(false);
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
   const vaultBannerLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
@@ -704,15 +706,15 @@ export default function App() {
         {store.backupStatus && store.backupStatus.showDismissibleBanner && route !== 'settings' && (
           <div
             role="status"
-            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2.5"
+            className="w-full bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-col md:flex-row md:items-center md:justify-between gap-3"
           >
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <div className="font-semibold">{store.backupStatus.headline}</div>
-              <div className="text-[11px] text-[var(--barn-muted)]">
+            <div className="w-full md:w-auto md:min-w-0 md:flex-1 space-y-1">
+              <div className="font-semibold leading-snug">{store.backupStatus.headline}</div>
+              <div className="text-[11px] leading-relaxed text-[var(--barn-muted)]">
                 {store.backupStatus.detail}
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto md:shrink-0">
               {store.opfsSupported && (
                 <button
                   type="button"
@@ -1001,6 +1003,16 @@ export default function App() {
             onDismissMemoAlert={(speciesName, signature) => {
               void store.dismissSpeciesMemoAlert(speciesName, signature);
             }}
+            dismissedWithdrawalSpecies={dismissedWithdrawalSpecies}
+            onDismissWithdrawalAlert={(speciesName) => {
+              const key = speciesName.trim().toLowerCase();
+              if (!key) return;
+              setDismissedWithdrawalSpecies((prev) => (prev.includes(key) ? prev : [...prev, key]));
+            }}
+            onOpenWithdrawalHerd={(speciesName) => {
+              store.selectSpeciesWorkspace(speciesName, 'herd');
+              setRequestedHerdWithdrawalNonce((n) => n + 1);
+            }}
             onToggleTaskCompleted={(task) => {
               void store.toggleTaskCompleted(task);
             }}
@@ -1139,6 +1151,8 @@ export default function App() {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
             requestedConflictFocusNonce={store.requestedHerdConflictNonce}
+            requestedWithdrawalFocusNonce={requestedHerdWithdrawalNonce}
+            onConsumeWithdrawalFocus={() => setRequestedHerdWithdrawalNonce(0)}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
             opfsSupported={store.opfsSupported}
             archivedHerdBundles={store.archivedHerdBundles}

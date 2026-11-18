@@ -347,18 +347,30 @@ export function AnimalPhotoGallery({
             {/* Active Photo Showcase Card */}
             <div className="rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden">
               <div className="relative bg-black/20 flex items-center justify-center max-h-72 overflow-hidden group">
-                <button
-                  type="button"
-                  onClick={() => setLightboxOpen(true)}
-                  aria-label={`Inspect ${activePhoto.caption || `${animal.name} photo`} full size`}
-                  className="max-h-72 flex items-center justify-center cursor-zoom-in focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--barn-sage)]"
-                >
-                  <img
-                    src={activePhotoSrc}
-                    alt={activePhoto.caption || `${animal.name} photo`}
-                    className="max-h-72 w-auto object-contain select-none"
-                  />
-                </button>
+                {activePhotoSrc ? (
+                  <button
+                    type="button"
+                    onClick={() => setLightboxOpen(true)}
+                    aria-label={`Inspect ${activePhoto.caption || `${animal.name} photo`} full size`}
+                    className="max-h-72 flex items-center justify-center cursor-zoom-in focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--barn-sage)]"
+                  >
+                    <img
+                      src={activePhotoSrc}
+                      alt={activePhoto.caption || `${animal.name} photo`}
+                      className="max-h-72 w-auto object-contain select-none"
+                    />
+                  </button>
+                ) : (
+                  <div className="w-full py-10 px-4 flex flex-col items-center justify-center text-center gap-1.5 text-xs text-white/85">
+                    <Camera className="w-6 h-6 text-white/70" aria-hidden="true" />
+                    <div className="font-medium">
+                      {activePhoto.originalFileName || 'Synced photo metadata'}
+                    </div>
+                    <p className="text-[11px] text-white/65 max-w-xs">
+                      Photo metadata synced. Restore a Photos-Only or Complete .ZIP backup to view this image.
+                    </p>
+                  </div>
+                )}
                 {loadingPhotoId === activePhoto.id && !activePhoto.dataUrl && !hydratedUrls[activePhoto.id] && (
                   <span
                     role="status"
@@ -544,11 +556,20 @@ export function AnimalPhotoGallery({
                               : 'border-[var(--barn-border)] opacity-75 hover:opacity-100'
                           }`}
                         >
-                          <img
-                            src={p.thumbnailDataUrl || p.dataUrl}
-                            alt={p.caption || `Photo ${idx + 1}`}
-                            className="w-full h-full object-cover"
-                          />
+                          {p.thumbnailDataUrl || p.dataUrl ? (
+                            <img
+                              src={p.thumbnailDataUrl || p.dataUrl}
+                              alt={p.caption || `Photo ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span
+                              title="Photo metadata synced — restore ZIP backup for image"
+                              className="w-full h-full flex items-center justify-center bg-[var(--barn-canvas)] text-[var(--barn-muted)]"
+                            >
+                              <Camera className="w-4 h-4" aria-hidden="true" />
+                            </span>
+                          )}
                           {p.isPrimary && (
                             <span
                               title="Primary photo"
@@ -619,11 +640,23 @@ export function AnimalPhotoGallery({
             </div>
 
             <div className="relative w-full flex items-center justify-center">
-              <img
-                src={activePhotoSrc}
-                alt={activePhoto.caption || animal.name}
-                className="max-h-[78vh] max-w-full rounded-xl object-contain"
-              />
+              {activePhotoSrc ? (
+                <img
+                  src={activePhotoSrc}
+                  alt={activePhoto.caption || animal.name}
+                  className="max-h-[78vh] max-w-full rounded-xl object-contain"
+                />
+              ) : (
+                <div className="p-8 rounded-xl bg-black/50 border border-white/15 text-center text-white/85 text-xs space-y-1.5">
+                  <Camera className="w-7 h-7 mx-auto text-white/70" aria-hidden="true" />
+                  <div className="font-medium">
+                    {activePhoto.originalFileName || 'Synced photo metadata'}
+                  </div>
+                  <div className="text-[11px] text-white/65">
+                    Restore a Photos-Only or Complete .ZIP backup to view this image.
+                  </div>
+                </div>
+              )}
               {photos.length > 1 && (
                 <>
                   <button

@@ -913,7 +913,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     const epochMeta: PersistedWriteEpochMeta = {
       epoch: nextEpoch,
       writerTabId: this.tabId,
-      updatedAtIso: nowIsoUtc(),
+      updatedAtIso: getAdjustedNowIsoUtc(),
     };
 
     try {
@@ -1121,7 +1121,7 @@ export class WebSqliteAdapter implements StorageAdapter {
               ? extraSettings.backupReminderSnoozedUntilMs
               : undefined,
           autoOffloadRetiredToOpfs: Boolean(extraSettings.autoOffloadRetiredToOpfs),
-          updatedAt: String(sRow.updated_at || nowIsoUtc()),
+          updatedAt: String(sRow.updated_at || getAdjustedNowIsoUtc()),
         }
       : {
           id: 'barn_settings',
@@ -1143,7 +1143,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           includePhotoOnPedigree: false,
           calendarSync: { ...DEFAULT_CALENDAR_SYNC_SETTINGS },
           autoOffloadRetiredToOpfs: false,
-          updatedAt: nowIsoUtc(),
+          updatedAt: getAdjustedNowIsoUtc(),
         };
 
     const speciesProfiles: SpeciesProfile[] = runQuery(

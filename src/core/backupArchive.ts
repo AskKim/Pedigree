@@ -760,11 +760,35 @@ export function mergePhotosOnlyIntoSnapshot(
       species: matchedAnimal.species,
     };
     const existing = photoMap.get(normalizedInc.id);
+    const existingHasBlob = Boolean(existing?.dataUrl || existing?.thumbnailDataUrl);
+    const incHasBlob = Boolean(normalizedInc.dataUrl || normalizedInc.thumbnailDataUrl);
     if (!existing) {
       photoMap.set(normalizedInc.id, normalizedInc);
       photosAdded++;
+    } else if (!existingHasBlob && incHasBlob) {
+      const incIsNewer = (normalizedInc.updatedAt || '') > (existing.updatedAt || '');
+      photoMap.set(normalizedInc.id, {
+        ...(incIsNewer ? normalizedInc : existing),
+        dataUrl: normalizedInc.dataUrl,
+        thumbnailDataUrl: normalizedInc.thumbnailDataUrl,
+        mimeType: normalizedInc.mimeType || existing.mimeType,
+        width: normalizedInc.width || existing.width,
+        height: normalizedInc.height || existing.height,
+        originalBytes: normalizedInc.originalBytes || existing.originalBytes,
+        storedBytes: normalizedInc.storedBytes || existing.storedBytes,
+      });
+      photosUpdated++;
     } else if ((normalizedInc.updatedAt || '') > (existing.updatedAt || '')) {
-      photoMap.set(normalizedInc.id, normalizedInc);
+      photoMap.set(
+        normalizedInc.id,
+        !incHasBlob && existingHasBlob
+          ? {
+              ...normalizedInc,
+              dataUrl: existing.dataUrl,
+              thumbnailDataUrl: existing.thumbnailDataUrl,
+            }
+          : normalizedInc
+      );
       photosUpdated++;
     }
   }

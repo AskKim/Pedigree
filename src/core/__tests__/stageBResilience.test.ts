@@ -12,6 +12,7 @@ import {
 } from '../archiveInspector';
 import {
   buildCompleteBackupZipArchive,
+  mergePhotosOnlyIntoSnapshot,
   parseBackupArchiveInput,
 } from '../backupArchive';
 import {
@@ -30,8 +31,12 @@ import {
   compareSameEntitySyncOperations,
   createOutboxOperation,
   diffEntityFieldsToOperations,
+  diffSnapshotsToSyncOperations,
   mergeDeltaOperations,
+  stripPhotoBlobsForSync,
 } from '../syncOutbox';
+import { migrateAnimalsToSpecies } from '../speciesMigration';
+import { mergeBarnSnapshots } from '../syncAndExports';
 import { AnimalPhoto, BarnTask } from '../models';
 
 function makeFakeBase64DataUrl(byteSize: number, mime = 'image/jpeg'): string {
@@ -492,6 +497,144 @@ describe('Stage B pure domain features (IMP-023)', () => {
       expect(merged.nextSnapshot.shows).toHaveLength(0);
       expect(merged.nextSnapshot.animalPhotos).toHaveLength(0);
       expect(merged.nextSnapshot.speciesProfiles).toHaveLength(0);
+    });
+
+    it('syncs metadata-only photo ops cleanly without binary blobs and hydrates blobs from ZIP/JSON restores', () => {
+      const fullPhoto: AnimalPhoto = {
+        id: 'ph-meta-1',
+        species: 'Rabbit',
+        animalId: 'ani-1',
+        isPrimary: true,
+        sortOrder: 0,
+        caption: 'Initial pose',
+        originalFileName: 'buck.webp',
+        mimeType: 'image/webp',
+        width: 1280,
+        height: 960,
+        originalBytes: 1_200_000,
+        storedBytes: 88_000,
+        thumbnailDataUrl: 'data:image/webp;base64,AAAA',
+        dataUrl: 'data:image/webp;base64,BBBBBBBB',
+        _rev: 1,
+        createdAt: '2026-06-01T10:00:00.000Z',
+        updatedAt: '2026-06-01T10:00:00.000Z',
+      };
+
+      const stripped = stripPhotoBlobsForSync(fullPhoto);
+      expect(stripped.dataUrl).toBe('');
+      expect(stripped.thumbnailDataUrl).toBe('');
+
+      const createOp = createOutboxOperation({
+        entityType: 'photo',
+        entityUuid: stripped.id,
+        deviceId: 'dev-a',
+        logicalCounter: 1,
+        fieldName: '__create__',
+        newValue: stripped,
+        timestamp: '2026-06-01T10:00:00.000Z',
+        recordRev: 1,
+      });
+
+      const unsafeSvgOp = createOutboxOperation({
+        entityType: 'photo',
+        entityUuid: 'ph-xss',
+        deviceId: 'dev-a',
+        logicalCounter: 2,
+        fieldName: '__create__',
+        newValue: {
+          ...stripped,
+          id: 'ph-xss',
+          dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+        },
+        timestamp: '2026-06-01T10:00:00.000Z',
+        recordRev: 1,
+      });
+
+      const peerBase = makeEmptySnapshot({
+        animals: [makeAnimal('ani-1', { name: 'Clover', species: 'Rabbit' })],
+      });
+      const afterDelta = mergeDeltaOperations(peerBase, [], [createOp, unsafeSvgOp], 'dev-b');
+      expect(afterDelta.nextSnapshot.animalPhotos).toHaveLength(1);
+      const syncedPhoto = afterDelta.nextSnapshot.animalPhotos![0];
+      expect(syncedPhoto.id).toBe('ph-meta-1');
+      expect(syncedPhoto.dataUrl).toBe('');
+      expect(syncedPhoto.caption).toBe('Initial pose');
+
+      // Peer updates caption locally at a later timestamp before ZIP blob restore arrives
+      const peerEditedSnap = {
+        ...afterDelta.nextSnapshot,
+        animalPhotos: [
+          {
+            ...syncedPhoto,
+            caption: 'Renamed on Device B',
+            _rev: 2,
+            updatedAt: '2026-06-01T12:00:00.000Z',
+          },
+        ],
+      };
+
+      const rehydrated = mergePhotosOnlyIntoSnapshot(peerEditedSnap, [fullPhoto]);
+      expect(rehydrated.photosUpdated).toBe(1);
+      expect(rehydrated.nextSnapshot.animalPhotos?.[0]?.dataUrl).toBe('data:image/webp;base64,BBBBBBBB');
+      expect(rehydrated.nextSnapshot.animalPhotos?.[0]?.caption).toBe('Renamed on Device B');
+
+      const mergedJson = mergeBarnSnapshots(peerEditedSnap, makeEmptySnapshot({
+        animals: peerEditedSnap.animals,
+        animalPhotos: [fullPhoto],
+      }));
+      expect(mergedJson.snapshot.animalPhotos?.[0]?.dataUrl).toBe('data:image/webp;base64,BBBBBBBB');
+      expect(mergedJson.snapshot.animalPhotos?.[0]?.caption).toBe('Renamed on Device B');
+    });
+
+    it('emits zero-blob outbox operations with bumped _rev values for cross-species migrations', () => {
+      const rabbit = makeAnimal('r-1', { species: 'Rabbit', name: 'Hop', _rev: 2 });
+      const photo: AnimalPhoto = {
+        id: 'ph-r1',
+        species: 'Rabbit',
+        animalId: 'r-1',
+        isPrimary: true,
+        sortOrder: 0,
+        caption: 'Profile',
+        originalFileName: 'hop.webp',
+        mimeType: 'image/webp',
+        width: 800,
+        height: 600,
+        originalBytes: 100_000,
+        storedBytes: 30_000,
+        thumbnailDataUrl: 'data:image/webp;base64,THUMB',
+        dataUrl: 'data:image/webp;base64,FULLDATA',
+        _rev: 1,
+        createdAt: '2026-06-01T10:00:00.000Z',
+        updatedAt: '2026-06-01T10:00:00.000Z',
+      };
+      const baseSnap = makeEmptySnapshot({
+        animals: [rabbit],
+        animalPhotos: [photo],
+      });
+
+      const migrated = migrateAnimalsToSpecies(baseSnap, ['r-1'], 'Guinea Pig');
+      expect(migrated.snapshot.animals[0]?._rev).toBe(3);
+      expect(migrated.snapshot.animalPhotos?.[0]?._rev).toBe(2);
+
+      let counter = 100;
+      const ops = diffSnapshotsToSyncOperations({
+        previous: baseSnap,
+        next: migrated.snapshot,
+        deviceId: 'dev-a',
+        nextCounter: () => ++counter,
+        timestamp: '2026-06-02T09:00:00.000Z',
+      });
+
+      expect(ops.some((op) => op.entity_type === 'animal' && op.field_name === 'species' && op.new_value === 'Guinea Pig' && op.record_rev === 3)).toBe(true);
+      expect(ops.some((op) => op.entity_type === 'photo' && op.field_name === 'species' && op.new_value === 'Guinea Pig' && op.record_rev === 2)).toBe(true);
+      expect(JSON.stringify(ops)).not.toContain('FULLDATA');
+      expect(JSON.stringify(ops)).not.toContain('THUMB');
+
+      const peerMerged = mergeDeltaOperations(baseSnap, [], ops, 'dev-b');
+      expect(peerMerged.nextSnapshot.animals[0]?.species).toBe('Guinea Pig');
+      expect(peerMerged.nextSnapshot.animalPhotos?.[0]?.species).toBe('Guinea Pig');
+      // Peer keeps its existing binary image payload intact!
+      expect(peerMerged.nextSnapshot.animalPhotos?.[0]?.dataUrl).toBe('data:image/webp;base64,FULLDATA');
     });
   });
 

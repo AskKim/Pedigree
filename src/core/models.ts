@@ -676,18 +676,42 @@ export function generateUuid(): string {
   });
 }
 
+let coreClockSkewMs = 0;
+
 /**
- * Returns the current UTC timestamp in ISO-8601 format (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ * Sets the active device clock-skew offset (serverMs - localDeviceMs) so pure domain
+ * timestamps (`nowEpochMs`, `nowIsoUtc`, `todayDateIso`) automatically compensate for
+ * drifted or rewound device clocks without introducing upward `storage/` imports.
  */
-export function nowIsoUtc(): string {
-  return new Date().toISOString();
+export function setCoreClockSkewMs(skewMs: number | null | undefined): void {
+  coreClockSkewMs =
+    typeof skewMs === 'number' && Number.isFinite(skewMs) ? Math.round(skewMs) : 0;
+}
+
+export function getCoreClockSkewMs(): number {
+  return coreClockSkewMs;
 }
 
 /**
- * Returns today's local calendar date as `YYYY-MM-DD`.
+ * Returns the current UTC epoch milliseconds adjusted for any recorded server clock skew.
+ */
+export function nowEpochMs(): number {
+  return Date.now() + coreClockSkewMs;
+}
+
+/**
+ * Returns the current UTC timestamp in ISO-8601 format (`YYYY-MM-DDTHH:mm:ss.sssZ`),
+ * adjusted for any recorded server clock skew.
+ */
+export function nowIsoUtc(): string {
+  return new Date(nowEpochMs()).toISOString();
+}
+
+/**
+ * Returns today's local calendar date as `YYYY-MM-DD` using the clock-skew-adjusted time.
  */
 export function todayDateIso(): string {
-  const now = new Date();
+  const now = new Date(nowEpochMs());
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');

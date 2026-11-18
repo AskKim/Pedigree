@@ -43,6 +43,7 @@ import {
   normalizeServiceFeeDirection,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
+  nowEpochMs,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -98,6 +99,60 @@ function mergeByIdAndTimestamp<T extends { id: string; updatedAt: string }>(
       added++;
     } else if ((inc.updatedAt || '') > (existing.updatedAt || '')) {
       map.set(inc.id, inc);
+      updated++;
+    }
+  }
+
+  return { merged: Array.from(map.values()), added, updated };
+}
+
+function mergeAnimalPhotosWithBlobPreservation(
+  localPhotos: AnimalPhoto[],
+  incomingPhotos: AnimalPhoto[]
+): { merged: AnimalPhoto[]; added: number; updated: number } {
+  const map = new Map<string, AnimalPhoto>();
+  for (const item of localPhotos) {
+    map.set(item.id, item);
+  }
+
+  let added = 0;
+  let updated = 0;
+
+  for (const inc of incomingPhotos) {
+    if (!inc.id) continue;
+    const existing = map.get(inc.id);
+    if (!existing) {
+      map.set(inc.id, inc);
+      added++;
+      continue;
+    }
+    const existingHasBlob = Boolean(existing.dataUrl || existing.thumbnailDataUrl);
+    const incHasBlob = Boolean(inc.dataUrl || inc.thumbnailDataUrl);
+    const incIsNewer = (inc.updatedAt || '') > (existing.updatedAt || '');
+
+    if (!existingHasBlob && incHasBlob) {
+      map.set(inc.id, {
+        ...(incIsNewer ? inc : existing),
+        dataUrl: inc.dataUrl,
+        thumbnailDataUrl: inc.thumbnailDataUrl,
+        mimeType: inc.mimeType || existing.mimeType,
+        width: inc.width || existing.width,
+        height: inc.height || existing.height,
+        originalBytes: inc.originalBytes || existing.originalBytes,
+        storedBytes: inc.storedBytes || existing.storedBytes,
+      });
+      updated++;
+    } else if (incIsNewer) {
+      map.set(
+        inc.id,
+        !incHasBlob && existingHasBlob
+          ? {
+              ...inc,
+              dataUrl: existing.dataUrl,
+              thumbnailDataUrl: existing.thumbnailDataUrl,
+            }
+          : inc
+      );
       updated++;
     }
   }
@@ -170,7 +225,7 @@ export function mergeBarnSnapshots(
   }
 
   const animalsRes = mergeByIdAndTimestamp(local.animals, incoming.animals);
-  const animalPhotosRes = mergeByIdAndTimestamp(
+  const animalPhotosRes = mergeAnimalPhotosWithBlobPreservation(
     local.animalPhotos ?? [],
     incoming.animalPhotos ?? []
   );
@@ -1122,7 +1177,7 @@ export function generateEvansHtmPedigree(
 /**
  * Generates a timestamp suffix (`YYYY-MM-DD-HHmmss`) so emergency/pre-delete backups never overwrite prior files.
  */
-export function formatTimestampedBackupSlug(date: Date = new Date()): string {
+export function formatTimestampedBackupSlug(date: Date = new Date(nowEpochMs())): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }

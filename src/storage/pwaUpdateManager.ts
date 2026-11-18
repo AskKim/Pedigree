@@ -11,7 +11,6 @@
 
 import { useEffect, useState } from 'react';
 import { CURRENT_BACKUP_SCHEMA_VERSION } from '../core/backupVault';
-import { nowIsoUtc } from '../core/models';
 import {
   CURRENT_APP_VERSION,
   evaluateUpgradeGate,
@@ -21,7 +20,11 @@ import {
   UpgradeGateDecision,
   VersionManifest,
 } from '../core/upgradeGate';
-import { getEffectiveOnlineStatus } from './storageProtection';
+import {
+  getAdjustedNowIsoUtc,
+  getEffectiveOnlineStatus,
+  recordServerDateHeaderSkew,
+} from './storageProtection';
 
 export type PwaUpdatePolicy = 'auto' | 'notify' | 'pinned';
 
@@ -196,6 +199,10 @@ async function fetchJsonNoStore(
       method: 'GET',
       cache: 'no-store',
     });
+    const dateHdr = res.headers?.get?.('date');
+    if (dateHdr) {
+      recordServerDateHeaderSkew(dateHdr);
+    }
     if (!res.ok) return null;
     const contentType = res.headers?.get?.('content-type') || '';
     if (contentType && !/json|text\/plain/i.test(contentType)) {
@@ -240,7 +247,7 @@ export async function fetchUpgradeGateDecision(options?: {
     remoteVersion: remoteVersion ?? currentState.remoteVersion,
     remoteStatus: remoteStatus ?? currentState.remoteStatus,
     gateDecision: decision,
-    lastCheckedAtIso: nowIsoUtc(),
+    lastCheckedAtIso: getAdjustedNowIsoUtc(),
   });
 
   return decision;
@@ -271,7 +278,7 @@ export async function checkForPwaUpdateNow(options?: {
   } catch {
     return 'unavailable';
   } finally {
-    setState({ checking: false, lastCheckedAtIso: nowIsoUtc() });
+    setState({ checking: false, lastCheckedAtIso: getAdjustedNowIsoUtc() });
   }
 }
 

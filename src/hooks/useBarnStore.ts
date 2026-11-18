@@ -127,7 +127,9 @@ import {
   bumpRecordRevision,
   createOutboxOperation,
   diffEntityFieldsToOperations,
+  diffSnapshotsToSyncOperations,
   mergeDeltaOperations,
+  stripPhotoBlobsForSync,
   SyncConflictEntry,
   SyncEntityType,
   SyncOperation,
@@ -141,6 +143,7 @@ import {
   appendSyncOperationsToIdb,
   BackupSyncStatus,
   buildDeltaFilePayload,
+  clearAllSyncStateInIdb,
   configureBackupSyncFolder,
   disconnectBackupSyncFolder,
   getOrCreateLocalDeviceId,
@@ -155,6 +158,7 @@ import {
 import {
   assertForegroundOrPause,
   BackgroundPausedError,
+  clearPausedBackgroundJob,
   registerFreezeLifecycleListener,
 } from '../storage/backgroundFreezeCoordinator';
 import {
@@ -461,6 +465,25 @@ export function useBarnStore() {
     const nextOps = [...syncOperationsRef.current, ...writtenOps];
     syncOperationsRef.current = nextOps;
     setSyncOperations(nextOps);
+  }, []);
+
+  const clearLocalSyncAndBackupReminderState = useCallback(async () => {
+    await clearAllSyncStateInIdb();
+    clearPausedBackgroundJob('directory_sync');
+    syncOperationsRef.current = [];
+    setSyncOperations([]);
+    syncConflictsRef.current = [];
+    setSyncConflicts([]);
+    setLocalLastBackupMeta(null);
+    setLocalSnoozedUntilMs(0);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem('pedigree.lastBackupMeta.v1');
+        localStorage.removeItem('pedigree.backupReminderSnoozedUntil.v1');
+      } catch {
+        // Ignore private browsing storage quota warnings
+      }
+    }
   }, []);
 
   const refreshStorageStatus = useCallback(async () => {
@@ -2232,6 +2255,14 @@ export function useBarnStore() {
             options
           );
           await adapterRef.current!.replaceSnapshot(result.snapshot);
+          const migrationOps = diffSnapshotsToSyncOperations({
+            previous: currentSnapshot,
+            next: result.snapshot,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+            timestamp: getAdjustedNowIsoUtc(),
+          });
+          await recordOutboxOps(migrationOps);
 
           const prevSpeciesById = new Map(currentSnapshot.animals.map((a) => [a.id, a.species]));
           const movedSet = new Set(
@@ -2259,6 +2290,8 @@ export function useBarnStore() {
     [
       enqueueStoreMutation,
       saveSafetyRollingBackup,
+      deviceId,
+      recordOutboxOps,
       selectedAnimalId,
       pedigreeAnimalId,
       reloadFromAdapter,
@@ -2313,6 +2346,21 @@ export function useBarnStore() {
           for (const rec of records) {
             photoCacheRef.current.set(rec.id, rec.dataUrl);
           }
+          // Metadata-only delta sync (binary blobs travel via .ZIP backups)
+          await recordOutboxOps(
+            records.map((rec) =>
+              createOutboxOperation({
+                entityType: 'photo',
+                entityUuid: rec.id,
+                deviceId,
+                logicalCounter: allocateNextLogicalCounter(),
+                fieldName: '__create__',
+                newValue: stripPhotoBlobsForSync(rec),
+                timestamp: ts,
+                recordRev: rec._rev ?? 1,
+              })
+            )
+          );
           await reloadFromAdapter();
 
           const totalAfter = existingPhotos.length + records.length;
@@ -2331,7 +2379,7 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const setPrimaryAnimalPhoto = useCallback(
@@ -2345,6 +2393,7 @@ export function useBarnStore() {
         );
         if (targetPhotos.length === 0) return;
 
+        const prevById = new Map(targetPhotos.map((p) => [p.id, p]));
         const updated = targetPhotos.map((p) => ({
           ...p,
           isPrimary: p.id === photoId,
@@ -2353,6 +2402,19 @@ export function useBarnStore() {
         }));
         try {
           await adapterRef.current!.saveAnimalPhotosBatch(updated);
+          const photoOps = updated.flatMap((nextPhoto) =>
+            diffEntityFieldsToOperations({
+              entityType: 'photo',
+              previous: prevById.get(nextPhoto.id),
+              next: nextPhoto,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              ignoreFields: ['dataUrl', 'thumbnailDataUrl'],
+              timestamp: ts,
+              recordRev: nextPhoto._rev,
+            })
+          );
+          await recordOutboxOps(photoOps);
           await reloadFromAdapter();
           notify('Primary cover photo updated (available for pedigrees).');
         } catch (err) {
@@ -2360,7 +2422,7 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, nextEntityRev, reloadFromAdapter, notify, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
   const updateAnimalPhotoCaption = useCallback(
@@ -2371,20 +2433,33 @@ export function useBarnStore() {
         const found = (currentSnapshot.animalPhotos ?? []).find((p) => p.id === photoId);
         if (!found) return;
         const ts = getAdjustedNowIsoUtc();
+        const nextPhoto: AnimalPhoto = {
+          ...found,
+          caption: caption.trim(),
+          _rev: nextEntityRev(found.id, found._rev),
+          updatedAt: ts,
+        };
         try {
-          await adapterRef.current!.saveAnimalPhoto({
-            ...found,
-            caption: caption.trim(),
-            _rev: nextEntityRev(found.id, found._rev),
-            updatedAt: ts,
-          });
+          await adapterRef.current!.saveAnimalPhoto(nextPhoto);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'photo',
+              previous: found,
+              next: nextPhoto,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              ignoreFields: ['dataUrl', 'thumbnailDataUrl'],
+              timestamp: ts,
+              recordRev: nextPhoto._rev,
+            })
+          );
           await reloadFromAdapter();
         } catch (err) {
           reportPersistenceFailure('update photo caption', err);
         }
       });
     },
-    [enqueueStoreMutation, nextEntityRev, reloadFromAdapter, reportPersistenceFailure]
+    [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, reportPersistenceFailure]
   );
 
   const deleteAnimalPhoto = useCallback(
@@ -2398,7 +2473,7 @@ export function useBarnStore() {
         try {
           await adapterRef.current!.deleteAnimalPhoto(photoId);
           photoCacheRef.current.delete(photoId);
-          await recordOutboxOps([
+          const ops: SyncOperation[] = [
             createOutboxOperation({
               entityType: 'photo',
               entityUuid: photoId,
@@ -2409,21 +2484,35 @@ export function useBarnStore() {
               timestamp: ts,
               recordRev: nextEntityRev(photoId, target?._rev),
             }),
-          ]);
+          ];
 
           if (target && target.isPrimary) {
             const siblings = all
               .filter((p) => p.animalId === target.animalId && p.id !== photoId)
               .sort((a, b) => a.sortOrder - b.sortOrder);
             if (siblings.length > 0) {
-              await adapterRef.current!.saveAnimalPhoto({
+              const promoted: AnimalPhoto = {
                 ...siblings[0],
                 isPrimary: true,
                 _rev: nextEntityRev(siblings[0].id, siblings[0]._rev),
                 updatedAt: ts,
-              });
+              };
+              await adapterRef.current!.saveAnimalPhoto(promoted);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'photo',
+                  previous: siblings[0],
+                  next: promoted,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  ignoreFields: ['dataUrl', 'thumbnailDataUrl'],
+                  timestamp: ts,
+                  recordRev: promoted._rev,
+                })
+              );
             }
           }
+          await recordOutboxOps(ops);
           await reloadFromAdapter();
           notify('Photo removed.');
         } catch (err) {
@@ -3791,7 +3880,12 @@ export function useBarnStore() {
       try {
         await saveSafetyRollingBackup(currentSnapshot);
         const empty: BarnDatabaseSnapshot = {
-          settings: { ...currentSnapshot.settings, updatedAt: getAdjustedNowIsoUtc() },
+          settings: {
+            ...currentSnapshot.settings,
+            lastBackupMeta: undefined,
+            backupReminderSnoozedUntilMs: undefined,
+            updatedAt: getAdjustedNowIsoUtc(),
+          },
           speciesProfiles: currentSnapshot.speciesProfiles,
           animals: [],
           animalPhotos: [],
@@ -3803,6 +3897,7 @@ export function useBarnStore() {
         };
         await adapterRef.current!.replaceSnapshot(empty);
         photoCacheRef.current.clear();
+        await clearLocalSyncAndBackupReminderState();
         setSelectedAnimalId(null);
         setPedigreeAnimalId(null);
         await reloadFromAdapter();
@@ -3811,7 +3906,14 @@ export function useBarnStore() {
         reportPersistenceFailure('clear all animal data', err);
       }
     });
-  }, [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
+  }, [
+    enqueueStoreMutation,
+    saveSafetyRollingBackup,
+    clearLocalSyncAndBackupReminderState,
+    reloadFromAdapter,
+    notify,
+    reportPersistenceFailure,
+  ]);
 
   const restoreFactoryDefaults = useCallback(async () => {
     return enqueueStoreMutation(async () => {
@@ -3823,6 +3925,7 @@ export function useBarnStore() {
         const factorySnapshot = buildFullPredefinedSampleSnapshot();
         await adapterRef.current!.replaceSnapshot(factorySnapshot);
         photoCacheRef.current.clear();
+        await clearLocalSyncAndBackupReminderState();
         setSelectedAnimalId(null);
         setPedigreeAnimalId(null);
         setPedigreeGenerations(factorySnapshot.settings.defaultGenerations);
@@ -3834,7 +3937,14 @@ export function useBarnStore() {
         reportPersistenceFailure('restore factory defaults', err);
       }
     });
-  }, [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]);
+  }, [
+    enqueueStoreMutation,
+    saveSafetyRollingBackup,
+    clearLocalSyncAndBackupReminderState,
+    reloadFromAdapter,
+    notify,
+    reportPersistenceFailure,
+  ]);
 
   const importJsonBackup = useCallback(
     async (jsonText: string, mode: 'merge' | 'replace') => {
@@ -3849,8 +3959,17 @@ export function useBarnStore() {
             }
             photoCacheRef.current.clear();
             const flagRes = applyImportConflictAttentionFlags(incoming.animals);
-            const nextSnap: BarnDatabaseSnapshot = { ...incoming, animals: flagRes.animals };
+            const nextSnap: BarnDatabaseSnapshot = {
+              ...incoming,
+              settings: {
+                ...incoming.settings,
+                lastBackupMeta: undefined,
+                backupReminderSnoozedUntilMs: undefined,
+              },
+              animals: flagRes.animals,
+            };
             await adapterRef.current!.replaceSnapshot(nextSnap);
+            await clearLocalSyncAndBackupReminderState();
             setWipedRecoveryContext(null);
             await reloadFromAdapter();
             if (flagRes.alertMessage) {
@@ -3915,7 +4034,14 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      enqueueStoreMutation,
+      saveSafetyRollingBackup,
+      clearLocalSyncAndBackupReminderState,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const importBackupArchiveBytes = useCallback(
@@ -3964,8 +4090,17 @@ export function useBarnStore() {
             }
             photoCacheRef.current.clear();
             const flagRes = applyImportConflictAttentionFlags(parsed.snapshot.animals);
-            const nextSnap: BarnDatabaseSnapshot = { ...parsed.snapshot, animals: flagRes.animals };
+            const nextSnap: BarnDatabaseSnapshot = {
+              ...parsed.snapshot,
+              settings: {
+                ...parsed.snapshot.settings,
+                lastBackupMeta: undefined,
+                backupReminderSnoozedUntilMs: undefined,
+              },
+              animals: flagRes.animals,
+            };
             await adapterRef.current!.replaceSnapshot(nextSnap);
+            await clearLocalSyncAndBackupReminderState();
             setWipedRecoveryContext(null);
             await reloadFromAdapter();
             if (flagRes.alertMessage) {
@@ -4045,7 +4180,13 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, saveSafetyRollingBackup, reloadFromAdapter, notify]
+    [
+      enqueueStoreMutation,
+      saveSafetyRollingBackup,
+      clearLocalSyncAndBackupReminderState,
+      reloadFromAdapter,
+      notify,
+    ]
   );
 
   const importDeltaOperations = useCallback(
@@ -4168,7 +4309,16 @@ export function useBarnStore() {
             await saveSafetyRollingBackup(currentSnapshot, 'Pre-rolling-restore safety snapshot');
           }
           photoCacheRef.current?.clear();
-          await adapterRef.current!.replaceSnapshot(snap);
+          const cleanedRollingSnap: BarnDatabaseSnapshot = {
+            ...snap,
+            settings: {
+              ...snap.settings,
+              lastBackupMeta: undefined,
+              backupReminderSnoozedUntilMs: undefined,
+            },
+          };
+          await adapterRef.current!.replaceSnapshot(cleanedRollingSnap);
+          await clearLocalSyncAndBackupReminderState();
           setWipedRecoveryContext(null);
           await reloadFromAdapter();
           notify(`Restored rolling snapshot (${snap.animals.length} animals).`);
@@ -4178,7 +4328,15 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      enqueueStoreMutation,
+      wipedRecoveryContext,
+      saveSafetyRollingBackup,
+      clearLocalSyncAndBackupReminderState,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const saveManualOpfsVaultBackup = useCallback(
@@ -4277,7 +4435,16 @@ export function useBarnStore() {
           await saveSafetyRollingBackup(currentSnapshot, 'Pre-vault-restore safety snapshot');
         }
         photoCacheRef.current?.clear();
-        await adapterRef.current!.replaceSnapshot(migrated.snapshot);
+        const cleanedVaultSnap: BarnDatabaseSnapshot = {
+          ...migrated.snapshot,
+          settings: {
+            ...migrated.snapshot.settings,
+            lastBackupMeta: undefined,
+            backupReminderSnoozedUntilMs: undefined,
+          },
+        };
+        await adapterRef.current!.replaceSnapshot(cleanedVaultSnap);
+        await clearLocalSyncAndBackupReminderState();
         setWipedRecoveryContext(null);
         setActiveSpeciesName(migrated.snapshot.settings.defaultSpecies || 'Rabbit');
         await reloadFromAdapter();
@@ -4293,7 +4460,14 @@ export function useBarnStore() {
         throw err;
       }
     },
-    [wipedRecoveryContext, saveSafetyRollingBackup, reloadFromAdapter, notify, reportPersistenceFailure]
+    [
+      wipedRecoveryContext,
+      saveSafetyRollingBackup,
+      clearLocalSyncAndBackupReminderState,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const restoreOpfsVaultBackup = useCallback(
@@ -4579,6 +4753,7 @@ export function useBarnStore() {
         const fresh = adapter.rebuildCleanDatabase
           ? await adapter.rebuildCleanDatabase({ lightweightPhotos: true, allowSeedFresh: true })
           : await adapter.initialize({ lightweightPhotos: true, allowSeedFresh: true });
+        await clearLocalSyncAndBackupReminderState();
         snapshotRef.current = fresh;
         setSnapshot(fresh);
         setWipedRecoveryContext(null);
@@ -4592,7 +4767,13 @@ export function useBarnStore() {
         reportPersistenceFailure('start fresh starter herds', err);
       }
     });
-  }, [enqueueStoreMutation, refreshVaultAndArchives, notify, reportPersistenceFailure]);
+  }, [
+    enqueueStoreMutation,
+    clearLocalSyncAndBackupReminderState,
+    refreshVaultAndArchives,
+    notify,
+    reportPersistenceFailure,
+  ]);
 
   const applyPlatformImportPreview = useCallback(
     async (
@@ -4734,6 +4915,16 @@ export function useBarnStore() {
           const snap = await adapterRef.current!.importRawSqliteBytes(bytes, {
             lightweightPhotos: true,
           });
+          if (snap.settings.lastBackupMeta || snap.settings.backupReminderSnoozedUntilMs) {
+            const cleanedSettings = {
+              ...snap.settings,
+              lastBackupMeta: undefined,
+              backupReminderSnoozedUntilMs: undefined,
+            };
+            await adapterRef.current!.saveSettings(cleanedSettings);
+            snap.settings = cleanedSettings;
+          }
+          await clearLocalSyncAndBackupReminderState();
           snapshotRef.current = snap;
           setSnapshot(snap);
           setWipedRecoveryContext(null);
@@ -4748,7 +4939,15 @@ export function useBarnStore() {
         }
       });
     },
-    [enqueueStoreMutation, saveSafetyRollingBackup, refreshStorageStatus, refreshVaultAndArchives, notify, reportPersistenceFailure]
+    [
+      enqueueStoreMutation,
+      saveSafetyRollingBackup,
+      clearLocalSyncAndBackupReminderState,
+      refreshStorageStatus,
+      refreshVaultAndArchives,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const analyzePhotoStorageFootprint = useCallback(

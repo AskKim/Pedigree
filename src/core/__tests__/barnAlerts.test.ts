@@ -2,14 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSpeciesMemoSignature,
   buildTaskAlertGroupSignature,
+  buildWithdrawalByAnimalMap,
+  evaluateAnimalActiveWithdrawal,
+  evaluateShowWithdrawalConflicts,
+  evaluateSpeciesActiveWithdrawalsAlert,
   evaluateSpeciesArrivingBabiesAlert,
   evaluateSpeciesDueTasksAlert,
   evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
+  evaluateWithdrawalDispositionWarning,
   formatArrivalTimingLabel,
   getGestationSoonWindowDays,
+  resolveCareLogWithdrawalClearDateIso,
 } from '../barnAlerts';
-import { BarnTask, BreedingRecord } from '../models';
+import { BarnTask, BreedingRecord, CareLog } from '../models';
 import { makeAnimal, makeSpeciesProfile } from './testFixtures';
 
 function makeTask(id: string, overrides: Partial<BarnTask> = {}): BarnTask {
@@ -224,3 +230,166 @@ describe('barnAlerts — per-species due/overdue task alerts and babies arriving
     expect(editedTimestampOnlyEval.signature).not.toBe(firstEval.signature);
   });
 });
+
+function makeHealthLog(id: string, animalId: string, overrides: Partial<CareLog> = {}): CareLog {
+  return {
+    id,
+    species: 'Rabbit',
+    animalId,
+    dateIso: '2026-11-10',
+    type: 'Health / Vet',
+    title: 'Vet Treatment',
+    weightGrams: 0,
+    showLegEarned: false,
+    medicationName: 'Ivermectin',
+    dosage: '0.2 mL',
+    administrationRoute: 'SubQ',
+    withdrawalDays: 14,
+    withdrawalClearDateIso: '2026-11-24',
+    notes: '',
+    createdAt: '2026-11-10T10:00:00.000Z',
+    updatedAt: '2026-11-10T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('barnAlerts — active medication withdrawal countdowns & safety warnings', () => {
+  it('resolves clear dates via explicit ISO or fallback dateIso + withdrawalDays and clears on the clear date itself', () => {
+    const fallbackLog = makeHealthLog('l-fallback', 'a1', {
+      dateIso: '2026-11-10',
+      withdrawalDays: 10,
+      withdrawalClearDateIso: '',
+    });
+    expect(resolveCareLogWithdrawalClearDateIso(fallbackLog)).toBe('2026-11-20');
+
+    // Day before clear date -> active (1d left)
+    const activeDayBefore = evaluateAnimalActiveWithdrawal([fallbackLog], 'a1', {
+      todayIso: '2026-11-19',
+    });
+    expect(activeDayBefore.isActive).toBe(true);
+    expect(activeDayBefore.clearDateIso).toBe('2026-11-20');
+    expect(activeDayBefore.daysRemaining).toBe(1);
+    expect(activeDayBefore.shortCountdownLabel).toBe('1d left');
+    expect(activeDayBefore.countdownLabel).toBe('1 day remaining');
+
+    // On the clear date itself -> cleared!
+    const clearedOnDate = evaluateAnimalActiveWithdrawal([fallbackLog], 'a1', {
+      todayIso: '2026-11-20',
+    });
+    expect(clearedOnDate.isActive).toBe(false);
+    expect(clearedOnDate.daysRemaining).toBe(0);
+    expect(clearedOnDate.activeLogs).toHaveLength(0);
+  });
+
+  it('picks the furthest clear date and deduplicates medications across overlapping logs', () => {
+    const logs: CareLog[] = [
+      makeHealthLog('l1', 'a1', {
+        medicationName: 'Penicillin G',
+        withdrawalClearDateIso: '2026-11-22',
+      }),
+      makeHealthLog('l2', 'a1', {
+        medicationName: 'Ivermectin',
+        withdrawalClearDateIso: '2026-11-29',
+      }),
+      makeHealthLog('l3', 'a1', {
+        medicationName: 'Penicillin G',
+        withdrawalClearDateIso: '2026-11-25',
+      }),
+    ];
+
+    const byAnimal = buildWithdrawalByAnimalMap(logs, { todayIso: '2026-11-18' });
+    const evalA1 = byAnimal.get('a1');
+    expect(evalA1?.isActive).toBe(true);
+    expect(evalA1?.clearDateIso).toBe('2026-11-29');
+    expect(evalA1?.daysRemaining).toBe(11);
+    expect(evalA1?.shortCountdownLabel).toBe('11d left');
+    expect(evalA1?.medicationSummary).toBe('Ivermectin, Penicillin G');
+  });
+
+  it('evaluates per-species withdrawal alerts, excludes Deceased/Sold/Archived stock, and honors session dismissal', () => {
+    const animals = [
+      makeAnimal('r-active', { name: 'Clover', species: 'Rabbit', status: 'Active' }),
+      makeAnimal('r-culled', { name: 'Bramble', species: 'Rabbit', status: 'Active', culled: true }),
+      makeAnimal('r-sold', { name: 'Sold Doe', species: 'Rabbit', status: 'Sold', archived: true }),
+      makeAnimal('r-dead', { name: 'Deceased Buck', species: 'Rabbit', status: 'Deceased', archived: true }),
+      makeAnimal('g-active', { name: 'Goat Kid', species: 'Goat', status: 'Active' }),
+    ];
+    const logs: CareLog[] = [
+      makeHealthLog('log-clover', 'r-active', { withdrawalClearDateIso: '2026-11-25' }),
+      makeHealthLog('log-bramble', 'r-culled', { withdrawalClearDateIso: '2026-11-21' }),
+      makeHealthLog('log-sold', 'r-sold', { withdrawalClearDateIso: '2026-11-28' }),
+      makeHealthLog('log-dead', 'r-dead', { withdrawalClearDateIso: '2026-11-28' }),
+      makeHealthLog('log-goat', 'g-active', { species: 'Goat', withdrawalClearDateIso: '2026-11-24' }),
+    ];
+
+    const byAnimal = buildWithdrawalByAnimalMap(logs, { todayIso: '2026-11-18' });
+    const rabbitAlert = evaluateSpeciesActiveWithdrawalsAlert(animals, logs, 'Rabbit', {
+      todayIso: '2026-11-18',
+      withdrawalByAnimalId: byAnimal,
+    });
+    expect(rabbitAlert.shouldShow).toBe(true);
+    expect(rabbitAlert.items.map((item) => item.animal.name)).toEqual(['Bramble', 'Clover']);
+    expect(rabbitAlert.items[0].evaluation.daysRemaining).toBe(3);
+    expect(rabbitAlert.items[1].evaluation.daysRemaining).toBe(7);
+
+    // Dismissed for the current session hides shouldShow while keeping items inspected
+    const dismissedAlert = evaluateSpeciesActiveWithdrawalsAlert(animals, logs, 'Rabbit', {
+      todayIso: '2026-11-18',
+      withdrawalByAnimalId: byAnimal,
+      dismissedSpeciesKeys: new Set(['rabbit']),
+    });
+    expect(dismissedAlert.items).toHaveLength(2);
+    expect(dismissedAlert.shouldShow).toBe(false);
+  });
+
+  it('triggers disposition soft confirmation only on Sold and Flagged for Cull', () => {
+    const logs = [makeHealthLog('l1', 'a1', { withdrawalClearDateIso: '2026-11-24' })];
+    const evalActive = evaluateAnimalActiveWithdrawal(logs, 'a1', { todayIso: '2026-11-18' });
+
+    expect(
+      evaluateWithdrawalDispositionWarning(evalActive, {
+        animalName: 'Clover',
+        isNewlySold: false,
+        isNewlyCulled: false,
+      })
+    ).toBeNull();
+
+    const soldWarning = evaluateWithdrawalDispositionWarning(evalActive, {
+      animalName: 'Clover',
+      isNewlySold: true,
+      isNewlyCulled: false,
+    });
+    expect(soldWarning?.reasons).toEqual(['Sold']);
+    expect(soldWarning?.detail).toContain('Ivermectin');
+    expect(soldWarning?.detail).toContain('6 days remaining');
+
+    const cullWarning = evaluateWithdrawalDispositionWarning(evalActive, {
+      animalName: 'Clover',
+      isNewlySold: false,
+      isNewlyCulled: true,
+    });
+    expect(cullWarning?.reasons).toEqual(['Flagged for Cull']);
+  });
+
+  it('warns on Show entry when withdrawal overlaps the show event date and clears on the clear date itself', () => {
+    const animals = [
+      makeAnimal('a1', { name: 'Clover', species: 'Rabbit' }),
+      makeAnimal('a2', { name: 'Maple', species: 'Rabbit' }),
+    ];
+    const logs = [
+      makeHealthLog('l1', 'a1', { withdrawalClearDateIso: '2026-11-24' }),
+      makeHealthLog('l2', 'a2', { withdrawalClearDateIso: '2026-11-20' }),
+    ];
+
+    // Show on Nov 23 -> a1 overlaps (clears Nov 24), a2 already cleared (Nov 20)
+    const conflictEval = evaluateShowWithdrawalConflicts(animals, ['a1', 'a2'], logs, '2026-11-23');
+    expect(conflictEval.hasConflict).toBe(true);
+    expect(conflictEval.conflicts.map((c) => c.animal.name)).toEqual(['Clover']);
+
+    // Show on Nov 24 (the exact clear date) -> cleared!
+    const clearDayShow = evaluateShowWithdrawalConflicts(animals, ['a1', 'a2'], logs, '2026-11-24');
+    expect(clearDayShow.hasConflict).toBe(false);
+    expect(clearDayShow.conflicts).toHaveLength(0);
+  });
+});
+

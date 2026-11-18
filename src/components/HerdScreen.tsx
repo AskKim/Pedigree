@@ -34,6 +34,10 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import {
+  AnimalWithdrawalEvaluation,
+  buildWithdrawalByAnimalMap,
+} from '../core/barnAlerts';
 import { getConflictSortPriority } from '../core/animalConflicts';
 import {
   analyzeAnimalCarrierLineage,
@@ -128,6 +132,8 @@ interface HerdScreenProps {
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   requestedConflictFocusNonce?: number;
+  requestedWithdrawalFocusNonce?: number;
+  onConsumeWithdrawalFocus?: () => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
   opfsSupported?: boolean;
   archivedHerdBundles?: ArchivedHerdIndexEntry[];
@@ -148,10 +154,17 @@ type HerdFilterTab =
   | 'Junior'
   | 'Active'
   | 'Archived'
+  | 'Withdrawal'
   | 'NeedsAttention'
   | 'Conflicts';
 
-type HerdSortOption = 'default' | 'conflicts_first' | 'name' | 'tattoo' | 'newest_dob';
+type HerdSortOption =
+  | 'default'
+  | 'conflicts_first'
+  | 'withdrawal_soonest'
+  | 'name'
+  | 'tattoo'
+  | 'newest_dob';
 
 export function HerdScreen({
   snapshot,
@@ -177,6 +190,8 @@ export function HerdScreen({
   onIgnoreConflicts,
   onRestoreConflictAlert,
   requestedConflictFocusNonce,
+  requestedWithdrawalFocusNonce,
+  onConsumeWithdrawalFocus,
   onLoadFullPhoto,
   opfsSupported = false,
   archivedHerdBundles = [],
@@ -231,6 +246,14 @@ export function HerdScreen({
       setSortBy('conflicts_first');
     }
   }, [requestedConflictFocusNonce]);
+
+  useEffect(() => {
+    if (requestedWithdrawalFocusNonce && requestedWithdrawalFocusNonce > 0) {
+      setFilterKey('Withdrawal');
+      setSortBy('withdrawal_soonest');
+      onConsumeWithdrawalFocus?.();
+    }
+  }, [requestedWithdrawalFocusNonce, onConsumeWithdrawalFocus]);
 
   useEffect(() => {
     setVisibleLimit(HERD_PAGE_SIZE);
@@ -305,6 +328,12 @@ export function HerdScreen({
   const [logUltrasoundResult, setLogUltrasoundResult] = useState<UltrasoundResult>('');
   const [logUltrasoundFetalCount, setLogUltrasoundFetalCount] = useState('');
 
+  const todayIso = todayDateIso();
+  const withdrawalByAnimalId = useMemo<Map<string, AnimalWithdrawalEvaluation>>(
+    () => buildWithdrawalByAnimalMap(careLogs, { todayIso }),
+    [careLogs, todayIso]
+  );
+
   // Live filter tab counts (single O(n) pass)
   const {
     maleCount,
@@ -313,6 +342,7 @@ export function HerdScreen({
     activeCount,
     archivedCount,
     needsAttentionCount,
+    withdrawalCount,
   } = useMemo(() => {
     let male = 0;
     let female = 0;
@@ -320,6 +350,7 @@ export function HerdScreen({
     let active = 0;
     let archived = 0;
     let needsAttention = 0;
+    let withdrawal = 0;
     for (const a of animals) {
       if (a.sex === 'Male') male++;
       else if (a.sex === 'Female') female++;
@@ -327,6 +358,7 @@ export function HerdScreen({
       if (isAnimalArchived(a)) archived++;
       else active++;
       if (doesAnimalNeedAttention(a)) needsAttention++;
+      if (withdrawalByAnimalId.get(a.id)?.isActive) withdrawal++;
     }
     return {
       maleCount: male,
@@ -335,8 +367,9 @@ export function HerdScreen({
       activeCount: active,
       archivedCount: archived,
       needsAttentionCount: needsAttention,
+      withdrawalCount: withdrawal,
     };
-  }, [animals]);
+  }, [animals, withdrawalByAnimalId]);
 
   const speciesGeneticsSpec = useMemo(
     () => getGeneticsSpecForSpecies(speciesProfile.name),
@@ -366,6 +399,7 @@ export function HerdScreen({
       if (filterKey === 'Junior' && a.status !== 'Junior') return false;
       if (filterKey === 'Active' && archived) return false;
       if (filterKey === 'Archived' && !archived) return false;
+      if (filterKey === 'Withdrawal' && !withdrawalByAnimalId.get(a.id)?.isActive) return false;
       if (filterKey === 'NeedsAttention' && !doesAnimalNeedAttention(a)) return false;
       if (filterKey === 'Conflicts' && !conflictsByAnimalId.get(a.id)?.hasAnyConflict) {
         return false;
@@ -400,6 +434,12 @@ export function HerdScreen({
         if (pa !== pb) return pa - pb;
         return a.name.localeCompare(b.name);
       }
+      if (sortBy === 'withdrawal_soonest') {
+        const wa = withdrawalByAnimalId.get(a.id)?.daysRemaining ?? Number.POSITIVE_INFINITY;
+        const wb = withdrawalByAnimalId.get(b.id)?.daysRemaining ?? Number.POSITIVE_INFINITY;
+        if (wa !== wb) return wa - wb;
+        return a.name.localeCompare(b.name);
+      }
       if (sortBy === 'name') {
         return a.name.localeCompare(b.name);
       }
@@ -420,6 +460,7 @@ export function HerdScreen({
     carrierTraitQuery,
     carrierAnalysisById,
     conflictsByAnimalId,
+    withdrawalByAnimalId,
   ]);
 
   // Only show dedicated Animal Page when user explicitly opened an animal (`selectedAnimalId`)
@@ -433,6 +474,16 @@ export function HerdScreen({
   const activeAnimalLogs = useMemo(
     () => (activeAnimal ? careLogs.filter((l) => l.animalId === activeAnimal.id) : []),
     [careLogs, activeAnimal]
+  );
+
+  const activeAnimalWithdrawal = useMemo(
+    () => (activeAnimal ? withdrawalByAnimalId.get(activeAnimal.id) ?? null : null),
+    [activeAnimal, withdrawalByAnimalId]
+  );
+
+  const editingAnimalCareLogs = useMemo(
+    () => (editingAnimal ? careLogs.filter((l) => l.animalId === editingAnimal.id) : []),
+    [careLogs, editingAnimal]
   );
 
   const [visibleCareLogCount, setVisibleCareLogCount] = useState(30);
@@ -656,6 +707,30 @@ export function HerdScreen({
               </button>
             </div>
           </div>
+
+          {activeAnimalWithdrawal?.isActive && (
+            <div
+              role="status"
+              className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+            >
+              <div className="flex items-start gap-2.5 min-w-0">
+                <ShieldAlert
+                  className="w-5 h-5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="text-xs space-y-1 min-w-0">
+                  <div className="font-semibold text-[var(--barn-ink)] font-mono tabular-nums">
+                    Active Medication Withdrawal · {activeAnimalWithdrawal.countdownLabel} · Clears{' '}
+                    {formatReadableDate(activeAnimalWithdrawal.clearDateIso)}
+                  </div>
+                  <p className="text-[var(--barn-muted)]">
+                    Medications: <strong className="text-[var(--barn-ink)]">{activeAnimalWithdrawal.medicationSummary}</strong>.
+                    Hold off on processing, sale without disclosure, or exhibition overlapping the withdrawal window.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {doesAnimalNeedAttention(activeAnimal) && (
             <div className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1678,6 +1753,9 @@ export function HerdScreen({
                     ['Junior', `Juniors (${juniorCount})`],
                     ['Active', `Active (${activeCount})`],
                     ['Archived', `Archived (${archivedCount})`],
+                    ...(withdrawalCount > 0 || filterKey === 'Withdrawal'
+                      ? ([['Withdrawal', `Withdrawal (${withdrawalCount})`]] as const)
+                      : []),
                     ...(needsAttentionCount > 0 || filterKey === 'NeedsAttention'
                       ? ([['NeedsAttention', `Needs Attention (${needsAttentionCount})`]] as const)
                       : []),
@@ -1694,7 +1772,7 @@ export function HerdScreen({
                     className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 tabular-nums ${
                       filterKey === key
                         ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
-                        : key === 'NeedsAttention' || key === 'Conflicts'
+                        : key === 'Withdrawal' || key === 'NeedsAttention' || key === 'Conflicts'
                         ? 'text-[var(--barn-terracotta)] hover:bg-[var(--barn-terracotta-tint)]'
                         : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
                     }`}
@@ -1718,6 +1796,7 @@ export function HerdScreen({
               >
                 <option value="default">Sort: Default Order</option>
                 <option value="conflicts_first">Sort: Conflicts First</option>
+                <option value="withdrawal_soonest">Sort: Withdrawal Clear Date</option>
                 <option value="name">Sort: Name (A–Z)</option>
                 <option value="tattoo">Sort: {idLabels.shortLabel}</option>
                 <option value="newest_dob">Sort: Newest DOB</option>
@@ -1993,7 +2072,7 @@ export function HerdScreen({
                         >
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="relative w-10 h-10 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] overflow-hidden flex items-center justify-center shrink-0">
-                              {coverPhoto ? (
+                              {coverPhoto && (coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl) ? (
                                 <img
                                   src={coverPhoto.thumbnailDataUrl || coverPhoto.dataUrl}
                                   alt={a.name}
@@ -2029,6 +2108,20 @@ export function HerdScreen({
                                     · Needs Attention
                                   </span>
                                 )}
+                                {(() => {
+                                  const rowWithdrawal = withdrawalByAnimalId.get(a.id);
+                                  if (!rowWithdrawal?.isActive) return null;
+                                  return (
+                                    <span
+                                      title={`Medication: ${rowWithdrawal.medicationSummary}`}
+                                      className="text-[11px] font-semibold text-[var(--barn-terracotta)] inline-flex items-center gap-1 shrink-0 font-mono tabular-nums"
+                                    >
+                                      · <ShieldAlert className="w-3 h-3" aria-hidden="true" />
+                                      Withdrawal: {rowWithdrawal.shortCountdownLabel} (clears{' '}
+                                      {formatReadableDate(rowWithdrawal.clearDateIso)})
+                                    </span>
+                                  );
+                                })()}
                                 {(() => {
                                   const rowConflict = conflictsByAnimalId.get(a.id);
                                   if (!rowConflict?.hasAnyConflict) return null;
@@ -2139,6 +2232,7 @@ export function HerdScreen({
           speciesProfile={speciesProfile}
           speciesAnimals={animals}
           speciesCages={cages}
+          animalCareLogs={editingAnimalCareLogs}
           preferredUnit={effectiveWeightUnit}
           currencyCode={settings.currencyCode}
           optimizationPresetId={settings.imageOptimizationPreset}

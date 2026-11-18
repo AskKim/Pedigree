@@ -36,9 +36,22 @@ jobs:
         run: npm run lint
 
       - name: Build production bundle (root path)
+        env:
+          NODE_ENV: production
         run: npm run build
 
       - name: Verify GitHub Pages subpath build
         env:
-          VITE_BASE_PATH: /${{ github.event.repository.name || 'Pedigree' }}/
-        run: npm run build
+          NODE_ENV: production
+        run: |
+          REPO_NAME="${{ github.event.repository.name }}"
+          if [ -z "$REPO_NAME" ]; then
+            REPO_NAME="Pedigree"
+          fi
+          SUBPATH="/${REPO_NAME}/"
+          npm run build -- --base="$SUBPATH"
+          grep -q '"start_url":"./"' dist/manifest.webmanifest
+          grep -q '"scope":"./"' dist/manifest.webmanifest
+          grep -q '"id":"./"' dist/manifest.webmanifest
+          grep -q "${SUBPATH}assets/" dist/index.html
+          grep -q "${SUBPATH}manifest.webmanifest" dist/index.html

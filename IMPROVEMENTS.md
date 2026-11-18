@@ -22,7 +22,7 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 
 ---
 
-## Logged Improvements (23)
+## Logged Improvements (25)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -124,8 +124,9 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 
 **Restoration Playbook if Overwritten:**
 1. Keep `const basePath = '/'`, `hmr: false`, and `watch: null` hardcoded in `vite.config.ts` without reading `process.env.VITE_BASE_PATH` or `process.env.DISABLE_HMR`.
-2. Do not add `VITE_BASE_PATH` or `DISABLE_HMR` to `.env.example`.
-3. Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.
+2. Keep relative `id`, `scope`, and `start_url` (`./`) in `VitePWA` manifest and keep `.github/workflows/deploy-pages.yml` strictly on Bun passing `--base=...` via CLI.
+3. Do not add `VITE_BASE_PATH` or `DISABLE_HMR` to `.env.example`.
+4. Ensure `package.json` defines `"test"` and `"verify:improvements"`, and `.github/workflows/ci.yml` executes both.
 
 ### IMP-009: Crash Error Boundary, Persistent Crash Log & DB Health Self-Repair
 
@@ -316,4 +317,30 @@ You can also open **Settings → Diagnostics & Support → App Improvements & Re
 1. Keep pure modules `src/core/photoMaintenance.ts`, `src/core/archiveInspector.ts`, `src/core/encryptedExport.ts`, `_rev` logic in `src/core/syncOutbox.ts`, and `buildDeterministicGoogleCalendarEventId` in `src/core/calendarExport.ts`.
 2. Keep `src/storage/passphraseCrypto.ts`, clock-skew compensation in `src/storage/storageProtection.ts`, encrypted delta/directory sync in `src/storage/localSyncChannels.ts`, off-thread inspection in `src/storage/offThreadWorkerClient.ts`, and `inspectRawSqliteBytes` in `src/storage/webSqliteAdapter.ts`.
 3. Keep Stage B store handlers in `src/hooks/useBarnStore.ts`, `409` `PUT` retry in `src/utils/googleCalendarClient.ts`, and UI mounts in `DiagnosticsAndSupportPanel.tsx`, `SettingsAndSyncScreen.tsx`, and `App.tsx`.
+
+### IMP-024: Active Medication Withdrawal Countdown & Livestock Safety Alerts
+
+- **Category:** Home & Alerts (`alerts-home`)
+- **Origin:** Session Improvement
+- **User Goal:** Surface active care-log withdrawal periods on Herd cards and Home alerts and trigger soft confirmation warnings before marking an animal under active withdrawal for sale, meat/cull processing, or show exhibition.
+- **Summary:** Evaluates CareLog withdrawal windows (`withdrawalClearDateIso` or `dateIso + withdrawalDays`, cleared on the clear date itself) via an O(L) animal lookup map (`buildWithdrawalByAnimalMap`), displays session-closable Home species withdrawal alerts, adds Herd `Withdrawal` filter/sort controls and per-animal countdown badges/banners, and gates `Sold`/`Flagged for Cull` edits and overlapping `ShowEvent` entries behind non-blocking inline confirmation prompts.
+- **Tracked Files:** `src/core/barnAlerts.ts`, `src/core/__tests__/barnAlerts.test.ts`, `src/components/HomeSpeciesScreen.tsx`, `src/components/HerdScreen.tsx`, `src/components/AnimalEditorModal.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`
+
+**Restoration Playbook if Overwritten:**
+1. Keep pure withdrawal functions (`buildWithdrawalByAnimalMap`, `evaluateAnimalActiveWithdrawal`, `evaluateSpeciesActiveWithdrawalsAlert`, `evaluateWithdrawalDispositionWarning`, `evaluateShowWithdrawalConflicts`) in `src/core/barnAlerts.ts`.
+2. Keep session-scoped `dismissedWithdrawalSpecies` in `src/App.tsx` wired to `HomeSpeciesScreen.tsx` and `HerdScreen.tsx`.
+3. Keep Herd withdrawal filter/sort/countdown badges in `HerdScreen.tsx` passing `animalCareLogs` into `AnimalEditorModal.tsx`, and keep show-date overlap checks in `SpeciesDashboardScreen.tsx`.
+
+### IMP-025: Sync Outbox Alignment, Metadata-Only Photo Sync & Reset State Cleanup
+
+- **Category:** Diagnostics & Sync (`diagnostics-sync`)
+- **Origin:** Session Improvement
+- **User Goal:** Align Folder/Delta Sync outbox mutations for photo actions and cross-species migrations while guaranteeing stale P2P sync queues, conflict logs, and backup reminders never leak across factory resets or full Replace restores.
+- **Summary:** Queues metadata-only photo operations (stripping image blobs so large photos travel exclusively via .ZIP backups) and full cross-species migration snapshot diffs with bumped `_rev` counters into the delta outbox, hydrates missing blobs onto metadata-only photo placeholders during .ZIP/.JSON merges without clobbering newer edits, guards UI galleries against empty image URLs, and wipes `sync_outbox`, `sync_conflicts`, `sync_checkpoints`, plus backup reminder keys (`pedigree.lastBackupMeta.v1`, `pedigree.backupReminderSnoozedUntil.v1`) on factory resets and full Replace restores.
+- **Tracked Files:** `src/core/syncOutbox.ts`, `src/core/speciesMigration.ts`, `src/core/backupArchive.ts`, `src/core/syncAndExports.ts`, `src/hooks/useBarnStore.ts`, `src/components/AnimalPhotoGallery.tsx`, `src/components/HerdScreen.tsx`, `src/core/__tests__/stageBResilience.test.ts`, `src/storage/__tests__/crossTabLockAndReload.test.ts`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `stripPhotoBlobsForSync`, `diffSnapshotsToSyncOperations`, and metadata-only `photo` `__create__` handling in `src/core/syncOutbox.ts`.
+2. Keep `bumpRecordRevision` calls in `src/core/speciesMigration.ts` and blob-preserving merge helpers in `src/core/backupArchive.ts` and `src/core/syncAndExports.ts`.
+3. Keep `clearLocalSyncAndBackupReminderState` wired across resets and Replace restores plus metadata-only photo/migration outbox emissions in `src/hooks/useBarnStore.ts`, and keep empty-src placeholders in `AnimalPhotoGallery.tsx` and `HerdScreen.tsx`.
 

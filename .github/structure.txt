@@ -1,15 +1,16 @@
 Pedigree/
 ├── .github/
-│   ├── prompts/
-│   │   ├── master_system_prompt.md        <-- Core AI Studio prompt (v2)
-│   │   └── master_system_prompt_old_v1.md <-- Archived v1 master prompt
 │   ├── workflows/
 │   │   ├── ci.yml
 │   │   └── deploy-pages.yml
 │   └── structure.txt
 ├── docs/
-│   └── plans/
-│       └── suggestions-backlog.md
+│   ├── plans/
+│   │   └── suggestions-backlog.md
+│   └── prompts/
+│       ├── master_system_prompt.md        <-- Active Master System Prompt
+│       ├── master_system_prompt_old_v2.md <-- Archived v2 prompt (reference only)
+│       └── master_system_prompt_old_v1.md <-- Archived v1 prompt (reference only)
 ├── public/
 ├── scripts/
 ├── src/

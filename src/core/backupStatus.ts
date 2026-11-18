@@ -7,7 +7,7 @@
  * Zero DOM dependencies so backup freshness rules are unit-testable and portable.
  */
 
-import { BarnDatabaseSnapshot, PREDEFINED_SPECIES_PRESETS } from './models';
+import { BarnDatabaseSnapshot, nowEpochMs, PREDEFINED_SPECIES_PRESETS } from './models';
 import { isSampleTestingId } from './sampleData';
 
 export interface LastBackupMeta {
@@ -62,7 +62,7 @@ export function formatLocalDateTimeReadable(iso: string | undefined | null): str
  */
 export function formatRelativeBackupAge(
   iso: string | undefined | null,
-  nowMs: number = Date.now()
+  nowMs: number = nowEpochMs()
 ): string {
   if (!iso) return '';
   const ts = new Date(iso).getTime();
@@ -140,7 +140,7 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
 export function evaluateBackupStatus(
   snapshot: BarnDatabaseSnapshot,
   lastBackup: LastBackupMeta | null,
-  nowMs: number = Date.now(),
+  nowMs: number = nowEpochMs(),
   snoozedUntilMs: number = 0,
   overdueDaysThreshold: number = 7
 ): BackupStatusEvaluation {
