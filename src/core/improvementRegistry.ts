@@ -867,9 +867,9 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
           'BoundedPhotoDataCache',
           'loadAnimalPhotoDataUrl',
           'hydrateSnapshotForExport',
-          'buildCompleteBackupZipOffThread',
+          'buildCompleteBackupZipToOpfsTmpOffThread',
         ],
-        rationale: 'Store loads lightweight snapshots, caches hydrated photos, hydrates rolling/export snapshots, and uses off-thread ZIP calls.',
+        rationale: 'Store loads lightweight snapshots, caches hydrated photos, hydrates rolling/export snapshots, and streams off-thread ZIP archives via OPFS /tmp.',
       },
       {
         filePath: 'src/components/AnimalPhotoGallery.tsx',
@@ -1939,6 +1939,124 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Restore `src/core/exporters/exporterTypes.ts`, `src/core/exporters/registry.ts`, and `src/core/__tests__/exportersRegistry.test.ts`.',
       'Restore `src/components/ImportExportHubScreen.tsx` and keep `importExport` inside `WorkspaceRoute` in `src/hooks/useBarnStore.ts`.',
       'Keep `ImportExportHubScreen` routing, `I` shortcut, navigation buttons, and Settings/Home/Species Hub links wired across `App.tsx`, `SettingsAndSyncScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `HomeSpeciesScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-031',
+    title: 'Interactive CSV Column Mapper, Starter Template & Unlinked Parent Preview',
+    category: 'species-ux',
+    source: 'session',
+    userIntent:
+      'Provide a one-click Starter CSV Template download, interactive column-mapping preview for spreadsheets, and pre-import highlighting for unresolved Sire/Dam links on non-HerdBoss CSV imports.',
+    summary:
+      'Adds pure TS Starter CSV Template generation (`csvStarterTemplate.ts`), unified column alias & override resolution (`csvColumnMapper.ts`), two-pass out-of-order CSV parent linking with unresolved Sire/Dam pre-import tracking in `universalPedigreeImporter.ts`, and interactive UI controls in `ExternalImporterPanel.tsx`.',
+    files: [
+      'src/core/importers/importerTypes.ts',
+      'src/core/importers/csvStarterTemplate.ts',
+      'src/core/importers/csvColumnMapper.ts',
+      'src/core/importers/universalPedigreeImporter.ts',
+      'src/components/ExternalImporterPanel.tsx',
+      'src/core/__tests__/resilienceAndUniversalImport.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/importers/csvStarterTemplate.ts',
+        requiredSubstrings: ['buildStarterCsvTemplate', 'STARTER_CSV_TEMPLATE_HEADERS'],
+        rationale: 'Pure TS starter CSV template generator must remain DOM-free with standard pedigree headers.',
+      },
+      {
+        filePath: 'src/core/importers/csvColumnMapper.ts',
+        requiredSubstrings: ['CSV_TARGET_FIELD_OPTIONS', 'resolveCsvColumnAssignments', 'makeCsvColumnOverrideKey'],
+        rationale: 'Pure TS column mapper must resolve aliases, sample cells, and user overrides cleanly.',
+      },
+      {
+        filePath: 'src/core/importers/universalPedigreeImporter.ts',
+        requiredSubstrings: ['resolveCsvColumnAssignments', 'unresolvedParentLinks', 'csvTables'],
+        rationale: 'Universal importer must perform two-pass parent resolution and surface column mapping & unresolved Sire/Dam links.',
+      },
+      {
+        filePath: 'src/components/ExternalImporterPanel.tsx',
+        requiredSubstrings: [
+          'Download Starter CSV Template',
+          'handleCsvColumnSelectionChange',
+          'unresolvedParentLinks',
+        ],
+        rationale: 'External importer UI must expose template download, interactive column mapping, and unresolved parent link warnings.',
+      },
+    ],
+    restorePlaybook: [
+      'Restore `src/core/importers/csvStarterTemplate.ts` and `src/core/importers/csvColumnMapper.ts` and keep `CsvTableMappingSummary`/`UnresolvedParentLink` in `src/core/importers/importerTypes.ts`.',
+      'Keep two-pass CSV resolution and `csvColumnMapping`/`unresolvedParentLinks` wiring in `src/core/importers/universalPedigreeImporter.ts`.',
+      'Keep the Starter CSV Template download button, column-mapping region, and unresolved Sire/Dam highlight card in `src/components/ExternalImporterPanel.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-032',
+    title: 'Low-RAM Export Streaming & Full OPFS /tmp Staging',
+    category: 'backup-safety',
+    source: 'session',
+    userIntent:
+      'Route all printable/shareable exports (including <512 KB .HTM pedigrees and cage cards) through OPFS /tmp with immediate post-use cleanup, and stream large .ZIP and .JSON backup chunks incrementally into OPFS /tmp without materializing monolithic JS heap buffers.',
+    summary:
+      'Adds worker-safe `opfsTempStream.ts` (`writeTempOpfsFileStreamed`) and chunked `writeTempOpfsFile`; stages all `downloadTextFile`, `downloadBinaryFile`, `shareTextFileOrDownload`, and `shareBinaryFileOrDownload` exports through OPFS `/tmp` with immediate cleanup in `webFileActions.ts`; streams `.JSON` backup chunks via `generateBarnBackupJsonChunks` (`syncAndExports.ts`); streams `.ZIP` archives one photo and one binder at a time via `streamCompleteBackupZipArchive` & `streamPhotosOnlyZipArchive` (`backupArchive.ts`); and wires worker/UI/store callers cleanly.',
+    files: [
+      'src/storage/opfsTempStream.ts',
+      'src/storage/opfsStorage.ts',
+      'src/core/syncAndExports.ts',
+      'src/core/backupArchive.ts',
+      'src/utils/webFileActions.ts',
+      'src/storage/archiveAndImport.worker.ts',
+      'src/storage/offThreadWorkerClient.ts',
+      'src/components/ImportExportHubScreen.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/hooks/useBarnStore.ts',
+      'src/storage/__tests__/opfsStorage.test.ts',
+      'src/storage/__tests__/photoHydrationAndWorker.test.ts',
+      'src/core/__tests__/syncAndExports.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/storage/opfsTempStream.ts',
+        requiredSubstrings: [
+          'writeTempOpfsFileStreamed',
+          'writeTempOpfsFile',
+          'purgeOpfsTmp',
+          'readTempOpfsFileAsBlob',
+        ],
+        rationale: 'Worker-safe OPFS /tmp chunk streamer must remain free of React/DOM imports and close writables in try/finally.',
+      },
+      {
+        filePath: 'src/core/syncAndExports.ts',
+        requiredSubstrings: ['generateBarnBackupJsonChunks'],
+        rationale: 'Pure TypeScript backup JSON chunk generator prevents allocating monolithic strings for photo-heavy backups.',
+      },
+      {
+        filePath: 'src/core/backupArchive.ts',
+        requiredSubstrings: ['streamCompleteBackupZipArchive', 'streamPhotosOnlyZipArchive'],
+        rationale: 'Streaming fflate Zip/ZipPassThrough/ZipDeflate builders decode and flush one entry at a time incrementally.',
+      },
+      {
+        filePath: 'src/utils/webFileActions.ts',
+        requiredSubstrings: [
+          'downloadTextChunks',
+          'downloadTempOpfsExport',
+          'stagePayloadInOpfsTmp',
+        ],
+        rationale: 'All printable, shareable, and streamed browser exports stage via OPFS /tmp when supported and clean up deterministically.',
+      },
+      {
+        filePath: 'src/storage/offThreadWorkerClient.ts',
+        requiredSubstrings: [
+          'buildCompleteBackupZipToOpfsTmpOffThread',
+          'buildPhotosOnlyZipToOpfsTmpOffThread',
+        ],
+        rationale: 'Off-thread worker bridge streams ZIP chunks straight to OPFS /tmp and falls back gracefully without Worker or OPFS.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `src/storage/opfsTempStream.ts` free of React/DOM imports and delegated from `src/storage/opfsStorage.ts` and `src/storage/archiveAndImport.worker.ts`.',
+      'Keep `generateBarnBackupJsonChunks` in `src/core/syncAndExports.ts` and `streamCompleteBackupZipArchive` / `streamPhotosOnlyZipArchive` in `src/core/backupArchive.ts`.',
+      'Keep full OPFS `/tmp` staging + `downloadTextChunks` / `downloadTempOpfsExport` in `src/utils/webFileActions.ts`, wired through `offThreadWorkerClient.ts`, `ImportExportHubScreen.tsx`, `SettingsAndSyncScreen.tsx`, and `useBarnStore.ts`.',
     ],
   },
 ];

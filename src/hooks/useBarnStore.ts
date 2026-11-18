@@ -174,7 +174,7 @@ import {
   setCurrentDiagnosticRoute,
 } from '../storage/crashLogger';
 import {
-  buildCompleteBackupZipOffThread,
+  buildCompleteBackupZipToOpfsTmpOffThread,
   parseBackupArchiveOffThread,
 } from '../storage/offThreadWorkerClient';
 import {
@@ -243,8 +243,8 @@ import {
 } from '../utils/googleCalendarClient';
 import {
   copyTextWithFallback,
-  downloadBinaryFile,
   downloadBlobDirect,
+  downloadTempOpfsExport,
   downloadTextFile,
   shareTextFileOrDownload,
 } from '../utils/webFileActions';
@@ -1965,12 +1965,12 @@ export function useBarnStore() {
         reason
       );
       const hydrated = await hydrateSnapshotForExport(snapshot, speciesName);
-      const archive = await buildCompleteBackupZipOffThread(hydrated, speciesName, {
+      const archive = await buildCompleteBackupZipToOpfsTmpOffThread(hydrated, speciesName, {
         backupScope: 'species',
         backupReason: reason,
         targetSpecies: speciesName,
       });
-      await downloadBinaryFile(filename, archive.bytes, 'application/zip');
+      await downloadTempOpfsExport(filename, archive, 'application/zip');
       void recordBackupExport('zip', filename);
       notify(
         `Saved ${speciesName} backup archive: ${filename} (${archive.animalCount} animals, ${archive.photoCount} photos, Printable Barn Binder included)`
@@ -5805,9 +5805,9 @@ export function useBarnStore() {
         if (options.downloadBackupFirst && currentSnapshot) {
           try {
             const hydrated = await hydrateSnapshotForExport(currentSnapshot);
-            const zip = await buildCompleteBackupZipOffThread(hydrated);
+            const zip = await buildCompleteBackupZipToOpfsTmpOffThread(hydrated);
             backupFilename = `pedigree-recovery-backup-${formatTimestampedBackupSlug()}.zip`;
-            await downloadBinaryFile(backupFilename, zip.bytes, 'application/zip');
+            await downloadTempOpfsExport(backupFilename, zip, 'application/zip');
           } catch (err) {
             logDiagnosticEvent({
               level: 'error',

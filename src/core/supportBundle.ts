@@ -17,7 +17,65 @@ import { buildCompleteBackupZipFiles } from './backupArchive';
 import { formatByteSizePure } from './imageOptimizationSpec';
 import { BarnDatabaseSnapshot, nowIsoUtc } from './models';
 import { exportBarnBackupJson, formatTimestampedBackupSlug } from './syncAndExports';
-import type { DiagnosticLogEntry, DiagnosticSummary } from '../storage/crashLogger';
+
+export type DiagnosticLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+export type DiagnosticCategory =
+  | 'runtime'
+  | 'promise'
+  | 'react'
+  | 'memory'
+  | 'storage'
+  | 'media'
+  | 'lifecycle'
+  | 'console';
+
+export interface MemorySample {
+  usedHeapBytes: number | null;
+  totalHeapBytes: number | null;
+  heapLimitBytes: number | null;
+  heapPercent: number | null;
+  deviceMemoryGb: number | null;
+  storageUsageBytes?: number;
+  storageQuotaBytes?: number;
+}
+
+export interface DiagnosticLogEntry {
+  id: string;
+  timestampIso: string;
+  timestampMs: number;
+  sessionId: string;
+  level: DiagnosticLogLevel;
+  category: DiagnosticCategory;
+  route: string;
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  details?: string;
+  memory?: MemorySample;
+}
+
+export type LogRetentionDays = 3 | 7 | 14;
+
+export interface DiagnosticConfig {
+  verboseEnabled: boolean;
+  retentionDays: LogRetentionDays;
+  supportEmail: string;
+}
+
+export interface DiagnosticSummary {
+  totalEntries: number;
+  errorCount: number;
+  memoryWarningCount: number;
+  crashCount: number;
+  oldestEntryIso: string | null;
+  newestEntryIso: string | null;
+  currentMemory: MemorySample;
+  config: DiagnosticConfig;
+  sessionId: string;
+  userAgent: string;
+  platformInfo: string;
+}
 
 export interface SupportBundleBuildResult {
   bytes: Uint8Array;

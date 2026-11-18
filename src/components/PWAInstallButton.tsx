@@ -7,13 +7,13 @@
 
 import { Download, Smartphone, WifiOff, X } from 'lucide-react';
 import React, { useState } from 'react';
-import { useOnlineStatus, usePWAInstall } from '../hooks/usePWAInstall';
+import { useOnlineStatus, usePWAInstall } from '../storage/storageProtection';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
   variant = 'header',
 }) => {
-  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
   const iosDialogRef = useAccessibleDialog({
     isOpen: showIOSGuide,
@@ -24,11 +24,11 @@ export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
     return null;
   }
 
-  if (isInstallable) {
+  if (canPromptInstall) {
     return (
       <button
         type="button"
-        onClick={() => void install()}
+        onClick={() => void promptInstall()}
         title="Install Community Pedigree for offline barn use"
         className={
           variant === 'header'
@@ -42,7 +42,7 @@ export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
     );
   }
 
-  if (isIOS) {
+  if (isIos) {
     return (
       <>
         <button

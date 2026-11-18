@@ -13,6 +13,7 @@
 
 2. **Review Active Implementation Plan**
    - Inspect `docs/plans/active-backlog-plan.md` (or any other active plan file in `docs/plans/` excluding `docs/plans/suggestions-backlog.md`) to determine current progress, completed steps, and the next pending task.
+   - **If no active plan file exists in `docs/plans/`:** Stop this workflow immediately and read/execute `.github/prompts/start_new_backlog_prompt.md` instead.
 
 3. **Execute Next Implementation Step**
    - Implement the next pending task in the plan while adhering strictly to project standards, code quality, `docs/prompts/master_system_prompt.md` invariants, and test coverage.

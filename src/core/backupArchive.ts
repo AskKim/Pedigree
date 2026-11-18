@@ -10,7 +10,15 @@
  * portability archives run identically on Web PWA and React Native / Expo.
  */
 
-import { strFromU8, strToU8, zipSync, Zippable } from 'fflate';
+import {
+  strFromU8,
+  strToU8,
+  Zip,
+  ZipDeflate,
+  ZipPassThrough,
+  zipSync,
+  Zippable,
+} from 'fflate';
 import { generateSpeciesBarnBinderHtml } from './barnBinder';
 import {
   isSvgImageInput,
@@ -33,6 +41,7 @@ import {
 } from './models';
 import {
   exportBarnBackupJson,
+  generateBarnBackupJsonChunks,
   parseBarnBackupJson,
   SpeciesBackupReason,
 } from './syncAndExports';
@@ -60,6 +69,14 @@ export interface BackupPhotoManifestEntry {
 
 export interface BackupArchiveBuildResult {
   bytes: Uint8Array;
+  photoCount: number;
+  animalCount: number;
+  binderCount: number;
+  totalImageBinaryBytes: number;
+}
+
+export interface StreamingZipArchiveSummary {
+  totalZipBytes: number;
   photoCount: number;
   animalCount: number;
   binderCount: number;
@@ -532,6 +549,456 @@ export function buildCompleteBackupZipArchive(
     binderCount,
     totalImageBinaryBytes,
   };
+}
+
+const ZIP_TEXT_SLICE_CHARS = 64 * 1024;
+
+function sliceUtf16Safe(
+  text: string,
+  start: number,
+  maxChars: number
+): { slice: string; nextOffset: number } {
+  let end = Math.min(text.length, start + maxChars);
+  if (end < text.length && end > start) {
+    const lastCode = text.charCodeAt(end - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+      end = Math.min(text.length, end + 1);
+    }
+  }
+  return { slice: text.slice(start, end), nextOffset: end };
+}
+
+async function pushTextToZipDeflate(
+  zip: Zip,
+  entryPath: string,
+  text: string,
+  flushChunks: () => Promise<void>
+): Promise<void> {
+  const def = new ZipDeflate(entryPath, { level: 6 });
+  zip.add(def);
+  if (text.length <= ZIP_TEXT_SLICE_CHARS) {
+    def.push(strToU8(text), true);
+    await flushChunks();
+    return;
+  }
+  let offset = 0;
+  while (offset < text.length) {
+    const { slice, nextOffset } = sliceUtf16Safe(text, offset, ZIP_TEXT_SLICE_CHARS);
+    const isFinal = nextOffset >= text.length;
+    def.push(strToU8(slice), isFinal);
+    await flushChunks();
+    offset = nextOffset;
+  }
+}
+
+async function pushJsonGeneratorToZipDeflate(
+  zip: Zip,
+  entryPath: string,
+  chunks: Generator<string, void, unknown>,
+  flushChunks: () => Promise<void>
+): Promise<void> {
+  const def = new ZipDeflate(entryPath, { level: 6 });
+  zip.add(def);
+  let curr = chunks.next();
+  if (curr.done) {
+    def.push(new Uint8Array(0), true);
+    await flushChunks();
+    return;
+  }
+  while (!curr.done) {
+    const next = chunks.next();
+    const isFinal = Boolean(next.done);
+    def.push(strToU8(curr.value), isFinal);
+    await flushChunks();
+    curr = next;
+  }
+}
+
+async function pushPhotoManifestToZipDeflate(
+  zip: Zip,
+  manifest: BackupPhotoManifestEntry[],
+  filterSpecies: string | undefined,
+  flushChunks: () => Promise<void>
+): Promise<void> {
+  const def = new ZipDeflate('photos/manifest.json', { level: 6 });
+  zip.add(def);
+
+  const headerObj = {
+    format: 'community-pedigree-photos-archive-v1',
+    package: 'Pedigree',
+    exportedAtIsoUtc: nowIsoUtc(),
+    filterSpecies: filterSpecies || null,
+    photoCount: manifest.length,
+  };
+  const headerJson = JSON.stringify(headerObj, null, 2);
+  let buffer = headerJson.slice(0, -1).trimEnd() + ',\n';
+
+  if (manifest.length === 0) {
+    buffer += '  "photos": []\n}';
+    def.push(strToU8(buffer), true);
+    await flushChunks();
+    return;
+  }
+
+  buffer += '  "photos": [\n';
+  for (let i = 0; i < manifest.length; i++) {
+    const itemJson = JSON.stringify(manifest[i], null, 2);
+    buffer += `    ${itemJson.replace(/\n/g, '\n    ')}`;
+    buffer += i < manifest.length - 1 ? ',\n' : '\n';
+    if (buffer.length >= ZIP_TEXT_SLICE_CHARS) {
+      def.push(strToU8(buffer), false);
+      await flushChunks();
+      buffer = '';
+    }
+  }
+  buffer += '  ]\n}';
+  def.push(strToU8(buffer), true);
+  await flushChunks();
+}
+
+async function streamArchivePhotoEntries(
+  zip: Zip,
+  snapshot: BarnDatabaseSnapshot,
+  filterSpecies: string | undefined,
+  flushChunks: () => Promise<void>
+): Promise<{
+  manifest: BackupPhotoManifestEntry[];
+  animalCount: number;
+  totalImageBinaryBytes: number;
+}> {
+  const animals = filterSpecies
+    ? snapshot.animals.filter((a) => isSameSpecies(a.species, filterSpecies))
+    : snapshot.animals;
+  const animalById = new Map(animals.map((a) => [a.id, a]));
+
+  const photos = (snapshot.animalPhotos ?? [])
+    .filter((p) =>
+      filterSpecies
+        ? isSameSpecies(p.species, filterSpecies) || animalById.has(p.animalId)
+        : true
+    )
+    .sort((a, b) => {
+      if (a.species !== b.species) return a.species.localeCompare(b.species);
+      if (a.animalId !== b.animalId) return a.animalId.localeCompare(b.animalId);
+      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+      return a.sortOrder - b.sortOrder;
+    });
+
+  const manifest: BackupPhotoManifestEntry[] = [];
+  const usedPaths = new Set<string>();
+  const countPerAnimal = new Map<string, number>();
+  const uniqueAnimalsWithPhotos = new Set<string>();
+  let totalImageBinaryBytes = 0;
+
+  for (const photo of photos) {
+    const decoded = dataUrlToBinary(photo.dataUrl, photo.mimeType);
+    if (!decoded || decoded.bytes.byteLength === 0) continue;
+
+    const animal = animalById.get(photo.animalId);
+    const speciesFolder = sanitizePathSegment(
+      animal?.species || photo.species || 'Livestock',
+      'Livestock'
+    );
+    const animalFolderRaw = animal
+      ? [animal.tattoo, animal.name].filter(Boolean).join('_') || animal.id.slice(0, 8)
+      : `animal-${photo.animalId.slice(0, 8)}`;
+    const animalFolder = sanitizePathSegment(animalFolderRaw, photo.animalId.slice(0, 8));
+
+    const idx = (countPerAnimal.get(photo.animalId) || 0) + 1;
+    countPerAnimal.set(photo.animalId, idx);
+    const numPrefix = String(idx).padStart(2, '0');
+    const roleTag = photo.isPrimary ? 'cover' : 'photo';
+
+    const origBaseRaw = (photo.originalFileName || '').replace(/\.[^.]+$/, '');
+    const origBase = origBaseRaw ? `-${sanitizePathSegment(origBaseRaw, 'img')}` : '';
+    const ext = extensionForMime(decoded.mimeType, photo.originalFileName);
+
+    let archivePath = `photos/${speciesFolder}/${animalFolder}/${numPrefix}-${roleTag}${origBase}.${ext}`;
+    let collision = 2;
+    while (usedPaths.has(archivePath)) {
+      archivePath = `photos/${speciesFolder}/${animalFolder}/${numPrefix}-${roleTag}${origBase}-${collision}.${ext}`;
+      collision++;
+    }
+    usedPaths.add(archivePath);
+
+    const storedBytesLen = decoded.bytes.byteLength;
+    const pass = new ZipPassThrough(archivePath);
+    zip.add(pass);
+    pass.push(decoded.bytes, true);
+    await flushChunks();
+
+    totalImageBinaryBytes += storedBytesLen;
+    uniqueAnimalsWithPhotos.add(photo.animalId);
+
+    manifest.push({
+      id: photo.id,
+      species: animal?.species || photo.species,
+      animalId: photo.animalId,
+      animalName: animal?.name || '',
+      animalTattoo: animal?.tattoo || '',
+      isPrimary: photo.isPrimary,
+      sortOrder: photo.sortOrder,
+      caption: photo.caption,
+      originalFileName: photo.originalFileName || `${numPrefix}-${roleTag}.${ext}`,
+      mimeType: decoded.mimeType,
+      width: photo.width,
+      height: photo.height,
+      originalBytes: photo.originalBytes,
+      storedBytes: storedBytesLen,
+      archivePath,
+      thumbnailDataUrl: photo.thumbnailDataUrl || '',
+      createdAt: photo.createdAt,
+      updatedAt: photo.updatedAt,
+    });
+  }
+
+  return {
+    manifest,
+    animalCount: uniqueAnimalsWithPhotos.size,
+    totalImageBinaryBytes,
+  };
+}
+
+function createStreamingZipDriver(onChunk: (chunk: Uint8Array) => Promise<void> | void) {
+  const pendingChunks: Uint8Array[] = [];
+  let streamError: Error | null = null;
+  let totalZipBytes = 0;
+
+  const zip = new Zip((err, chunk) => {
+    if (err) {
+      streamError = err instanceof Error ? err : new Error(String(err));
+      return;
+    }
+    if (chunk && chunk.byteLength > 0) {
+      pendingChunks.push(chunk);
+    }
+  });
+
+  const flushChunks = async (): Promise<void> => {
+    if (streamError) {
+      throw streamError;
+    }
+    while (pendingChunks.length > 0) {
+      const batch = pendingChunks.splice(0, pendingChunks.length);
+      for (const chunk of batch) {
+        totalZipBytes += chunk.byteLength;
+        await onChunk(chunk);
+      }
+    }
+    if (streamError) {
+      throw streamError;
+    }
+  };
+
+  return {
+    zip,
+    flushChunks,
+    getTotalZipBytes: () => totalZipBytes,
+  };
+}
+
+/**
+ * Streams a **Photos-Only `.ZIP`** archive incrementally chunk-by-chunk (one decoded photo at a time)
+ * so large photo libraries never materialize the full archive in JS heap beforehand.
+ */
+export async function streamPhotosOnlyZipArchive(
+  snapshot: BarnDatabaseSnapshot,
+  onChunk: (chunk: Uint8Array) => Promise<void> | void,
+  filterSpecies?: string
+): Promise<StreamingZipArchiveSummary> {
+  const { zip, flushChunks, getTotalZipBytes } = createStreamingZipDriver(onChunk);
+
+  try {
+    const { manifest, animalCount, totalImageBinaryBytes } = await streamArchivePhotoEntries(
+      zip,
+      snapshot,
+      filterSpecies,
+      flushChunks
+    );
+
+    await pushPhotoManifestToZipDeflate(zip, manifest, filterSpecies, flushChunks);
+
+    const readme = [
+      'Community Pedigree — Portable Animal Photos Archive',
+      `Exported: ${nowIsoUtc()}`,
+      `Photos Included: ${manifest.length} across ${animalCount} animal(s)`,
+      '',
+      'Folders inside photos/ hold standard viewable image files (.webp / .jpg / .png).',
+      'Use "Merge Backup (.JSON / .ZIP)" in Barn Settings -> Open Data Portability & Backups',
+      'to merge these photos back onto matching animals on any device.',
+    ].join('\n');
+    await pushTextToZipDeflate(zip, 'README.txt', readme, flushChunks);
+
+    zip.end();
+    await flushChunks();
+
+    return {
+      totalZipBytes: getTotalZipBytes(),
+      photoCount: manifest.length,
+      animalCount,
+      binderCount: 0,
+      totalImageBinaryBytes,
+    };
+  } catch (err) {
+    try {
+      zip.terminate();
+    } catch {
+      // Ignore terminate cleanup errors
+    }
+    throw err;
+  }
+}
+
+/**
+ * Streams a **Complete Barn Archive + Photos (`.ZIP`)** incrementally chunk-by-chunk
+ * (`pedigree-backup.json` JSON chunks, one species `binder/*.htm` at a time, and one
+ * decoded photo binary at a time) so large archives write directly to OPFS `/tmp` in low RAM.
+ */
+export async function streamCompleteBackupZipArchive(
+  snapshot: BarnDatabaseSnapshot,
+  onChunk: (chunk: Uint8Array) => Promise<void> | void,
+  filterSpecies?: string,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
+): Promise<StreamingZipArchiveSummary> {
+  const { zip, flushChunks, getTotalZipBytes } = createStreamingZipDriver(onChunk);
+
+  try {
+    const { manifest, totalImageBinaryBytes } = await streamArchivePhotoEntries(
+      zip,
+      snapshot,
+      filterSpecies,
+      flushChunks
+    );
+
+    const scopedSnapshot: BarnDatabaseSnapshot = filterSpecies
+      ? {
+          settings: snapshot.settings,
+          speciesProfiles: snapshot.speciesProfiles.filter((sp) =>
+            isSameSpecies(sp.name, filterSpecies)
+          ),
+          animals: snapshot.animals.filter((a) => isSameSpecies(a.species, filterSpecies)),
+          animalPhotos: [],
+          cages: snapshot.cages.filter((c) => isSameSpecies(c.species, filterSpecies)),
+          breedings: snapshot.breedings.filter((b) => isSameSpecies(b.species, filterSpecies)),
+          tasks: snapshot.tasks.filter((t) => isSameSpecies(t.species, filterSpecies)),
+          careLogs: snapshot.careLogs.filter((l) => isSameSpecies(l.species, filterSpecies)),
+          shows: snapshot.shows.filter((s) => isSameSpecies(s.species, filterSpecies)),
+        }
+      : {
+          ...snapshot,
+          animalPhotos: [],
+        };
+
+    const resolvedMeta = extraMeta
+      ? extraMeta
+      : filterSpecies
+      ? {
+          backupScope: 'species' as const,
+          backupReason: 'manual' as SpeciesBackupReason,
+          targetSpecies: filterSpecies,
+        }
+      : undefined;
+
+    await pushJsonGeneratorToZipDeflate(
+      zip,
+      'pedigree-backup.json',
+      generateBarnBackupJsonChunks(scopedSnapshot, resolvedMeta),
+      flushChunks
+    );
+
+    const targetSpeciesNames: string[] = [];
+    const seenSpecies = new Set<string>();
+    const registerTargetSpecies = (rawName: string | undefined) => {
+      const clean = (rawName || '').trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (seenSpecies.has(key)) return;
+      seenSpecies.add(key);
+      targetSpeciesNames.push(clean);
+    };
+
+    if (filterSpecies) {
+      const matched = snapshot.speciesProfiles.find((sp) =>
+        isSameSpecies(sp.name, filterSpecies)
+      );
+      registerTargetSpecies(matched?.name || filterSpecies);
+    } else {
+      for (const sp of snapshot.speciesProfiles) {
+        registerTargetSpecies(sp.name);
+      }
+      for (const a of snapshot.animals) {
+        registerTargetSpecies(a.species);
+      }
+    }
+
+    let binderCount = 0;
+    const usedBinderPaths = new Set<string>();
+    for (const spName of targetSpeciesNames) {
+      const spSlug = sanitizePathSegment(spName.toLowerCase(), 'species');
+      let binderPath = `binder/${spSlug}-binder.htm`;
+      let suffix = 2;
+      while (usedBinderPaths.has(binderPath)) {
+        binderPath = `binder/${spSlug}-${suffix}-binder.htm`;
+        suffix++;
+      }
+      usedBinderPaths.add(binderPath);
+
+      const binderHtml = generateSpeciesBarnBinderHtml(snapshot, spName, {
+        colorMode: 'color',
+        includeArchived: true,
+        includePhotos: true,
+        includeCoverAndSignature: true,
+        includeSpeciesOverview: true,
+        includeHealthAndLitters: true,
+        includeShowsAndKinship: true,
+      });
+      await pushTextToZipDeflate(zip, binderPath, binderHtml, flushChunks);
+      binderCount++;
+    }
+
+    await pushPhotoManifestToZipDeflate(zip, manifest, filterSpecies, flushChunks);
+
+    const readme = [
+      'Community Pedigree — Complete Portable Backup Archive (.ZIP)',
+      `Barn: ${snapshot.settings.barnName}`,
+      `Exported: ${nowIsoUtc()}`,
+      `Animals: ${scopedSnapshot.animals.length}`,
+      `Photos: ${manifest.length}`,
+      `Printable Barn Binders: ${binderCount}`,
+      '',
+      'Contents:',
+      '- pedigree-backup.json: Complete herd, lineage, breeding, chore, care log, and species memo pad database.',
+      '- binder/*.htm: Complete human-readable Printable Barn Binder per species (pedigrees, health, litters, shows, kinship, photos, and signature page).',
+      '- photos/: Standard viewable image files organized by species and animal.',
+      '- photos/manifest.json: Index linking every image file to its animal UUID, tattoo, cover flag, and caption.',
+      '',
+      'To restore or merge everything back into Community Pedigree on any phone or PC:',
+      'Open Settings -> Open Data Portability & Backups -> Restore or Merge (.JSON / .ZIP).',
+    ].join('\n');
+    await pushTextToZipDeflate(zip, 'README.txt', readme, flushChunks);
+
+    zip.end();
+    await flushChunks();
+
+    return {
+      totalZipBytes: getTotalZipBytes(),
+      photoCount: manifest.length,
+      animalCount: scopedSnapshot.animals.length,
+      binderCount,
+      totalImageBinaryBytes,
+    };
+  } catch (err) {
+    try {
+      zip.terminate();
+    } catch {
+      // Ignore terminate cleanup errors
+    }
+    throw err;
+  }
 }
 
 function isZipMagicBytes(bytes: Uint8Array): boolean {

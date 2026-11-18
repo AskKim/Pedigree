@@ -86,6 +86,71 @@ export interface CustomSpeciesImportOverride {
   birthEventLabel?: string;
 }
 
+export type CsvTargetFieldKey =
+  | 'name'
+  | 'tattoo'
+  | 'species'
+  | 'sex'
+  | 'birthDateIso'
+  | 'breed'
+  | 'variety'
+  | 'weight'
+  | 'weightUnit'
+  | 'sire'
+  | 'dam'
+  | 'pgs'
+  | 'pgd'
+  | 'mgs'
+  | 'mgd'
+  | 'sss'
+  | 'ssd'
+  | 'sds'
+  | 'sdd'
+  | 'dss'
+  | 'dsd'
+  | 'dds'
+  | 'ddd'
+  | 'registrationNumber'
+  | 'grandChampionNumber'
+  | 'legsCount'
+  | 'genotypeRaw'
+  | 'status'
+  | 'cageLocation'
+  | 'breederName'
+  | 'ownerName'
+  | 'notes';
+
+export type CsvColumnMappingSelection = CsvTargetFieldKey | '__ignore__';
+
+export interface CsvColumnPreviewItem {
+  header: string;
+  normalizedKey: string;
+  assignedField: CsvTargetFieldKey | '';
+  autoMatchedField: CsvTargetFieldKey | '';
+  isUserOverride: boolean;
+  sampleValues: string[];
+}
+
+export interface CsvTableMappingSummary {
+  archiveName: string;
+  entryPath: string;
+  rowCount: number;
+  columns: CsvColumnPreviewItem[];
+}
+
+export interface UnresolvedParentLink {
+  entryPath: string;
+  rowNumber: number;
+  childAnimalId: string;
+  childName: string;
+  childTattoo: string;
+  species: string;
+  role: 'sire' | 'dam';
+  rawReference: string;
+  placeholderCreated: boolean;
+  placeholderAnimalId?: string;
+}
+
 export interface ImporterRunOptions {
   /**
    * Used when an external platform exports single-species CSVs that omit an explicit `Species` column.
@@ -101,6 +166,16 @@ export interface ImporterRunOptions {
    * without storing binary images or adding photo schema fields.
    */
   appendDeferredImageFilenamesToNotes?: boolean;
+  /**
+   * Optional interactive spreadsheet column mapping overrides keyed by `${entryPath}::${header}`
+   * or `${header}`. Set value to `'__ignore__'` to explicitly leave an auto-matched column unmapped.
+   */
+  csvColumnMapping?: Record<string, CsvColumnMappingSelection>;
+  /**
+   * When true (default), unresolved Gen 1 Sire/Dam links in non-HerdBoss CSVs synthesize a
+   * placeholder ancestor animal record; when false, those parent IDs remain unlinked.
+   */
+  createPlaceholderAncestorsForUnlinked?: boolean;
 }
 
 export interface PlatformImportPreview {
@@ -129,6 +204,16 @@ export interface PlatformImportPreview {
   tasks: BarnTask[];
   careLogs: CareLog[];
   shows: ShowEvent[];
+  /**
+   * Per-table CSV/TSV column mapping breakdown (headers, matched vs unmapped, sample values)
+   * for interactive spreadsheet column mapping previews.
+   */
+  csvTables?: CsvTableMappingSummary[];
+  /**
+   * Pre-import highlight list of Gen 1 Sire/Dam references on non-HerdBoss CSV imports
+   * that did not match any animal row in the spreadsheet or preexisting barn herd.
+   */
+  unresolvedParentLinks?: UnresolvedParentLink[];
   /**
    * Privacy-safe manifest of filenames, row counts, and column headers (zero breeder PII)
    * so Kimberly can inspect or share exact export structure for QA tuning.

@@ -6,6 +6,8 @@ import {
   parseDelimitedTable,
   parseFlexibleWeightToGrams,
 } from '../importers/archiveAndCsvUtils';
+import { resolveCsvColumnAssignments } from '../importers/csvColumnMapper';
+import { buildStarterCsvTemplate } from '../importers/csvStarterTemplate';
 import { UniversalPedigreeImporter } from '../importers/universalPedigreeImporter';
 import { BarnDatabaseSnapshot } from '../models';
 import { buildSpeciesHerdMap, calculateAnimalCoi } from '../pedigreeCalculator';
@@ -357,5 +359,128 @@ describe('UniversalPedigreeImporter — heterogeneous system imports & graceful 
     expect(preview.warnings.some((w) => w.includes('pedigree.pdf'))).toBe(true);
     expect(preview.warnings.some((w) => w.includes('herd.xlsx'))).toBe(true);
     expect(preview.warnings.some((w) => w.includes('corrupt.json'))).toBe(true);
+  });
+
+  it('generates a Starter CSV Template with standard headers that round-trips cleanly with zero unresolved links', () => {
+    const template = buildStarterCsvTemplate('Rabbit');
+    expect(template.headers.slice(0, 11)).toEqual([
+      'Name',
+      'Ear_ID',
+      'Sex',
+      'DOB',
+      'Breed',
+      'Variety',
+      'Weight',
+      'Sire_ID',
+      'Dam_ID',
+      'Reg_No',
+      'GC_No',
+    ]);
+    expect(template.content.startsWith('\uFEFF')).toBe(true);
+
+    const preview = UniversalPedigreeImporter.parse(
+      [{ fileName: template.filename, bytes: encodeUtf8(template.content) }],
+      makeEmptySnapshot(),
+      { fallbackSpeciesName: 'Rabbit' }
+    );
+
+    expect(preview.animals).toHaveLength(3);
+    expect(preview.unresolvedParentLinks).toHaveLength(0);
+    expect(preview.parentLinksResolved).toBe(2);
+    expect(preview.csvTables).toHaveLength(1);
+    expect(preview.csvTables![0].columns.every((c) => c.assignedField !== '')).toBe(true);
+
+    const sire = preview.animals.find((a) => a.tattoo === 'OR-101')!;
+    const dam = preview.animals.find((a) => a.tattoo === 'OR-102')!;
+    const offspring = preview.animals.find((a) => a.tattoo === 'OR-205')!;
+    expect(offspring.sireId).toBe(sire.id);
+    expect(offspring.damId).toBe(dam.id);
+    expect(sire.registrationNumber).toBe('REG-1042');
+    expect(sire.grandChampionNumber).toBe('GC-881');
+  });
+
+  it('supports interactive CSV column mapping overrides and __ignore__ exclusions with sample previews', () => {
+    const csv = [
+      'Barn_Call_Name,Custom_Ear,Gender_Code,Papa_Ref,Mama_Ref,Internal_Row_Num',
+      'Maple Star,MS-11,Doe,MS-01,MS-02,999',
+      'Maple King,MS-01,Buck,,,1000',
+    ].join('\n');
+
+    const { headers, rows } = parseDelimitedTable(csv);
+    const initial = resolveCsvColumnAssignments(headers, rows, undefined, 'custom.csv');
+    expect(initial.unmappedColumns).toContain('Barn_Call_Name');
+    expect(initial.unmappedColumns).toContain('Custom_Ear');
+    expect(initial.unmappedColumns).toContain('Papa_Ref');
+
+    const preview = UniversalPedigreeImporter.parse(
+      [{ fileName: 'custom.csv', bytes: encodeUtf8(csv) }],
+      makeEmptySnapshot(),
+      {
+        fallbackSpeciesName: 'Rabbit',
+        csvColumnMapping: {
+          'custom.csv::Barn_Call_Name': 'name',
+          'custom.csv::Custom_Ear': 'tattoo',
+          'custom.csv::Gender_Code': 'sex',
+          'custom.csv::Papa_Ref': 'sire',
+          'custom.csv::Mama_Ref': 'dam',
+          'custom.csv::Internal_Row_Num': '__ignore__',
+        },
+      }
+    );
+
+    const star = preview.animals.find((a) => a.tattoo === 'MS-11')!;
+    const king = preview.animals.find((a) => a.tattoo === 'MS-01')!;
+    expect(star).toBeDefined();
+    expect(star.name).toBe('Maple Star');
+    expect(star.sex).toBe('Female');
+    expect(star.sireId).toBe(king.id); // Resolved out-of-order to row 2!
+
+    // Mama_Ref 'MS-02' was not in CSV or barn -> flagged in unresolvedParentLinks
+    expect(preview.unresolvedParentLinks).toHaveLength(1);
+    expect(preview.unresolvedParentLinks![0]).toMatchObject({
+      rowNumber: 1,
+      childName: 'Maple Star',
+      role: 'dam',
+      rawReference: 'MS-02',
+      placeholderCreated: true,
+    });
+  });
+
+  it('resolves existing barn parents cleanly and leaves unresolved Sire/Dam unlinked when placeholder creation is disabled', () => {
+    const existingBuck = makeAnimal('existing-buck-1', {
+      name: 'Barn Champion',
+      tattoo: 'BC-10',
+      sex: 'Male',
+      species: 'Rabbit',
+    });
+    const snapshot = {
+      ...makeEmptySnapshot(),
+      animals: [existingBuck],
+    };
+
+    const csv = [
+      'Name,Ear_ID,Sex,Sire_ID,Dam_ID',
+      'Clover Kit,CK-77,Doe,BC-10,MISSING-DOE-9',
+    ].join('\n');
+
+    const preview = UniversalPedigreeImporter.parse(
+      [{ fileName: 'kits.csv', bytes: encodeUtf8(csv) }],
+      snapshot,
+      {
+        fallbackSpeciesName: 'Rabbit',
+        createPlaceholderAncestorsForUnlinked: false,
+      }
+    );
+
+    expect(preview.animals).toHaveLength(1);
+    const kit = preview.animals[0];
+    expect(kit.sireId).toBe(existingBuck.id);
+    expect(kit.damId).toBe('');
+    expect(preview.unresolvedParentLinks).toHaveLength(1);
+    expect(preview.unresolvedParentLinks![0]).toMatchObject({
+      role: 'dam',
+      rawReference: 'MISSING-DOE-9',
+      placeholderCreated: false,
+    });
   });
 });

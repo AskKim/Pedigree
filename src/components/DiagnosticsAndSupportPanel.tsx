@@ -150,6 +150,11 @@ export function DiagnosticsAndSupportPanel({
     includedPhotos: boolean;
   } | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
+  const [manualCopyBox, setManualCopyBox] = useState<{
+    target: 'support' | 'improvements';
+    label: string;
+    text: string;
+  } | null>(null);
   const [confirmRebuildDb, setConfirmRebuildDb] = useState(false);
   const [pendingHeavyBundleAttemptShare, setPendingHeavyBundleAttemptShare] = useState<
     boolean | null
@@ -368,6 +373,7 @@ export function DiagnosticsAndSupportPanel({
     const report = formatSupportReportText(list.slice(0, 60), sum);
     const copyMode = await copyTextWithFallback(report);
     if (copyMode !== 'unsupported') {
+      setManualCopyBox(null);
       setCopiedSummary(true);
       if (copiedTimerRef.current !== null) {
         clearTimeout(copiedTimerRef.current);
@@ -377,7 +383,14 @@ export function DiagnosticsAndSupportPanel({
         setCopiedSummary(false);
       }, 2500);
     } else {
-      setFeedback('Clipboard access is blocked here — use Download Error Logs (.TXT) instead.');
+      setManualCopyBox({
+        target: 'support',
+        label: 'Selectable Support Text Report',
+        text: report,
+      });
+      setFeedback(
+        'Clipboard access is blocked here — copy from the text box below or use Download Error Logs (.TXT).'
+      );
     }
   };
 
@@ -677,6 +690,31 @@ export function DiagnosticsAndSupportPanel({
                 )}
               </button>
             </div>
+            {manualCopyBox?.target === 'support' && (
+              <div className="pt-1 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-[var(--barn-ink)]">
+                    {manualCopyBox.label} (tap to select all)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setManualCopyBox(null)}
+                    className="text-[11px] underline text-[var(--barn-muted)]"
+                  >
+                    Hide box
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  aria-label={manualCopyBox.label}
+                  value={manualCopyBox.text}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onClick={(e) => e.currentTarget.select()}
+                  rows={6}
+                  className="w-full p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px]"
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1380,12 +1418,21 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             onClick={async () => {
-              const mode = await copyTextWithFallback(formatImprovementsMarkdown());
-              setImprovementsFeedback(
-                mode !== 'unsupported'
-                  ? 'Copied Markdown recovery log to clipboard.'
-                  : 'Clipboard unavailable in this browser — use Download Recovery .JSON instead.'
-              );
+              const markdown = formatImprovementsMarkdown();
+              const mode = await copyTextWithFallback(markdown);
+              if (mode !== 'unsupported') {
+                setManualCopyBox(null);
+                setImprovementsFeedback('Copied Markdown recovery log to clipboard.');
+              } else {
+                setManualCopyBox({
+                  target: 'improvements',
+                  label: 'Selectable Markdown Recovery Log',
+                  text: markdown,
+                });
+                setImprovementsFeedback(
+                  'Clipboard unavailable in this browser — copy from the text box below or use Download Recovery .JSON.'
+                );
+              }
             }}
             className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
           >
@@ -1398,9 +1445,34 @@ export function DiagnosticsAndSupportPanel({
           <div
             role="status"
             aria-live="polite"
-            className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px]"
+            className="p-2 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px] space-y-2"
           >
-            {improvementsFeedback}
+            <div>{improvementsFeedback}</div>
+            {manualCopyBox?.target === 'improvements' && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-[var(--barn-ink)]">
+                    {manualCopyBox.label} (tap to select all)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setManualCopyBox(null)}
+                    className="underline text-[var(--barn-muted)]"
+                  >
+                    Hide box
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  aria-label={manualCopyBox.label}
+                  value={manualCopyBox.text}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onClick={(e) => e.currentTarget.select()}
+                  rows={6}
+                  className="w-full p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px]"
+                />
+              </div>
+            )}
           </div>
         )}
 

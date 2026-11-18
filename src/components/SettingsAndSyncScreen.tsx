@@ -62,8 +62,8 @@ import {
 } from '../core/models';
 import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
 import {
-  exportBarnBackupJson,
   formatTimestampedBackupSlug,
+  generateBarnBackupJsonChunks,
 } from '../core/syncAndExports';
 import {
   CustomThemeColors,
@@ -87,7 +87,7 @@ import {
 } from '../storage/storageProtection';
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
-import { downloadTextFile } from '../utils/webFileActions';
+import { downloadTextChunks } from '../utils/webFileActions';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
@@ -346,8 +346,11 @@ export function SettingsAndSyncScreen({
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
         const filename = `community-pedigree-full-backup-${stampSlug}.json`;
-        const rawJson = exportBarnBackupJson(exportSnapshot);
-        await downloadTextFile(filename, rawJson, 'application/json');
+        await downloadTextChunks(
+          filename,
+          generateBarnBackupJsonChunks(exportSnapshot),
+          'application/json'
+        );
         void recordBackupExport('json', filename);
         setPreResetBackupFeedback(
           `Saved pre-reset JSON backup ${filename} (${exportSnapshot.animals.length} animals).`

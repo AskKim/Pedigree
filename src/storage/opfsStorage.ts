@@ -43,32 +43,56 @@ import { isSampleTestingId } from '../core/sampleData';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import { pushBackupPayloadToSyncFolder } from './localSyncChannels';
-import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
+import {
+  getOpfsSubdir,
+  isOpfsSupported,
+  listDirEntries,
+  markTempOpfsFileActive,
+  OpfsDirectoryHandle,
+  OpfsFileHandle,
+  OpfsNamespace,
+  OpfsWritableStream,
+  purgeOpfsTmp,
+  readOpfsFileBytes,
+  readOpfsFileText,
+  readTempOpfsFileAsBlob,
+  registerOpfsDiagnosticLogger,
+  removeOpfsEntrySafe,
+  removeTempOpfsFile,
+  setOpfsRootResolverForTest,
+  StreamedOpfsTempFileResult,
+  sweepOrphanedOpfsTmpOnBoot,
+  unmarkTempOpfsFileActive,
+  writeFileToOpfsDir,
+  writeTempOpfsFile,
+  writeTempOpfsFileStreamed,
+} from './opfsTempStream';
 import { isQuotaExceededError } from './storageProtection';
 
-export type OpfsNamespace = 'tmp' | 'backups' | 'archives';
+registerOpfsDiagnosticLogger((ev) => {
+  logDiagnosticEvent(ev);
+});
 
-export interface OpfsWritableStream {
-  write(data: string | Uint8Array | ArrayBuffer | Blob): Promise<void>;
-  close(): Promise<void>;
-}
-
-export interface OpfsFileHandle {
-  kind?: 'file';
-  name: string;
-  getFile(): Promise<File | Blob>;
-  createWritable(): Promise<OpfsWritableStream>;
-}
-
-export interface OpfsDirectoryHandle {
-  kind?: 'directory';
-  name?: string;
-  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<OpfsDirectoryHandle>;
-  getFileHandle(name: string, options?: { create?: boolean }): Promise<OpfsFileHandle>;
-  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
-  entries?: () => AsyncIterable<[string, OpfsFileHandle | OpfsDirectoryHandle]>;
-  values?: () => AsyncIterable<OpfsFileHandle | OpfsDirectoryHandle>;
-}
+export {
+  getOpfsSubdir,
+  isOpfsSupported,
+  markTempOpfsFileActive,
+  purgeOpfsTmp,
+  readTempOpfsFileAsBlob,
+  removeTempOpfsFile,
+  setOpfsRootResolverForTest,
+  sweepOrphanedOpfsTmpOnBoot,
+  unmarkTempOpfsFileActive,
+  writeTempOpfsFile,
+  writeTempOpfsFileStreamed,
+};
+export type {
+  OpfsDirectoryHandle,
+  OpfsFileHandle,
+  OpfsNamespace,
+  OpfsWritableStream,
+  StreamedOpfsTempFileResult,
+};
 
 export interface PriorUseSentinel {
   barnName: string;
@@ -202,7 +226,6 @@ function recordOpfsPruneSyncWarning(
 }
 
 const opfsNamespaceQueues = new Map<OpfsNamespace, Promise<void>>();
-const activeTempFiles = new Set<string>();
 
 function withOpfsNamespaceLock<T>(
   namespace: OpfsNamespace,
@@ -222,14 +245,6 @@ function withOpfsNamespaceLock<T>(
   });
 }
 
-export function markTempOpfsFileActive(fileName: string): void {
-  if (fileName) activeTempFiles.add(fileName);
-}
-
-export function unmarkTempOpfsFileActive(fileName: string): void {
-  if (fileName) activeTempFiles.delete(fileName);
-}
-
 function measureUtf8ByteLength(text: string): number {
   if (typeof Blob !== 'undefined') {
     return new Blob([text]).size;
@@ -240,255 +255,8 @@ function measureUtf8ByteLength(text: string): number {
   return text.length;
 }
 
-let testRootResolver: (() => Promise<OpfsDirectoryHandle | null>) | null = null;
-
-/**
- * Allows deterministic unit tests to inject an in-memory OPFS root handle mock.
- * Pass `null` to restore native browser `navigator.storage.getDirectory()`.
- */
-export function setOpfsRootResolverForTest(
-  resolver: (() => Promise<OpfsDirectoryHandle | null>) | null
-): void {
-  testRootResolver = resolver;
-  if (!resolver) {
-    activeTempFiles.clear();
-  }
-}
-
-export function isOpfsSupported(): boolean {
-  if (testRootResolver) return true;
-  if (typeof navigator === 'undefined') return false;
-  const storage = navigator.storage as (StorageManager & { getDirectory?: unknown }) | undefined;
-  return Boolean(storage && typeof storage.getDirectory === 'function');
-}
-
-async function getOpfsRoot(): Promise<OpfsDirectoryHandle | null> {
-  if (testRootResolver) {
-    return testRootResolver();
-  }
-  if (typeof navigator === 'undefined') return null;
-  const storage = navigator.storage as
-    | (StorageManager & { getDirectory?: () => Promise<OpfsDirectoryHandle> })
-    | undefined;
-  if (!storage || typeof storage.getDirectory !== 'function') {
-    return null;
-  }
-  try {
-    return (await storage.getDirectory()) as unknown as OpfsDirectoryHandle;
-  } catch (err) {
-    logDiagnosticEvent({
-      level: 'warn',
-      category: 'storage',
-      message: 'Could not open Origin Private File System root directory — using fallback storage',
-      error: err,
-    });
-    return null;
-  }
-}
-
-export async function getOpfsSubdir(
-  namespace: OpfsNamespace,
-  create = true
-): Promise<OpfsDirectoryHandle | null> {
-  const root = await getOpfsRoot();
-  if (!root) return null;
-  try {
-    return await root.getDirectoryHandle(namespace, { create });
-  } catch {
-    return null;
-  }
-}
-
-async function listDirEntries(
-  dir: OpfsDirectoryHandle
-): Promise<Array<{ name: string; handle: OpfsFileHandle | OpfsDirectoryHandle }>> {
-  const results: Array<{ name: string; handle: OpfsFileHandle | OpfsDirectoryHandle }> = [];
-  if (typeof dir.entries === 'function') {
-    for await (const [name, handle] of dir.entries()) {
-      results.push({ name, handle });
-    }
-    return results;
-  }
-  if (typeof dir.values === 'function') {
-    for await (const handle of dir.values()) {
-      if (handle && typeof handle.name === 'string') {
-        results.push({ name: handle.name, handle });
-      }
-    }
-  }
-  return results;
-}
-
-async function readOpfsFileText(
-  dir: OpfsDirectoryHandle,
-  fileName: string
-): Promise<string | null> {
-  try {
-    const fh = await dir.getFileHandle(fileName, { create: false });
-    const file = await fh.getFile();
-    return await readBlobAsText(file);
-  } catch {
-    return null;
-  }
-}
-
-async function readOpfsFileBytes(
-  dir: OpfsDirectoryHandle,
-  fileName: string
-): Promise<Uint8Array | null> {
-  try {
-    const fh = await dir.getFileHandle(fileName, { create: false });
-    const file = await fh.getFile();
-    const buf = await readBlobAsArrayBuffer(file);
-    return new Uint8Array(buf);
-  } catch {
-    return null;
-  }
-}
-
-async function removeOpfsEntrySafe(dir: OpfsDirectoryHandle, name: string): Promise<boolean> {
-  try {
-    await dir.removeEntry(name);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Writes payload to a file inside `dir`, guaranteeing `writable.close()` inside `try / finally`.
- * If `QuotaExceededError` occurs, purges `/tmp` and retries the write once cleanly.
- */
-async function writeFileToOpfsDir(
-  dir: OpfsDirectoryHandle,
-  fileName: string,
-  data: string | Uint8Array | Blob
-): Promise<void> {
-  const runWrite = async () => {
-    const fh = await dir.getFileHandle(fileName, { create: true });
-    const writable = await fh.createWritable();
-    try {
-      await writable.write(data);
-    } finally {
-      await writable.close();
-    }
-  };
-
-  try {
-    await runWrite();
-  } catch (err) {
-    if (isQuotaExceededError(err)) {
-      const purged = await purgeOpfsTmp();
-      logDiagnosticEvent({
-        level: 'warn',
-        category: 'memory',
-        message: `Corrective action: QuotaExceededError during OPFS write "${fileName}" — purged ${purged.filesRemoved} /tmp file(s) and retrying once`,
-        error: err,
-      });
-      await runWrite();
-      return;
-    }
-    throw err;
-  }
-}
-
 function compactStamp(iso: string): string {
   return iso.replace(/[-:T.Z]/g, '').slice(0, 15);
-}
-
-// ---------------------------------------------------------------------------
-// 1. Ephemeral Export Scratchpad (`/tmp`) & Boot Orphan Sweep
-// ---------------------------------------------------------------------------
-
-export async function purgeOpfsTmp(options: { includeActive?: boolean } = {}): Promise<{
-  filesRemoved: number;
-  bytesFreed: number;
-}> {
-  const includeActive = Boolean(options.includeActive);
-  const tmpDir = await getOpfsSubdir('tmp', false);
-  if (!tmpDir) return { filesRemoved: 0, bytesFreed: 0 };
-
-  let filesRemoved = 0;
-  let bytesFreed = 0;
-  try {
-    const entries = await listDirEntries(tmpDir);
-    for (const item of entries) {
-      if (item.handle.kind === 'directory') continue;
-      if (!includeActive && activeTempFiles.has(item.name)) continue;
-      try {
-        const file = await (item.handle as OpfsFileHandle).getFile();
-        bytesFreed += Number(file.size) || 0;
-      } catch {
-        // Ignore size inspect failure
-      }
-      if (await removeOpfsEntrySafe(tmpDir, item.name)) {
-        filesRemoved++;
-      }
-    }
-  } catch {
-    // Non-fatal purge failure
-  }
-  return { filesRemoved, bytesFreed };
-}
-
-export async function sweepOrphanedOpfsTmpOnBoot(): Promise<{
-  filesRemoved: number;
-  bytesFreed: number;
-}> {
-  const res = await purgeOpfsTmp({ includeActive: false });
-  if (res.filesRemoved > 0) {
-    logDiagnosticEvent({
-      level: 'info',
-      category: 'storage',
-      message: `Corrective action: Boot orphan sweep removed ${res.filesRemoved} stale /tmp OPFS file(s) (${res.bytesFreed} bytes reclaimed)`,
-    });
-  }
-  return res;
-}
-
-export async function writeTempOpfsFile(
-  prefix: string,
-  data: string | Uint8Array | Blob,
-  extension = 'tmp',
-  options?: { keepActiveAfterWrite?: boolean }
-): Promise<{ fileName: string } | null> {
-  const tmpDir = await getOpfsSubdir('tmp', true);
-  if (!tmpDir) return null;
-  const cleanPrefix = (prefix || 'export')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .slice(0, 32);
-  const cleanExt = (extension || 'tmp').replace(/[^a-z0-9]/gi, '') || 'tmp';
-  const fileName = `${cleanPrefix}-${Date.now().toString(36)}-${generateUuid().slice(0, 8)}.${cleanExt}`;
-  markTempOpfsFileActive(fileName);
-  let writeSucceeded = false;
-  try {
-    await writeFileToOpfsDir(tmpDir, fileName, data);
-    writeSucceeded = true;
-    return { fileName };
-  } finally {
-    if (!writeSucceeded || !options?.keepActiveAfterWrite) {
-      unmarkTempOpfsFileActive(fileName);
-    }
-  }
-}
-
-export async function readTempOpfsFileAsBlob(fileName: string): Promise<Blob | null> {
-  const tmpDir = await getOpfsSubdir('tmp', false);
-  if (!tmpDir) return null;
-  try {
-    const fh = await tmpDir.getFileHandle(fileName, { create: false });
-    return await fh.getFile();
-  } catch {
-    return null;
-  }
-}
-
-export async function removeTempOpfsFile(fileName: string): Promise<void> {
-  unmarkTempOpfsFileActive(fileName);
-  const tmpDir = await getOpfsSubdir('tmp', false);
-  if (!tmpDir) return;
-  await removeOpfsEntrySafe(tmpDir, fileName);
 }
 
 // ---------------------------------------------------------------------------

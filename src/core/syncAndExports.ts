@@ -345,18 +345,16 @@ export function buildSpeciesZipBackupFileName(
   );
 }
 
-/**
- * Serializes the entire database into an open, human-readable JSON backup (`version: 5`)
- * with summary metadata and deterministic sorting.
- */
-export function exportBarnBackupJson(
+const JSON_STREAM_CHUNK_TARGET_CHARS = 64 * 1024;
+
+function buildBarnBackupEnvelopeContext(
   snapshot: BarnDatabaseSnapshot,
   extraMeta?: {
     backupScope?: 'barn' | 'species';
     backupReason?: SpeciesBackupReason;
     targetSpecies?: string;
   }
-): string {
+) {
   const sortedAnimals = [...snapshot.animals].sort((a, b) => {
     const spCmp = (a.species || '').localeCompare(b.species || '');
     if (spCmp !== 0) return spCmp;
@@ -404,7 +402,7 @@ export function exportBarnBackupJson(
   }));
 
   const exportedAtIsoUtc = nowIsoUtc();
-  const payload = {
+  const headerPayload = {
     format: 'community-pedigree-backup',
     package: 'Pedigree',
     version: 5,
@@ -427,6 +425,32 @@ export function exportBarnBackupJson(
       bySpecies: Array.from(bySpeciesMap.values()),
     },
     settings: snapshot.settings,
+  };
+
+  return {
+    headerPayload,
+    exportedSpeciesProfiles,
+    sortedAnimals,
+  };
+}
+
+/**
+ * Serializes the entire database into an open, human-readable JSON backup (`version: 5`)
+ * with summary metadata and deterministic sorting.
+ */
+export function exportBarnBackupJson(
+  snapshot: BarnDatabaseSnapshot,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
+): string {
+  const { headerPayload, exportedSpeciesProfiles, sortedAnimals } =
+    buildBarnBackupEnvelopeContext(snapshot, extraMeta);
+
+  const payload = {
+    ...headerPayload,
     speciesProfiles: exportedSpeciesProfiles,
     animals: sortedAnimals,
     animalPhotos: snapshot.animalPhotos ?? [],
@@ -437,6 +461,75 @@ export function exportBarnBackupJson(
     shows: snapshot.shows,
   };
   return JSON.stringify(payload, null, 2);
+}
+
+/**
+ * Streams a full JSON v5 backup incrementally in bounded (~64 KB) string chunks so large
+ * photo-inclusive backups never materialize a monolithic string in JS heap beforehand.
+ */
+export function* generateBarnBackupJsonChunks(
+  snapshot: BarnDatabaseSnapshot,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  },
+  chunkTargetChars: number = JSON_STREAM_CHUNK_TARGET_CHARS
+): Generator<string, void, unknown> {
+  const targetChars = Math.max(4096, chunkTargetChars);
+  const { headerPayload, exportedSpeciesProfiles, sortedAnimals } =
+    buildBarnBackupEnvelopeContext(snapshot, extraMeta);
+
+  const headerJson = JSON.stringify(headerPayload, null, 2);
+  let buffer = headerJson.slice(0, -1).trimEnd() + ',\n';
+
+  const sections: ReadonlyArray<{ key: string; items: readonly unknown[] }> = [
+    { key: 'speciesProfiles', items: exportedSpeciesProfiles },
+    { key: 'animals', items: sortedAnimals },
+    { key: 'animalPhotos', items: snapshot.animalPhotos ?? [] },
+    { key: 'cages', items: snapshot.cages },
+    { key: 'breedings', items: snapshot.breedings },
+    { key: 'tasks', items: snapshot.tasks },
+    { key: 'careLogs', items: snapshot.careLogs },
+    { key: 'shows', items: snapshot.shows },
+  ];
+
+  for (let sIdx = 0; sIdx < sections.length; sIdx++) {
+    const { key, items } = sections[sIdx];
+    const isLastSection = sIdx === sections.length - 1;
+    const sectionTrailer = isLastSection ? '\n' : ',\n';
+
+    if (items.length === 0) {
+      buffer += `  ${JSON.stringify(key)}: []${sectionTrailer}`;
+      if (buffer.length >= targetChars) {
+        yield buffer;
+        buffer = '';
+      }
+      continue;
+    }
+
+    buffer += `  ${JSON.stringify(key)}: [\n`;
+    for (let i = 0; i < items.length; i++) {
+      const rawItem = JSON.stringify(items[i], null, 2) ?? 'null';
+      const indentedItem = `    ${rawItem.replace(/\n/g, '\n    ')}`;
+      buffer += indentedItem;
+      buffer += i < items.length - 1 ? ',\n' : '\n';
+      if (buffer.length >= targetChars) {
+        yield buffer;
+        buffer = '';
+      }
+    }
+    buffer += `  ]${sectionTrailer}`;
+    if (buffer.length >= targetChars) {
+      yield buffer;
+      buffer = '';
+    }
+  }
+
+  buffer += '}';
+  if (buffer.length > 0) {
+    yield buffer;
+  }
 }
 
 /**

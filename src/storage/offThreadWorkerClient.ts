@@ -20,6 +20,9 @@ import {
   buildPhotosOnlyZipArchive,
   parseBackupArchiveInput,
   ParsedBackupArchive,
+  streamCompleteBackupZipArchive,
+  streamPhotosOnlyZipArchive,
+  StreamingZipArchiveSummary,
 } from '../core/backupArchive';
 import type {
   ImporterRunOptions,
@@ -38,8 +41,19 @@ import {
   SupportBundleBuildResult,
 } from '../core/supportBundle';
 import type { SpeciesBackupReason } from '../core/syncAndExports';
-import type { ArchiveWorkerRequest, ArchiveWorkerResponse } from './archiveAndImport.worker';
+import type {
+  ArchiveWorkerRequest,
+  ArchiveWorkerResponse,
+  OpfsTempZipBuildResult,
+} from './archiveAndImport.worker';
 import { logDiagnosticEvent } from './crashLogger';
+import {
+  isOpfsSupported,
+  markTempOpfsFileActive,
+  writeTempOpfsFileStreamed,
+} from './opfsTempStream';
+
+export type { OpfsTempZipBuildResult };
 
 const WORKER_TIMEOUT_MS = 90_000;
 const WORKER_IDLE_TERMINATE_MS = 60_000;
@@ -211,6 +225,104 @@ export function buildImporterWorkerSnapshot(
       dataUrl: '',
     })),
   };
+}
+
+async function runStreamedZipMainThreadFallback(
+  prefix: string,
+  streamFn: (onChunk: (chunk: Uint8Array) => Promise<void>) => Promise<StreamingZipArchiveSummary>
+): Promise<OpfsTempZipBuildResult> {
+  await yieldToUiFrame();
+  if (isOpfsSupported()) {
+    const staged = await writeTempOpfsFileStreamed(
+      prefix,
+      'zip',
+      async (writeChunk) => streamFn((chunk) => writeChunk(chunk)),
+      { keepActiveAfterWrite: true }
+    );
+    if (staged) {
+      return {
+        opfsTempFileName: staged.fileName,
+        blob: staged.blob,
+        byteSize: staged.byteSize,
+        photoCount: staged.meta.photoCount,
+        animalCount: staged.meta.animalCount,
+        binderCount: staged.meta.binderCount,
+        totalImageBinaryBytes: staged.meta.totalImageBinaryBytes,
+      };
+    }
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const meta = await streamFn(async (chunk) => {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  });
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return {
+    opfsTempFileName: null,
+    bytes,
+    byteSize: bytes.byteLength,
+    photoCount: meta.photoCount,
+    animalCount: meta.animalCount,
+    binderCount: meta.binderCount,
+    totalImageBinaryBytes: meta.totalImageBinaryBytes,
+  };
+}
+
+export async function buildCompleteBackupZipToOpfsTmpOffThread(
+  snapshot: BarnDatabaseSnapshot,
+  filterSpecies?: string,
+  extraMeta?: {
+    backupScope?: 'barn' | 'species';
+    backupReason?: SpeciesBackupReason;
+    targetSpecies?: string;
+  }
+): Promise<OpfsTempZipBuildResult> {
+  const workerPromise = runInWorker<OpfsTempZipBuildResult>((id) => ({
+    id,
+    kind: 'buildCompleteBackupZipToOpfsTmp',
+    snapshot,
+    filterSpecies,
+    extraMeta,
+  }));
+  if (workerPromise) {
+    const res = await workerPromise;
+    if (res.opfsTempFileName) {
+      markTempOpfsFileActive(res.opfsTempFileName);
+    }
+    return res;
+  }
+  return runStreamedZipMainThreadFallback('archive', (onChunk) =>
+    streamCompleteBackupZipArchive(snapshot, onChunk, filterSpecies, extraMeta)
+  );
+}
+
+export async function buildPhotosOnlyZipToOpfsTmpOffThread(
+  snapshot: BarnDatabaseSnapshot,
+  filterSpecies?: string
+): Promise<OpfsTempZipBuildResult> {
+  const workerPromise = runInWorker<OpfsTempZipBuildResult>((id) => ({
+    id,
+    kind: 'buildPhotosOnlyZipToOpfsTmp',
+    snapshot,
+    filterSpecies,
+  }));
+  if (workerPromise) {
+    const res = await workerPromise;
+    if (res.opfsTempFileName) {
+      markTempOpfsFileActive(res.opfsTempFileName);
+    }
+    return res;
+  }
+  return runStreamedZipMainThreadFallback('photos-archive', (onChunk) =>
+    streamPhotosOnlyZipArchive(snapshot, onChunk, filterSpecies)
+  );
 }
 
 export async function buildCompleteBackupZipOffThread(

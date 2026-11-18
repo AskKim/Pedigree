@@ -48,6 +48,7 @@ import {
   sweepOrphanedOpfsTmpOnBoot,
   unmarkTempOpfsFileActive,
   writeTempOpfsFile,
+  writeTempOpfsFileStreamed,
 } from '../opfsStorage';
 
 interface MockFileEntry {
@@ -92,6 +93,9 @@ function createInMemoryOpfsMock(options?: {
     async getFile(): Promise<Blob> {
       const copy = new Uint8Array(entry.bytes.byteLength);
       copy.set(entry.bytes);
+      if (typeof Blob !== 'undefined') {
+        return new Blob([copy], { type: 'application/octet-stream' });
+      }
       return {
         size: copy.byteLength,
         type: 'application/octet-stream',
@@ -106,7 +110,7 @@ function createInMemoryOpfsMock(options?: {
     async createWritable(): Promise<OpfsWritableStream> {
       writeCallCounter += 1;
       const hook = options?.onCreateWritable?.(entry.name, writeCallCounter);
-      let staged: Uint8Array | null = null;
+      const stagedChunks: Uint8Array[] = [];
       return {
         async write(data) {
           if (hook?.throwOnWrite) {
@@ -117,12 +121,19 @@ function createInMemoryOpfsMock(options?: {
             quotaErr.name = 'QuotaExceededError';
             throw quotaErr;
           }
-          staged = await toUint8(data);
+          stagedChunks.push(await toUint8(data));
         },
         async close() {
           hook?.spyClose();
-          if (staged) {
-            entry.bytes = staged;
+          if (stagedChunks.length > 0) {
+            const total = stagedChunks.reduce((sum, c) => sum + c.byteLength, 0);
+            const merged = new Uint8Array(total);
+            let offset = 0;
+            for (const c of stagedChunks) {
+              merged.set(c, offset);
+              offset += c.byteLength;
+            }
+            entry.bytes = merged;
           }
         },
       };
@@ -267,6 +278,69 @@ describe('opfsStorage handles, QuotaExceededError recovery & /tmp sweeps', () =>
     const swept = await sweepOrphanedOpfsTmpOnBoot();
     expect(swept.filesRemoved).toBeGreaterThanOrEqual(1);
     expect(mock.rootNode.dirs.get('tmp')?.files.size).toBe(0);
+  });
+
+  it('streams multi-chunk payloads via writeTempOpfsFileStreamed, recovers from QuotaExceededError, and cleans up partial files on failure', async () => {
+    const closeSpies: Array<ReturnType<typeof vi.fn<() => void>>> = [];
+    let quotaHit = false;
+    const mock = createInMemoryOpfsMock({
+      onCreateWritable: (fileName) => {
+        const spyClose = vi.fn<() => void>();
+        closeSpies.push(spyClose);
+        if (!quotaHit && fileName.startsWith('streamed-') && closeSpies.length === 2) {
+          quotaHit = true;
+          return { failOnceWithQuotaExceeded: true, spyClose };
+        }
+        return { spyClose };
+      },
+    });
+    setOpfsRootResolverForTest(async () => mock.rootHandle);
+
+    // Seed an inactive orphan file in /tmp that QuotaExceededError recovery should purge
+    const orphan = await writeTempOpfsFile('export', 'stale-orphan', 'txt');
+    expect(mock.rootNode.dirs.get('tmp')?.files.has(orphan!.fileName)).toBe(true);
+
+    const streamed = await writeTempOpfsFileStreamed(
+      'streamed',
+      'json',
+      async (writeChunk) => {
+        await writeChunk('{"part":1,');
+        await writeChunk(new TextEncoder().encode('"part2":"ok"}'));
+        return { chunksWritten: 2 };
+      },
+      { keepActiveAfterWrite: true }
+    );
+
+    expect(streamed).not.toBeNull();
+    expect(streamed!.meta.chunksWritten).toBe(2);
+    expect(await streamed!.blob.text()).toBe('{"part":1,"part2":"ok"}');
+    expect(mock.rootNode.dirs.get('tmp')?.files.has(orphan!.fileName)).toBe(false);
+    expect(mock.rootNode.dirs.get('tmp')?.files.has(streamed!.fileName)).toBe(true);
+    unmarkTempOpfsFileActive(streamed!.fileName);
+
+    // Large >256KB binary write should be chunked cleanly without losing bytes
+    const bigBytes = new Uint8Array(300 * 1024);
+    bigBytes.fill(0x5a);
+    bigBytes[bigBytes.byteLength - 1] = 0x7f;
+    const largeRes = await writeTempOpfsFile('bigbin', bigBytes, 'bin');
+    expect(largeRes).not.toBeNull();
+    const storedEntry = mock.rootNode.dirs.get('tmp')?.files.get(largeRes!.fileName);
+    expect(storedEntry?.bytes.byteLength).toBe(300 * 1024);
+    expect(storedEntry?.bytes[storedEntry.bytes.byteLength - 1]).toBe(0x7f);
+
+    // Mid-stream non-quota failure must close writable and remove partial /tmp file
+    await expect(
+      writeTempOpfsFileStreamed('abort', 'zip', async (writeChunk) => {
+        await writeChunk(new Uint8Array([1, 2, 3]));
+        throw new Error('Mid-stream abort');
+      })
+    ).rejects.toThrow(/Mid-stream abort/);
+
+    const remainingNames = Array.from(mock.rootNode.dirs.get('tmp')?.files.keys() ?? []);
+    expect(remainingNames.some((n) => n.startsWith('abort-'))).toBe(false);
+    for (const spy of closeSpies) {
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

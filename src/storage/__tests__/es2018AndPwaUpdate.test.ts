@@ -272,3 +272,77 @@ describe('storageProtection — manual offline toggle & captive-portal connectiv
     resetConnectivityStateForTests();
   });
 });
+
+describe('deviceCapabilityDetector — browser feature signal probing', () => {
+  it('safely detects missing or throwing optional browser APIs without crashing', async () => {
+    const { detectCurrentBrowserCompatibility, readBrowserFeatureSignals } = await import(
+      '../deviceCapabilityDetector'
+    );
+    const { classifyDeviceCapability } = await import('../../core/deviceCapability');
+
+    const originalWindow = globalThis.window;
+    const originalNav = globalThis.navigator;
+    const originalWasm = globalThis.WebAssembly;
+    const originalWorker = globalThis.Worker;
+
+    try {
+      const restrictedWindow: Record<string, unknown> = {
+        get indexedDB() {
+          throw new Error('SecurityError: indexedDB blocked');
+        },
+      };
+      Object.defineProperty(globalThis, 'window', {
+        value: restrictedWindow,
+        configurable: true,
+      });
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {
+          userAgent:
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+        },
+        configurable: true,
+      });
+      Object.defineProperty(globalThis, 'WebAssembly', {
+        value: undefined,
+        configurable: true,
+      });
+      Object.defineProperty(globalThis, 'Worker', {
+        value: undefined,
+        configurable: true,
+      });
+
+      const signals = readBrowserFeatureSignals();
+      expect(signals.indexedDbSupported).toBe(false);
+      expect(signals.wasmSupported).toBe(false);
+      expect(signals.moduleWorkerSupported).toBe(false);
+      expect(signals.opfsSupported).toBe(false);
+      expect(signals.directoryPickerSupported).toBe(false);
+      expect(signals.persistStorageSupported).toBe(false);
+      expect(signals.clipboardWriteSupported).toBe(false);
+      expect(signals.webShareFilesSupported).toBe(false);
+
+      const assessment = classifyDeviceCapability({
+        deviceMemoryGb: null,
+        hardwareConcurrency: 4,
+        jsHeapLimitBytes: null,
+        usedHeapBytes: null,
+        userAgent: signals.userAgent,
+        maxTouchPoints: 5,
+        coarsePointer: true,
+        screenWidthPx: 390,
+        screenHeightPx: 844,
+        devicePixelRatio: 3,
+      });
+      const compat = detectCurrentBrowserCompatibility(assessment);
+      expect(compat.wasmFallbackActive).toBe(true);
+      expect(compat.isOutdatedBrowser).toBe(true);
+      expect(compat.shouldConfirmHeavyZipExport).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'window', { value: originalWindow, configurable: true });
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+      Object.defineProperty(globalThis, 'WebAssembly', { value: originalWasm, configurable: true });
+      Object.defineProperty(globalThis, 'Worker', { value: originalWorker, configurable: true });
+    }
+  });
+});
+

@@ -89,6 +89,7 @@ import {
 import {
   exportBarnBackupJson,
   formatTimestampedBackupSlug,
+  generateBarnBackupJsonChunks,
 } from '../core/syncAndExports';
 import type { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
 import {
@@ -113,7 +114,9 @@ import {
 } from '../storage/localSyncChannels';
 import {
   buildCompleteBackupZipOffThread,
+  buildCompleteBackupZipToOpfsTmpOffThread,
   buildPhotosOnlyZipOffThread,
+  buildPhotosOnlyZipToOpfsTmpOffThread,
   inspectBackupArchiveOffThread,
 } from '../storage/offThreadWorkerClient';
 import type { OpfsPruneSyncWarning } from '../storage/opfsStorage';
@@ -131,7 +134,12 @@ import {
 } from '../storage/storageProtection';
 import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
-import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
+import {
+  downloadBinaryFile,
+  downloadTempOpfsExport,
+  downloadTextChunks,
+  downloadTextFile,
+} from '../utils/webFileActions';
 import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { UnifiedBackupVaultPanel } from './UnifiedBackupVaultPanel';
@@ -448,25 +456,33 @@ export function ImportExportHubScreen({
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `community-pedigree-full-backup-${stampSlug}.json`;
-        const rawJson = exportBarnBackupJson(exportSnapshot);
-        const filename = encryptBackupExport
-          ? `community-pedigree-full-backup-${stampSlug}-encrypted.json`
-          : baseFilename;
-        const outputJson = encryptBackupExport
-          ? JSON.stringify(
-              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-                payloadKind: 'json_backup',
-                originalFileName: baseFilename,
-              }),
-              null,
-              2
-            )
-          : rawJson;
-        await downloadTextFile(filename, outputJson, 'application/json');
-        void recordBackupExport('json', filename);
-        setBackupFeedback(
-          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
-        );
+        if (encryptBackupExport) {
+          const rawJson = exportBarnBackupJson(exportSnapshot);
+          const filename = `community-pedigree-full-backup-${stampSlug}-encrypted.json`;
+          const outputJson = JSON.stringify(
+            await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
+              payloadKind: 'json_backup',
+              originalFileName: baseFilename,
+            }),
+            null,
+            2
+          );
+          await downloadTextFile(filename, outputJson, 'application/json');
+          void recordBackupExport('json', filename);
+          setBackupFeedback(
+            `Downloaded encrypted ${filename} (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
+          );
+        } else {
+          await downloadTextChunks(
+            baseFilename,
+            generateBarnBackupJsonChunks(exportSnapshot),
+            'application/json'
+          );
+          void recordBackupExport('json', baseFilename);
+          setBackupFeedback(
+            `Downloaded ${baseFilename} (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
+          );
+        }
       } catch (err: unknown) {
         setBackupError(err instanceof Error ? err.message : 'Could not prepare full JSON backup.');
       } finally {
@@ -489,25 +505,33 @@ export function ImportExportHubScreen({
         const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `community-pedigree-records-only-${stampSlug}.json`;
-        const rawJson = exportBarnBackupJson(lightSnapshot);
-        const filename = encryptBackupExport
-          ? `community-pedigree-records-only-${stampSlug}-encrypted.json`
-          : baseFilename;
-        const outputJson = encryptBackupExport
-          ? JSON.stringify(
-              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-                payloadKind: 'json_backup',
-                originalFileName: baseFilename,
-              }),
-              null,
-              2
-            )
-          : rawJson;
-        await downloadTextFile(filename, outputJson, 'application/json');
-        void recordBackupExport('json', filename);
-        setBackupFeedback(
-          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
-        );
+        if (encryptBackupExport) {
+          const rawJson = exportBarnBackupJson(lightSnapshot);
+          const filename = `community-pedigree-records-only-${stampSlug}-encrypted.json`;
+          const outputJson = JSON.stringify(
+            await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
+              payloadKind: 'json_backup',
+              originalFileName: baseFilename,
+            }),
+            null,
+            2
+          );
+          await downloadTextFile(filename, outputJson, 'application/json');
+          void recordBackupExport('json', filename);
+          setBackupFeedback(
+            `Downloaded encrypted lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
+          );
+        } else {
+          await downloadTextChunks(
+            baseFilename,
+            generateBarnBackupJsonChunks(lightSnapshot),
+            'application/json'
+          );
+          void recordBackupExport('json', baseFilename);
+          setBackupFeedback(
+            `Downloaded lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
+          );
+        }
       } catch (err: unknown) {
         setBackupError(
           err instanceof Error ? err.message : 'Could not prepare records-only JSON backup.'
@@ -539,23 +563,28 @@ export function ImportExportHubScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
         const baseFilename = `community-pedigree-archive-${stampSlug}.zip`;
-        let finalBytes = archive.bytes;
-        let filename = baseFilename;
         if (encryptBackupExport) {
+          const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
           const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
             payloadKind: 'zip_archive',
             originalFileName: baseFilename,
           });
-          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
+          const finalBytes = wrapEncryptedZipContainer(env, baseFilename);
+          const filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
+          await downloadBinaryFile(filename, finalBytes, 'application/zip');
+          void recordBackupExport('zip', filename);
+          setBackupFeedback(
+            `Saved encrypted ${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(finalBytes.byteLength)}).`
+          );
+        } else {
+          const archive = await buildCompleteBackupZipToOpfsTmpOffThread(exportSnapshot);
+          await downloadTempOpfsExport(baseFilename, archive, 'application/zip');
+          void recordBackupExport('zip', baseFilename);
+          setBackupFeedback(
+            `Saved ${baseFilename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(archive.byteSize)}).`
+          );
         }
-        await downloadBinaryFile(filename, finalBytes, 'application/zip');
-        void recordBackupExport('zip', filename);
-        setBackupFeedback(
-          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(finalBytes.byteLength)}).`
-        );
       } catch (err: unknown) {
         const baseMsg =
           err instanceof Error ? err.message : 'Could not build Complete Archive (.ZIP).';
@@ -595,22 +624,26 @@ export function ImportExportHubScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
         const baseFilename = `community-pedigree-photos-${stampSlug}.zip`;
-        let finalBytes = archive.bytes;
-        let filename = baseFilename;
         if (encryptBackupExport) {
+          const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
           const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
             payloadKind: 'zip_archive',
             originalFileName: baseFilename,
           });
-          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
+          const finalBytes = wrapEncryptedZipContainer(env, baseFilename);
+          const filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
+          await downloadBinaryFile(filename, finalBytes, 'application/zip');
+          setBackupFeedback(
+            `Saved encrypted ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
+          );
+        } else {
+          const archive = await buildPhotosOnlyZipToOpfsTmpOffThread(exportSnapshot);
+          await downloadTempOpfsExport(baseFilename, archive, 'application/zip');
+          setBackupFeedback(
+            `Saved ${baseFilename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(archive.byteSize)}).`
+          );
         }
-        await downloadBinaryFile(filename, finalBytes, 'application/zip');
-        setBackupFeedback(
-          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
-        );
       } catch (err: unknown) {
         const baseMsg =
           err instanceof Error ? err.message : 'Could not build Photos-Only (.ZIP) archive.';

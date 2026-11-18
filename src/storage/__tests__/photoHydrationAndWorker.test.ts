@@ -12,14 +12,30 @@ import {
 } from '../../core/photoMaintenance';
 import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
 import {
+  buildCompleteBackupZipArchive,
+  buildPhotosOnlyZipArchive,
+  parseBackupArchiveInput,
+  streamCompleteBackupZipArchive,
+  streamPhotosOnlyZipArchive,
+} from '../../core/backupArchive';
+import { generateBarnBackupJsonChunks } from '../../core/syncAndExports';
+import {
   BoundedPhotoDataCache,
   hydrateSnapshotWithPhotoDataUrls,
   stripPhotoDataUrlsFromSnapshot,
 } from '../photoHydration';
 import {
+  OpfsDirectoryHandle,
+  OpfsFileHandle,
+  OpfsWritableStream,
+  setOpfsRootResolverForTest,
+} from '../opfsStorage';
+import {
   buildCompleteBackupZipOffThread,
+  buildCompleteBackupZipToOpfsTmpOffThread,
   buildImporterWorkerSnapshot,
   buildPhotosOnlyZipOffThread,
+  buildPhotosOnlyZipToOpfsTmpOffThread,
   buildSupportBundleZipOffThread,
   parseBackupArchiveOffThread,
   parseExternalImportOffThread,
@@ -136,8 +152,89 @@ function makeTestSnapshot(): BarnDatabaseSnapshot {
   };
 }
 
+function createSimpleOpfsMock() {
+  const dirs = new Map<string, Map<string, Uint8Array>>();
+  let writeCount = 0;
+
+  const toUint8 = async (data: string | Uint8Array | ArrayBuffer | Blob): Promise<Uint8Array> => {
+    if (typeof data === 'string') return new TextEncoder().encode(data);
+    if (data instanceof Uint8Array) return new Uint8Array(data);
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    return new Uint8Array(await data.arrayBuffer());
+  };
+
+  const makeDir = (dirName: string): OpfsDirectoryHandle => {
+    if (!dirs.has(dirName)) dirs.set(dirName, new Map());
+    const files = dirs.get(dirName)!;
+    return {
+      kind: 'directory',
+      name: dirName,
+      async getDirectoryHandle(name, opts) {
+        if (!dirs.has(name)) {
+          if (!opts?.create) throw new Error(`Missing dir ${name}`);
+          dirs.set(name, new Map());
+        }
+        return makeDir(name);
+      },
+      async getFileHandle(name, opts): Promise<OpfsFileHandle> {
+        if (!files.has(name)) {
+          if (!opts?.create) throw new Error(`Missing file ${name}`);
+          files.set(name, new Uint8Array(0));
+        }
+        return {
+          kind: 'file',
+          name,
+          async getFile() {
+            const bytes = files.get(name) ?? new Uint8Array(0);
+            const copy = new Uint8Array(bytes.byteLength);
+            copy.set(bytes);
+            return new Blob([copy], { type: 'application/octet-stream' });
+          },
+          async createWritable(): Promise<OpfsWritableStream> {
+            writeCount += 1;
+            const chunks: Uint8Array[] = [];
+            return {
+              async write(data) {
+                chunks.push(await toUint8(data));
+              },
+              async close() {
+                const total = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+                const merged = new Uint8Array(total);
+                let off = 0;
+                for (const c of chunks) {
+                  merged.set(c, off);
+                  off += c.byteLength;
+                }
+                files.set(name, merged);
+              },
+            };
+          },
+        };
+      },
+      async removeEntry(name) {
+        if (!files.delete(name)) throw new Error(`Missing file ${name}`);
+      },
+      async *entries() {
+        for (const [k] of files.entries()) {
+          yield [k, await this.getFileHandle(k)] as [string, OpfsFileHandle];
+        }
+      },
+    };
+  };
+
+  return {
+    dirs,
+    getWriteCount: () => writeCount,
+    rootHandle: makeDir(''),
+  };
+}
+
 afterEach(() => {
+  setOpfsRootResolverForTest(null);
   resetArchiveWorkerForTests();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('BoundedPhotoDataCache & snapshot hydration', () => {
@@ -484,6 +581,208 @@ describe('Phase 2 compatibility & memory fallbacks', () => {
 
     expect(result.failedFiles).toHaveLength(3);
     expect(progressCalls).toEqual([1, 2, 3]);
+  });
+});
+
+describe('Low-RAM export streaming & OPFS /tmp staging for all exports', () => {
+  it('streams complete & photos-only ZIP archives incrementally with identical parsed output to synchronous builders', async () => {
+    const snap = makeTestSnapshot();
+
+    const streamedCompleteChunks: Uint8Array[] = [];
+    const completeSummary = await streamCompleteBackupZipArchive(snap, (chunk) => {
+      streamedCompleteChunks.push(chunk);
+    });
+    expect(streamedCompleteChunks.length).toBeGreaterThan(1);
+    const completeLen = streamedCompleteChunks.reduce((sum, c) => sum + c.byteLength, 0);
+    expect(completeSummary.totalZipBytes).toBe(completeLen);
+
+    const streamedCompleteBytes = new Uint8Array(completeLen);
+    let offset = 0;
+    for (const c of streamedCompleteChunks) {
+      streamedCompleteBytes.set(c, offset);
+      offset += c.byteLength;
+    }
+
+    const syncComplete = buildCompleteBackupZipArchive(snap);
+    expect(completeSummary.animalCount).toBe(syncComplete.animalCount);
+    expect(completeSummary.photoCount).toBe(syncComplete.photoCount);
+    expect(completeSummary.binderCount).toBe(syncComplete.binderCount);
+
+    const parsedComplete = parseBackupArchiveInput(
+      streamedCompleteBytes,
+      'streamed-complete.zip',
+      snap.settings
+    );
+    expect(parsedComplete.kind).toBe('full_snapshot');
+    if (parsedComplete.kind === 'full_snapshot') {
+      expect(parsedComplete.snapshot.animals).toHaveLength(2);
+      expect(parsedComplete.snapshot.animalPhotos).toHaveLength(2);
+      expect(parsedComplete.photosReconstructed).toBe(2);
+    }
+
+    const streamedPhotosChunks: Uint8Array[] = [];
+    const photosSummary = await streamPhotosOnlyZipArchive(snap, (chunk) => {
+      streamedPhotosChunks.push(chunk);
+    });
+    const photosBytes = new Uint8Array(photosSummary.totalZipBytes);
+    offset = 0;
+    for (const c of streamedPhotosChunks) {
+      photosBytes.set(c, offset);
+      offset += c.byteLength;
+    }
+    const syncPhotos = buildPhotosOnlyZipArchive(snap);
+    expect(photosSummary.photoCount).toBe(syncPhotos.photoCount);
+    const parsedPhotos = parseBackupArchiveInput(photosBytes, 'streamed-photos.zip', snap.settings);
+    expect(parsedPhotos.kind).toBe('photos_only');
+    if (parsedPhotos.kind === 'photos_only') {
+      expect(parsedPhotos.photos).toHaveLength(2);
+    }
+  });
+
+  it('streams off-thread ZIP archives directly into OPFS /tmp when OPFS is available and falls back to bytes when unavailable', async () => {
+    const snap = makeTestSnapshot();
+    const opfsMock = createSimpleOpfsMock();
+    setOpfsRootResolverForTest(async () => opfsMock.rootHandle);
+
+    const completeTmp = await buildCompleteBackupZipToOpfsTmpOffThread(snap);
+    expect(completeTmp.opfsTempFileName).toBeTruthy();
+    expect(completeTmp.bytes).toBeUndefined();
+    expect(completeTmp.blob).toBeDefined();
+    expect(opfsMock.dirs.get('tmp')?.has(completeTmp.opfsTempFileName!)).toBe(true);
+
+    const parsedComplete = parseBackupArchiveInput(
+      new Uint8Array(await completeTmp.blob!.arrayBuffer()),
+      'opfs-complete.zip',
+      snap.settings
+    );
+    expect(parsedComplete.kind).toBe('full_snapshot');
+
+    const photosTmp = await buildPhotosOnlyZipToOpfsTmpOffThread(snap);
+    expect(photosTmp.opfsTempFileName).toBeTruthy();
+    expect(photosTmp.blob).toBeDefined();
+    expect(opfsMock.dirs.get('tmp')?.has(photosTmp.opfsTempFileName!)).toBe(true);
+
+    // Without OPFS, falls back cleanly to Uint8Array bytes
+    setOpfsRootResolverForTest(null);
+    const originalNav = globalThis.navigator;
+    vi.stubGlobal('navigator', {});
+    try {
+      const fallbackZip = await buildCompleteBackupZipToOpfsTmpOffThread(snap);
+      expect(fallbackZip.opfsTempFileName).toBeNull();
+      expect(fallbackZip.bytes).toBeDefined();
+      expect(fallbackZip.bytes!.byteLength).toBe(fallbackZip.byteSize);
+    } finally {
+      vi.stubGlobal('navigator', originalNav);
+    }
+  });
+
+  it('stages small (<512 KB) .HTM downloads, streamed JSON chunks, and Web Share payloads through OPFS /tmp and cleans up immediately', async () => {
+    vi.useFakeTimers();
+    const {
+      downloadTextChunks,
+      downloadTextFile,
+      shareBinaryFileOrDownload,
+      shareTextFileOrDownload,
+    } = await import('../../utils/webFileActions');
+
+    const opfsMock = createSimpleOpfsMock();
+    setOpfsRootResolverForTest(async () => opfsMock.rootHandle);
+
+    const clickedAnchors: Array<{ download: string; href: string }> = [];
+    const createdUrls: string[] = [];
+    const revokedUrls: string[] = [];
+
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => {
+      const u = `blob:mock-${createdUrls.length + 1}`;
+      createdUrls.push(u);
+      return u;
+    });
+    URL.revokeObjectURL = vi.fn((u: string) => {
+      revokedUrls.push(u);
+    });
+
+    const fakeBody = { appendChild: vi.fn(), removeChild: vi.fn() };
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => {
+        const anchor = {
+          href: '',
+          download: '',
+          parentNode: fakeBody,
+          click: () => {
+            clickedAnchors.push({ download: anchor.download, href: anchor.href });
+          },
+        };
+        return anchor;
+      }),
+      body: fakeBody,
+    });
+
+    try {
+      // 1. Small (< 512 KB) Printable .HTM pedigree should still stage through OPFS /tmp
+      await downloadTextFile('clover-pedigree.htm', '<html><body>Small 12 KB Pedigree</body></html>', 'text/html');
+      expect(clickedAnchors).toHaveLength(1);
+      expect(clickedAnchors[0].download).toBe('clover-pedigree.htm');
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(revokedUrls).toHaveLength(1);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
+
+      // 2. shareTextFileOrDownload stages through OPFS /tmp and cleans up immediately on share resolve
+      const shareSpy = vi.fn(async () => {});
+      vi.stubGlobal('navigator', {
+        canShare: vi.fn(() => true),
+        share: shareSpy,
+      });
+
+      const sharedRes = await shareTextFileOrDownload({
+        filename: 'cage-card.htm',
+        content: '<html><body>Cage Card</body></html>',
+        mimeType: 'text/html',
+        title: 'Cage Card',
+      });
+      expect(sharedRes).toBe('shared');
+      expect(shareSpy).toHaveBeenCalledTimes(1);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
+
+      // 3. shareBinaryFileOrDownload falling back to download hands off the staged /tmp blob without double-writing
+      const writesBeforeFallback = opfsMock.getWriteCount();
+      vi.stubGlobal('navigator', {
+        canShare: vi.fn(() => true),
+        share: vi.fn(async () => {
+          throw new Error('Share sheet dismissed');
+        }),
+      });
+      const fallbackRes = await shareBinaryFileOrDownload({
+        filename: 'support-bundle.zip',
+        bytes: new Uint8Array([80, 75, 3, 4]),
+        mimeType: 'application/zip',
+        title: 'Support Bundle',
+      });
+      expect(fallbackRes).toBe('downloaded');
+      expect(opfsMock.getWriteCount()).toBe(writesBeforeFallback + 1);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
+
+      // 4. downloadTextChunks streams JSON backup chunks directly into OPFS /tmp
+      const snap = makeTestSnapshot();
+      await downloadTextChunks(
+        'streamed-backup.json',
+        generateBarnBackupJsonChunks(snap),
+        'application/json'
+      );
+      expect(clickedAnchors.some((a) => a.download === 'streamed-backup.json')).toBe(true);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
+    } finally {
+      URL.createObjectURL = origCreateObjectURL;
+      URL.revokeObjectURL = origRevokeObjectURL;
+    }
   });
 });
 

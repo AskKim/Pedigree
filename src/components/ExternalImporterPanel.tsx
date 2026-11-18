@@ -21,10 +21,13 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Download,
   FileArchive,
+  FileSpreadsheet,
   FolderUp,
   ImageOff,
   Plus,
+  RotateCcw,
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
@@ -48,6 +51,12 @@ import {
   makeConflictSelectionKey,
 } from '../core/importers/conflictResolver';
 import {
+  CSV_TARGET_FIELD_OPTIONS,
+  makeCsvColumnOverrideKey,
+} from '../core/importers/csvColumnMapper';
+import { buildStarterCsvTemplate } from '../core/importers/csvStarterTemplate';
+import {
+  CsvColumnMappingSelection,
   CustomSpeciesImportOverride,
   PlatformImportPreview,
   RawArchiveInput,
@@ -76,7 +85,7 @@ import {
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
 } from '../core/inputSanitization';
-import { copyTextWithFallback } from '../utils/webFileActions';
+import { copyTextWithFallback, downloadTextFile } from '../utils/webFileActions';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
@@ -119,8 +128,15 @@ export function ExternalImporterPanel({
 
   const [stagedArchives, setStagedArchives] = useState<RawArchiveInput[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
+  const [csvColumnMapping, setCsvColumnMapping] = useState<
+    Record<string, CsvColumnMappingSelection>
+  >({});
+  const [createPlaceholdersForUnlinked, setCreatePlaceholdersForUnlinked] =
+    useState<boolean>(true);
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
   const [copiedReport, setCopiedReport] = useState<boolean>(false);
+  const [manualCopyDiagnostic, setManualCopyDiagnostic] = useState<boolean>(false);
   const [isImporting, setIsImporting] = useState<boolean>(false);
   const [importAndOptimizePhotos, setImportAndOptimizePhotos] = useState<boolean>(true);
   const [importPreset, setImportPreset] = useState<ImageOptimizationPresetId>(
@@ -322,6 +338,9 @@ export function ExternalImporterPanel({
       fallbackSpeciesName: fallbackSpecies.trim() || 'Rabbit',
       customSpeciesOverrides,
       appendDeferredImageFilenamesToNotes: notePhotoFilenames,
+      csvColumnMapping:
+        Object.keys(csvColumnMapping).length > 0 ? csvColumnMapping : undefined,
+      createPlaceholderAncestorsForUnlinked: createPlaceholdersForUnlinked,
     })
       .then((parsed) => {
         if (cancelled || parseRequestSeqRef.current !== reqId) return;
@@ -349,6 +368,8 @@ export function ExternalImporterPanel({
     fallbackSpecies,
     customSpeciesOverrides,
     notePhotoFilenames,
+    csvColumnMapping,
+    createPlaceholdersForUnlinked,
   ]);
 
   const effectiveParseError = parseError || previewParseError;
@@ -480,6 +501,7 @@ export function ExternalImporterPanel({
     if (!preview) return;
     const mode = await copyTextWithFallback(preview.schemaDiagnosticReport);
     if (mode !== 'unsupported') {
+      setManualCopyDiagnostic(false);
       setCopiedReport(true);
       if (copiedReportTimerRef.current !== null) {
         clearTimeout(copiedReportTimerRef.current);
@@ -488,7 +510,52 @@ export function ExternalImporterPanel({
         copiedReportTimerRef.current = null;
         setCopiedReport(false);
       }, 2500);
+      return;
     }
+    setCopiedReport(false);
+    setManualCopyDiagnostic(true);
+  };
+
+  const handleDownloadStarterCsvTemplate = async () => {
+    setParseError(null);
+    setTemplateNotice(null);
+    try {
+      const targetSpecies =
+        fallbackSpecies.trim() || activeSpeciesName || snapshot.settings.defaultSpecies || 'Rabbit';
+      const template = buildStarterCsvTemplate(targetSpecies, snapshot.speciesProfiles);
+      await downloadTextFile(template.filename, template.content, 'text/csv;charset=utf-8');
+      setTemplateNotice(
+        `Downloaded ${template.filename} with standard columns (${template.headers.slice(0, 11).join(', ')}) and 3 linked sample rows. Fill it out in Excel or Google Sheets, then upload it using Universal Pedigree / Spreadsheets.`
+      );
+    } catch (err: unknown) {
+      setParseError(
+        err instanceof Error ? err.message : 'Could not download Starter CSV Template.'
+      );
+    }
+  };
+
+  const handleCsvColumnSelectionChange = (
+    entryPath: string,
+    header: string,
+    autoMatchedField: string,
+    nextValue: string
+  ) => {
+    const key = makeCsvColumnOverrideKey(entryPath, header);
+    setCsvColumnMapping((prev) => {
+      const next = { ...prev };
+      if (nextValue === '') {
+        if (autoMatchedField) {
+          next[key] = '__ignore__';
+        } else {
+          delete next[key];
+        }
+      } else if (nextValue === autoMatchedField) {
+        delete next[key];
+      } else {
+        next[key] = nextValue as CsvColumnMappingSelection;
+      }
+      return next;
+    });
   };
 
   const handleCommit = async () => {
@@ -523,6 +590,7 @@ export function ExternalImporterPanel({
 
       await onCommitImport(previewToCommit, optimizedPhotos, conflictSelections);
       setStagedArchives([]);
+      setCsvColumnMapping({});
       setConflictSelections({});
       setArchiveOverrides({});
       setShowImportLifecycleList(false);
@@ -579,7 +647,10 @@ export function ExternalImporterPanel({
           <select
             id={`${baseId}-platform`}
             value={selectedPlatformId}
-            onChange={(e) => setSelectedPlatformId(e.target.value)}
+            onChange={(e) => {
+              setSelectedPlatformId(e.target.value);
+              setCsvColumnMapping({});
+            }}
             className="w-full min-h-[40px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-semibold"
           >
             {PLATFORM_IMPORTERS.map((imp) => (
@@ -839,9 +910,24 @@ export function ExternalImporterPanel({
             className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Plus className="w-4 h-4" aria-hidden="true" />
-            {stagedArchives.length === 0
+            {importer.id === 'universal-pedigree'
+              ? stagedArchives.length === 0
+                ? 'Select CSV / .HTM / JSON / .ZIP File(s)'
+                : `Add Another File (#${stagedArchives.length + 1})`
+              : stagedArchives.length === 0
               ? 'Select HerdBoss .ZIP File(s) (1 or Both)'
               : `Add Companion .ZIP (#${stagedArchives.length + 1})`}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              void handleDownloadStarterCsvTemplate();
+            }}
+            className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-semibold text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Download className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+            <span>Download Starter CSV Template</span>
           </button>
 
           {stagedArchives.length > 0 && (
@@ -849,6 +935,7 @@ export function ExternalImporterPanel({
               type="button"
               onClick={() => {
                 setStagedArchives([]);
+                setCsvColumnMapping({});
                 setConflictSelections({});
                 setParseError(null);
               }}
@@ -858,6 +945,28 @@ export function ExternalImporterPanel({
             </button>
           )}
         </div>
+
+        {templateNotice && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/60 text-xs flex flex-wrap items-center justify-between gap-2"
+          >
+            <span className="text-[var(--barn-ink)]">{templateNotice}</span>
+            {selectedPlatformId !== 'universal-pedigree' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPlatformId('universal-pedigree');
+                  setCsvColumnMapping({});
+                }}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] shrink-0"
+              >
+                Switch to Spreadsheet Importer
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Staged ZIP Tray */}
         {stagedArchives.length > 0 && (
@@ -979,6 +1088,238 @@ export function ExternalImporterPanel({
               <span className="text-[var(--barn-ink)]">
                 {preview.speciesDetected.join(', ')}
               </span>
+            </div>
+          )}
+
+          {/* Interactive Spreadsheet Column-Mapping Preview (Non-HerdBoss CSV/TSV) */}
+          {preview.csvTables && preview.csvTables.length > 0 && (() => {
+            const totalCols = preview.csvTables.reduce((sum, t) => sum + t.columns.length, 0);
+            const unmappedCols = preview.csvTables.reduce(
+              (sum, t) => sum + t.columns.filter((c) => !c.assignedField).length,
+              0
+            );
+            const matchedCols = totalCols - unmappedCols;
+            const hasUserOverrides = Object.keys(csvColumnMapping).length > 0;
+            const identityOptions = CSV_TARGET_FIELD_OPTIONS.filter((o) => o.group === 'identity');
+            const pedigreeOptions = CSV_TARGET_FIELD_OPTIONS.filter((o) => o.group === 'pedigree');
+            const detailOptions = CSV_TARGET_FIELD_OPTIONS.filter((o) => o.group === 'details');
+
+            return (
+              <div
+                role="region"
+                aria-label="Spreadsheet Column Mapping"
+                className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-sage)]/60 space-y-3 text-xs"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex items-start gap-2.5">
+                    <FileSpreadsheet
+                      className="w-4 h-4 text-[var(--barn-sage)] shrink-0 mt-0.5"
+                      aria-hidden="true"
+                    />
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        {unmappedCols > 0
+                          ? `We matched ${matchedCols} of ${totalCols} columns — map the remaining ${unmappedCols}`
+                          : `We matched all ${matchedCols} spreadsheet columns`}
+                      </div>
+                      <p className="text-[11px] text-[var(--barn-muted)]">
+                        Adjust any column mapping below before merging. Sample cell values are shown
+                        for each header.
+                      </p>
+                    </div>
+                  </div>
+                  {hasUserOverrides && (
+                    <button
+                      type="button"
+                      onClick={() => setCsvColumnMapping({})}
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 shrink-0"
+                    >
+                      <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                      Reset Auto-Mapping
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  {preview.csvTables.map((table) => {
+                    const sortedCols = [...table.columns].sort((a, b) => {
+                      const aUnmapped = a.assignedField ? 1 : 0;
+                      const bUnmapped = b.assignedField ? 1 : 0;
+                      return aUnmapped - bUnmapped;
+                    });
+                    return (
+                      <div
+                        key={table.entryPath}
+                        className="rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] overflow-hidden"
+                      >
+                        <div className="px-3 py-2 bg-[var(--barn-subtle)]/40 border-b border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <span className="font-mono font-semibold text-[var(--barn-ink)] truncate">
+                            {table.entryPath}
+                          </span>
+                          <span className="text-[var(--barn-muted)]">
+                            {table.rowCount} row{table.rowCount === 1 ? '' : 's'} ·{' '}
+                            {table.columns.filter((c) => c.assignedField).length}/
+                            {table.columns.length} mapped
+                          </span>
+                        </div>
+
+                        <div className="max-h-72 overflow-y-auto divide-y divide-[var(--barn-border)]">
+                          {sortedCols.map((col, colIdx) => {
+                            const selectId = `${baseId}-colmap-${table.entryPath}-${colIdx}`;
+                            const isMapped = Boolean(col.assignedField);
+                            return (
+                              <div
+                                key={`${table.entryPath}::${col.header}`}
+                                className={`px-3 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                                  !isMapped ? 'bg-[var(--barn-terracotta-tint)]/40' : ''
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1 space-y-0.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <label
+                                      htmlFor={selectId}
+                                      className="font-mono font-semibold text-[var(--barn-ink)] truncate"
+                                    >
+                                      {col.header}
+                                    </label>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                        isMapped
+                                          ? 'bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] border border-[var(--barn-sage)]/40'
+                                          : 'bg-[var(--barn-terracotta-tint)] text-[var(--barn-terracotta)] border border-[var(--barn-terracotta)]/50'
+                                      }`}
+                                    >
+                                      {isMapped
+                                        ? col.isUserOverride
+                                          ? 'Custom Map'
+                                          : 'Matched'
+                                        : 'Unmapped'}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-[var(--barn-muted)] truncate">
+                                    {col.sampleValues.length > 0
+                                      ? `Samples: ${col.sampleValues.join(' · ')}`
+                                      : 'No sample values in rows'}
+                                  </div>
+                                </div>
+
+                                <select
+                                  id={selectId}
+                                  value={col.assignedField}
+                                  onChange={(e) =>
+                                    handleCsvColumnSelectionChange(
+                                      table.entryPath,
+                                      col.header,
+                                      col.autoMatchedField,
+                                      e.target.value
+                                    )
+                                  }
+                                  className="sm:w-60 min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-medium"
+                                >
+                                  <option value="">-- Ignore / Do not import --</option>
+                                  <optgroup label="Animal Identity">
+                                    {identityOptions.map((opt) => (
+                                      <option key={opt.key} value={opt.key}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Parentage & Pedigree">
+                                    {pedigreeOptions.map((opt) => (
+                                      <option key={opt.key} value={opt.key}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Weight, Registry & Barn Details">
+                                    {detailOptions.map((opt) => (
+                                      <option key={opt.key} value={opt.key}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                </select>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Pre-Import Highlighting for Unresolved Sire/Dam Links on Non-HerdBoss CSV Imports */}
+          {preview.unresolvedParentLinks && preview.unresolvedParentLinks.length > 0 && (
+            <div
+              role="region"
+              aria-label="Unresolved Sire and Dam Links"
+              className="p-4 rounded-xl bg-[var(--barn-terracotta-tint)]/60 border border-[var(--barn-terracotta)] space-y-3 text-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle
+                  className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                  aria-hidden="true"
+                />
+                <div className="space-y-0.5 min-w-0">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Unresolved Sire / Dam Links Highlighted ({preview.unresolvedParentLinks.length})
+                  </div>
+                  <p className="text-[11px] text-[var(--barn-muted)]">
+                    These Sire or Dam values did not match any animal row in your CSV or your
+                    existing barn herd. Check the column mapping above or choose how to handle them
+                    before importing:
+                  </p>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2 cursor-pointer select-none text-[11px] font-medium text-[var(--barn-ink)] bg-[var(--barn-surface)]/80 px-3 py-2 rounded-lg border border-[var(--barn-border)]">
+                <input
+                  type="checkbox"
+                  checked={createPlaceholdersForUnlinked}
+                  onChange={(e) => setCreatePlaceholdersForUnlinked(e.target.checked)}
+                  className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>
+                  Create placeholder ancestor records for unresolved Sire/Dam references (uncheck to
+                  leave them unlinked instead of creating stub records)
+                </span>
+              </label>
+
+              <div className="max-h-52 overflow-y-auto divide-y divide-[var(--barn-border)] rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                {preview.unresolvedParentLinks.map((link, idx) => (
+                  <div
+                    key={`${link.entryPath}-${link.rowNumber}-${link.role}-${idx}`}
+                    className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-mono text-[var(--barn-muted)] mr-1.5">
+                        Row {link.rowNumber}:
+                      </span>
+                      <span className="font-semibold text-[var(--barn-ink)]">
+                        {link.childName}
+                      </span>
+                      {link.childTattoo && (
+                        <span className="font-mono text-[var(--barn-muted)] ml-1">
+                          ({link.childTattoo})
+                        </span>
+                      )}
+                      <span className="mx-1.5 text-[var(--barn-muted)]">&rarr;</span>
+                      <span className="font-semibold text-[var(--barn-terracotta)] uppercase">
+                        {link.role}
+                      </span>{' '}
+                      <span className="font-mono bg-[var(--barn-canvas)] px-1.5 py-0.5 rounded border border-[var(--barn-border)]">
+                        {link.rawReference}
+                      </span>
+                    </div>
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[10px] font-medium text-[var(--barn-muted)] shrink-0">
+                      {link.placeholderCreated ? 'Placeholder Ancestor' : 'Left Unlinked'}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1772,9 +2113,27 @@ export function ExternalImporterPanel({
                   </button>
                 </div>
 
-                <pre className="max-h-48 overflow-auto p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px] whitespace-pre-wrap">
-                  {preview.schemaDiagnosticReport}
-                </pre>
+                {manualCopyDiagnostic ? (
+                  <div className="space-y-1.5">
+                    <p role="status" className="text-[11px] text-[var(--barn-terracotta)] font-medium">
+                      Clipboard access is blocked in this browser — tap the box below to select and
+                      copy manually.
+                    </p>
+                    <textarea
+                      readOnly
+                      aria-label="Selectable QA schema diagnostic report"
+                      value={preview.schemaDiagnosticReport}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onClick={(e) => e.currentTarget.select()}
+                      rows={8}
+                      className="w-full p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px]"
+                    />
+                  </div>
+                ) : (
+                  <pre className="max-h-48 overflow-auto p-2.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[11px] whitespace-pre-wrap">
+                    {preview.schemaDiagnosticReport}
+                  </pre>
+                )}
               </div>
             )}
           </div>

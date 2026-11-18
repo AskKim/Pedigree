@@ -19,71 +19,31 @@
  */
 
 import { generateUuid, nowIsoUtc } from '../core/models';
+import type {
+  DiagnosticCategory,
+  DiagnosticConfig,
+  DiagnosticLogEntry,
+  DiagnosticLogLevel,
+  DiagnosticSummary,
+  LogRetentionDays,
+  MemorySample,
+} from '../core/supportBundle';
 import {
   BackgroundPausedError,
   notifyBackgroundTransition,
 } from './backgroundFreezeCoordinator';
 
+export type {
+  DiagnosticCategory,
+  DiagnosticConfig,
+  DiagnosticLogEntry,
+  DiagnosticLogLevel,
+  DiagnosticSummary,
+  LogRetentionDays,
+  MemorySample,
+};
+
 export const DEFAULT_SUPPORT_EMAIL = '';
-
-export type DiagnosticLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-
-export type DiagnosticCategory =
-  | 'runtime'
-  | 'promise'
-  | 'react'
-  | 'memory'
-  | 'storage'
-  | 'media'
-  | 'lifecycle'
-  | 'console';
-
-export interface MemorySample {
-  usedHeapBytes: number | null;
-  totalHeapBytes: number | null;
-  heapLimitBytes: number | null;
-  heapPercent: number | null;
-  deviceMemoryGb: number | null;
-  storageUsageBytes?: number;
-  storageQuotaBytes?: number;
-}
-
-export interface DiagnosticLogEntry {
-  id: string;
-  timestampIso: string;
-  timestampMs: number;
-  sessionId: string;
-  level: DiagnosticLogLevel;
-  category: DiagnosticCategory;
-  route: string;
-  message: string;
-  stack?: string;
-  componentStack?: string;
-  details?: string;
-  memory?: MemorySample;
-}
-
-export type LogRetentionDays = 3 | 7 | 14;
-
-export interface DiagnosticConfig {
-  verboseEnabled: boolean;
-  retentionDays: LogRetentionDays;
-  supportEmail: string;
-}
-
-export interface DiagnosticSummary {
-  totalEntries: number;
-  errorCount: number;
-  memoryWarningCount: number;
-  crashCount: number;
-  oldestEntryIso: string | null;
-  newestEntryIso: string | null;
-  currentMemory: MemorySample;
-  config: DiagnosticConfig;
-  sessionId: string;
-  userAgent: string;
-  platformInfo: string;
-}
 
 const LOG_IDB_NAME = 'community_pedigree_diagnostics_v1';
 const LOG_STORE_NAME = 'diagnostic_logs';

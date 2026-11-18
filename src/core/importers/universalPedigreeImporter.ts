@@ -18,12 +18,14 @@
  */
 
 import { parseGenotypeString } from '../geneticsEngine';
-import { isSafeRecordKey, sanitizePlainText, sanitizeSingleLineText } from '../inputSanitization';
+import { sanitizePlainText, sanitizeSingleLineText } from '../inputSanitization';
 import {
   Animal,
   BarnDatabaseSnapshot,
   BiologicalSex,
+  isAnimalArchived,
   isSameSpecies,
+  normalizeAnimalStatus,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
@@ -31,7 +33,6 @@ import {
 } from '../models';
 import {
   extractVirtualEntries,
-  normalizeColumnKey,
   normalizeFlexibleDateIso,
   parseDelimitedTable,
   parseFlexibleWeightToGrams,
@@ -43,12 +44,19 @@ import {
   PreexistingAnimalMatch,
 } from './conflictResolver';
 import {
+  CsvTableColumnResolution,
+  resolveCsvColumnAssignments,
+} from './csvColumnMapper';
+import {
+  CsvTableMappingSummary,
+  CsvTargetFieldKey,
   CustomSpeciesImportOverride,
   DetectedTableDiagnostic,
   ImporterRunOptions,
   PlatformImporter,
   PlatformImportPreview,
   RawArchiveInput,
+  UnresolvedParentLink,
   VirtualArchiveEntry,
 } from './importerTypes';
 
@@ -621,6 +629,7 @@ function parseEvansHtmlEntry(
 }
 
 interface MultiGenColumnSpec {
+  targetField: CsvTargetFieldKey;
   childRole: 'subject' | 'sire' | 'dam' | 'pgs' | 'pgd' | 'mgs' | 'mgd';
   linkSide: 'sire' | 'dam';
   sex: BiologicalSex;
@@ -629,51 +638,57 @@ interface MultiGenColumnSpec {
 
 const MULTI_GEN_COLUMN_SPECS: MultiGenColumnSpec[] = [
   {
+    targetField: 'sire',
     childRole: 'subject',
     linkSide: 'sire',
     sex: 'Male',
-    aliases: ['sireid', 'sire', 'sirename', 'siretag', 'father', 'fatherid', 'fathername', 'buck', 'ram', 'bull', 'stallion', 'stud'],
+    aliases: ['sireid', 'siretattooid', 'sire', 'sirename', 'siretag', 'father', 'fatherid', 'fathername', 'buck', 'ram', 'bull', 'stallion', 'stud'],
   },
   {
+    targetField: 'dam',
     childRole: 'subject',
     linkSide: 'dam',
     sex: 'Female',
-    aliases: ['damid', 'dam', 'damname', 'damtag', 'mother', 'motherid', 'mothername', 'doe', 'ewe', 'cow', 'mare'],
+    aliases: ['damid', 'damtattooid', 'dam', 'damname', 'damtag', 'mother', 'motherid', 'mothername', 'doe', 'ewe', 'cow', 'mare'],
   },
   // Gen 2
   {
+    targetField: 'pgs',
     childRole: 'sire',
     linkSide: 'sire',
     sex: 'Male',
     aliases: ['pgs', 'siresire', 'siressire', 'paternalgrandsire', 'fatherfather', 'fathersfather', 'ss', 'ff', 'g2s1'],
   },
   {
+    targetField: 'pgd',
     childRole: 'sire',
     linkSide: 'dam',
     sex: 'Female',
     aliases: ['pgd', 'siredam', 'siresdam', 'paternalgranddam', 'fathermother', 'fathersmother', 'sd', 'fm', 'g2d1'],
   },
   {
+    targetField: 'mgs',
     childRole: 'dam',
     linkSide: 'sire',
     sex: 'Male',
     aliases: ['mgs', 'damsire', 'damssire', 'maternalgrandsire', 'motherfather', 'mothersfather', 'ds', 'mf', 'g2s2'],
   },
   {
+    targetField: 'mgd',
     childRole: 'dam',
     linkSide: 'dam',
     sex: 'Female',
     aliases: ['mgd', 'damdam', 'damsdam', 'maternalgranddam', 'mothermother', 'mothersmother', 'dd', 'mm', 'g2d2'],
   },
   // Gen 3 (great-grandparents)
-  { childRole: 'pgs', linkSide: 'sire', sex: 'Male', aliases: ['sss', 'fff', 'pgssire', 'siresiresire'] },
-  { childRole: 'pgs', linkSide: 'dam', sex: 'Female', aliases: ['ssd', 'ffm', 'pgsdam', 'siresiredam'] },
-  { childRole: 'pgd', linkSide: 'sire', sex: 'Male', aliases: ['sds', 'fmf', 'pgdsire', 'siredamsire'] },
-  { childRole: 'pgd', linkSide: 'dam', sex: 'Female', aliases: ['sdd', 'fmm', 'pgddam', 'siredamdam'] },
-  { childRole: 'mgs', linkSide: 'sire', sex: 'Male', aliases: ['dss', 'mff', 'mgssire', 'damsiresire'] },
-  { childRole: 'mgs', linkSide: 'dam', sex: 'Female', aliases: ['dsd', 'mfm', 'mgsdam', 'damsiredam'] },
-  { childRole: 'mgd', linkSide: 'sire', sex: 'Male', aliases: ['dds', 'mmf', 'mgdsire', 'damdamsire'] },
-  { childRole: 'mgd', linkSide: 'dam', sex: 'Female', aliases: ['ddd', 'mmm', 'mgddam', 'damdamdam'] },
+  { targetField: 'sss', childRole: 'pgs', linkSide: 'sire', sex: 'Male', aliases: ['sss', 'fff', 'pgssire', 'siresiresire'] },
+  { targetField: 'ssd', childRole: 'pgs', linkSide: 'dam', sex: 'Female', aliases: ['ssd', 'ffm', 'pgsdam', 'siresiredam'] },
+  { targetField: 'sds', childRole: 'pgd', linkSide: 'sire', sex: 'Male', aliases: ['sds', 'fmf', 'pgdsire', 'siredamsire'] },
+  { targetField: 'sdd', childRole: 'pgd', linkSide: 'dam', sex: 'Female', aliases: ['sdd', 'fmm', 'pgddam', 'siredamdam'] },
+  { targetField: 'dss', childRole: 'mgs', linkSide: 'sire', sex: 'Male', aliases: ['dss', 'mff', 'mgssire', 'damsiresire'] },
+  { targetField: 'dsd', childRole: 'mgs', linkSide: 'dam', sex: 'Female', aliases: ['dsd', 'mfm', 'mgsdam', 'damsiredam'] },
+  { targetField: 'dds', childRole: 'mgd', linkSide: 'sire', sex: 'Male', aliases: ['dds', 'mmf', 'mgdsire', 'damdamsire'] },
+  { targetField: 'ddd', childRole: 'mgd', linkSide: 'dam', sex: 'Female', aliases: ['ddd', 'mmm', 'mgddam', 'damdamdam'] },
 ];
 
 function createMissingSpeciesProfile(
@@ -752,8 +767,76 @@ export const UniversalPedigreeImporter: PlatformImporter = {
     const animalsById = new Map<string, Animal>();
     const matchedExistingByAnimalId = new Map<string, PreexistingAnimalMatch>();
     const animalLookup = new Map<string, string>();
+    const resolvedRealAnimalIds = new Set<string>();
+    const csvTables: CsvTableMappingSummary[] = [];
+    const unresolvedParentLinks: UnresolvedParentLink[] = [];
     let parentLinksResolved = 0;
     let placeholderAncestorsCreated = 0;
+
+    interface PendingCsvParentRow {
+      entryPath: string;
+      rowNumber: number;
+      row: Record<string, string>;
+      resolution: CsvTableColumnResolution;
+      subject: Animal;
+      species: string;
+      breed: string;
+    }
+    const pendingCsvParentRows: PendingCsvParentRow[] = [];
+
+    const existingBarnById = new Map<string, Animal>();
+    const existingBarnLookup = new Map<string, Animal>();
+    const existingBarnNameCounts = new Map<string, number>();
+    for (const ex of existingSnapshot.animals) {
+      existingBarnById.set(ex.id, ex);
+      const spKey = ex.species.trim().toLowerCase();
+      const nameClean = (ex.name || '').trim().toLowerCase();
+      if (nameClean) {
+        const nk = `${spKey}::${nameClean}`;
+        existingBarnNameCounts.set(nk, (existingBarnNameCounts.get(nk) || 0) + 1);
+      }
+    }
+    for (const ex of existingSnapshot.animals) {
+      const spKey = ex.species.trim().toLowerCase();
+      const regClean = (ex.registrationNumber || '').trim().toLowerCase();
+      const tatClean = (ex.tattoo || '').trim().toLowerCase();
+      const idClean = (ex.id || '').trim().toLowerCase();
+      const nameClean = (ex.name || '').trim().toLowerCase();
+      if (idClean && !existingBarnLookup.has(`${spKey}::id::${idClean}`)) {
+        existingBarnLookup.set(`${spKey}::id::${idClean}`, ex);
+      }
+      if (regClean && !existingBarnLookup.has(`${spKey}::reg::${regClean}`)) {
+        existingBarnLookup.set(`${spKey}::reg::${regClean}`, ex);
+      }
+      if (tatClean && !existingBarnLookup.has(`${spKey}::tat::${tatClean}`)) {
+        existingBarnLookup.set(`${spKey}::tat::${tatClean}`, ex);
+      }
+      if (
+        nameClean &&
+        (existingBarnNameCounts.get(`${spKey}::${nameClean}`) || 0) === 1 &&
+        !existingBarnLookup.has(`${spKey}::name::${nameClean}`)
+      ) {
+        existingBarnLookup.set(`${spKey}::name::${nameClean}`, ex);
+      }
+    }
+
+    const findExistingBarnParent = (
+      species: string,
+      tokens: Array<string | undefined>
+    ): Animal | undefined => {
+      const spKey = species.trim().toLowerCase();
+      for (const rawTok of tokens) {
+        const clean = (rawTok || '').trim().toLowerCase();
+        if (!clean) continue;
+        const hit =
+          existingBarnLookup.get(`${spKey}::id::${clean}`) ||
+          existingBarnLookup.get(`${spKey}::reg::${clean}`) ||
+          existingBarnLookup.get(`${spKey}::tat::${clean}`) ||
+          existingBarnLookup.get(`${spKey}::name::${clean}`);
+        if (hit) return hit;
+      }
+      return undefined;
+    };
 
     const registerToken = (species: string, token: string | undefined, id: string) => {
       const clean = (token || '').trim().toLowerCase();
@@ -764,9 +847,16 @@ export const UniversalPedigreeImporter: PlatformImporter = {
 
     const resolveOrInsertAnimal = (
       species: string,
-      meta: ParsedCellMeta,
+      meta: ParsedCellMeta & {
+        status?: Animal['status'];
+        archived?: boolean;
+        cageLocation?: string;
+        breederName?: string;
+        ownerName?: string;
+      },
       seedHint: string,
-      defaultBreed = ''
+      defaultBreed = '',
+      markAsRealSubject = false
     ): Animal => {
       const spLower = species.trim().toLowerCase();
       const lookupCandidates = [meta.tattoo, meta.registrationNumber, meta.name]
@@ -786,11 +876,15 @@ export const UniversalPedigreeImporter: PlatformImporter = {
             if (!existing.registrationNumber && meta.registrationNumber) existing.registrationNumber = meta.registrationNumber;
             if (!existing.grandChampionNumber && meta.grandChampionNumber) existing.grandChampionNumber = meta.grandChampionNumber;
             if (!existing.legsCount && meta.legsCount) existing.legsCount = meta.legsCount;
+            if (!existing.cageLocation && meta.cageLocation) existing.cageLocation = meta.cageLocation;
+            if (!existing.breederName && meta.breederName) existing.breederName = meta.breederName;
+            if (!existing.ownerName && meta.ownerName) existing.ownerName = meta.ownerName;
             if (!existing.genotypeRaw && meta.genotypeRaw) {
               existing.genotypeRaw = meta.genotypeRaw;
               existing.genotype = parseGenotypeString(meta.genotypeRaw, species);
             }
             if (existing.sex === 'Unknown' && meta.sex !== 'Unknown') existing.sex = meta.sex;
+            if (markAsRealSubject) resolvedRealAnimalIds.add(existing.id);
             return existing;
           }
         }
@@ -815,6 +909,10 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         matchedExistingByAnimalId.set(finalId, preexisting);
       }
 
+      const resolvedStatus = meta.status ?? 'Active';
+      const resolvedArchived =
+        meta.archived !== undefined ? meta.archived : isAnimalArchived({ status: resolvedStatus });
+
       const created: Animal = {
         id: finalId,
         tattoo: meta.tattoo,
@@ -823,8 +921,8 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         breed: meta.breed || defaultBreed,
         variety: meta.variety,
         sex: meta.sex,
-        status: 'Active',
-        archived: false,
+        status: resolvedStatus,
+        archived: resolvedArchived,
         birthDateIso: meta.birthDateIso,
         weightGrams: meta.weightGrams,
         genotype: meta.genotypeRaw ? parseGenotypeString(meta.genotypeRaw, species) : [],
@@ -832,9 +930,9 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         registrationNumber: meta.registrationNumber,
         grandChampionNumber: meta.grandChampionNumber,
         legsCount: meta.legsCount,
-        cageLocation: '',
-        breederName: '',
-        ownerName: '',
+        cageLocation: meta.cageLocation || '',
+        breederName: meta.breederName || '',
+        ownerName: meta.ownerName || '',
         sireId: '',
         damId: '',
         notes: meta.notes,
@@ -842,13 +940,20 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         updatedAt: ts,
       };
       animalsById.set(finalId, created);
+      if (markAsRealSubject || preexisting) {
+        resolvedRealAnimalIds.add(finalId);
+      }
       registerToken(species, meta.tattoo, finalId);
       registerToken(species, meta.registrationNumber, finalId);
       registerToken(species, meta.name, finalId);
       return created;
     };
 
-    const linkParentSafe = (child: Animal, role: 'sire' | 'dam', parent: Animal) => {
+    const linkParentSafe = (
+      child: Animal,
+      role: 'sire' | 'dam',
+      parent: Pick<Animal, 'id'>
+    ) => {
       if (child.id === parent.id) return;
       if (role === 'sire' && child.sireId !== parent.id) {
         child.sireId = parent.id;
@@ -1013,7 +1118,7 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         }
       }
 
-      // 3. Delimited spreadsheet (CSV / TSV / Pipe / Semicolon)
+      // 3. Delimited spreadsheet (CSV / TSV / Pipe / Semicolon) — Pass 1: subject rows + column mapping
       try {
         const { headers, rows } = parseDelimitedTable(text);
         if (headers.length === 0 || rows.length === 0) {
@@ -1021,66 +1126,53 @@ export const UniversalPedigreeImporter: PlatformImporter = {
           continue;
         }
 
-        const normMap = new Map<string, string>();
-        for (const h of headers) {
-          const nk = normalizeColumnKey(h);
-          if (nk && !normMap.has(nk)) normMap.set(nk, h);
-        }
-        const usedCols = new Set<string>();
-        const pick = (row: Record<string, string>, candidates: string[]): string => {
-          for (const c of candidates) {
-            const actual = normMap.get(c);
-            if (actual !== undefined && isSafeRecordKey(actual)) {
-              usedCols.add(actual);
-              const val = row[actual];
-              if (val) return val;
-            }
+        const resolution = resolveCsvColumnAssignments(
+          headers,
+          rows,
+          options.csvColumnMapping,
+          entry.entryPath
+        );
+        csvTables.push({
+          archiveName: entry.archiveName,
+          entryPath: entry.entryPath,
+          rowCount: rows.length,
+          columns: resolution.columns,
+        });
+
+        const pickField = (row: Record<string, string>, field: CsvTargetFieldKey): string => {
+          const matchedHeaders = resolution.headersByField.get(field);
+          if (!matchedHeaders || matchedHeaders.length === 0) return '';
+          for (const hdr of matchedHeaders) {
+            const val = (row[hdr] || '').trim();
+            if (val) return val;
           }
           return '';
         };
 
         rows.forEach((row, rIdx) => {
-          const spRaw = pick(row, ['species', 'animaltype', 'type', 'livestock']);
+          const spRaw = pickField(row, 'species');
           const sp = ensureSpecies(spRaw, headers.join(' '), entry.baseName);
 
-          const name = pick(row, [
-            'name',
-            'animalname',
-            'registeredname',
-            'callname',
-            'rabbitname',
-            'goatname',
-            'animal',
-          ]);
-          const tattoo = pick(row, [
-            'tattoo',
-            'eartattoo',
-            'eartag',
-            'primarytag',
-            'tag',
-            'tagnumber',
-            'id',
-            'animalid',
-            'eid',
-          ]);
+          const name = pickField(row, 'name');
+          const tattoo = pickField(row, 'tattoo');
           if (!name && !tattoo) return;
 
-          const breed = pick(row, ['breed', 'primarybreed']);
-          const variety = pick(row, ['variety', 'color', 'coatcolor', 'coat', 'markings']);
-          const sex = normalizeSexLoose(pick(row, ['sex', 'gender']));
-          const birthDateIso = normalizeFlexibleDateIso(
-            pick(row, ['dob', 'birthdate', 'dateofbirth', 'born', 'whelped', 'kindled'])
-          );
-          const wtUnit = pick(row, ['weightunit', 'wtunit', 'unit']);
-          const weightGrams = parseFlexibleWeightToGrams(
-            pick(row, ['weight', 'wt', 'weightlbs', 'weightkg', 'currentweight', 'lbs']),
-            wtUnit
-          );
-          const regNum = pick(row, ['registrationnumber', 'regnumber', 'regno', 'reg', 'arbareg']);
-          const gcNum = pick(row, ['grandchampionnumber', 'gcnumber', 'gcno', 'gc']);
-          const legs = Math.max(0, Number(pick(row, ['legs', 'legscount', 'showlegs'])) || 0);
-          const genotypeRaw = pick(row, ['genotype', 'genotyperaw', 'colorcode']);
-          const notes = pick(row, ['notes', 'comments', 'remarks', 'memo']);
+          const breed = pickField(row, 'breed');
+          const variety = pickField(row, 'variety');
+          const sex = normalizeSexLoose(pickField(row, 'sex'));
+          const birthDateIso = normalizeFlexibleDateIso(pickField(row, 'birthDateIso'));
+          const wtUnit = pickField(row, 'weightUnit');
+          const weightGrams = parseFlexibleWeightToGrams(pickField(row, 'weight'), wtUnit);
+          const regNum = pickField(row, 'registrationNumber');
+          const gcNum = pickField(row, 'grandChampionNumber');
+          const legs = Math.max(0, Number(pickField(row, 'legsCount')) || 0);
+          const genotypeRaw = pickField(row, 'genotypeRaw');
+          const rawStatus = pickField(row, 'status');
+          const status = rawStatus ? normalizeAnimalStatus(rawStatus) : 'Active';
+          const cageLocation = sanitizeSingleLineText(pickField(row, 'cageLocation'), 100);
+          const breederName = sanitizeSingleLineText(pickField(row, 'breederName'), 140);
+          const ownerName = sanitizeSingleLineText(pickField(row, 'ownerName'), 140);
+          const notes = pickField(row, 'notes');
 
           const subject = resolveOrInsertAnimal(
             sp.name,
@@ -1096,54 +1188,28 @@ export const UniversalPedigreeImporter: PlatformImporter = {
               legsCount: legs,
               genotypeRaw,
               sex,
+              status,
+              archived: isAnimalArchived({ status }),
+              cageLocation,
+              breederName,
+              ownerName,
               notes,
               isUnknown: false,
             },
-            `${entry.entryPath}-r${rIdx}`
+            `${entry.entryPath}-r${rIdx}`,
+            '',
+            true
           );
 
-          // Synthesize and link multi-gen ancestors (Gen 1, Gen 2, Gen 3) from flat spreadsheet columns
-          const roleAnimals: Record<'subject' | 'sire' | 'dam' | 'pgs' | 'pgd' | 'mgs' | 'mgd', Animal | undefined> = {
+          pendingCsvParentRows.push({
+            entryPath: entry.entryPath,
+            rowNumber: rIdx + 1,
+            row,
+            resolution,
             subject,
-            sire: undefined,
-            dam: undefined,
-            pgs: undefined,
-            pgd: undefined,
-            mgs: undefined,
-            mgd: undefined,
-          };
-
-          for (const spec of MULTI_GEN_COLUMN_SPECS) {
-            const rawAncRef = pick(row, spec.aliases).trim();
-            if (!rawAncRef || /^(?:unknown|none|n\/a|na|-|0)$/i.test(rawAncRef)) continue;
-            const childAnimal = roleAnimals[spec.childRole];
-            if (!childAnimal) continue;
-
-            const ancMeta = parseAncestorTextLines([rawAncRef], spec.sex);
-            if (ancMeta.isUnknown || !ancMeta.name) continue;
-
-            const alreadyCount = animalsById.size;
-            const ancAnimal = resolveOrInsertAnimal(
-              sp.name,
-              ancMeta,
-              `${entry.entryPath}-r${rIdx}-${spec.childRole}-${spec.linkSide}`,
-              breed
-            );
-            if (animalsById.size > alreadyCount && spec.childRole !== 'subject') {
-              placeholderAncestorsCreated++;
-            } else if (animalsById.size > alreadyCount) {
-              // Note: Sire/Dam may be ancestors referenced only by name
-              placeholderAncestorsCreated++;
-            }
-            linkParentSafe(childAnimal, spec.linkSide, ancAnimal);
-
-            if (spec.childRole === 'subject' && spec.linkSide === 'sire') roleAnimals.sire = ancAnimal;
-            else if (spec.childRole === 'subject' && spec.linkSide === 'dam') roleAnimals.dam = ancAnimal;
-            else if (spec.childRole === 'sire' && spec.linkSide === 'sire') roleAnimals.pgs = ancAnimal;
-            else if (spec.childRole === 'sire' && spec.linkSide === 'dam') roleAnimals.pgd = ancAnimal;
-            else if (spec.childRole === 'dam' && spec.linkSide === 'sire') roleAnimals.mgs = ancAnimal;
-            else if (spec.childRole === 'dam' && spec.linkSide === 'dam') roleAnimals.mgd = ancAnimal;
-          }
+            species: sp.name,
+            breed,
+          });
         });
 
         diagnostics.push({
@@ -1152,13 +1218,138 @@ export const UniversalPedigreeImporter: PlatformImporter = {
           classification: 'animals',
           rowCount: rows.length,
           headers,
-          matchedColumns: headers.filter((h) => usedCols.has(h)),
-          unmappedColumns: headers.filter((h) => !usedCols.has(h)),
+          matchedColumns: resolution.matchedColumns,
+          unmappedColumns: resolution.unmappedColumns,
         });
       } catch (tableErr) {
         warnings.push(
           `Could not parse "${entry.baseName}": ${tableErr instanceof Error ? tableErr.message : 'Invalid file format.'}`
         );
+      }
+    }
+
+    // Pass 2: Resolve CSV Sire/Dam & multi-gen ancestor links after all subject rows are indexed
+    const createPlaceholdersForUnlinked = options.createPlaceholderAncestorsForUnlinked !== false;
+    for (const item of pendingCsvParentRows) {
+      const pickItemField = (field: CsvTargetFieldKey): string => {
+        const matchedHeaders = item.resolution.headersByField.get(field);
+        if (!matchedHeaders || matchedHeaders.length === 0) return '';
+        for (const hdr of matchedHeaders) {
+          const val = (item.row[hdr] || '').trim();
+          if (val) return val;
+        }
+        return '';
+      };
+
+      const roleAnimals: Record<
+        'subject' | 'sire' | 'dam' | 'pgs' | 'pgd' | 'mgs' | 'mgd',
+        Pick<Animal, 'id'> | undefined
+      > = {
+        subject: item.subject,
+        sire: undefined,
+        dam: undefined,
+        pgs: undefined,
+        pgd: undefined,
+        mgs: undefined,
+        mgd: undefined,
+      };
+
+      for (const spec of MULTI_GEN_COLUMN_SPECS) {
+        const rawAncRef = pickItemField(spec.targetField);
+        if (!rawAncRef || /^(?:unknown|none|n\/a|na|-|0)$/i.test(rawAncRef)) continue;
+        const childTarget = roleAnimals[spec.childRole];
+        if (!childTarget) continue;
+
+        const childAnimal = animalsById.get(childTarget.id);
+        if (!childAnimal) continue;
+
+        const ancMeta = parseAncestorTextLines([rawAncRef], spec.sex);
+        if (ancMeta.isUnknown || !ancMeta.name) continue;
+
+        const spLower = item.species.trim().toLowerCase();
+        const candidateTokens = [
+          ancMeta.tattoo,
+          ancMeta.registrationNumber,
+          ancMeta.name,
+          rawAncRef,
+        ]
+          .map((t) => (t || '').trim().toLowerCase())
+          .filter((t) => t.length > 0 && t !== 'imported ancestor');
+
+        let matchedRealAnimal: Animal | undefined;
+        let matchedPlaceholderId: string | undefined;
+
+        for (const tok of candidateTokens) {
+          const hitId = animalLookup.get(`${spLower}::${tok}`);
+          if (hitId) {
+            if (resolvedRealAnimalIds.has(hitId)) {
+              matchedRealAnimal = animalsById.get(hitId);
+              break;
+            }
+            if (!matchedPlaceholderId) {
+              matchedPlaceholderId = hitId;
+            }
+          }
+        }
+
+        if (!matchedRealAnimal) {
+          matchedRealAnimal = findExistingBarnParent(item.species, [
+            ancMeta.tattoo,
+            ancMeta.registrationNumber,
+            ancMeta.name,
+            rawAncRef,
+          ]);
+        }
+
+        let resolvedParentTarget: Pick<Animal, 'id'> | undefined = matchedRealAnimal;
+
+        if (!resolvedParentTarget) {
+          if (createPlaceholdersForUnlinked) {
+            const alreadyCount = animalsById.size;
+            const placeholderAnimal = matchedPlaceholderId
+              ? animalsById.get(matchedPlaceholderId)
+              : resolveOrInsertAnimal(
+                  item.species,
+                  ancMeta,
+                  `${item.entryPath}-r${item.rowNumber}-${spec.childRole}-${spec.linkSide}`,
+                  item.breed,
+                  false
+                );
+            if (animalsById.size > alreadyCount) {
+              placeholderAncestorsCreated++;
+            }
+            if (placeholderAnimal) {
+              registerToken(item.species, rawAncRef, placeholderAnimal.id);
+              resolvedParentTarget = placeholderAnimal;
+            }
+          }
+
+          if (spec.childRole === 'subject') {
+            unresolvedParentLinks.push({
+              entryPath: item.entryPath,
+              rowNumber: item.rowNumber,
+              childAnimalId: item.subject.id,
+              childName: item.subject.name,
+              childTattoo: item.subject.tattoo,
+              species: item.species,
+              role: spec.linkSide,
+              rawReference: rawAncRef,
+              placeholderCreated: Boolean(resolvedParentTarget),
+              placeholderAnimalId: resolvedParentTarget?.id,
+            });
+          }
+        }
+
+        if (!resolvedParentTarget) continue;
+
+        linkParentSafe(childAnimal, spec.linkSide, resolvedParentTarget);
+
+        if (spec.childRole === 'subject' && spec.linkSide === 'sire') roleAnimals.sire = resolvedParentTarget;
+        else if (spec.childRole === 'subject' && spec.linkSide === 'dam') roleAnimals.dam = resolvedParentTarget;
+        else if (spec.childRole === 'sire' && spec.linkSide === 'sire') roleAnimals.pgs = resolvedParentTarget;
+        else if (spec.childRole === 'sire' && spec.linkSide === 'dam') roleAnimals.pgd = resolvedParentTarget;
+        else if (spec.childRole === 'dam' && spec.linkSide === 'sire') roleAnimals.mgs = resolvedParentTarget;
+        else if (spec.childRole === 'dam' && spec.linkSide === 'dam') roleAnimals.mgd = resolvedParentTarget;
       }
     }
 
@@ -1234,6 +1425,8 @@ export const UniversalPedigreeImporter: PlatformImporter = {
       tasks: [],
       careLogs: [],
       shows: [],
+      csvTables,
+      unresolvedParentLinks,
       schemaDiagnosticReport: reportLines.join('\n'),
     };
   },

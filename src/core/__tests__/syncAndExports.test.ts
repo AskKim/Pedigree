@@ -17,6 +17,7 @@ import {
   exportAnimalsCsv,
   exportBarnBackupJson,
   exportSpeciesBackupJson,
+  generateBarnBackupJsonChunks,
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
   mergeBarnSnapshots,
@@ -394,5 +395,62 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(kitDto).toBeTruthy();
     expect(kitDto?.carrierDisclosures).toContain('Lineage Potential: Vienna (Blue-Eyed White) (Sire)');
     expect(kitDto?.carrierDisclosures).toContain('Cleared: Rex Fur (DNA Clear)');
+  });
+
+  it('streams backup JSON chunks via generateBarnBackupJsonChunks with exact parity to exportBarnBackupJson', () => {
+    const animals = Array.from({ length: 10 }, (_, idx) =>
+      makeAnimal(`a-${idx + 1}`, {
+        name: `Animal ${idx + 1}`,
+        species: 'Rabbit',
+        sex: idx % 2 === 0 ? 'Male' : 'Female',
+        notes: `Detailed breeding & show record #${idx + 1}: ` + 'pedigree-note-'.repeat(40),
+      })
+    );
+    const snap = makeEmptySnapshot({
+      settings: makeSettings({ barnName: 'Chunked Barn', breederName: 'Alex' }),
+      animals,
+      animalPhotos: [
+        {
+          id: 'p1',
+          species: 'Rabbit',
+          animalId: 'a-1',
+          isPrimary: true,
+          sortOrder: 0,
+          caption: 'Cover',
+          originalFileName: 'a1.png',
+          mimeType: 'image/png',
+          width: 1,
+          height: 1,
+          originalBytes: 120,
+          storedBytes: 68,
+          thumbnailDataUrl: 'data:image/png;base64,AAAA',
+          dataUrl: 'data:image/png;base64,BBBB',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const chunks = Array.from(
+      generateBarnBackupJsonChunks(snap, { backupScope: 'species', targetSpecies: 'Rabbit' }, 4096)
+    );
+    expect(chunks.length).toBeGreaterThan(2);
+
+    const streamedJoined = chunks.join('');
+    const monolithic = exportBarnBackupJson(snap, {
+      backupScope: 'species',
+      targetSpecies: 'Rabbit',
+    });
+
+    const streamedParsed = JSON.parse(streamedJoined);
+    const monolithicParsed = JSON.parse(monolithic);
+    // Normalize millisecond timestamps in case clock ticked between calls
+    streamedParsed.exportedAtIsoUtc = monolithicParsed.exportedAtIsoUtc;
+    streamedParsed.exportedAtLocal = monolithicParsed.exportedAtLocal;
+    expect(streamedParsed).toEqual(monolithicParsed);
+
+    const restored = parseBarnBackupJson(streamedJoined, makeSettings());
+    expect(restored.animals).toHaveLength(10);
+    expect(restored.animalPhotos).toHaveLength(1);
   });
 });
