@@ -265,6 +265,7 @@ export type WorkspaceRoute =
   | 'pedigree'
   | 'reports'
   | 'memo'
+  | 'importExport'
   | 'settings';
 
 export type BreedingTaskCheckoffAction =

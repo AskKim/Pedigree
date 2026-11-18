@@ -2,26 +2,22 @@
  * @license
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Barn Preferences, Appearance Studio, PWA Storage Protection, Multi-Worker Local Sync,
- * Custom Livestock, External Platform Importers & Global Reset Screen (`Settings`).
+ * Barn Preferences, Appearance Studio, PWA Storage Protection, Diagnostics & Global Reset (`Settings`).
+ * Links directly to the consolidated Import/Export Hub (`ImportExportHubScreen`) for backups,
+ * native restores, multi-worker delta sync, external importers, and non-native exporters.
  */
 
 import {
   AlertTriangle,
-  Archive,
+  ArrowLeftRight,
   Bell,
   CalendarPlus,
   CheckCircle2,
   Database,
   Download,
-  Eye,
-  EyeOff,
-  FileSpreadsheet,
   FolderSync,
   HardDrive,
   HelpCircle,
-  Images,
-  KeyRound,
   Loader2,
   Lock,
   LogOut,
@@ -30,7 +26,6 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
-  Share2,
   ShieldCheck,
   Smartphone,
   Sun,
@@ -40,59 +35,21 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import {
-  BackgroundPausedError,
-  clearPausedBackgroundJob,
-  registerPausedBackgroundJob,
-} from '../storage/backgroundFreezeCoordinator';
-import { emitAsyncErrorToast } from '../storage/crashLogger';
-import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
-import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
-import {
-  buildCompleteBackupZipOffThread,
-  buildPhotosOnlyZipOffThread,
-  inspectBackupArchiveOffThread,
-} from '../storage/offThreadWorkerClient';
-import {
-  decryptBytesWithPassphrase,
-  decryptTextWithPassphrase,
-  encryptBytesWithPassphrase,
-  encryptTextWithPassphrase,
-  supportsPassphraseCrypto,
-} from '../storage/passphraseCrypto';
-import { stripPhotoDataUrlsFromSnapshot } from '../storage/photoHydration';
-import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
+import React, { useEffect, useId, useState } from 'react';
 import { BackupStatusEvaluation } from '../core/backupStatus';
+import { CURRENT_BACKUP_SCHEMA_VERSION, VaultBackupMetadata } from '../core/backupVault';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
 } from '../core/dataHealthCheck';
 import {
-  EncryptedPayloadEnvelope,
-  tryExtractEncryptedEnvelopeFromZip,
-  tryParseEncryptedEnvelopeJson,
-  wrapEncryptedZipContainer,
-} from '../core/encryptedExport';
-import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
-import {
-  getHeavyZipExportGate,
-  getTierStoragePolicy,
-} from '../core/deviceCapability';
-import { detectCurrentBrowserCompatibility } from '../storage/deviceCapabilityDetector';
-import { BackupSyncStatus } from '../storage/localSyncChannels';
-import { OpfsPruneSyncWarning } from '../storage/opfsStorage';
-import {
   calculateSavingsPercent,
   formatByteSizePure,
   IMAGE_OPTIMIZATION_PRESETS,
   ImageOptimizationPresetId,
 } from '../core/imageOptimizationSpec';
-import { ConflictSelectionMap } from '../core/importers/conflictResolver';
-import { PlatformImportPreview } from '../core/importers/importerTypes';
 import {
-  AnimalPhoto,
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
@@ -103,75 +60,46 @@ import {
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
-import { buildCleanCsvExportFileName, exportAnimalsCsv } from '../core/csvExport';
+import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
 import {
-  buildPdfReadyBarnSnapshot,
   exportBarnBackupJson,
   formatTimestampedBackupSlug,
 } from '../core/syncAndExports';
-import {
-  formatReadableByteLimit,
-  MAX_DELTA_BATCH_FILES,
-  MAX_DELTA_BATCH_TOTAL_BYTES,
-  MAX_DELTA_JSON_BYTES,
-  MAX_JSON_BACKUP_BYTES,
-  MAX_SQLITE_DB_BYTES,
-  MAX_ZIP_ARCHIVE_BYTES,
-  validateUploadFileSize,
-} from '../core/inputSanitization';
-import { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
 import {
   CustomThemeColors,
   DEFAULT_WARM_THEME_COLORS,
   WARM_THEME_PRESETS,
 } from '../core/themePalette';
-import {
-  EncryptedSyncPassphraseError,
-  parseDeltaFileTextAsync,
-  reauthorizeBackupSyncFolder,
-  resumePersistedDirectorySyncIfGranted,
-  shareOrDownloadFile,
-  supportsDirectoryPicker,
-  syncWithPickedDirectory,
-} from '../storage/localSyncChannels';
-import {
-  ArchivedHerdIndexEntry,
-  CURRENT_BACKUP_SCHEMA_VERSION,
-  VaultBackupMetadata,
-} from '../core/backupVault';
 import { CURRENT_APP_VERSION } from '../core/upgradeGate';
+import {
+  detectCurrentBrowserCompatibility,
+  DeviceCapabilityController,
+} from '../storage/deviceCapabilityDetector';
 import {
   PwaUpdatePolicy,
   usePwaUpdateStatus,
 } from '../storage/pwaUpdateManager';
 import {
-  getAdjustedNowMs,
   RollingBackupMeta,
   StorageProtectionStatus,
   useConnectivityStatus,
   usePWAInstall,
 } from '../storage/storageProtection';
-import { downloadBinaryFile, downloadTextFile } from '../utils/webFileActions';
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
+import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
+import { downloadTextFile } from '../utils/webFileActions';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
-import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
-import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
-import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
+import type { ImportExportHubSection } from './ImportExportHubScreen';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
-import { UnifiedBackupVaultPanel } from './UnifiedBackupVaultPanel';
 
 interface SettingsAndSyncScreenProps {
   snapshot: BarnDatabaseSnapshot;
-  engineName: string;
   activeSpeciesName: string;
-  deviceId: string;
   storageStatus: StorageProtectionStatus | null;
   backupStatus: BackupStatusEvaluation | null;
-  syncOperations: SyncOperation[];
-  syncConflicts: SyncConflictEntry[];
   openAddSpeciesOnMount: boolean;
   onConsumedOpenAddSpecies: () => void;
   onRequestPersistentStorage: () => Promise<StorageProtectionStatus> | void;
@@ -183,28 +111,6 @@ interface SettingsAndSyncScreenProps {
   onSaveSpecies: (profile: SpeciesProfile) => Promise<boolean | void> | void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
   onDownloadTimestampedSpeciesBackup: (speciesName: string) => Promise<void> | void;
-  onApplyPlatformImport: (
-    preview: PlatformImportPreview,
-    optimizedPhotos?: AnimalPhoto[],
-    conflictSelections?: ConflictSelectionMap
-  ) => Promise<void>;
-  onImportJson: (jsonText: string, mode: 'merge' | 'replace') => Promise<void>;
-  onImportBackupArchive: (
-    bytes: Uint8Array,
-    fileName: string,
-    mode: 'merge' | 'replace'
-  ) => Promise<void>;
-  onImportDeltaOperations: (ops: SyncOperation[]) => Promise<void>;
-  onResolveSyncConflict: (conflictId: string, side: 'winning' | 'losing') => Promise<void>;
-  onDismissSyncConflict: (conflictId: string) => Promise<void>;
-  onBuildLocalDeltaJson: () => { filename: string; content: string };
-  onRestoreRollingBackup: (key: string) => Promise<void>;
-  onExportSqliteBytes: () => Promise<Uint8Array | null>;
-  onInspectSqliteRestoreBytes?: (
-    bytes: Uint8Array,
-    fileName?: string
-  ) => Promise<PreRestoreArchiveInspection>;
-  onImportSqliteBytes: (bytes: Uint8Array) => Promise<void>;
   onAnalyzePhotoFootprint?: (
     presetId?: ImageOptimizationPresetId
   ) => Promise<PhotoStorageFootprintReport | null>;
@@ -244,41 +150,20 @@ interface SettingsAndSyncScreenProps {
   opfsSupported?: boolean;
   opfsVaultBackups?: VaultBackupMetadata[];
   rollingBackups?: RollingBackupMeta[];
-  archivedHerdBundles?: ArchivedHerdIndexEntry[];
   onSaveManualOpfsVaultBackup?: (note?: string) => Promise<unknown> | void;
   onCreateVerifiedPreUpgradeBackup?: () => Promise<{
     verified: boolean;
     checksumSha256: string;
     fileName: string;
   } | null>;
-  onRestoreOpfsVaultBackup?: (key: string) => Promise<void>;
-  onDownloadOpfsVaultBackup?: (key: string) => Promise<void>;
-  onDeleteOpfsVaultBackup?: (key: string) => Promise<void>;
-  onDeleteRollingBackup?: (key: string) => Promise<void>;
-  onRestoreArchivedHerdBundle?: (
-    archiveKey: string,
-    options?: { restoreToActiveStatus?: boolean; deleteArchiveAfterRestore?: boolean }
-  ) => Promise<void>;
-  onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
-  onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
-  backupSyncStatus?: BackupSyncStatus | null;
-  pruneSyncWarning?: OpfsPruneSyncWarning | null;
-  onConnectBackupSync?: () => Promise<unknown>;
-  onReauthorizeBackupSync?: () => Promise<unknown>;
-  onDisconnectBackupSync?: () => Promise<unknown>;
-  onSyncVaultToSyncNow?: () => Promise<unknown>;
-  onDismissPruneWarning?: () => void;
+  onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
 }
 
 export function SettingsAndSyncScreen({
   snapshot,
-  engineName,
   activeSpeciesName,
-  deviceId,
   storageStatus,
   backupStatus,
-  syncOperations,
-  syncConflicts,
   openAddSpeciesOnMount,
   onConsumedOpenAddSpecies,
   onRequestPersistentStorage,
@@ -287,17 +172,6 @@ export function SettingsAndSyncScreen({
   onSaveSpecies,
   onDeleteSpecies,
   onDownloadTimestampedSpeciesBackup,
-  onApplyPlatformImport,
-  onImportJson,
-  onImportBackupArchive,
-  onImportDeltaOperations,
-  onResolveSyncConflict,
-  onDismissSyncConflict,
-  onBuildLocalDeltaJson,
-  onRestoreRollingBackup,
-  onExportSqliteBytes,
-  onInspectSqliteRestoreBytes,
-  onImportSqliteBytes,
   onAnalyzePhotoFootprint,
   onPruneOrphanPhotos,
   onReoptimizeOversizedPhotos,
@@ -323,23 +197,9 @@ export function SettingsAndSyncScreen({
   opfsSupported = false,
   opfsVaultBackups = [],
   rollingBackups = [],
-  archivedHerdBundles = [],
   onSaveManualOpfsVaultBackup,
   onCreateVerifiedPreUpgradeBackup,
-  onRestoreOpfsVaultBackup,
-  onDownloadOpfsVaultBackup,
-  onDeleteOpfsVaultBackup,
-  onDeleteRollingBackup,
-  onRestoreArchivedHerdBundle,
-  onDownloadArchivedHerdBundle,
-  onDeleteArchivedHerdBundle,
-  backupSyncStatus = null,
-  pruneSyncWarning = null,
-  onConnectBackupSync,
-  onReauthorizeBackupSync,
-  onDisconnectBackupSync,
-  onSyncVaultToSyncNow,
-  onDismissPruneWarning,
+  onOpenImportExportHub,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -378,64 +238,17 @@ export function SettingsAndSyncScreen({
 
   const [confirmGlobalDeleteAll, setConfirmGlobalDeleteAll] = useState(false);
   const [confirmFactoryRestore, setConfirmFactoryRestore] = useState(false);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [portabilityFeedback, setPortabilityFeedback] = useState<string | null>(null);
-  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [preResetBackupFeedback, setPreResetBackupFeedback] = useState<string | null>(null);
+  const [preResetBackupError, setPreResetBackupError] = useState<string | null>(null);
   const [showCustomSpeciesModal, setShowCustomSpeciesModal] = useState(false);
-  const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
-  const [folderSyncBusy, setFolderSyncBusy] = useState(false);
-  const [zipExportBusy, setZipExportBusy] = useState<
-    'complete' | 'photos' | 'json' | 'json-light' | null
-  >(null);
-  const [pendingHeavyZipExport, setPendingHeavyZipExport] = useState<'complete' | 'photos' | null>(
-    null
-  );
-  const [pendingLargeRestore, setPendingLargeRestore] = useState<{
-    file: File;
-    kind: 'archive' | 'sqlite';
-    mode?: 'merge' | 'replace';
-  } | null>(null);
+  const [zipExportBusy, setZipExportBusy] = useState<'json' | null>(null);
 
-  const folderSyncLock = useAsyncSubmitLock();
-  const deltaUploadLock = useAsyncSubmitLock();
-  const deltaShareLock = useAsyncSubmitLock();
-  const sqliteExportLock = useAsyncSubmitLock();
-  const csvExportLock = useAsyncSubmitLock();
-  const reportExportLock = useAsyncSubmitLock();
   const archiveExportLock = useAsyncSubmitLock();
   const destructiveResetLock = useAsyncSubmitLock();
   const preUpgradeBackupLock = useAsyncSubmitLock();
   const updateCheckLock = useAsyncSubmitLock();
-  const conflictRowLock = useAsyncKeyedLock();
   const [preUpgradeFeedback, setPreUpgradeFeedback] = useState<string | null>(null);
   const [updateCheckFeedback, setUpdateCheckFeedback] = useState<string | null>(null);
-
-  const cryptoSupported = supportsPassphraseCrypto();
-  const [encryptOutgoingSync, setEncryptOutgoingSync] = useState(false);
-  const [syncPassphrase, setSyncPassphrase] = useState('');
-  const [showSyncPassphrase, setShowSyncPassphrase] = useState(false);
-
-  const [encryptBackupExport, setEncryptBackupExport] = useState(false);
-  const [backupExportPassphrase, setBackupExportPassphrase] = useState('');
-  const [showBackupExportPassphrase, setShowBackupExportPassphrase] = useState(false);
-
-  const [restoreInspectBusy, setRestoreInspectBusy] = useState(false);
-  const [pendingRestorePassphrasePrompt, setPendingRestorePassphrasePrompt] = useState<{
-    fileName: string;
-    sourceFormat: 'json' | 'zip';
-    mode: 'merge' | 'replace';
-    envelope: EncryptedPayloadEnvelope;
-    passphrase: string;
-    error: string | null;
-  } | null>(null);
-  const [pendingRestoreInspection, setPendingRestoreInspection] = useState<{
-    inspection: PreRestoreArchiveInspection;
-    mode: 'merge' | 'replace';
-    jsonText?: string;
-    archiveBytes?: Uint8Array;
-    sqliteBytes?: Uint8Array;
-  } | null>(null);
-  const restoreCommitLock = useAsyncSubmitLock();
 
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
   const connectivity = useConnectivityStatus();
@@ -461,11 +274,6 @@ export function SettingsAndSyncScreen({
     setIncludePhotoOnPedigree(Boolean(settings.includePhotoOnPedigree));
     setAutoOffloadRetiredToOpfs(Boolean(settings.autoOffloadRetiredToOpfs));
   }, [settings]);
-
-  const mergeFileRef = useRef<HTMLInputElement | null>(null);
-  const replaceFileRef = useRef<HTMLInputElement | null>(null);
-  const sqliteFileRef = useRef<HTMLInputElement | null>(null);
-  const deltaImportRef = useRef<HTMLInputElement | null>(null);
 
   const isDark = settings.themeMode === 'dark';
   const customColors: CustomThemeColors = settings.customColors || {};
@@ -529,724 +337,35 @@ export function SettingsAndSyncScreen({
 
   const handleDownloadTimestampedFullBackup = async () => {
     await archiveExportLock.runLocked(async () => {
-      setImportError(null);
-      if (encryptBackupExport && backupExportPassphrase.length < 4) {
-        setImportError(
-          'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-        );
-        return;
-      }
+      setPreResetBackupError(null);
+      setPreResetBackupFeedback(null);
       setZipExportBusy('json');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-full-backup-${stampSlug}.json`;
+        const filename = `community-pedigree-full-backup-${stampSlug}.json`;
         const rawJson = exportBarnBackupJson(exportSnapshot);
-        const filename = encryptBackupExport
-          ? `community-pedigree-full-backup-${stampSlug}-encrypted.json`
-          : baseFilename;
-        const outputJson = encryptBackupExport
-          ? JSON.stringify(
-              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-                payloadKind: 'json_backup',
-                originalFileName: baseFilename,
-              }),
-              null,
-              2
-            )
-          : rawJson;
-        await downloadTextFile(filename, outputJson, 'application/json');
+        await downloadTextFile(filename, rawJson, 'application/json');
         void recordBackupExport('json', filename);
-        setPortabilityFeedback(
-          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}JSON backup (${exportSnapshot.animals.length} animals, ${(exportSnapshot.animalPhotos ?? []).length} embedded photos).`
+        setPreResetBackupFeedback(
+          `Saved pre-reset JSON backup ${filename} (${exportSnapshot.animals.length} animals).`
         );
-      } catch (err: any) {
-        setImportError(err?.message || 'Could not prepare full JSON backup.');
+      } catch (err) {
+        setPreResetBackupError(
+          err instanceof Error ? err.message : 'Could not prepare pre-reset JSON backup.'
+        );
       } finally {
         setZipExportBusy(null);
       }
     });
   };
 
-  const handleDownloadDatabaseOnlyBackup = async () => {
-    await archiveExportLock.runLocked(async () => {
-      setImportError(null);
-      if (encryptBackupExport && backupExportPassphrase.length < 4) {
-        setImportError(
-          'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-        );
-        return;
-      }
-      setZipExportBusy('json-light');
-      try {
-        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
-        const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-records-only-${stampSlug}.json`;
-        const rawJson = exportBarnBackupJson(lightSnapshot);
-        const filename = encryptBackupExport
-          ? `community-pedigree-records-only-${stampSlug}-encrypted.json`
-          : baseFilename;
-        const outputJson = encryptBackupExport
-          ? JSON.stringify(
-              await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
-                payloadKind: 'json_backup',
-                originalFileName: baseFilename,
-              }),
-              null,
-              2
-            )
-          : rawJson;
-        await downloadTextFile(filename, outputJson, 'application/json');
-        void recordBackupExport('json', filename);
-        setPortabilityFeedback(
-          `Downloaded ${encryptBackupExport ? 'encrypted ' : ''}lightweight records-only JSON (${lightSnapshot.animals.length} animals; full-res photos skipped to preserve tab memory).`
-        );
-      } catch (err: any) {
-        setImportError(err?.message || 'Could not prepare records-only JSON backup.');
-      } finally {
-        setZipExportBusy(null);
-      }
-    });
-  };
-
-  const handleExportCsv = async () => {
-    await csvExportLock.runLocked(async () => {
-      setImportError(null);
-      const filename = buildCleanCsvExportFileName(settings.barnName);
-      const csvContent = exportAnimalsCsv(
-        snapshot.animals,
-        snapshot.speciesProfiles,
-        settings,
-        undefined,
-        allPhotos
-      );
-      await downloadTextFile(filename, csvContent, 'text/csv');
-      setPortabilityFeedback(
-        `Exported ${snapshot.animals.length} animal record(s) to ${filename} (UTF-8 CSV with resolved parent names & tattoos).`
-      );
-    });
-  };
-
-  const activeDeviceTier = deviceCapability?.assessment.tier ?? 5;
-  const activeTierPolicy = getTierStoragePolicy(activeDeviceTier);
   const activeBrowserCompat =
     deviceCapability?.browserCompatibility ??
     detectCurrentBrowserCompatibility(deviceCapability?.assessment);
-  const heavyZipGate = deviceCapability
-    ? getHeavyZipExportGate(deviceCapability.assessment, activeBrowserCompat)
-    : {
-        requiresConfirmation: activeDeviceTier === 1 || activeBrowserCompat.shouldConfirmHeavyZipExport,
-        title: 'Memory Caution for Older or Lower-Memory Device',
-        body:
-          activeBrowserCompat.heavyZipCautionReason ||
-          'Your device or browser may have limited memory for compressed .ZIP archives.',
-        advice:
-          'You can still try creating the .ZIP archive below. If it fails or reloads the page, please use Timestamped Backup (.JSON) instead — it safely backs up your herd using much less memory because of your older device or browser.',
-      };
-
-  const handleDownloadCompleteZip = async (skipCaution = false) => {
-    if (archiveExportLock.isLockedNow()) return;
-    setImportError(null);
-    if (encryptBackupExport && backupExportPassphrase.length < 4) {
-      setImportError(
-        'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-      );
-      return;
-    }
-    if (!skipCaution && heavyZipGate.requiresConfirmation) {
-      setPendingHeavyZipExport('complete');
-      return;
-    }
-    await archiveExportLock.runLocked(async () => {
-      setPendingHeavyZipExport(null);
-      setZipExportBusy('complete');
-      try {
-        const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
-          : snapshot;
-        const stampSlug = formatTimestampedBackupSlug();
-        const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
-        const baseFilename = `community-pedigree-archive-${stampSlug}.zip`;
-        let finalBytes = archive.bytes;
-        let filename = baseFilename;
-        if (encryptBackupExport) {
-          const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
-            payloadKind: 'zip_archive',
-            originalFileName: baseFilename,
-          });
-          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
-        }
-        await downloadBinaryFile(filename, finalBytes, 'application/zip');
-        void recordBackupExport('zip', filename);
-        setPortabilityFeedback(
-          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.animalCount} animals · ${archive.photoCount} photo files · ${archive.binderCount} Barn Binder .HTM file${archive.binderCount === 1 ? '' : 's'} · ${formatByteSizePure(finalBytes.byteLength)}).`
-        );
-      } catch (err: any) {
-        const baseMsg = err?.message || 'Could not build Complete Archive (.ZIP).';
-        setImportError(
-          heavyZipGate.requiresConfirmation
-            ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
-            : baseMsg
-        );
-      } finally {
-        setZipExportBusy(null);
-      }
-    });
-  };
-
-  const handleDownloadPhotosOnlyZip = async (skipCaution = false) => {
-    if (archiveExportLock.isLockedNow()) return;
-    setImportError(null);
-    if (allPhotos.length === 0) {
-      setImportError('No animal photos stored yet to archive.');
-      return;
-    }
-    if (encryptBackupExport && backupExportPassphrase.length < 4) {
-      setImportError(
-        'Enter an encryption passphrase of at least 4 characters before exporting an encrypted backup.'
-      );
-      return;
-    }
-    if (!skipCaution && heavyZipGate.requiresConfirmation) {
-      setPendingHeavyZipExport('photos');
-      return;
-    }
-    await archiveExportLock.runLocked(async () => {
-      setPendingHeavyZipExport(null);
-      setZipExportBusy('photos');
-      try {
-        const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
-          : snapshot;
-        const stampSlug = formatTimestampedBackupSlug();
-        const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
-        const baseFilename = `community-pedigree-photos-${stampSlug}.zip`;
-        let finalBytes = archive.bytes;
-        let filename = baseFilename;
-        if (encryptBackupExport) {
-          const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
-            payloadKind: 'zip_archive',
-            originalFileName: baseFilename,
-          });
-          finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
-        }
-        await downloadBinaryFile(filename, finalBytes, 'application/zip');
-        setPortabilityFeedback(
-          `Saved ${encryptBackupExport ? 'encrypted ' : ''}${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
-        );
-      } catch (err: any) {
-        const baseMsg = err?.message || 'Could not build Photos-Only (.ZIP) archive.';
-        setImportError(
-          heavyZipGate.requiresConfirmation
-            ? `${baseMsg} Because this device or browser is older or low-memory, please use Timestamped Backup (.JSON) instead.`
-            : baseMsg
-        );
-      } finally {
-        setZipExportBusy(null);
-      }
-    });
-  };
-
-  const isSqliteUnavailable =
-    !activeBrowserCompat.signals.wasmSupported || /json fallback/i.test(engineName);
-  const dirPickerSupported = supportsDirectoryPicker();
   const persistStorageSupported = activeBrowserCompat.signals.persistStorageSupported;
-  const webShareSupported = activeBrowserCompat.signals.webShareFilesSupported;
-
-  const handleBackupArchiveUpload = async (
-    file: File | undefined,
-    mode: 'merge' | 'replace',
-    skipTierCheck = false
-  ) => {
-    if (!file) return;
-    setImportError(null);
-    setPortabilityFeedback(null);
-    setPendingRestorePassphrasePrompt(null);
-    setPendingRestoreInspection(null);
-    try {
-      const lower = file.name.toLowerCase();
-      const isJson = lower.endsWith('.json') && !lower.endsWith('.zip');
-      const sizeCheck = validateUploadFileSize(
-        file.name,
-        file.size,
-        isJson ? MAX_JSON_BACKUP_BYTES : MAX_ZIP_ARCHIVE_BYTES,
-        isJson ? 'a JSON backup file' : 'a backup .ZIP archive'
-      );
-      if (!sizeCheck.ok) {
-        setImportError(sizeCheck.error);
-        return;
-      }
-      if (
-        !skipTierCheck &&
-        activeDeviceTier <= 2 &&
-        file.size > activeTierPolicy.maxSafeImportBytesHint
-      ) {
-        setPendingLargeRestore({ file, kind: 'archive', mode });
-        return;
-      }
-      setPendingLargeRestore(null);
-      if (isJson) {
-        const text = await readBlobAsText(file);
-        const encryptedEnvelope = tryParseEncryptedEnvelopeJson(text);
-        if (encryptedEnvelope) {
-          setPendingRestorePassphrasePrompt({
-            fileName: file.name,
-            sourceFormat: 'json',
-            mode,
-            envelope: encryptedEnvelope,
-            passphrase: '',
-            error: null,
-          });
-          return;
-        }
-        setRestoreInspectBusy(true);
-        const bytes = new TextEncoder().encode(text);
-        const { inspection } = await inspectBackupArchiveOffThread(
-          bytes,
-          file.name,
-          snapshot,
-          false
-        );
-        setPendingRestoreInspection({
-          inspection,
-          mode,
-          jsonText: text,
-        });
-      } else {
-        const buf = await readBlobAsArrayBuffer(file);
-        const rawBytes = new Uint8Array(buf);
-        const encryptedEnvelope = tryExtractEncryptedEnvelopeFromZip(rawBytes, file.name);
-        if (encryptedEnvelope) {
-          setPendingRestorePassphrasePrompt({
-            fileName: file.name,
-            sourceFormat: 'zip',
-            mode,
-            envelope: encryptedEnvelope,
-            passphrase: '',
-            error: null,
-          });
-          return;
-        }
-        setRestoreInspectBusy(true);
-        const { inspection } = await inspectBackupArchiveOffThread(
-          rawBytes,
-          file.name,
-          snapshot,
-          false
-        );
-        setPendingRestoreInspection({
-          inspection,
-          mode,
-          archiveBytes: rawBytes,
-        });
-      }
-    } catch (err: any) {
-      setImportError(err?.message || 'Could not parse backup (.JSON or .ZIP) file.');
-    } finally {
-      setRestoreInspectBusy(false);
-    }
-  };
-
-  const handleDecryptAndInspectBackup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pendingRestorePassphrasePrompt) return;
-    const prompt = pendingRestorePassphrasePrompt;
-    setRestoreInspectBusy(true);
-    try {
-      if (prompt.sourceFormat === 'json') {
-        const plainText = await decryptTextWithPassphrase(prompt.envelope, prompt.passphrase);
-        const plainBytes = new TextEncoder().encode(plainText);
-        const { inspection } = await inspectBackupArchiveOffThread(
-          plainBytes,
-          prompt.fileName,
-          snapshot,
-          true
-        );
-        setPendingRestorePassphrasePrompt(null);
-        setPendingRestoreInspection({
-          inspection,
-          mode: prompt.mode,
-          jsonText: plainText,
-        });
-      } else {
-        const plainBytes = await decryptBytesWithPassphrase(prompt.envelope, prompt.passphrase);
-        const { inspection } = await inspectBackupArchiveOffThread(
-          plainBytes,
-          prompt.fileName,
-          snapshot,
-          true
-        );
-        setPendingRestorePassphrasePrompt(null);
-        setPendingRestoreInspection({
-          inspection,
-          mode: prompt.mode,
-          archiveBytes: plainBytes,
-        });
-      }
-    } catch (err: any) {
-      setPendingRestorePassphrasePrompt((prev) =>
-        prev
-          ? {
-              ...prev,
-              error:
-                err?.message ||
-                'Incorrect passphrase or corrupted encrypted archive. Try again.',
-            }
-          : null
-      );
-    } finally {
-      setRestoreInspectBusy(false);
-    }
-  };
-
-  const handleConfirmPendingRestore = async () => {
-    if (!pendingRestoreInspection) return;
-    await restoreCommitLock.runLocked(async () => {
-      const pending = pendingRestoreInspection;
-      setImportError(null);
-      try {
-        if (pending.sqliteBytes) {
-          await onImportSqliteBytes(pending.sqliteBytes);
-          setPortabilityFeedback(
-            `Restored SQLite database "${pending.inspection.fileName}".`
-          );
-        } else if (pending.jsonText !== undefined) {
-          await onImportJson(pending.jsonText, pending.mode);
-          setPortabilityFeedback(
-            `${pending.mode === 'replace' ? 'Restored' : 'Merged'} JSON backup "${pending.inspection.fileName}".`
-          );
-        } else if (pending.archiveBytes) {
-          await onImportBackupArchive(
-            pending.archiveBytes,
-            pending.inspection.fileName,
-            pending.mode
-          );
-          setPortabilityFeedback(
-            `${pending.mode === 'replace' ? 'Restored' : 'Merged'} archive "${pending.inspection.fileName}".`
-          );
-        }
-        setPendingRestoreInspection(null);
-      } catch (err: any) {
-        setImportError(err?.message || 'Restore failed.');
-      }
-    });
-  };
-
-  const handleSqliteUpload = async (file: File | undefined, skipTierCheck = false) => {
-    if (!file) return;
-    setImportError(null);
-    setPendingRestorePassphrasePrompt(null);
-    setPendingRestoreInspection(null);
-    try {
-      const sizeCheck = validateUploadFileSize(
-        file.name,
-        file.size,
-        MAX_SQLITE_DB_BYTES,
-        'a SQLite database'
-      );
-      if (!sizeCheck.ok) {
-        setImportError(sizeCheck.error);
-        return;
-      }
-      if (
-        !skipTierCheck &&
-        activeDeviceTier <= 2 &&
-        file.size > activeTierPolicy.maxSafeImportBytesHint
-      ) {
-        setPendingLargeRestore({ file, kind: 'sqlite' });
-        return;
-      }
-      setPendingLargeRestore(null);
-      const buf = await readBlobAsArrayBuffer(file);
-      const sqliteBytes = new Uint8Array(buf);
-      if (onInspectSqliteRestoreBytes) {
-        setRestoreInspectBusy(true);
-        const inspection = await onInspectSqliteRestoreBytes(sqliteBytes, file.name);
-        setPendingRestoreInspection({
-          inspection,
-          mode: 'replace',
-          sqliteBytes,
-        });
-      } else {
-        await onImportSqliteBytes(sqliteBytes);
-      }
-    } catch (err: any) {
-      setImportError(err?.message || 'Could not load database file.');
-    } finally {
-      setRestoreInspectBusy(false);
-    }
-  };
-
-  const handleDeltaFilesUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    await deltaUploadLock.runLocked(async () => {
-      setImportError(null);
-      setSyncFeedback(null);
-      try {
-        const list = Array.from(files);
-        if (list.length > MAX_DELTA_BATCH_FILES) {
-          setImportError(
-            `Selected ${list.length} delta files; upload at most ${MAX_DELTA_BATCH_FILES} per batch to protect mobile memory.`
-          );
-          return;
-        }
-        let totalBytes = 0;
-        for (const file of list) {
-          const check = validateUploadFileSize(
-            file.name,
-            file.size,
-            MAX_DELTA_JSON_BYTES,
-            'a delta sync JSON file'
-          );
-          if (!check.ok) {
-            setImportError(check.error);
-            return;
-          }
-          totalBytes += file.size;
-          if (totalBytes > MAX_DELTA_BATCH_TOTAL_BYTES) {
-            setImportError(
-              `Combined delta batch exceeds ${formatReadableByteLimit(MAX_DELTA_BATCH_TOTAL_BYTES)}.`
-            );
-            return;
-          }
-        }
-        const combinedOps: SyncOperation[] = [];
-        let decryptedFileCount = 0;
-        for (const file of list) {
-          const text = await readBlobAsText(file);
-          const parsed = await parseDeltaFileTextAsync(
-            text,
-            syncPassphrase || undefined
-          );
-          if (parsed.wasEncrypted) decryptedFileCount += 1;
-          combinedOps.push(...parsed.operations);
-        }
-        await onImportDeltaOperations(combinedOps);
-        setSyncFeedback(
-          `Processed ${combinedOps.length} operation(s) across ${list.length} delta file(s)${
-            decryptedFileCount > 0 ? ` (${decryptedFileCount} encrypted)` : ''
-          }.`
-        );
-      } catch (err: any) {
-        if (err instanceof EncryptedSyncPassphraseError) {
-          setImportError(err.message);
-        } else {
-          setImportError(err?.message || 'Could not parse delta sync JSON file.');
-        }
-      }
-    });
-  };
-
-  const syncContextRef = useRef({
-    snapshot,
-    syncOperations,
-    deviceId,
-    activeDeviceTier,
-    encryptOutgoingSync,
-    syncPassphrase,
-    onHydrateSnapshotForExport,
-    onImportDeltaOperations,
-  });
-  syncContextRef.current = {
-    snapshot,
-    syncOperations,
-    deviceId,
-    activeDeviceTier,
-    encryptOutgoingSync,
-    syncPassphrase,
-    onHydrateSnapshotForExport,
-    onImportDeltaOperations,
-  };
-
-  const executeResumeDirectorySync = useCallback(async (triggerReauthorize: boolean) => {
-    setImportError(null);
-    setFolderSyncBusy(true);
-    try {
-      if (triggerReauthorize) {
-        await reauthorizeBackupSyncFolder();
-      }
-      const ctx = syncContextRef.current;
-      const exportSnapshot =
-        ctx.activeDeviceTier === 1
-          ? stripPhotoDataUrlsFromSnapshot(ctx.snapshot)
-          : ctx.onHydrateSnapshotForExport
-          ? await ctx.onHydrateSnapshotForExport(ctx.snapshot)
-          : ctx.snapshot;
-      const activePass =
-        ctx.encryptOutgoingSync && ctx.syncPassphrase.length >= 4
-          ? ctx.syncPassphrase
-          : undefined;
-      const resumed = await resumePersistedDirectorySyncIfGranted({
-        deviceId: ctx.deviceId,
-        localOperations: ctx.syncOperations,
-        masterBackupJson: exportBarnBackupJson(exportSnapshot),
-        passphrase: activePass,
-      });
-      if (!resumed.resumed) {
-        if (resumed.reason === 'permission_required') {
-          const reasonMsg = `Folder write permission for "${resumed.folderName || 'Sync Folder'}" must be re-confirmed before finishing sync.`;
-          registerPausedBackgroundJob({
-            taskId: 'directory_sync',
-            label: 'Folder Sync',
-            pausedAtMs: getAdjustedNowMs(),
-            severity: 'severity',
-            severityReason: reasonMsg,
-            resumeHandler: () => executeResumeDirectorySync(true),
-          });
-          emitAsyncErrorToast({
-            title: 'Folder Sync Paused — Permission Needed',
-            detail: reasonMsg,
-            severity: 'error',
-            sticky: true,
-            category: 'storage',
-            canOpenDiagnostics: false,
-          });
-        }
-        return;
-      }
-      if (resumed.incomingOps.length > 0) {
-        await ctx.onImportDeltaOperations(resumed.incomingOps);
-      }
-      clearPausedBackgroundJob('directory_sync');
-      const encNote = resumed.wroteEncrypted ? ' (AES-GCM encrypted)' : '';
-      const skipNote =
-        resumed.encryptedPeersSkipped > 0
-          ? ` Note: ${resumed.encryptedPeersSkipped} encrypted peer delta(s) skipped — enable Sync Encryption with matching passphrase.`
-          : '';
-      setSyncFeedback(
-        `Resumed & synced folder "${resumed.folderName}"${encNote}: read ${resumed.peerFilesRead} peer delta file(s) and wrote delta_${ctx.deviceId}.json.${skipNote}`
-      );
-    } catch (err: any) {
-      if (err instanceof BackgroundPausedError) {
-        registerPausedBackgroundJob({
-          taskId: 'directory_sync',
-          label: 'Folder Sync',
-          pausedAtMs: getAdjustedNowMs(),
-          severity: err.severityIssue ? 'severity' : 'minor',
-          severityReason: err.severityIssue ?? undefined,
-          resumeHandler: () => executeResumeDirectorySync(Boolean(err.severityIssue)),
-        });
-        emitAsyncErrorToast({
-          title: 'Folder Sync Paused',
-          detail: err.checkpointSummary || err.message,
-          severity: err.severityIssue ? 'error' : 'warning',
-          sticky: Boolean(err.severityIssue),
-          category: 'lifecycle',
-          canOpenDiagnostics: Boolean(err.severityIssue),
-        });
-      } else {
-        const msg = err?.message || 'Folder sync failed to resume.';
-        registerPausedBackgroundJob({
-          taskId: 'directory_sync',
-          label: 'Folder Sync',
-          pausedAtMs: getAdjustedNowMs(),
-          severity: 'severity',
-          severityReason: msg,
-          resumeHandler: () => executeResumeDirectorySync(false),
-        });
-        emitAsyncErrorToast({
-          title: 'Folder Sync Resume Failed',
-          detail: msg,
-          severity: 'error',
-          sticky: true,
-          category: 'storage',
-        });
-        setImportError(msg);
-      }
-    } finally {
-      setFolderSyncBusy(false);
-    }
-  }, []);
-
-  const handleDirectorySync = async () => {
-    if (encryptOutgoingSync && syncPassphrase.length < 4) {
-      setImportError(
-        'Enter a sync passphrase of at least 4 characters or turn off encrypted folder sync.'
-      );
-      return;
-    }
-    await folderSyncLock.runLocked(async () => {
-      setImportError(null);
-      setSyncFeedback(null);
-      setFolderSyncBusy(true);
-      try {
-        const exportSnapshot =
-          activeDeviceTier === 1
-            ? stripPhotoDataUrlsFromSnapshot(snapshot)
-            : onHydrateSnapshotForExport
-            ? await onHydrateSnapshotForExport(snapshot)
-            : snapshot;
-        const res = await syncWithPickedDirectory({
-          deviceId,
-          localOperations: syncOperations,
-          masterBackupJson: exportBarnBackupJson(exportSnapshot),
-          passphrase: encryptOutgoingSync ? syncPassphrase : undefined,
-        });
-        if (res.incomingOps.length > 0) {
-          await onImportDeltaOperations(res.incomingOps);
-        }
-        clearPausedBackgroundJob('directory_sync');
-        const encNote = res.wroteEncrypted ? ' (AES-GCM encrypted)' : '';
-        const skipNote =
-          res.encryptedPeersSkipped > 0
-            ? ` Note: ${res.encryptedPeersSkipped} encrypted peer delta(s) skipped — enable Sync Encryption with matching passphrase.`
-            : '';
-        setSyncFeedback(
-          `Synced folder "${res.folderName}"${encNote}: read ${res.peerFilesRead} peer delta file(s) and wrote delta_${deviceId}.json.${skipNote}`
-        );
-      } catch (err: any) {
-        if (err instanceof BackgroundPausedError) {
-          const hasSeverity = Boolean(err.severityIssue);
-          registerPausedBackgroundJob({
-            taskId: 'directory_sync',
-            label: 'Folder Sync',
-            pausedAtMs: getAdjustedNowMs(),
-            severity: hasSeverity ? 'severity' : 'minor',
-            severityReason: err.severityIssue ?? undefined,
-            resumeHandler: () => executeResumeDirectorySync(hasSeverity),
-          });
-          setSyncFeedback(
-            hasSeverity
-              ? err.message
-              : 'Folder sync paused cleanly when app moved to background and will auto-resume when you return.'
-          );
-          emitAsyncErrorToast({
-            title: 'Folder Sync Paused',
-            detail: err.checkpointSummary || err.message,
-            severity: hasSeverity ? 'error' : 'warning',
-            sticky: hasSeverity,
-            category: 'lifecycle',
-            canOpenDiagnostics: hasSeverity,
-          });
-        } else if (err?.name !== 'AbortError') {
-          setImportError(err?.message || 'Local folder sync could not complete.');
-        }
-      } finally {
-        setFolderSyncBusy(false);
-      }
-    });
-  };
-
-  const handleDownloadSqlite = async () => {
-    await sqliteExportLock.runLocked(async () => {
-      const bytes = await onExportSqliteBytes();
-      if (!bytes) {
-        setImportError('Raw SQLite binary export is unavailable in fallback mode.');
-        return;
-      }
-      const stamp = formatTimestampedBackupSlug();
-      const filename = `community-pedigree-${stamp}.sqlite`;
-      await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
-      void recordBackupExport('sqlite', filename);
-    });
-  };
-
-  const stamp = new Date().toISOString().slice(0, 10);
-  const unresolvedConflicts = syncConflicts.filter((c) => !c.resolved);
 
   const colorPickersForMode: Array<{
     key: keyof CustomThemeColors;
@@ -1646,7 +765,8 @@ export function SettingsAndSyncScreen({
                   />
                   <span>
                     Auto-offload Sold &amp; Deceased animals&apos; heavy photos &amp; logs to OPFS{' '}
-                    <code className="font-mono">/archives</code>
+                    <code className="font-mono">/archives</code> to improve device memory while
+                    preserving all data
                   </span>
                 </label>
               </div>
@@ -2413,41 +1533,6 @@ export function SettingsAndSyncScreen({
                   </div>
                 )}
             </div>
-
-            {/* Unified OPFS Backup Vault + IndexedDB Rolling Fallback */}
-            <UnifiedBackupVaultPanel
-              opfsSupported={opfsSupported}
-              opfsBackups={opfsVaultBackups}
-              rollingBackups={rollingBackups}
-              archivedBundlesCount={archivedHerdBundles.length}
-              archivedAnimalsCount={archivedHerdBundles.reduce(
-                (acc, b) => acc + b.animalCount,
-                0
-              )}
-              deviceTier={activeDeviceTier}
-              backupSyncStatus={backupSyncStatus}
-              pruneSyncWarning={pruneSyncWarning}
-              onSaveManualVaultBackup={(note) => onSaveManualOpfsVaultBackup?.(note)}
-              onRestoreOpfsBackup={async (key) => {
-                if (onRestoreOpfsVaultBackup) await onRestoreOpfsVaultBackup(key);
-              }}
-              onDownloadOpfsBackup={async (key) => {
-                if (onDownloadOpfsVaultBackup) await onDownloadOpfsVaultBackup(key);
-              }}
-              onDeleteOpfsBackup={async (key) => {
-                if (onDeleteOpfsVaultBackup) await onDeleteOpfsVaultBackup(key);
-              }}
-              onRestoreRollingBackup={onRestoreRollingBackup}
-              onDeleteRollingBackup={async (key) => {
-                if (onDeleteRollingBackup) await onDeleteRollingBackup(key);
-              }}
-              onOpenArchivedHerdsModal={() => setShowArchivedHerdsModal(true)}
-              onConnectBackupSync={onConnectBackupSync}
-              onReauthorizeBackupSync={onReauthorizeBackupSync}
-              onDisconnectBackupSync={onDisconnectBackupSync}
-              onSyncVaultToSyncNow={onSyncVaultToSyncNow}
-              onDismissPruneWarning={onDismissPruneWarning}
-            />
           </section>
 
           {/* Appearance, Light/Dark Switcher & Custom Color Picker */}
@@ -2586,305 +1671,24 @@ export function SettingsAndSyncScreen({
           </section>
         </div>
 
-        {/* Right 6 Columns: Importer, Multi-Worker Peer Sync, Exports & Reset Controls */}
+        {/* Right 6 Columns: Import/Export Hub Launcher, Diagnostics & Reset Controls */}
         <div className="lg:col-span-6 space-y-6">
-          <ExternalImporterPanel
-            snapshot={snapshot}
-            activeSpeciesName={activeSpeciesName}
-            deviceCapabilityAssessment={deviceCapability?.assessment}
-            onCommitImport={onApplyPlatformImport}
-          />
-
-          {/* Zero-Cloud Multi-Worker Peer Sync & Field-Level Merge */}
+          {/* Consolidated Import/Export Hub Summary & Direct Section Launchers */}
           <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-display text-xl font-semibold">
-                  Zero-Cloud Multi-Worker Sync (SyncThing / Folder / Share)
-                </h2>
-                <p className="text-xs text-[var(--barn-muted)] mt-0.5 font-mono">
-                  Device ID: {deviceId} · Outbox Ops: {syncOperations.length}
-                </p>
-              </div>
-              <FolderSync className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-            </div>
-
-            {syncFeedback && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
-              >
-                {syncFeedback}
-              </div>
-            )}
-
-            <p className="text-xs text-[var(--barn-muted)]">
-              Merge offline field edits across multiple farm workers without overwriting another
-              worker&apos;s changes on a different field of the same animal.
-            </p>
-
-            {/* Optional Passphrase Encryption for Shared Sync Folder / Delta Files */}
-            {cryptoSupported && (
-              <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label
-                    htmlFor={`${baseId}-sync-encrypt-toggle`}
-                    className="flex items-center gap-2 font-medium text-[var(--barn-ink)] cursor-pointer"
-                  >
-                    <input
-                      id={`${baseId}-sync-encrypt-toggle`}
-                      type="checkbox"
-                      checked={encryptOutgoingSync}
-                      onChange={(e) => setEncryptOutgoingSync(e.target.checked)}
-                      className="rounded border-[var(--barn-border)]"
-                    />
-                    <KeyRound className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                    <span>Encrypt outgoing sync &amp; decrypt shared peer deltas</span>
-                  </label>
-                  <span className="text-[10px] font-mono text-[var(--barn-muted)]">
-                    AES-256-GCM · Memory-only key
-                  </span>
-                </div>
-                {(encryptOutgoingSync || syncPassphrase.length > 0) && (
-                  <div className="flex items-center gap-2">
-                    <label htmlFor={`${baseId}-sync-passphrase`} className="sr-only">
-                      Shared Sync Passphrase
-                    </label>
-                    <input
-                      id={`${baseId}-sync-passphrase`}
-                      type={showSyncPassphrase ? 'text' : 'password'}
-                      value={syncPassphrase}
-                      onChange={(e) => setSyncPassphrase(e.target.value)}
-                      placeholder="Shared barn sync passphrase (min 4 chars, never saved)"
-                      autoComplete="off"
-                      className="flex-1 min-w-0 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowSyncPassphrase((v) => !v)}
-                      aria-label={showSyncPassphrase ? 'Hide sync passphrase' : 'Show sync passphrase'}
-                      className="min-h-[38px] min-w-[38px] px-2.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
-                    >
-                      {showSyncPassphrase ? (
-                        <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
-                      ) : (
-                        <Eye className="w-3.5 h-3.5" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                disabled={deltaShareLock.isSubmitting}
-                aria-busy={deltaShareLock.isSubmitting}
-                onClick={() =>
-                  void deltaShareLock.runLocked(async () => {
-                    setImportError(null);
-                    if (encryptOutgoingSync && syncPassphrase.length < 4) {
-                      setImportError(
-                        'Enter a sync passphrase of at least 4 characters before exporting an encrypted delta.'
-                      );
-                      return;
-                    }
-                    const delta = onBuildLocalDeltaJson();
-                    const finalFilename = encryptOutgoingSync
-                      ? delta.filename.replace(/\.json$/i, '-encrypted.json')
-                      : delta.filename;
-                    const content = encryptOutgoingSync
-                      ? JSON.stringify(
-                          await encryptTextWithPassphrase(delta.content, syncPassphrase, {
-                            payloadKind: 'delta_log',
-                            originalFileName: delta.filename,
-                          }),
-                          null,
-                          2
-                        )
-                      : delta.content;
-                    const mode = await shareOrDownloadFile({
-                      filename: finalFilename,
-                      content,
-                      mimeType: 'application/json',
-                      title: 'Community Pedigree Worker Delta Log',
-                    });
-                    setSyncFeedback(
-                      mode === 'shared'
-                        ? `Shared ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} via native share sheet.`
-                        : `Downloaded ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} for SyncThing / local sharing.`
-                    );
-                  })
-                }
-                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-65"
-              >
-                {deltaShareLock.isSubmitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Share2 className="w-4 h-4" aria-hidden="true" />
-                )}
-                {deltaShareLock.isSubmitting ? 'Preparing Delta...' : 'Share / Export Worker Delta'}
-              </button>
-
-              <input
-                ref={deltaImportRef}
-                type="file"
-                accept=".json,application/json"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  void handleDeltaFilesUpload(e.target.files);
-                  e.target.value = '';
-                }}
-              />
-              <button
-                type="button"
-                disabled={deltaUploadLock.isSubmitting}
-                aria-busy={deltaUploadLock.isSubmitting}
-                onClick={() => deltaImportRef.current?.click()}
-                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-65"
-              >
-                {deltaUploadLock.isSubmitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Upload className="w-4 h-4" aria-hidden="true" />
-                )}
-                {deltaUploadLock.isSubmitting
-                  ? 'Merging Deltas...'
-                  : 'Merge Peer Delta Files (.JSON)'}
-              </button>
-
-              <button
-                type="button"
-                disabled={folderSyncBusy || folderSyncLock.isSubmitting || !dirPickerSupported}
-                aria-busy={folderSyncBusy || folderSyncLock.isSubmitting}
-                aria-describedby={!dirPickerSupported ? `${baseId}-dirpicker-reason` : undefined}
-                onClick={() => void handleDirectorySync()}
-                className={`sm:col-span-2 min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                  dirPickerSupported
-                    ? 'hover:bg-[var(--barn-subtle)] disabled:opacity-50'
-                    : 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-60 cursor-not-allowed'
-                }`}
-              >
-                {folderSyncBusy || folderSyncLock.isSubmitting ? (
-                  <Loader2 className="w-4 h-4 text-[var(--barn-sage)] animate-spin" aria-hidden="true" />
-                ) : (
-                  <FolderSync className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
-                )}
-                {folderSyncBusy || folderSyncLock.isSubmitting
-                  ? 'Syncing Local Folder...'
-                  : 'Sync Directly With Local SyncThing / Shared Folder'}
-              </button>
-            </div>
-
-            {!dirPickerSupported && (
-              <p id={`${baseId}-dirpicker-reason`} className="text-[11px] text-[var(--barn-muted)]">
-                Disabled: Direct local folder picking isn&apos;t supported in this browser (e.g., Safari,
-                Firefox, or mobile browsers). Use <strong>Share / Export Worker Delta</strong> and{' '}
-                <strong>Merge Peer Delta Files (.JSON)</strong> above instead.
-              </p>
-            )}
-            {!webShareSupported && (
-              <p className="text-[11px] text-[var(--barn-muted)]">
-                Note: Native file Share Sheet is unavailable here — <strong>Share / Export Worker Delta</strong>{' '}
-                will download a ready-to-share <span className="font-mono">.JSON</span> file directly.
-              </p>
-            )}
-
-            {syncConflicts.length > 0 && (
-              <div className="border-t border-[var(--barn-border)] pt-3 space-y-2.5">
-                <div className="text-xs font-semibold text-[var(--barn-ink)]">
-                  Field Collision Review Log ({unresolvedConflicts.length} unresolved)
-                </div>
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {syncConflicts.slice(0, 10).map((c) => (
-                    <div
-                      key={c.conflict_id}
-                      className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold">
-                          {c.entity_label} · <code className="font-mono">{c.field_name}</code>
-                        </span>
-                        <span className="text-[11px] font-mono text-[var(--barn-muted)]">
-                          {c.resolved ? 'Resolved' : 'Needs Review'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
-                        <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-sage)]/50 truncate">
-                          Applied ({c.winning_device_id}): {String(c.winning_value)}
-                        </div>
-                        <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] truncate">
-                          Alternate ({c.losing_device_id}): {String(c.losing_value)}
-                        </div>
-                      </div>
-                      {!c.resolved && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
-                            onClick={() =>
-                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
-                                onResolveSyncConflict(c.conflict_id, 'winning')
-                              )
-                            }
-                            className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-60"
-                          >
-                            Keep Applied
-                          </button>
-                          <button
-                            type="button"
-                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
-                            onClick={() =>
-                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
-                                onResolveSyncConflict(c.conflict_id, 'losing')
-                              )
-                            }
-                            className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60"
-                          >
-                            Use Alternate
-                          </button>
-                          <button
-                            type="button"
-                            disabled={conflictRowLock.isKeyLocked(c.conflict_id)}
-                            onClick={() =>
-                              void conflictRowLock.runKeyLocked(c.conflict_id, () =>
-                                onDismissSyncConflict(c.conflict_id)
-                              )
-                            }
-                            className="min-h-[30px] px-2 py-1 text-[11px] text-[var(--barn-muted)] underline disabled:opacity-60"
-                          >
-                            Dismiss
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Local Backups & Open Exports */}
-          <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="font-display text-xl font-semibold">
-                  Open Data Portability &amp; Backups
+                  Import, Export &amp; Backup Hub
                 </h2>
                 <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-                  Engine: {engineName} · Full local ownership, zero cloud lock-in
-                </p>
-                <p className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)] mt-1">
-                  {snapshot.animals.length} animals · {allPhotos.length} photo
-                  {allPhotos.length === 1 ? '' : 's'} ({formatByteSizePure(totalStoredPhotoBytes)})
-                  {' · '}
-                  {snapshot.breedings.length} breedings · {snapshot.tasks.length} chores
+                  All system backups, native restores, zero-cloud peer sync, external importers
+                  (HerdBoss, Evans .HTM, CSV), and non-native exporters live in one dedicated workspace.
                 </p>
               </div>
-              <Database className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <ArrowLeftRight
+                className="w-5 h-5 text-[var(--barn-sage)] shrink-0"
+                aria-hidden="true"
+              />
             </div>
 
             {backupStatus && (
@@ -2897,700 +1701,65 @@ export function SettingsAndSyncScreen({
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-[var(--barn-ink)]">
                   <span>{backupStatus.headline}</span>
-                  {backupStatus.lastExportRelative && (
-                    <span className="font-mono text-[11px] text-[var(--barn-muted)]">
-                      {backupStatus.lastExportRelative}
-                    </span>
-                  )}
+                  <span className="font-mono tabular-nums text-[11px] text-[var(--barn-muted)]">
+                    {opfsVaultBackups.length + rollingBackups.length} local vault snapshot
+                    {opfsVaultBackups.length + rollingBackups.length === 1 ? '' : 's'}
+                  </span>
                 </div>
-                <p className="text-[11px] text-[var(--barn-muted)]">{backupStatus.detail}</p>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono text-[var(--barn-muted)] pt-0.5">
-                  <span>Last export: {backupStatus.lastExportLabel}</span>
-                  <span>Latest change: {backupStatus.latestChangeLabel}</span>
-                </div>
-              </div>
-            )}
-
-            {importError && (
-              <div
-                role="alert"
-                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium"
-              >
-                {importError}
-              </div>
-            )}
-
-            {portabilityFeedback && !importError && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
-              >
-                {portabilityFeedback}
-              </div>
-            )}
-
-            <div className="space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs font-semibold text-[var(--barn-muted)]">
-                  1-Click Timestamped Exports (Data + Organized Image Files)
-                </div>
-              </div>
-
-              {/* Optional Backup Encryption Toggle & In-Memory Passphrase */}
-              {cryptoSupported && (
-                <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label
-                      htmlFor={`${baseId}-backup-encrypt-toggle`}
-                      className="flex items-center gap-2 font-medium text-[var(--barn-ink)] cursor-pointer"
-                    >
-                      <input
-                        id={`${baseId}-backup-encrypt-toggle`}
-                        type="checkbox"
-                        checked={encryptBackupExport}
-                        onChange={(e) => setEncryptBackupExport(e.target.checked)}
-                        className="rounded border-[var(--barn-border)]"
-                      />
-                      <Lock className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                      <span>Passphrase-encrypt exported .ZIP &amp; .JSON backups</span>
-                    </label>
-                    <span className="text-[10px] font-mono text-[var(--barn-muted)]">
-                      PBKDF2 + AES-256-GCM
-                    </span>
-                  </div>
-                  {encryptBackupExport && (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <label htmlFor={`${baseId}-backup-passphrase`} className="sr-only">
-                          Backup Encryption Passphrase
-                        </label>
-                        <input
-                          id={`${baseId}-backup-passphrase`}
-                          type={showBackupExportPassphrase ? 'text' : 'password'}
-                          value={backupExportPassphrase}
-                          onChange={(e) => setBackupExportPassphrase(e.target.value)}
-                          placeholder="Enter export passphrase (min 4 chars — kept in memory only)"
-                          autoComplete="new-password"
-                          className="flex-1 min-w-0 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowBackupExportPassphrase((v) => !v)}
-                          aria-label={
-                            showBackupExportPassphrase
-                              ? 'Hide backup passphrase'
-                              : 'Show backup passphrase'
-                          }
-                          className="min-h-[38px] min-w-[38px] px-2.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center"
-                        >
-                          {showBackupExportPassphrase ? (
-                            <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
-                          ) : (
-                            <Eye className="w-3.5 h-3.5" aria-hidden="true" />
-                          )}
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-[var(--barn-muted)]">
-                        Write down this passphrase — we never store it. Leave unchecked for normal
-                        1-click unencrypted exports.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                  aria-busy={zipExportBusy === 'complete'}
-                  onClick={() => void handleDownloadCompleteZip()}
-                  title="Includes database JSON, organized animal photos, and printable Barn Binder .HTM per species"
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Archive className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  {zipExportBusy === 'complete'
-                    ? 'Building Archive (.ZIP)...'
-                    : 'Complete Archive + Binders (.ZIP)'}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={
-                    allPhotos.length === 0 ||
-                    zipExportBusy !== null ||
-                    archiveExportLock.isSubmitting
-                  }
-                  aria-busy={zipExportBusy === 'photos'}
-                  onClick={() => void handleDownloadPhotosOnlyZip()}
-                  title={
-                    allPhotos.length === 0
-                      ? 'Add photos to any animal first to export a photo folder archive'
-                      : 'Download all animal images organized into species & animal folders (.ZIP)'
-                  }
-                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold hover:bg-[var(--barn-subtle)] disabled:opacity-45 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Images className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  {zipExportBusy === 'photos'
-                    ? 'Packaging Photos (.ZIP)...'
-                    : `Export Photos Folder (${allPhotos.length}) (.ZIP)`}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isSqliteUnavailable || sqliteExportLock.isSubmitting}
-                  aria-busy={sqliteExportLock.isSubmitting}
-                  aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
-                  onClick={() => void handleDownloadSqlite()}
-                  className={`min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                    isSqliteUnavailable
-                      ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
-                      : 'hover:bg-[var(--barn-subtle)] disabled:opacity-60'
-                  }`}
-                >
-                  {sqliteExportLock.isSubmitting ? (
-                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  )}
-                  {sqliteExportLock.isSubmitting ? 'Exporting .SQLITE...' : 'Download Raw .SQLITE DB'}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                  aria-busy={zipExportBusy === 'json'}
-                  onClick={() => void handleDownloadTimestampedFullBackup()}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  {zipExportBusy === 'json'
-                    ? 'Preparing Backup (.JSON)...'
-                    : 'Timestamped Backup (.JSON)'}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                  aria-busy={zipExportBusy === 'json-light'}
-                  onClick={() => void handleDownloadDatabaseOnlyBackup()}
-                  title="Saves all herd, pedigree, breeding, and care logs as compact .JSON without loading full-resolution photos into memory"
-                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-60 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Database className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  {zipExportBusy === 'json-light'
-                    ? 'Preparing Records (.JSON)...'
-                    : 'Database Only (.JSON, Skip Photos)'}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={csvExportLock.isSubmitting}
-                  aria-busy={csvExportLock.isSubmitting}
-                  onClick={() => void handleExportCsv()}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-60"
-                >
-                  {csvExportLock.isSubmitting ? (
-                    <Loader2 className="w-4 h-4 text-[var(--barn-sage)] shrink-0 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <FileSpreadsheet className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  )}
-                  {csvExportLock.isSubmitting ? 'Exporting CSV...' : 'Export CSV'}
-                </button>
-
-                <button
-                  type="button"
-                  disabled={reportExportLock.isSubmitting}
-                  aria-busy={reportExportLock.isSubmitting}
-                  onClick={() =>
-                    void reportExportLock.runLocked(async () => {
-                      setImportError(null);
-                      try {
-                        const reportFilename = `barn-pdf-report-dto-${stamp}.json`;
-                        await downloadTextFile(
-                          reportFilename,
-                          JSON.stringify(
-                            buildPdfReadyBarnSnapshot(snapshot, activeSpeciesName),
-                            null,
-                            2
-                          ),
-                          'application/json'
-                        );
-                        setPortabilityFeedback(`Downloaded ${reportFilename}.`);
-                      } catch (err) {
-                        setImportError(
-                          err instanceof Error ? err.message : 'Report JSON export failed.'
-                        );
-                      }
-                    })
-                  }
-                  className="min-h-[44px] sm:min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-60"
-                >
-                  {reportExportLock.isSubmitting ? (
-                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  )}
-                  {reportExportLock.isSubmitting
-                    ? 'Preparing Report...'
-                    : `Export ${activeSpeciesName} Report (.JSON)`}
-                </button>
-              </div>
-
-              {pendingHeavyZipExport && (
-                <div
-                  role="alert"
-                  className="p-3.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs space-y-2"
-                >
-                  <div className="font-semibold text-[var(--barn-ink)]">{heavyZipGate.title}</div>
-                  <p className="text-[11px] text-[var(--barn-ink)] leading-relaxed">
-                    {heavyZipGate.body}
-                  </p>
-                  <p className="text-[11px] text-[var(--barn-muted)] leading-relaxed">
-                    {heavyZipGate.advice}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                    <button
-                      type="button"
-                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                      onClick={() => {
-                        const kind = pendingHeavyZipExport;
-                        setPendingHeavyZipExport(null);
-                        if (kind === 'complete') {
-                          void handleDownloadCompleteZip(true);
-                        } else {
-                          void handleDownloadPhotosOnlyZip(true);
-                        }
-                      }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold disabled:opacity-60"
-                    >
-                      Try .ZIP Export Anyway
-                    </button>
-                    <button
-                      type="button"
-                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                      onClick={() => {
-                        setPendingHeavyZipExport(null);
-                        void handleDownloadDatabaseOnlyBackup();
-                      }}
-                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-60"
-                    >
-                      Database Only (.JSON, Skip Photos)
-                    </button>
-                    <button
-                      type="button"
-                      disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                      onClick={() => {
-                        setPendingHeavyZipExport(null);
-                        void handleDownloadTimestampedFullBackup();
-                      }}
-                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold disabled:opacity-60"
-                    >
-                      Full .JSON Backup (With Photos)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingHeavyZipExport(null)}
-                      className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {isSqliteUnavailable && (
-                <p id={`${baseId}-sqlite-reason`} className="text-[11px] text-[var(--barn-muted)]">
-                  Raw <span className="font-mono">.SQLITE</span> export/load is disabled because
-                  WebAssembly SQLite isn&apos;t available in this browser (your records are safely stored
-                  in IndexedDB JSON mode). Use <strong>Timestamped Backup (.JSON)</strong> instead.
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Last export: {backupStatus.lastExportLabel} · Latest change:{' '}
+                  {backupStatus.latestChangeLabel}
                 </p>
-              )}
-            </div>
-
-            <div className="border-t border-[var(--barn-border)] pt-4 space-y-2.5">
-              <div className="text-xs font-semibold text-[var(--barn-muted)]">
-                Restore &amp; Archive Merge (.ZIP, .JSON, or .SQLITE)
               </div>
-              {activeDeviceTier <= 2 && (
-                <div className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[11px] text-[var(--barn-ink)] space-y-1">
-                  <div className="font-semibold">
-                    Tier {activeDeviceTier} Low-Memory Restore Caution (Recommended ≤{' '}
-                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)})
-                  </div>
-                  <p className="text-[var(--barn-muted)]">
-                    Large raw .ZIP, .JSON, or .SQLITE restores decode photos and database buffers
-                    simultaneously in browser RAM. Close other tabs before restoring files above{' '}
-                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)}.
-                  </p>
+            )}
+
+            {onOpenImportExportHub && (
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => onOpenImportExportHub('all')}
+                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-2 hover:opacity-95"
+                >
+                  <ArrowLeftRight className="w-4 h-4" aria-hidden="true" />
+                  Open Import / Export Hub
+                </button>
+
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('sync')}
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--barn-sage)]/45 bg-[var(--barn-sage-tint)]/35 hover:bg-[var(--barn-sage-tint)]/60 text-xs font-medium inline-flex items-center justify-center gap-1.5"
+                  >
+                    <FolderSync className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    <span className="truncate">Sync / Multi-Device</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('backup')}
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Database className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    <span className="truncate">System Backup</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('imports')}
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    <span className="truncate">Imports</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('exporters')}
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    <span className="truncate">Exporters</span>
+                  </button>
                 </div>
-              )}
-
-              {pendingLargeRestore && (
-                <div
-                  role="alert"
-                  className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)] text-xs space-y-2"
-                >
-                  <div className="font-semibold text-[var(--barn-ink)]">
-                    Large Restore Warning ({formatByteSizePure(pendingLargeRestore.file.size)})
-                  </div>
-                  <p className="text-[11px] text-[var(--barn-muted)]">
-                    &ldquo;{pendingLargeRestore.file.name}&rdquo; exceeds this Tier{' '}
-                    {activeDeviceTier} device&rsquo;s{' '}
-                    {formatByteSizePure(activeTierPolicy.maxSafeImportBytesHint)} comfort ceiling.
-                    Close other browser tabs first, or proceed anyway?
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const pending = pendingLargeRestore;
-                        setPendingLargeRestore(null);
-                        if (pending.kind === 'sqlite') {
-                          void handleSqliteUpload(pending.file, true);
-                        } else {
-                          void handleBackupArchiveUpload(
-                            pending.file,
-                            pending.mode || 'replace',
-                            true
-                          );
-                        }
-                      }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
-                    >
-                      Proceed with Restore
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingLargeRestore(null)}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <input
-                  ref={mergeFileRef}
-                  type="file"
-                  accept=".json,.zip,application/json,application/zip"
-                  className="hidden"
-                  onChange={(e) => {
-                    void handleBackupArchiveUpload(e.target.files?.[0], 'merge');
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={restoreInspectBusy || restoreCommitLock.isSubmitting}
-                  onClick={() => mergeFileRef.current?.click()}
-                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Merge (.JSON / .ZIP)
-                </button>
-
-                <input
-                  ref={replaceFileRef}
-                  type="file"
-                  accept=".json,.zip,application/json,application/zip"
-                  className="hidden"
-                  onChange={(e) => {
-                    void handleBackupArchiveUpload(e.target.files?.[0], 'replace');
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={restoreInspectBusy || restoreCommitLock.isSubmitting}
-                  onClick={() => replaceFileRef.current?.click()}
-                  className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Restore (.JSON / .ZIP)
-                </button>
-
-                <input
-                  ref={sqliteFileRef}
-                  type="file"
-                  accept=".sqlite,.db,.sqlite3"
-                  className="hidden"
-                  onChange={(e) => {
-                    void handleSqliteUpload(e.target.files?.[0]);
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={
-                    isSqliteUnavailable || restoreInspectBusy || restoreCommitLock.isSubmitting
-                  }
-                  aria-describedby={isSqliteUnavailable ? `${baseId}-sqlite-reason` : undefined}
-                  onClick={() => sqliteFileRef.current?.click()}
-                  className={`min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                    isSqliteUnavailable || restoreInspectBusy || restoreCommitLock.isSubmitting
-                      ? 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
-                      : 'hover:bg-[var(--barn-subtle)]'
-                  }`}
-                >
-                  <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Load .SQLITE File
-                </button>
               </div>
-              <p className="text-[11px] text-[var(--barn-muted)]">
-                Complete Archive (.ZIP) exports both database records and real viewable images
-                organized by species &amp; animal. Photos-Only (.ZIP) archives merge cleanly back
-                onto matching animals without overwriting your herd.
-              </p>
-
-              {restoreInspectBusy && (
-                <div
-                  role="status"
-                  className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs flex items-center gap-2"
-                >
-                  <Loader2 className="w-4 h-4 animate-spin text-[var(--barn-sage)]" aria-hidden="true" />
-                  <span>Inspecting backup contents before writing to database...</span>
-                </div>
-              )}
-
-              {/* Encrypted Archive Passphrase Prompt (Stage B) */}
-              {pendingRestorePassphrasePrompt && (
-                <form
-                  onSubmit={(e) => void handleDecryptAndInspectBackup(e)}
-                  className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-sage)] text-xs space-y-2.5"
-                >
-                  <div className="flex items-center gap-2 font-semibold text-[var(--barn-ink)]">
-                    <Lock className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                    <span>
-                      Unlock Encrypted Backup &ldquo;{pendingRestorePassphrasePrompt.fileName}&rdquo;
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-[var(--barn-muted)]">
-                    This {pendingRestorePassphrasePrompt.sourceFormat.toUpperCase()} archive is
-                    encrypted ({pendingRestorePassphrasePrompt.envelope.cipher}). Enter its
-                    passphrase to inspect records before restoring.
-                  </p>
-                  {pendingRestorePassphrasePrompt.error && (
-                    <div
-                      role="alert"
-                      className="p-2 rounded-lg bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[11px] font-medium"
-                    >
-                      {pendingRestorePassphrasePrompt.error}
-                    </div>
-                  )}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label htmlFor={`${baseId}-unlock-restore-pass`} className="sr-only">
-                      Encrypted Backup Passphrase
-                    </label>
-                    <input
-                      id={`${baseId}-unlock-restore-pass`}
-                      type="password"
-                      autoFocus
-                      value={pendingRestorePassphrasePrompt.passphrase}
-                      onChange={(e) =>
-                        setPendingRestorePassphrasePrompt((prev) =>
-                          prev ? { ...prev, passphrase: e.target.value, error: null } : null
-                        )
-                      }
-                      placeholder="Enter backup passphrase..."
-                      className="flex-1 min-w-[180px] min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
-                    />
-                    <button
-                      type="submit"
-                      disabled={restoreInspectBusy || !pendingRestorePassphrasePrompt.passphrase}
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-55"
-                    >
-                      {restoreInspectBusy ? 'Unlocking...' : 'Decrypt & Inspect'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingRestorePassphrasePrompt(null)}
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {/* Pre-Restore Archive Inspector Dry-Run Preview (Stage B) */}
-              {pendingRestoreInspection && (
-                <div
-                  role="region"
-                  aria-label="Pre-Restore Archive Inspector"
-                  className="p-4 rounded-xl bg-[var(--barn-canvas)] border-2 border-[var(--barn-sage)] text-xs space-y-3"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <div className="font-semibold text-[var(--barn-ink)] flex flex-wrap items-center gap-1.5">
-                        <CheckCircle2
-                          className="w-4 h-4 text-[var(--barn-sage)] shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          Pre-Restore Inspector: {pendingRestoreInspection.inspection.fileName}
-                        </span>
-                        <span className="px-1.5 py-0.5 rounded bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-[10px] uppercase">
-                          {pendingRestoreInspection.inspection.sourceFormat}
-                        </span>
-                        {pendingRestoreInspection.inspection.encrypted && (
-                          <span className="px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] font-mono text-[10px]">
-                            Encrypted
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
-                        {pendingRestoreInspection.inspection.barnName} · Mode:{' '}
-                        <strong className="text-[var(--barn-ink)]">
-                          {pendingRestoreInspection.mode === 'replace'
-                            ? 'Replace Current Barn'
-                            : 'Merge Into Current Barn'}
-                        </strong>
-                        {pendingRestoreInspection.inspection.isPhotosOnly
-                          ? ' · Photos-Only Archive'
-                          : ''}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                    <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
-                      <div className="text-[var(--barn-muted)]">Animals</div>
-                      <div className="font-mono font-semibold text-[var(--barn-ink)]">
-                        {pendingRestoreInspection.inspection.animalCount} (
-                        {pendingRestoreInspection.inspection.activeAnimalCount} active /{' '}
-                        {pendingRestoreInspection.inspection.archivedAnimalCount} arch)
-                      </div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
-                      <div className="text-[var(--barn-muted)]">Photos</div>
-                      <div className="font-mono font-semibold text-[var(--barn-ink)]">
-                        {pendingRestoreInspection.inspection.photoCount} ·{' '}
-                        {formatByteSizePure(pendingRestoreInspection.inspection.photoBytes)}
-                      </div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
-                      <div className="text-[var(--barn-muted)]">Breedings / Chores</div>
-                      <div className="font-mono font-semibold text-[var(--barn-ink)]">
-                        {pendingRestoreInspection.inspection.breedingCount} /{' '}
-                        {pendingRestoreInspection.inspection.taskCount}
-                      </div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
-                      <div className="text-[var(--barn-muted)]">Integrity Checks</div>
-                      <div className="font-mono font-semibold text-[var(--barn-ink)]">
-                        {pendingRestoreInspection.inspection.duplicateTattooCount} dup ·{' '}
-                        {pendingRestoreInspection.inspection.parentSexMismatchCount} sex ·{' '}
-                        {pendingRestoreInspection.inspection.healthIssueCount} health
-                      </div>
-                    </div>
-                  </div>
-
-                  {pendingRestoreInspection.inspection.speciesBreakdown.length > 0 && (
-                    <div className="rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] p-2.5 space-y-1 text-[11px]">
-                      <div className="font-semibold text-[var(--barn-muted)]">
-                        Species Breakdown in Archive
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono">
-                        {pendingRestoreInspection.inspection.speciesBreakdown.map((sp) => (
-                          <span key={sp.species}>
-                            {sp.species}: {sp.animalCount} animals, {sp.photoCount} photos (
-                            {formatByteSizePure(sp.photoBytes)})
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {pendingRestoreInspection.mode === 'replace' &&
-                    pendingRestoreInspection.inspection.replaceImpact && (
-                      <div className="p-2.5 rounded-lg bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[11px] space-y-0.5">
-                        <div className="font-semibold text-[var(--barn-ink)]">
-                          Replace Impact Summary
-                        </div>
-                        <p className="text-[var(--barn-muted)]">
-                          Current barn ({pendingRestoreInspection.inspection.replaceImpact.currentAnimalCount}{' '}
-                          animals) &rarr; Incoming ({pendingRestoreInspection.inspection.animalCount}{' '}
-                          animals, net{' '}
-                          {pendingRestoreInspection.inspection.replaceImpact.netAnimalDelta >= 0
-                            ? `+${pendingRestoreInspection.inspection.replaceImpact.netAnimalDelta}`
-                            : pendingRestoreInspection.inspection.replaceImpact.netAnimalDelta}
-                          ).{' '}
-                          {pendingRestoreInspection.inspection.replaceImpact
-                            .currentAnimalsNotInIncoming > 0 && (
-                            <strong className="text-[var(--barn-ink)]">
-                              {
-                                pendingRestoreInspection.inspection.replaceImpact
-                                  .currentAnimalsNotInIncoming
-                              }{' '}
-                              existing local animal(s) are not in this backup.
-                            </strong>
-                          )}{' '}
-                          A safety backup of your current barn is saved first.
-                        </p>
-                      </div>
-                    )}
-
-                  {pendingRestoreInspection.mode === 'merge' &&
-                    pendingRestoreInspection.inspection.mergeImpact && (
-                      <div className="p-2.5 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[11px] space-y-0.5">
-                        <div className="font-semibold text-[var(--barn-ink)]">
-                          Merge Impact Summary
-                        </div>
-                        <p className="text-[var(--barn-muted)]">
-                          Will add{' '}
-                          <strong className="text-[var(--barn-ink)]">
-                            {pendingRestoreInspection.inspection.mergeImpact.newAnimalsToAdd}
-                          </strong>{' '}
-                          new animal(s) &amp;{' '}
-                          <strong className="text-[var(--barn-ink)]">
-                            {pendingRestoreInspection.inspection.mergeImpact.newPhotosToAdd}
-                          </strong>{' '}
-                          new photo(s), while matching{' '}
-                          {pendingRestoreInspection.inspection.mergeImpact.existingAnimalsMatched}{' '}
-                          existing animal(s) and{' '}
-                          {pendingRestoreInspection.inspection.mergeImpact.existingPhotosMatched}{' '}
-                          photo(s).
-                        </p>
-                      </div>
-                    )}
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={restoreCommitLock.isSubmitting}
-                      aria-busy={restoreCommitLock.isSubmitting}
-                      onClick={() => void handleConfirmPendingRestore()}
-                      className={`min-h-[38px] px-3.5 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-60 ${
-                        pendingRestoreInspection.mode === 'replace'
-                          ? 'bg-[var(--barn-terracotta)] text-white'
-                          : 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
-                      }`}
-                    >
-                      {restoreCommitLock.isSubmitting && (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                      )}
-                      {restoreCommitLock.isSubmitting
-                        ? 'Applying Restore...'
-                        : pendingRestoreInspection.mode === 'replace'
-                        ? 'Confirm & Replace Barn Data'
-                        : 'Confirm & Merge Into Barn'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={restoreCommitLock.isSubmitting}
-                      onClick={() => setPendingRestoreInspection(null)}
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            )}
           </section>
 
           <DiagnosticsAndSupportPanel
@@ -3618,6 +1787,25 @@ export function SettingsAndSyncScreen({
                 Per-species testing data and delete controls live at the bottom of each species hub.
               </p>
             </div>
+
+            {preResetBackupError && (
+              <div
+                role="alert"
+                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium"
+              >
+                {preResetBackupError}
+              </div>
+            )}
+
+            {preResetBackupFeedback && !preResetBackupError && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
+              >
+                {preResetBackupFeedback}
+              </div>
+            )}
 
             <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -3834,7 +2022,8 @@ export function SettingsAndSyncScreen({
                     { key: 'B', label: 'Breeding Lab' },
                     { key: 'P', label: 'Pedigree Explorer' },
                     { key: 'O', label: 'Reports' },
-                    { key: 'S', label: 'Import & Settings' },
+                    { key: 'I', label: 'Import / Export Hub' },
+                    { key: 'S', label: 'Settings' },
                     { key: '?', label: 'Quick Shortcuts Help Dialog' },
                   ].map((item) => (
                     <div
@@ -3864,32 +2053,6 @@ export function SettingsAndSyncScreen({
           onClose={() => setShowCustomSpeciesModal(false)}
         />
       )}
-
-      <ArchivedHerdsModal
-        isOpen={showArchivedHerdsModal}
-        opfsSupported={opfsSupported}
-        archives={archivedHerdBundles}
-        autoOffloadEnabled={Boolean(settings.autoOffloadRetiredToOpfs)}
-        onToggleAutoOffload={(enabled) =>
-          onUpdateSettings({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
-        }
-        onRestoreArchive={async (archiveKey, opts) => {
-          if (onRestoreArchivedHerdBundle) {
-            await onRestoreArchivedHerdBundle(archiveKey, opts);
-          }
-        }}
-        onDownloadArchive={async (archiveKey) => {
-          if (onDownloadArchivedHerdBundle) {
-            await onDownloadArchivedHerdBundle(archiveKey);
-          }
-        }}
-        onDeleteArchive={async (archiveKey) => {
-          if (onDeleteArchivedHerdBundle) {
-            await onDeleteArchivedHerdBundle(archiveKey);
-          }
-        }}
-        onClose={() => setShowArchivedHerdsModal(false)}
-      />
     </div>
   );
 }

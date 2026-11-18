@@ -13,6 +13,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowDown,
+  ArrowLeftRight,
   ArrowRight,
   ArrowUp,
   ArrowUpToLine,
@@ -50,6 +51,7 @@ import {
 import { WorkspaceRoute } from '../hooks/useBarnStore';
 import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
+import type { ImportExportHubSection } from './ImportExportHubScreen';
 
 interface HomeSpeciesScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -70,6 +72,7 @@ interface HomeSpeciesScreenProps {
   deviceCapability?: DeviceCapabilityController;
   onApplyLowMemorySettings?: (patch: Partial<BarnSettings>) => void;
   onOpenSettings?: () => void;
+  onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
 }
 
 export function HomeSpeciesScreen({
@@ -91,6 +94,7 @@ export function HomeSpeciesScreen({
   deviceCapability,
   onApplyLowMemorySettings,
   onOpenSettings,
+  onOpenImportExportHub,
 }: HomeSpeciesScreenProps) {
   const [draggedSpeciesId, setDraggedSpeciesId] = useState<string | null>(null);
   const [dragOverSpeciesId, setDragOverSpeciesId] = useState<string | null>(null);
@@ -992,16 +996,27 @@ export function HomeSpeciesScreen({
           })}
         </div>
 
-        {/* Add Species CTA below all species cards, linking to Settings */}
-        <div className="pt-2">
+        {/* Add Species & Import/Export Hub CTAs below all species cards */}
+        <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <button
             type="button"
             onClick={onNavigateToAddSpecies}
             className="w-full min-h-[48px] px-5 py-3 rounded-2xl border border-dashed border-[var(--barn-border)] bg-[var(--barn-surface)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)]/50 text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center justify-center gap-2 transition-colors"
           >
             <Plus className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
-            Add Species (Configure Livestock &amp; Custom Prefix in Settings)
+            Add Species (Configure Livestock &amp; Prefix in Settings)
           </button>
+
+          {onOpenImportExportHub && (
+            <button
+              type="button"
+              onClick={() => onOpenImportExportHub('all')}
+              className="w-full min-h-[48px] px-5 py-3 rounded-2xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)]/50 text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center justify-center gap-2 transition-colors"
+            >
+              <ArrowLeftRight className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+              Open Import / Export Hub (Backups, Restore &amp; Sync)
+            </button>
+          )}
         </div>
       </section>
     </div>

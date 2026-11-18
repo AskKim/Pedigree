@@ -19,6 +19,7 @@
 
 import {
   AlertTriangle,
+  ArrowLeftRight,
   ArrowRight,
   CalendarCheck,
   Clock,
@@ -53,6 +54,8 @@ import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './util
 import { useAccessibleDialog } from './utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from './utils/useAsyncSubmitLock';
 
+import type { ImportExportHubSection } from './components/ImportExportHubScreen';
+
 const SpeciesDashboardScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SpeciesDashboardScreen')['SpeciesDashboardScreen']>
 >(() => import('./components/SpeciesDashboardScreen'), 'SpeciesDashboardScreen', 'Species Dashboard');
@@ -77,9 +80,13 @@ const SpeciesMemoScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SpeciesMemoScreen')['SpeciesMemoScreen']>
 >(() => import('./components/SpeciesMemoScreen'), 'SpeciesMemoScreen', 'Species Memo');
 
+const ImportExportHubScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/ImportExportHubScreen')['ImportExportHubScreen']>
+>(() => import('./components/ImportExportHubScreen'), 'ImportExportHubScreen', 'Import / Export Hub');
+
 const SettingsAndSyncScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SettingsAndSyncScreen')['SettingsAndSyncScreen']>
->(() => import('./components/SettingsAndSyncScreen'), 'SettingsAndSyncScreen', 'Import & Settings');
+>(() => import('./components/SettingsAndSyncScreen'), 'SettingsAndSyncScreen', 'Settings');
 
 const CalendarSyncConfirmModal = lazyNamedRoute<
   ComponentProps<typeof import('./components/CalendarIntegrationModals')['CalendarSyncConfirmModal']>
@@ -97,7 +104,8 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   pedigree: 'Pedigree Explorer',
   reports: 'Reports',
   memo: 'Species Memo',
-  settings: 'Import & Settings',
+  importExport: 'Import / Export Hub',
+  settings: 'Settings',
 };
 
 export default function App() {
@@ -117,9 +125,19 @@ export default function App() {
   const [dismissedWithdrawalSpecies, setDismissedWithdrawalSpecies] = useState<string[]>([]);
   const [requestedHerdWithdrawalNonce, setRequestedHerdWithdrawalNonce] = useState(0);
   const [hasOpenModal, setHasOpenModal] = useState(false);
+  const [importExportInitialSection, setImportExportInitialSection] =
+    useState<ImportExportHubSection>('all');
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
   const vaultBannerLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
   const reconnectDbLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
+
+  const openImportExportHub = useCallback(
+    (section: ImportExportHubSection = 'all') => {
+      setImportExportInitialSection(section);
+      store.setRoute('importExport');
+    },
+    [store]
+  );
 
   const shortcutToastTimerRef = useRef<number | null>(null);
   const herdPickerModalRef = useAccessibleDialog({
@@ -223,7 +241,8 @@ export default function App() {
         b: { route: 'breeding', label: 'Breeding' },
         p: { route: 'pedigree', label: 'Pedigree' },
         o: { route: 'reports', label: 'Reports' },
-        s: { route: 'settings', label: 'Import & Settings' },
+        i: { route: 'importExport', label: 'Import / Export Hub' },
+        s: { route: 'settings', label: 'Settings' },
       };
       const entry = shortcutMap[key];
       if (!entry) return;
@@ -326,6 +345,7 @@ export default function App() {
     { id: 'breeding', label: 'Breeding', shortcut: 'b' },
     { id: 'pedigree', label: 'Pedigree', shortcut: 'p' },
     { id: 'reports', label: 'Reports', shortcut: 'o' },
+    { id: 'importExport', label: 'Import / Export', shortcut: 'i' },
   ];
 
   const showInstallReminder =
@@ -341,7 +361,7 @@ export default function App() {
       </a>
 
       {/* 3-Zone Top Navigation Bar */}
-      <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-4 lg:gap-8 overflow-x-clip">
+      <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-3 lg:gap-6 overflow-x-clip">
         {/* Zone 1: Single-line Brand Wordmark */}
         <button
           type="button"
@@ -351,10 +371,10 @@ export default function App() {
           Community Pedigree
         </button>
 
-        {/* Zone 2: 5 Concise Single-Line Navigation Links */}
+        {/* Zone 2: Concise Single-Line Navigation Links */}
         <nav
           aria-label="Primary Navigation"
-          className="hidden md:flex items-center md:gap-4 lg:gap-6 text-sm font-medium shrink-0"
+          className="hidden md:flex items-center md:gap-2.5 lg:gap-5 text-xs lg:text-sm font-medium shrink-0"
         >
           {navItems.map((item) => {
             const active = route === item.id;
@@ -452,16 +472,40 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() =>
+              route === 'importExport' ? setRoute('dashboard') : openImportExportHub('all')
+            }
+            aria-current={route === 'importExport' ? 'page' : undefined}
+            title={
+              route === 'importExport'
+                ? `Back to ${activeSpeciesName}`
+                : 'Import / Export Hub (Shortcut: I)'
+            }
+            aria-label={
+              route === 'importExport' ? `Back to ${activeSpeciesName}` : 'Import / Export Hub'
+            }
+            className={`md:hidden min-h-[44px] min-w-[44px] px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center justify-center gap-1.5 ${
+              route === 'importExport'
+                ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+                : 'border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+            }`}
+          >
+            <ArrowLeftRight className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span className="hidden sm:inline">Import / Export</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setRoute(route === 'settings' ? 'dashboard' : 'settings')}
             aria-current={route === 'settings' ? 'page' : undefined}
             aria-keyshortcuts="s"
             title={
               route === 'settings'
                 ? `Back to ${activeSpeciesName}`
-                : 'Import & Settings (Shortcut: S)'
+                : 'Settings (Shortcut: S)'
             }
             aria-label={
-              route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import and Settings'
+              route === 'settings' ? `Back to ${activeSpeciesName}` : 'Settings'
             }
             className={`min-h-[44px] sm:min-h-[38px] px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               route === 'settings'
@@ -472,7 +516,7 @@ export default function App() {
             <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
             <span className="sm:hidden">{route === 'settings' ? 'Back' : 'Settings'}</span>
             <span className="hidden sm:inline">
-              {route === 'settings' ? `Back to ${activeSpeciesName}` : 'Import & Settings'}
+              {route === 'settings' ? `Back to ${activeSpeciesName}` : 'Settings'}
             </span>
           </button>
         </div>
@@ -682,10 +726,10 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {route !== 'settings' && (
+              {route !== 'importExport' && (
                 <button
                   type="button"
-                  onClick={() => setRoute('settings')}
+                  onClick={() => openImportExportHub('backup')}
                   className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
                   Open Backups
@@ -703,7 +747,9 @@ export default function App() {
         )}
 
         {/* Proactive Unbacked-Edits Reminder Banner (IMP-001) */}
-        {store.backupStatus && store.backupStatus.showDismissibleBanner && route !== 'settings' && (
+        {store.backupStatus &&
+          store.backupStatus.showDismissibleBanner &&
+          route !== 'importExport' && (
           <div
             role="status"
             className="w-full bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-col md:flex-row md:items-center md:justify-between gap-3"
@@ -732,7 +778,7 @@ export default function App() {
               )}
               <button
                 type="button"
-                onClick={() => setRoute('settings')}
+                onClick={() => openImportExportHub('backup')}
                 className={`min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
                   store.opfsSupported
                     ? 'border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)]'
@@ -814,10 +860,10 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {route !== 'settings' && (
+                {route !== 'importExport' && (
                   <button
                     type="button"
-                    onClick={() => setRoute('settings')}
+                    onClick={() => openImportExportHub('backup')}
                     className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
                   >
                     Open Backups &amp; Compatibility
@@ -848,10 +894,10 @@ export default function App() {
               <span className="break-words">{store.errorMessage}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {route !== 'settings' && (
+              {route !== 'importExport' && (
                 <button
                   type="button"
-                  onClick={() => setRoute('settings')}
+                  onClick={() => openImportExportHub('backup')}
                   className="min-h-[44px] sm:min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
                   Open Recovery &amp; Backups
@@ -931,7 +977,7 @@ export default function App() {
         )}
 
         {/* Contextual Species Switcher Bar inside any Species Workspace */}
-        {route !== 'home' && route !== 'settings' && (
+        {route !== 'home' && route !== 'settings' && route !== 'importExport' && (
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <label
@@ -1028,6 +1074,7 @@ export default function App() {
               void store.updateSettings(patch);
             }}
             onOpenSettings={() => setRoute('settings')}
+            onOpenImportExportHub={openImportExportHub}
           />
         )}
 
@@ -1106,6 +1153,7 @@ export default function App() {
             }}
             onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             onOpenSettings={() => setRoute('settings')}
+            onOpenImportExportHub={openImportExportHub}
             onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
           />
         )}
@@ -1237,16 +1285,65 @@ export default function App() {
           />
         )}
 
-        {route === 'settings' && (
-          <SettingsAndSyncScreen
+        {route === 'importExport' && (
+          <ImportExportHubScreen
             snapshot={snapshot}
             engineName={store.engineName}
             activeSpeciesName={activeSpeciesName}
             deviceId={store.deviceId}
-            storageStatus={store.storageStatus}
             backupStatus={store.backupStatus}
             syncOperations={store.syncOperations}
             syncConflicts={store.syncConflicts}
+            initialSection={importExportInitialSection}
+            onConsumedInitialSection={() => setImportExportInitialSection('all')}
+            onOpenSettings={() => setRoute('settings')}
+            onOpenReports={() => setRoute('reports')}
+            recordBackupExport={store.recordBackupExport}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
+            }}
+            onApplyPlatformImport={store.applyPlatformImportPreview}
+            onImportJson={store.importJsonBackup}
+            onImportBackupArchive={store.importBackupArchiveBytes}
+            onImportDeltaOperations={store.importDeltaOperations}
+            onResolveSyncConflict={store.resolveSyncConflict}
+            onDismissSyncConflict={store.dismissSyncConflict}
+            onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
+            onRestoreRollingBackup={store.restoreRollingBackupByKey}
+            onExportSqliteBytes={store.exportSqliteBytes}
+            onInspectSqliteRestoreBytes={store.inspectSqliteRestoreBytes}
+            onImportSqliteBytes={store.importSqliteBytes}
+            deviceCapability={deviceCapability}
+            onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
+            opfsSupported={store.opfsSupported}
+            opfsVaultBackups={store.opfsVaultBackups}
+            rollingBackups={store.rollingBackups}
+            archivedHerdBundles={store.archivedHerdBundles}
+            onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
+            onCreateVerifiedPreUpgradeBackup={store.createAndVerifyPreUpgradeBackup}
+            onRestoreOpfsVaultBackup={store.restoreOpfsVaultBackup}
+            onDownloadOpfsVaultBackup={store.downloadOpfsVaultBackupByKey}
+            onDeleteOpfsVaultBackup={store.deleteOpfsVaultBackupByKey}
+            onDeleteRollingBackup={store.deleteRollingIdbBackupByKey}
+            onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
+            onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
+            onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
+            backupSyncStatus={store.backupSyncStatus}
+            pruneSyncWarning={store.pruneSyncWarning}
+            onConnectBackupSync={store.connectBackupSyncFolder}
+            onReauthorizeBackupSync={store.reauthorizeBackupSyncFolder}
+            onDisconnectBackupSync={store.disconnectBackupSyncFolder}
+            onSyncVaultToSyncNow={store.syncVaultBackupsToSyncNow}
+            onDismissPruneWarning={store.dismissPruneSyncWarning}
+          />
+        )}
+
+        {route === 'settings' && (
+          <SettingsAndSyncScreen
+            snapshot={snapshot}
+            activeSpeciesName={activeSpeciesName}
+            storageStatus={store.storageStatus}
+            backupStatus={store.backupStatus}
             openAddSpeciesOnMount={store.openAddSpeciesInSettings}
             onConsumedOpenAddSpecies={() => store.setOpenAddSpeciesInSettings(false)}
             onRequestPersistentStorage={store.triggerPersistentStorageRequest}
@@ -1259,17 +1356,6 @@ export default function App() {
               void store.deleteSpeciesProfile(profile);
             }}
             onDownloadTimestampedSpeciesBackup={store.exportTimestampedSpeciesBackup}
-            onApplyPlatformImport={store.applyPlatformImportPreview}
-            onImportJson={store.importJsonBackup}
-            onImportBackupArchive={store.importBackupArchiveBytes}
-            onImportDeltaOperations={store.importDeltaOperations}
-            onResolveSyncConflict={store.resolveSyncConflict}
-            onDismissSyncConflict={store.dismissSyncConflict}
-            onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
-            onRestoreRollingBackup={store.restoreRollingBackupByKey}
-            onExportSqliteBytes={store.exportSqliteBytes}
-            onInspectSqliteRestoreBytes={store.inspectSqliteRestoreBytes}
-            onImportSqliteBytes={store.importSqliteBytes}
             onAnalyzePhotoFootprint={store.analyzePhotoStorageFootprint}
             onPruneOrphanPhotos={store.pruneOrphanAnimalPhotos}
             onReoptimizeOversizedPhotos={store.reoptimizeOversizedAnimalPhotos}
@@ -1301,23 +1387,9 @@ export default function App() {
             opfsSupported={store.opfsSupported}
             opfsVaultBackups={store.opfsVaultBackups}
             rollingBackups={store.rollingBackups}
-            archivedHerdBundles={store.archivedHerdBundles}
             onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
             onCreateVerifiedPreUpgradeBackup={store.createAndVerifyPreUpgradeBackup}
-            onRestoreOpfsVaultBackup={store.restoreOpfsVaultBackup}
-            onDownloadOpfsVaultBackup={store.downloadOpfsVaultBackupByKey}
-            onDeleteOpfsVaultBackup={store.deleteOpfsVaultBackupByKey}
-            onDeleteRollingBackup={store.deleteRollingIdbBackupByKey}
-            onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
-            onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
-            onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
-            backupSyncStatus={store.backupSyncStatus}
-            pruneSyncWarning={store.pruneSyncWarning}
-            onConnectBackupSync={store.connectBackupSyncFolder}
-            onReauthorizeBackupSync={store.reauthorizeBackupSyncFolder}
-            onDisconnectBackupSync={store.disconnectBackupSyncFolder}
-            onSyncVaultToSyncNow={store.syncVaultBackupsToSyncNow}
-            onDismissPruneWarning={store.dismissPruneSyncWarning}
+            onOpenImportExportHub={openImportExportHub}
           />
               )}
             </Suspense>
@@ -1325,7 +1397,7 @@ export default function App() {
         )}
 
         {/* Quiet Desktop Keyboard Shortcuts Hint Footer */}
-        {route !== 'settings' && (
+        {route !== 'settings' && route !== 'importExport' && (
           <footer className="hidden md:flex items-center justify-between gap-4 pt-3 pb-1 border-t border-[var(--barn-border)]/60 text-[11px] text-[var(--barn-muted)]">
             <span>
               Shortcuts: <kbd className="font-mono font-semibold text-[var(--barn-ink)]">H</kbd> Home ·{' '}
@@ -1334,6 +1406,7 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">I</kbd> Import/Export ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
             </span>
             <button
@@ -1489,7 +1562,8 @@ export default function App() {
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
-                { key: 'S', label: 'Import & Settings', desc: 'Backups, external platform importer, diagnostics & sync' },
+                { key: 'I', label: 'Import / Export Hub', desc: 'System backups, native restores, sync & external exporters' },
+                { key: 'S', label: 'Settings', desc: 'Barn preferences, calendar sync, appearance & diagnostics' },
                 { key: '?', label: 'Shortcuts Help', desc: 'Open this quick keyboard reference' },
                 { key: 'Tab / Esc', label: 'Dialog Controls', desc: 'Cycle controls inside modals or press Esc to close' },
               ].map((item) => (

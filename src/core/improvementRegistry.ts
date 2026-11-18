@@ -89,6 +89,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'src/core/syncAndExports.ts',
       'src/hooks/useBarnStore.ts',
       'src/App.tsx',
+      'src/components/ImportExportHubScreen.tsx',
       'src/components/SettingsAndSyncScreen.tsx',
     ],
     invariants: [
@@ -113,15 +114,20 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         rationale: 'Global dismissible/snoozable reminder banner alerts breeders when real edits are unbacked.',
       },
       {
+        filePath: 'src/components/ImportExportHubScreen.tsx',
+        requiredSubstrings: ['backupStatus', 'recordBackupExport'],
+        rationale: 'Import/Export Hub exports must show live backup timestamps and record external exports immediately.',
+      },
+      {
         filePath: 'src/components/SettingsAndSyncScreen.tsx',
         requiredSubstrings: ['backupStatus', 'recordBackupExport'],
-        rationale: 'Settings exports must show live backup timestamps and record external exports immediately.',
+        rationale: 'Settings backup summary & pre-reset export must show live backup status and record exports immediately.',
       },
     ],
     restorePlaybook: [
       'Restore `evaluateBackupStatus` and timestamp formatters in `src/core/backupStatus.ts`.',
       'Ensure `exportBarnBackupJson` emits `exportedAtLocal`, `barnSummary`, and deterministically sorted animals in `src/core/syncAndExports.ts`.',
-      'Wire `lastBackupMeta`, `recordBackupExport`, and `snoozeBackupReminder` in `src/hooks/useBarnStore.ts` and connect banner/cards in `src/App.tsx` and `src/components/SettingsAndSyncScreen.tsx`.',
+      'Wire `lastBackupMeta`, `recordBackupExport`, and `snoozeBackupReminder` in `src/hooks/useBarnStore.ts` and connect banner/cards in `src/App.tsx`, `ImportExportHubScreen.tsx`, and `SettingsAndSyncScreen.tsx`.',
     ],
   },
   {
@@ -471,7 +477,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'src/core/syncOutbox.ts',
       'src/storage/localSyncChannels.ts',
       'src/core/backupArchive.ts',
-      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/ImportExportHubScreen.tsx',
     ],
     invariants: [
       {
@@ -486,7 +492,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       },
     ],
     restorePlaybook: [
-      'Preserve `syncOutbox.ts`, `localSyncChannels.ts`, and `backupArchive.ts` hooks inside `useBarnStore.ts` and `SettingsAndSyncScreen.tsx`.',
+      'Preserve `syncOutbox.ts`, `localSyncChannels.ts`, and `backupArchive.ts` hooks inside `useBarnStore.ts` and `ImportExportHubScreen.tsx`.',
     ],
   },
   {
@@ -1009,6 +1015,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'src/storage/deviceCapabilityDetector.ts',
       'src/utils/webFileActions.ts',
       'src/components/UnifiedBackupVaultPanel.tsx',
+      'src/components/ImportExportHubScreen.tsx',
       'src/components/SettingsAndSyncScreen.tsx',
       'src/components/PrintPreviewModal.tsx',
       'src/App.tsx',
@@ -1051,7 +1058,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         rationale: 'Clipboard fallback for restricted/older browser contexts must remain available.',
       },
       {
-        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        filePath: 'src/components/ImportExportHubScreen.tsx',
         requiredSubstrings: ['pendingHeavyZipExport', 'heavyZipGate', 'handleDownloadDatabaseOnlyBackup'],
         rationale: 'Heavy .ZIP exports must warn Tier 1/outdated browsers and offer Database-Only .JSON fallback without photo hydration.',
       },
@@ -1060,7 +1067,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep ES2018 target in `tsconfig.json` and `vite.config.ts` (`safari12`, `registerType: "prompt"`) plus ES5 guard, circuit breaker, and `?emergency_reset=true` in `index.html`.',
       'Keep `src/utils/es2018Shims.ts` imported first in `src/main.tsx` alongside `src/storage/pwaUpdateManager.ts`.',
       'Keep `assessBrowserCompatibility` and `getHeavyZipExportGate` in `src/core/deviceCapability.ts` and hook probes in `src/storage/deviceCapabilityDetector.ts`.',
-      'Keep disabled-with-reason UI controls (`Share .HTM` in `PrintPreviewModal.tsx`, Storage Vault, Settings), Database-Only `.JSON` export, table/care-log windowing, and open-dialog PWA update deferral in `App.tsx`.',
+      'Keep disabled-with-reason UI controls (`Share .HTM` in `PrintPreviewModal.tsx`, Storage Vault, Import/Export Hub, Settings), Database-Only `.JSON` export, table/care-log windowing, and open-dialog PWA update deferral in `App.tsx`.',
     ],
   },
   {
@@ -1229,10 +1236,11 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         requiredSubstrings: [
           'requestAnimationFrame',
           "o: { route: 'reports', label: 'Reports' }",
-          "s: { route: 'settings', label: 'Import & Settings' }",
+          "i: { route: 'importExport', label: 'Import / Export Hub' }",
+          "s: { route: 'settings', label: 'Settings' }",
           'e.isComposing',
         ],
-        rationale: 'Root shell coalesces MutationObserver work via rAF and guards O/S/H/D/R/B/P/? shortcuts cleanly.',
+        rationale: 'Root shell coalesces MutationObserver work via rAF and guards O/I/S/H/D/R/B/P/? shortcuts cleanly.',
       },
       {
         filePath: 'src/core/syncAndExports.ts',
@@ -1352,6 +1360,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'src/utils/googleCalendarClient.ts',
       'src/hooks/useBarnStore.ts',
       'src/components/DiagnosticsAndSupportPanel.tsx',
+      'src/components/ImportExportHubScreen.tsx',
       'src/components/SettingsAndSyncScreen.tsx',
       'src/App.tsx',
       'src/core/__tests__/stageBResilience.test.ts',
@@ -1414,9 +1423,9 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         rationale: 'Google Calendar push must update existing events via PUT when deterministic ID returns HTTP 409.',
       },
       {
-        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        filePath: 'src/components/ImportExportHubScreen.tsx',
         requiredSubstrings: ['pendingRestoreInspection', 'encryptBackupExport'],
-        rationale: 'Settings must require Pre-Restore Inspector confirmation and expose opt-in backup/sync encryption.',
+        rationale: 'Import/Export Hub must require Pre-Restore Inspector confirmation and expose opt-in backup/sync encryption.',
       },
       {
         filePath: 'src/components/DiagnosticsAndSupportPanel.tsx',
@@ -1432,7 +1441,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     restorePlaybook: [
       'Keep pure modules `src/core/photoMaintenance.ts`, `src/core/archiveInspector.ts`, `src/core/encryptedExport.ts`, `_rev` logic in `src/core/syncOutbox.ts`, and `buildDeterministicGoogleCalendarEventId` in `src/core/calendarExport.ts`.',
       'Keep `src/storage/passphraseCrypto.ts`, clock-skew compensation in `src/storage/storageProtection.ts`, encrypted delta/directory sync in `src/storage/localSyncChannels.ts`, off-thread inspection in `src/storage/offThreadWorkerClient.ts`, and `inspectRawSqliteBytes` in `src/storage/webSqliteAdapter.ts`.',
-      'Keep Stage B store handlers in `src/hooks/useBarnStore.ts`, `409` PUT retry in `src/utils/googleCalendarClient.ts`, and UI mounts in `DiagnosticsAndSupportPanel.tsx`, `SettingsAndSyncScreen.tsx`, and `App.tsx`.',
+      'Keep Stage B store handlers in `src/hooks/useBarnStore.ts`, `409` PUT retry in `src/utils/googleCalendarClient.ts`, and UI mounts in `DiagnosticsAndSupportPanel.tsx`, `ImportExportHubScreen.tsx`, and `App.tsx`.',
     ],
   },
   {
@@ -1584,6 +1593,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
     files: [
       'src/core/upgradeGate.ts',
       'src/storage/pwaUpdateManager.ts',
+      'src/components/ImportExportHubScreen.tsx',
       'src/components/SettingsAndSyncScreen.tsx',
       'src/storage/__tests__/passphraseAndClockSkew.test.ts',
     ],
@@ -1599,15 +1609,20 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         rationale: 'Version/status manifest checks must propagate HTTP Date skew and record adjusted timestamps.',
       },
       {
-        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        filePath: 'src/components/ImportExportHubScreen.tsx',
         requiredSubstrings: ['archiveExportLock', 'getAdjustedNowMs', 'archiveExportLock.runLocked'],
         rationale: 'Archive/backup exports must lock synchronously against double-tap and record skew-adjusted pause timestamps.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['archiveExportLock', 'archiveExportLock.runLocked'],
+        rationale: 'Pre-reset full JSON backup in Settings must lock synchronously against double-tap.',
       },
     ],
     restorePlaybook: [
       'Keep `nowEpochMs` default inside `computeHttpDateClockSkewMs` in `src/core/upgradeGate.ts`.',
       'Keep `recordServerDateHeaderSkew` and `getAdjustedNowIsoUtc` in `src/storage/pwaUpdateManager.ts`.',
-      'Keep `archiveExportLock = useAsyncSubmitLock()` wrapping all 4 export handlers and disabling export/caution/reset buttons in `src/components/SettingsAndSyncScreen.tsx`, plus `getAdjustedNowMs()` for `pausedAtMs`.',
+      'Keep `archiveExportLock = useAsyncSubmitLock()` wrapping all 4 export handlers in `src/components/ImportExportHubScreen.tsx` and the pre-reset backup handler in `src/components/SettingsAndSyncScreen.tsx`, plus `getAdjustedNowMs()` for `pausedAtMs`.',
     ],
   },
   {
@@ -1854,6 +1869,76 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep BreedScheduleOverride & normalizeBreedScheduleOverrides in `src/core/models.ts` and pure helpers in `src/core/taskMaster.ts` with tests in `src/core/__tests__/taskMaster.test.ts`.',
       'Keep `breed_overrides_json` persisted in `src/storage/webSqliteAdapter.ts` and normalized in `src/core/syncAndExports.ts` and `src/core/syncOutbox.ts`.',
       'Keep `recalculateBreedingPostBirthTasks` and `completeBreedingTaskWithOutcome` in `src/hooks/useBarnStore.ts` wired through `src/App.tsx` to `SpeciesDashboardScreen.tsx`, `BreedingScreen.tsx`, and `SpeciesEditorModal.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-030',
+    title: 'Consolidated Import/Export Hub & Extensible Non-Native Exporter Registry',
+    category: 'backup-safety',
+    source: 'session',
+    userIntent:
+      'Consolidate all backup, native restore, multi-worker sync, external importer, and non-native exporter tools into a clean 3-section Import/Export Hub page integrated into navigation and Settings.',
+    summary:
+      'Adds a pure TypeScript extensible non-native exporter registry (`exporterTypes.ts`, `registry.ts`) supporting `.CSV`, Evans `.HTM`, Printable Barn Binder `.HTM`, Normalized Report DTO `.JSON`, and `.ICS` calendar tasks plus future external schema slots; introduces `ImportExportHubScreen` structured cleanly into System Backup, Imports (Native System Imports first followed by External Format Importers), and Exporters; wires `' +
+      "'importExport'" +
+      '` into `useBarnStore.ts`, `App.tsx` (desktop/mobile nav + `I` shortcut + backup banner routing), `SpeciesDashboardScreen.tsx`, `HomeSpeciesScreen.tsx`, and `SettingsAndSyncScreen.tsx`.',
+    files: [
+      'src/core/exporters/exporterTypes.ts',
+      'src/core/exporters/registry.ts',
+      'src/core/__tests__/exportersRegistry.test.ts',
+      'src/components/ImportExportHubScreen.tsx',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/components/HomeSpeciesScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/exporters/exporterTypes.ts',
+        requiredSubstrings: ['ExternalExporterDescriptor', 'ExportedArtifactPayload'],
+        rationale: 'Pure TypeScript exporter interface contracts must remain DOM-free for cross-platform reuse.',
+      },
+      {
+        filePath: 'src/core/exporters/registry.ts',
+        requiredSubstrings: [
+          'BUILTIN_NON_NATIVE_EXPORTERS',
+          'PLANNED_EXTERNAL_SCHEMA_TARGETS',
+          'buildExporterCatalog',
+          'runExternalExporter',
+        ],
+        rationale: 'Non-native exporter catalog must keep built-in formats and extensible registry hooks intact.',
+      },
+      {
+        filePath: 'src/components/ImportExportHubScreen.tsx',
+        requiredSubstrings: [
+          'ImportExportHubScreen',
+          'ExternalImporterPanel',
+          'UnifiedBackupVaultPanel',
+          'BUILTIN_NON_NATIVE_EXPORTERS',
+        ],
+        rationale: 'Hub screen must organize System Backup, Native & External Imports, and Exporters cleanly.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: ["| 'importExport'"],
+        rationale: 'WorkspaceRoute union must include importExport.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['ImportExportHubScreen', 'openImportExportHub'],
+        rationale: 'Root shell must route, lazy-load, and link banners/shortcuts cleanly to ImportExportHubScreen.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['onOpenImportExportHub'],
+        rationale: 'Settings must link cleanly into all sections of the Import/Export Hub without duplicating forms.',
+      },
+    ],
+    restorePlaybook: [
+      'Restore `src/core/exporters/exporterTypes.ts`, `src/core/exporters/registry.ts`, and `src/core/__tests__/exportersRegistry.test.ts`.',
+      'Restore `src/components/ImportExportHubScreen.tsx` and keep `importExport` inside `WorkspaceRoute` in `src/hooks/useBarnStore.ts`.',
+      'Keep `ImportExportHubScreen` routing, `I` shortcut, navigation buttons, and Settings/Home/Species Hub links wired across `App.tsx`, `SettingsAndSyncScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `HomeSpeciesScreen.tsx`.',
     ],
   },
 ];

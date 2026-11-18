@@ -13,6 +13,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowDown,
+  ArrowLeftRight,
   ArrowRight,
   ArrowRightLeft,
   ArrowUp,
@@ -95,6 +96,7 @@ import {
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+import type { ImportExportHubSection } from './ImportExportHubScreen';
 
 const EMPTY_WITHDRAWAL_MAP = new Map<string, AnimalWithdrawalEvaluation>();
 
@@ -146,6 +148,7 @@ interface SpeciesDashboardScreenProps {
   onHideSummaryGrid?: () => void;
   onLocateConflicts?: () => void;
   onOpenSettings: () => void;
+  onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
   onHydrateSnapshotForExport?: (
     targetSnapshot?: BarnDatabaseSnapshot,
     filterSpecies?: string
@@ -188,6 +191,7 @@ export function SpeciesDashboardScreen({
   onHideSummaryGrid,
   onLocateConflicts,
   onOpenSettings,
+  onOpenImportExportHub,
   onHydrateSnapshotForExport,
 }: SpeciesDashboardScreenProps) {
   const {
@@ -575,14 +579,26 @@ export function SpeciesDashboardScreen({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
-        >
-          <Settings className="w-3.5 h-3.5" aria-hidden="true" />
-          Barn Settings &amp; Importers
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenImportExportHub && (
+            <button
+              type="button"
+              onClick={() => onOpenImportExportHub('all')}
+              className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+              Import / Export Hub
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Settings className="w-3.5 h-3.5" aria-hidden="true" />
+            Barn Settings
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
