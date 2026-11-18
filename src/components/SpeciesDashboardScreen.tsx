@@ -943,17 +943,17 @@ export function SpeciesDashboardScreen({
             )}
           </div>
 
-          <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch gap-2 shrink-0">
+          <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch gap-2 max-w-full">
             <button
               type="button"
               onClick={() => onNavigate('memo')}
-              className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
+              className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-all shadow-sm"
             >
-              <span className="inline-flex items-center gap-2.5">
+              <span className="inline-flex items-center gap-2.5 min-w-0">
                 <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
                   <StickyNote className="w-4 h-4" aria-hidden="true" />
                 </span>
-                <span>
+                <span className="min-w-0">
                   <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
                     {speciesProfile.name} Note Pad
                   </span>
@@ -968,13 +968,13 @@ export function SpeciesDashboardScreen({
             <button
               type="button"
               onClick={openBinderPreview}
-              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-colors shrink-0"
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
             >
-              <span className="inline-flex items-center gap-2.5">
+              <span className="inline-flex items-center gap-2.5 min-w-0">
                 <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
                   <BookOpen className="w-4 h-4" aria-hidden="true" />
                 </span>
-                <span>
+                <span className="min-w-0">
                   <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
                     Printable Barn Binder
                   </span>
@@ -992,13 +992,13 @@ export function SpeciesDashboardScreen({
           <button
             type="button"
             onClick={openBinderPreview}
-            className="w-full sm:w-auto bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-colors shrink-0"
+            className="w-full sm:w-auto max-w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-colors"
           >
-            <span className="inline-flex items-center gap-2.5">
+            <span className="inline-flex items-center gap-2.5 min-w-0">
               <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
                 <BookOpen className="w-4 h-4" aria-hidden="true" />
               </span>
-              <span>
+              <span className="min-w-0">
                 <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
                   Printable Barn Binder
                 </span>
@@ -1013,13 +1013,13 @@ export function SpeciesDashboardScreen({
           <button
             type="button"
             onClick={() => onNavigate('memo')}
-            className="w-full sm:w-auto bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 whitespace-nowrap transition-all shrink-0 shadow-sm"
+            className="w-full sm:w-auto max-w-full bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-all shadow-sm"
           >
-            <span className="inline-flex items-center gap-2.5">
+            <span className="inline-flex items-center gap-2.5 min-w-0">
               <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
                 <StickyNote className="w-4 h-4" aria-hidden="true" />
               </span>
-              <span>
+              <span className="min-w-0">
                 <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
                   {speciesProfile.name} Note Pad
                 </span>
@@ -1073,7 +1073,7 @@ export function SpeciesDashboardScreen({
                 </p>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               {conflictedAnimalCount > 0 && onLocateConflicts && (
                 <button
                   type="button"
@@ -1296,7 +1296,7 @@ export function SpeciesDashboardScreen({
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 max-w-full">
                       {renderReorderControls()}
                       <div className="flex items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
                         <button
@@ -1803,12 +1803,12 @@ export function SpeciesDashboardScreen({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 max-w-full">
                       {renderReorderControls()}
                       <button
                         type="button"
                         onClick={() => onNavigate('breeding')}
-                        className="min-h-[38px] px-3.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                        className="min-h-[38px] max-w-full px-3.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
                       >
                         Open Breeding Lab
                       </button>
@@ -1916,16 +1916,16 @@ export function SpeciesDashboardScreen({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 max-w-full">
                       {renderReorderControls()}
                       <button
                         type="button"
                         aria-expanded={showNewCageForm}
                         onClick={() => setShowNewCageForm((v) => !v)}
-                        className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                        className="min-h-[38px] max-w-full px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
                       >
-                        <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                        Add Location
+                        <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>Add Location</span>
                       </button>
                     </div>
                   </div>
@@ -2303,7 +2303,7 @@ export function SpeciesDashboardScreen({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 max-w-full">
                     {renderReorderControls()}
                     <button
                       type="button"
@@ -2312,10 +2312,10 @@ export function SpeciesDashboardScreen({
                         setPendingShowWithdrawalWarning(null);
                         setShowNewShowForm((v) => !v);
                       }}
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                      className="min-h-[38px] max-w-full px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
                     >
-                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                      Add Show
+                      <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>Add Show</span>
                     </button>
                   </div>
                 </div>

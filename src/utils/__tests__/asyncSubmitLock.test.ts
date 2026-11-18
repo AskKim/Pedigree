@@ -93,8 +93,10 @@ describe('createAsyncLockController & createAsyncKeyedLockController — double-
       expect(states).toEqual([true, false]);
 
       // Disposal cancels any pending state notifications
+      expect(controller.isDisposed()).toBe(false);
       await controller.run(async () => 'before-unmount');
       controller.dispose();
+      expect(controller.isDisposed()).toBe(true);
       vi.advanceTimersByTime(500);
       expect(states).toEqual([true, false, true]);
     } finally {
@@ -134,6 +136,8 @@ describe('createAsyncLockController & createAsyncKeyedLockController — double-
     expect(keyed.isLocked('task-a')).toBe(false);
     expect(keyed.getLockedKeys()).toEqual([]);
     expect(keyUpdates.length).toBeGreaterThanOrEqual(4);
+    expect(keyed.isDisposed()).toBe(false);
     keyed.dispose();
+    expect(keyed.isDisposed()).toBe(true);
   });
 });

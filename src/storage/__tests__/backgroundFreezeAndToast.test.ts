@@ -19,8 +19,13 @@ import {
   emitAsyncErrorToast,
   getActiveAsyncErrorToasts,
   handleUnhandledRejectionReason,
+  inspectPreviousSessionUncleanExit,
+  logDiagnosticEvent,
+  markCleanSessionExit,
+  normalizeStoredDiagnosticEntry,
   readEmergencySessionTrace,
   resetAsyncErrorToastsForTests,
+  shouldIgnoreConsoleDiagnosticMessage,
   writeEmergencySessionTraceSync,
 } from '../crashLogger';
 import { syncWithPickedDirectory } from '../localSyncChannels';
@@ -420,5 +425,121 @@ describe('Mobile Background Freeze Coordinator, Emergency Session Trace & Async 
 
     expect(syncOpenCount).toBe(2);
     expect(syncCloseCount).toBe(syncOpenCount);
+  });
+
+  it('ignores Vite dev-proxy WebSocket console noise while preserving real errors', () => {
+    expect(
+      shouldIgnoreConsoleDiagnosticMessage(
+        '[vite] failed to connect to websocket.\nyour current setup:\n  (browser) example.com/ <--[HTTP]--> localhost:3000/'
+      )
+    ).toBe(true);
+    expect(shouldIgnoreConsoleDiagnosticMessage('[vite] server connection lost. Polling for restart...')).toBe(
+      true
+    );
+    expect(shouldIgnoreConsoleDiagnosticMessage('[vite] connecting...')).toBe(true);
+
+    expect(shouldIgnoreConsoleDiagnosticMessage('[vite] Internal Server Error\nSyntaxError')).toBe(false);
+    expect(shouldIgnoreConsoleDiagnosticMessage('Failed writing local database to IndexedDB')).toBe(false);
+  });
+
+  it('normalizes legacy stored Vite WebSocket noise and low-heap lifecycle exits out of Memory Alerts', () => {
+    const viteWsEntry = makeFakeEntry(10, {
+      category: 'console',
+      level: 'error',
+      message: '[vite] failed to connect to websocket.\nyour current setup: ...',
+    });
+    expect(normalizeStoredDiagnosticEntry(viteWsEntry)).toBeNull();
+
+    const lowHeapLegacyExit = makeFakeEntry(11, {
+      category: 'memory',
+      level: 'warn',
+      message:
+        'Previous session (sess-mwmc32si-cu0lt) terminated unexpectedly without clean pagehide (last active 2026-11-18T16:29:41.842Z, route "home", JS heap 6.8%). Possible mobile OS tab kill / out-of-memory reload.',
+      details: JSON.stringify({
+        previousSessionId: 'sess-mwmc32si-cu0lt',
+        lastRoute: 'home',
+        lastHeapPercent: 6.8,
+        lastHeapBytes: 68_000_000,
+        downtimeMs: 10_370,
+      }),
+    });
+    const normalizedLow = normalizeStoredDiagnosticEntry(lowHeapLegacyExit);
+    expect(normalizedLow?.category).toBe('lifecycle');
+    expect(normalizedLow?.level).toBe('warn');
+
+    const highHeapExit = makeFakeEntry(12, {
+      category: 'memory',
+      level: 'error',
+      message:
+        'Previous session (sess-oom-999) terminated unexpectedly without clean pagehide (last active 2026-11-18T16:29:41.842Z, route "home", JS heap 84.2%). Possible mobile OS tab kill / out-of-memory reload.',
+      details: JSON.stringify({
+        previousSessionId: 'sess-oom-999',
+        lastHeapPercent: 84.2,
+      }),
+    });
+    const normalizedHigh = normalizeStoredDiagnosticEntry(highHeapExit);
+    expect(normalizedHigh?.category).toBe('memory');
+    expect(normalizedHigh?.level).toBe('error');
+  });
+
+  it('keeps lifecycle warnings in lifecycle category and classifies only genuine high-heap exits or OOM faults as memory', () => {
+    const localMock = createMemoryStorage();
+    vi.stubGlobal('localStorage', localMock);
+
+    // 1. Explicit lifecycle category is never hijacked to memory by descriptive text
+    const lifecycleEntry = logDiagnosticEvent({
+      level: 'warn',
+      category: 'lifecycle',
+      message: 'Session suspended without out-of-memory indicator',
+    });
+    expect(lifecycleEntry?.category).toBe('lifecycle');
+
+    // 2. Real storage/runtime memory faults still elevate to memory
+    const oomEntry = logDiagnosticEvent({
+      level: 'error',
+      category: 'storage',
+      message: 'Array buffer allocation failed',
+      error: new RangeError('Out of memory'),
+    });
+    expect(oomEntry?.category).toBe('memory');
+
+    // 3. Low-heap (6.8%) unclean exit logs as lifecycle warn (not Memory Alert)
+    localMock.setItem(
+      'pedigree_session_heartbeat_v1',
+      JSON.stringify({
+        sessionId: 'sess-prev-low-heap',
+        active: true,
+        startedAtMs: Date.now() - 20_000,
+        lastAliveMs: Date.now() - 10_000,
+        lastRoute: 'home',
+        lastHeapPercent: 6.8,
+        lastHeapBytes: 68_000_000,
+      })
+    );
+    const lowExitLog = inspectPreviousSessionUncleanExit();
+    expect(lowExitLog?.category).toBe('lifecycle');
+    expect(lowExitLog?.level).toBe('warn');
+    expect(lowExitLog?.message).not.toContain('out-of-memory');
+
+    // 4. High-heap (82.5%) unclean exit logs as memory error
+    localMock.setItem(
+      'pedigree_session_heartbeat_v1',
+      JSON.stringify({
+        sessionId: 'sess-prev-high-heap',
+        active: true,
+        startedAtMs: Date.now() - 20_000,
+        lastAliveMs: Date.now() - 10_000,
+        lastRoute: 'pedigree',
+        lastHeapPercent: 82.5,
+        lastHeapBytes: 825_000_000,
+      })
+    );
+    const highExitLog = inspectPreviousSessionUncleanExit();
+    expect(highExitLog?.category).toBe('memory');
+    expect(highExitLog?.level).toBe('error');
+
+    // 5. markCleanSessionExit clears active flag cleanly so no warning fires
+    markCleanSessionExit();
+    expect(inspectPreviousSessionUncleanExit()).toBeNull();
   });
 });

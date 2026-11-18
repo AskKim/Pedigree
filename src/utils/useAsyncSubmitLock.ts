@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface AsyncLockController {
   isLocked: () => boolean;
+  isDisposed: () => boolean;
   run: <T>(fn: () => Promise<T> | T) => Promise<{ skipped: boolean; value?: T }>;
   dispose: () => void;
 }
@@ -38,6 +39,7 @@ export function createAsyncLockController(options?: {
 
   return {
     isLocked: () => locked,
+    isDisposed: () => disposed,
     async run<T>(fn: () => Promise<T> | T): Promise<{ skipped: boolean; value?: T }> {
       if (locked || disposed) {
         return { skipped: true };
@@ -76,6 +78,7 @@ export function createAsyncLockController(options?: {
 
 export interface AsyncKeyedLockController {
   isLocked: (key: string) => boolean;
+  isDisposed: () => boolean;
   getLockedKeys: () => string[];
   run: <T>(key: string, fn: () => Promise<T> | T) => Promise<{ skipped: boolean; value?: T }>;
   dispose: () => void;
@@ -95,6 +98,7 @@ export function createAsyncKeyedLockController(options?: {
 
   return {
     isLocked: (key: string) => lockedKeys.has(key),
+    isDisposed: () => disposed,
     getLockedKeys: () => Array.from(lockedKeys),
     async run<T>(
       key: string,
@@ -123,29 +127,45 @@ export function createAsyncKeyedLockController(options?: {
 export function useAsyncSubmitLock(options?: { postSettleCooldownMs?: number }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const cooldownMs = options?.postSettleCooldownMs ?? 0;
+  const cooldownMsRef = useRef(cooldownMs);
+  cooldownMsRef.current = cooldownMs;
 
   const controllerRef = useRef<AsyncLockController | null>(null);
-  if (!controllerRef.current) {
+  if (!controllerRef.current || controllerRef.current.isDisposed()) {
     controllerRef.current = createAsyncLockController({
-      postSettleCooldownMs: cooldownMs,
+      postSettleCooldownMs: cooldownMsRef.current,
       onLockChange: (next) => setIsSubmitting(next),
     });
   }
 
   useEffect(() => {
-    const controller = controllerRef.current;
+    let controller = controllerRef.current;
+    if (!controller || controller.isDisposed()) {
+      controller = createAsyncLockController({
+        postSettleCooldownMs: cooldownMsRef.current,
+        onLockChange: (next) => setIsSubmitting(next),
+      });
+      controllerRef.current = controller;
+    }
+    setIsSubmitting(controller.isLocked());
     return () => {
-      controller?.dispose();
+      controller.dispose();
     };
   }, []);
 
   const runLocked = useCallback(async <T>(fn: () => Promise<T> | T) => {
-    return controllerRef.current!.run(fn);
+    const controller = controllerRef.current;
+    if (!controller || controller.isDisposed()) {
+      return { skipped: true };
+    }
+    return controller.run(fn);
   }, []);
+
+  const isLockedNow = useCallback(() => controllerRef.current?.isLocked() ?? false, []);
 
   return {
     isSubmitting,
-    isLockedNow: () => controllerRef.current?.isLocked() ?? false,
+    isLockedNow,
     runLocked,
   };
 }
@@ -154,25 +174,42 @@ export function useAsyncKeyedLock() {
   const [lockedKeys, setLockedKeys] = useState<string[]>([]);
 
   const controllerRef = useRef<AsyncKeyedLockController | null>(null);
-  if (!controllerRef.current) {
+  if (!controllerRef.current || controllerRef.current.isDisposed()) {
     controllerRef.current = createAsyncKeyedLockController({
       onKeysChange: (keys) => setLockedKeys(keys),
     });
   }
 
   useEffect(() => {
-    const controller = controllerRef.current;
+    let controller = controllerRef.current;
+    if (!controller || controller.isDisposed()) {
+      controller = createAsyncKeyedLockController({
+        onKeysChange: (keys) => setLockedKeys(keys),
+      });
+      controllerRef.current = controller;
+    }
+    const currentKeys = controller.getLockedKeys();
+    setLockedKeys((prev) =>
+      prev.length === currentKeys.length && prev.every((k, i) => k === currentKeys[i])
+        ? prev
+        : currentKeys
+    );
     return () => {
-      controller?.dispose();
+      controller.dispose();
     };
   }, []);
 
   const runKeyLocked = useCallback(async <T>(key: string, fn: () => Promise<T> | T) => {
-    return controllerRef.current!.run(key, fn);
+    const controller = controllerRef.current;
+    if (!controller || controller.isDisposed()) {
+      return { skipped: true };
+    }
+    return controller.run(key, fn);
   }, []);
 
   const isKeyLocked = useCallback(
-    (key: string) => lockedKeys.indexOf(key) !== -1 || (controllerRef.current?.isLocked(key) ?? false),
+    (key: string) =>
+      lockedKeys.indexOf(key) !== -1 || (controllerRef.current?.isLocked(key) ?? false),
     [lockedKeys]
   );
 

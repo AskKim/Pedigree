@@ -451,7 +451,7 @@ export function ReportsScreen({
               <strong>To Date</strong> (<span className="font-mono">{dateToIso}</span>), so no dated
               records can match.
             </span>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               <button
                 type="button"
                 onClick={handleSwapDates}
@@ -608,22 +608,22 @@ export function ReportsScreen({
                 <p className="text-xs text-[var(--barn-muted)]">{activeReport.description}</p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 <button
                   type="button"
                   onClick={handleDownloadCsv}
-                  className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                  className="min-h-[40px] max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
                 >
-                  <Download className="w-4 h-4" aria-hidden="true" />
-                  Download CSV
+                  <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>Download CSV</span>
                 </button>
                 <button
                   type="button"
                   onClick={handleOpenPrintPreview}
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] hover:opacity-95 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-opacity"
+                  className="min-h-[40px] max-w-full px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] hover:opacity-95 text-xs font-semibold inline-flex items-center gap-1.5 transition-opacity"
                 >
-                  <Printer className="w-4 h-4" aria-hidden="true" />
-                  Print / Save PDF
+                  <Printer className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>Print / Save PDF</span>
                 </button>
               </div>
             </div>

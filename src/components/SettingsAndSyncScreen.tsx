@@ -2,13 +2,12 @@
  * @license
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Barn Preferences, Appearance Studio, PWA Storage Protection, Diagnostics & Global Reset (`Settings`).
- * Links directly to the consolidated Import/Export Hub (`ImportExportHubScreen`) for backups,
- * native restores, multi-worker delta sync, external importers, and non-native exporters.
+ * Barn Preferences, Calendar Integration, Appearance Studio & Backup/Tool Launchers (`Settings`).
+ * Links directly to the consolidated Import/Export Hub (`ImportExportHubScreen`) and the
+ * lazy-loaded Developer & Troubleshooting console ("The Techy Stuff").
  */
 
 import {
-  AlertTriangle,
   ArrowLeftRight,
   Bell,
   CalendarPlus,
@@ -18,31 +17,21 @@ import {
   FolderSync,
   HardDrive,
   HelpCircle,
-  Loader2,
-  Lock,
   LogOut,
   Moon,
   Palette,
   Plus,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   Smartphone,
   Sun,
-  Trash2,
-  Unlock,
+  Terminal,
   Upload,
-  Wifi,
-  WifiOff,
 } from 'lucide-react';
 import React, { useEffect, useId, useState } from 'react';
 import { BackupStatusEvaluation } from '../core/backupStatus';
-import { CURRENT_BACKUP_SCHEMA_VERSION, VaultBackupMetadata } from '../core/backupVault';
+import { VaultBackupMetadata } from '../core/backupVault';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
-import {
-  BarnHealthRepairResult,
-  BarnHealthReport,
-} from '../core/dataHealthCheck';
 import {
   calculateSavingsPercent,
   formatByteSizePure,
@@ -60,7 +49,6 @@ import {
   SpeciesProfile,
   WeightUnit,
 } from '../core/models';
-import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
 import {
   formatTimestampedBackupSlug,
   generateBarnBackupJsonChunks,
@@ -70,19 +58,10 @@ import {
   DEFAULT_WARM_THEME_COLORS,
   WARM_THEME_PRESETS,
 } from '../core/themePalette';
-import { CURRENT_APP_VERSION } from '../core/upgradeGate';
-import {
-  detectCurrentBrowserCompatibility,
-  DeviceCapabilityController,
-} from '../storage/deviceCapabilityDetector';
-import {
-  PwaUpdatePolicy,
-  usePwaUpdateStatus,
-} from '../storage/pwaUpdateManager';
+import { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
 import {
   RollingBackupMeta,
   StorageProtectionStatus,
-  useConnectivityStatus,
   usePWAInstall,
 } from '../storage/storageProtection';
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
@@ -90,7 +69,6 @@ import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { downloadTextChunks } from '../utils/webFileActions';
 import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
-import { DiagnosticsAndSupportPanel } from './DiagnosticsAndSupportPanel';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 import type { ImportExportHubSection } from './ImportExportHubScreen';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
@@ -102,7 +80,6 @@ interface SettingsAndSyncScreenProps {
   backupStatus: BackupStatusEvaluation | null;
   openAddSpeciesOnMount: boolean;
   onConsumedOpenAddSpecies: () => void;
-  onRequestPersistentStorage: () => Promise<StorageProtectionStatus> | void;
   recordBackupExport: (
     format: 'zip' | 'sqlite' | 'json',
     fileName?: string
@@ -111,28 +88,6 @@ interface SettingsAndSyncScreenProps {
   onSaveSpecies: (profile: SpeciesProfile) => Promise<boolean | void> | void;
   onDeleteSpecies: (profile: SpeciesProfile) => void;
   onDownloadTimestampedSpeciesBackup: (speciesName: string) => Promise<void> | void;
-  onAnalyzePhotoFootprint?: (
-    presetId?: ImageOptimizationPresetId
-  ) => Promise<PhotoStorageFootprintReport | null>;
-  onPruneOrphanPhotos?: () => Promise<{ removedCount: number; reclaimedBytes: number }>;
-  onReoptimizeOversizedPhotos?: (
-    presetId?: ImageOptimizationPresetId
-  ) => Promise<{ updatedCount: number; oversizedFound: number; reclaimedBytes: number }>;
-  onPruneFullResPhotoPayloads?: () => Promise<{ prunedCount: number; reclaimedBytes: number }>;
-  onScanDatabaseHealth: () => BarnHealthReport | null;
-  onRepairDatabaseHealth: () => Promise<BarnHealthRepairResult | null>;
-  onResetDatabaseConnection: () => Promise<void>;
-  onPurgeCorruptedCaches: (options: {
-    downloadBackupFirst: boolean;
-    rebuildLocalDb: boolean;
-  }) => Promise<{
-    cachesCleared: number;
-    serviceWorkersUnregistered: number;
-    backupFilename: string | null;
-  }>;
-  onSeedAllSpecies: () => Promise<void> | void;
-  onClearAllRecords: () => Promise<void> | void;
-  onRestoreFactoryDefaults: () => Promise<void> | void;
   onExportTasksToCalendar?: (tasks: BarnTask[], filenameHint?: string) => number;
   googleAuthConnected?: boolean;
   googleUserEmail?: string | null;
@@ -141,7 +96,6 @@ interface SettingsAndSyncScreenProps {
   onConnectGoogleCalendar?: () => Promise<boolean>;
   onDisconnectGoogleCalendar?: () => Promise<void>;
   onRefreshGoogleCalendars?: () => Promise<void>;
-  onLocateConflicts?: () => void;
   deviceCapability?: DeviceCapabilityController;
   onHydrateSnapshotForExport?: (
     targetSnapshot?: BarnDatabaseSnapshot,
@@ -150,13 +104,8 @@ interface SettingsAndSyncScreenProps {
   opfsSupported?: boolean;
   opfsVaultBackups?: VaultBackupMetadata[];
   rollingBackups?: RollingBackupMeta[];
-  onSaveManualOpfsVaultBackup?: (note?: string) => Promise<unknown> | void;
-  onCreateVerifiedPreUpgradeBackup?: () => Promise<{
-    verified: boolean;
-    checksumSha256: string;
-    fileName: string;
-  } | null>;
   onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
+  onOpenTechyStuff?: () => void;
 }
 
 export function SettingsAndSyncScreen({
@@ -166,23 +115,11 @@ export function SettingsAndSyncScreen({
   backupStatus,
   openAddSpeciesOnMount,
   onConsumedOpenAddSpecies,
-  onRequestPersistentStorage,
   recordBackupExport,
   onUpdateSettings,
   onSaveSpecies,
   onDeleteSpecies,
   onDownloadTimestampedSpeciesBackup,
-  onAnalyzePhotoFootprint,
-  onPruneOrphanPhotos,
-  onReoptimizeOversizedPhotos,
-  onPruneFullResPhotoPayloads,
-  onScanDatabaseHealth,
-  onRepairDatabaseHealth,
-  onResetDatabaseConnection,
-  onPurgeCorruptedCaches,
-  onSeedAllSpecies,
-  onClearAllRecords,
-  onRestoreFactoryDefaults,
   onExportTasksToCalendar,
   googleAuthConnected = false,
   googleUserEmail = null,
@@ -191,15 +128,13 @@ export function SettingsAndSyncScreen({
   onConnectGoogleCalendar,
   onDisconnectGoogleCalendar,
   onRefreshGoogleCalendars,
-  onLocateConflicts,
   deviceCapability,
   onHydrateSnapshotForExport,
   opfsSupported = false,
   opfsVaultBackups = [],
   rollingBackups = [],
-  onSaveManualOpfsVaultBackup,
-  onCreateVerifiedPreUpgradeBackup,
   onOpenImportExportHub,
+  onOpenTechyStuff,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -236,23 +171,13 @@ export function SettingsAndSyncScreen({
     Boolean(settings.autoOffloadRetiredToOpfs)
   );
 
-  const [confirmGlobalDeleteAll, setConfirmGlobalDeleteAll] = useState(false);
-  const [confirmFactoryRestore, setConfirmFactoryRestore] = useState(false);
-  const [preResetBackupFeedback, setPreResetBackupFeedback] = useState<string | null>(null);
-  const [preResetBackupError, setPreResetBackupError] = useState<string | null>(null);
+  const [quickBackupFeedback, setQuickBackupFeedback] = useState<string | null>(null);
+  const [quickBackupError, setQuickBackupError] = useState<string | null>(null);
   const [showCustomSpeciesModal, setShowCustomSpeciesModal] = useState(false);
   const [zipExportBusy, setZipExportBusy] = useState<'json' | null>(null);
 
   const archiveExportLock = useAsyncSubmitLock();
-  const destructiveResetLock = useAsyncSubmitLock();
-  const preUpgradeBackupLock = useAsyncSubmitLock();
-  const updateCheckLock = useAsyncSubmitLock();
-  const [preUpgradeFeedback, setPreUpgradeFeedback] = useState<string | null>(null);
-  const [updateCheckFeedback, setUpdateCheckFeedback] = useState<string | null>(null);
-
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
-  const connectivity = useConnectivityStatus();
-  const pwaUpdate = usePwaUpdateStatus();
 
   useEffect(() => {
     if (openAddSpeciesOnMount) {
@@ -337,8 +262,8 @@ export function SettingsAndSyncScreen({
 
   const handleDownloadTimestampedFullBackup = async () => {
     await archiveExportLock.runLocked(async () => {
-      setPreResetBackupError(null);
-      setPreResetBackupFeedback(null);
+      setQuickBackupError(null);
+      setQuickBackupFeedback(null);
       setZipExportBusy('json');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
@@ -352,23 +277,18 @@ export function SettingsAndSyncScreen({
           'application/json'
         );
         void recordBackupExport('json', filename);
-        setPreResetBackupFeedback(
-          `Saved pre-reset JSON backup ${filename} (${exportSnapshot.animals.length} animals).`
+        setQuickBackupFeedback(
+          `Saved timestamped JSON backup ${filename} (${exportSnapshot.animals.length} animals).`
         );
       } catch (err) {
-        setPreResetBackupError(
-          err instanceof Error ? err.message : 'Could not prepare pre-reset JSON backup.'
+        setQuickBackupError(
+          err instanceof Error ? err.message : 'Could not prepare JSON backup.'
         );
       } finally {
         setZipExportBusy(null);
       }
     });
   };
-
-  const activeBrowserCompat =
-    deviceCapability?.browserCompatibility ??
-    detectCurrentBrowserCompatibility(deviceCapability?.assessment);
-  const persistStorageSupported = activeBrowserCompat.signals.persistStorageSupported;
 
   const colorPickersForMode: Array<{
     key: keyof CustomThemeColors;
@@ -1161,381 +1081,45 @@ export function SettingsAndSyncScreen({
             )}
           </section>
 
-          {/* PWA Offline App Installation & Local Storage Protection */}
-          <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="font-display text-xl font-semibold">
-                  Offline PWA &amp; Storage Eviction Defense
-                </h2>
-                <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-                  100% Free zero-cloud PWA · Protects local barn storage against browser cleanup
-                </p>
-              </div>
-              <ShieldCheck className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-            </div>
-
-            {/* Persistent Storage Lock Status */}
-            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-semibold">
-                  {storageStatus?.persisted ? (
-                    <>
-                      <CheckCircle2
-                        className="w-4 h-4 text-[var(--barn-sage)] shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span>Persistent Storage Lock Granted</span>
-                    </>
-                  ) : (
-                    <>
-                      <HardDrive
-                        className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span>Standard Browser Storage (Lock Not Yet Elevated)</span>
-                    </>
-                  )}
-                </div>
-
-                {!storageStatus?.persisted && (
-                  <button
-                    type="button"
-                    disabled={!persistStorageSupported}
-                    aria-describedby={!persistStorageSupported ? `${baseId}-persist-reason` : undefined}
-                    onClick={() => void onRequestPersistentStorage()}
-                    className={`min-h-[34px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
-                      persistStorageSupported
-                        ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
-                        : 'border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
-                    }`}
-                  >
-                    Lock Persistent Storage
-                  </button>
-                )}
-              </div>
-
-              {!storageStatus?.persisted && !persistStorageSupported && (
-                <p id={`${baseId}-persist-reason`} className="text-[11px] text-[var(--barn-muted)]">
-                  Disabled: This browser doesn&apos;t support manual Persistent Storage locking. Storage
-                  retention is managed automatically; keep Timestamped Backup (.JSON) copies saved
-                  off-device.
-                </p>
-              )}
-
-              {storageStatus && storageStatus.quotaBytes > 0 && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-mono tabular-nums text-[var(--barn-muted)]">
-                    <span>Used: {formatByteSizePure(storageStatus.usageBytes)}</span>
-                    <span>
-                      Available Quota: {formatByteSizePure(storageStatus.quotaBytes)} (
-                      {storageStatus.percentUsed}%)
-                    </span>
-                  </div>
-                  <div
-                    role="progressbar"
-                    aria-label="Local browser storage used"
-                    aria-valuenow={Math.round(storageStatus.percentUsed)}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    className="h-2 rounded-full bg-[var(--barn-subtle)] overflow-hidden"
-                  >
-                    <div
-                      style={{ width: `${Math.max(1, storageStatus.percentUsed)}%` }}
-                      className="h-full bg-[var(--barn-sage)] rounded-full"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Home Screen Install CTA */}
-            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-semibold">
-                  <Smartphone className="w-4 h-4 text-[var(--barn-sage)] shrink-0" />
-                  <span>
-                    {isInstalled
-                      ? 'Installed as Standalone Offline App'
-                      : 'Install App to Home Screen (Offline Barn Mode)'}
-                  </span>
-                </div>
-                {canPromptInstall && (
-                  <button
-                    type="button"
-                    onClick={() => void promptInstall()}
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
-                  >
-                    Install App Now
-                  </button>
-                )}
-              </div>
-              {isIos && !isInstalled ? (
-                <p className="text-[11px] text-[var(--barn-muted)]">
-                  On iPhone/iPad Safari: tap the <strong>Share</strong> icon and choose{' '}
-                  <strong>Add to Home Screen</strong> so iOS elevates storage priority and prevents
-                  7-day unvisited-tab cleanup.
-                </p>
-              ) : !isInstalled ? (
-                <p className="text-[11px] text-[var(--barn-muted)]">
-                  Use your browser menu &rarr; <strong>Install App</strong> /{' '}
-                  <strong>Add to Home Screen</strong> so the app shell loads identically in Airplane
-                  Mode or dead-zone barns.
-                </p>
-              ) : null}
-            </div>
-
-            {/* App Offline Toggle & Timed Connectivity Probe */}
-            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-semibold">
-                  {connectivity.isEffectivelyOnline ? (
-                    <Wifi className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  ) : (
-                    <WifiOff className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0" aria-hidden="true" />
-                  )}
-                  <span>
-                    Connectivity Governor:{' '}
-                    {connectivity.manualOffline
-                      ? 'Manual App Offline'
-                      : connectivity.reason === 'captive_or_unreachable'
-                      ? 'Captive Wi-Fi / Unreachable'
-                      : connectivity.navigatorOnline
-                      ? 'Online'
-                      : 'Browser Offline'}
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={connectivity.manualOffline}
-                    onClick={() => connectivity.setManualOffline(!connectivity.manualOffline)}
-                    className={`min-h-[34px] px-3 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap border transition-colors ${
-                      connectivity.manualOffline
-                        ? 'bg-[var(--barn-terracotta)] text-white border-[var(--barn-terracotta)]'
-                        : 'bg-[var(--barn-surface)] text-[var(--barn-ink)] border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
-                    }`}
-                  >
-                    {connectivity.manualOffline ? 'App Offline: ON' : 'Go Offline in App'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={connectivity.probeStatus === 'probing' || connectivity.manualOffline}
-                    onClick={() => void connectivity.probeNow()}
-                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
-                  >
-                    {connectivity.probeStatus === 'probing'
-                      ? 'Probing...'
-                      : 'Run Connectivity Probe'}
-                  </button>
-                </div>
-              </div>
-              <p className="text-[11px] text-[var(--barn-muted)]">
-                Manual App Offline queues calendar uploads and outbound checks locally without
-                enabling device Airplane Mode. The probe checks uncached{' '}
-                <code className="font-mono">version.json</code> with a timeout to catch captive
-                barn/fair Wi-Fi portals.
-              </p>
-              {connectivity.probeDetail && (
-                <p className="text-[11px] text-[var(--barn-ink)] bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-lg px-2.5 py-1.5">
-                  {connectivity.probeDetail}
-                  {connectivity.lastProbeAtIso
-                    ? ` (${new Date(connectivity.lastProbeAtIso).toLocaleTimeString()})`
-                    : ''}
-                </p>
-              )}
-            </div>
-
-            {/* PWA Update Governor (auto / notify / pinned) & Upgrade Gate */}
-            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-semibold">
-                  {pwaUpdate.state.policy === 'pinned' ? (
-                    <Lock className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0" aria-hidden="true" />
-                  ) : (
-                    <Unlock className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  )}
-                  <span>App Update Policy &amp; Release Gate</span>
-                </div>
-                <span className="font-mono text-[11px] text-[var(--barn-muted)]">
-                  v{CURRENT_APP_VERSION} · Schema v{CURRENT_BACKUP_SCHEMA_VERSION}
+          {/* Routine Home Screen Install CTA */}
+          <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-5 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-semibold">
+                <Smartphone className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                <span>
+                  {isInstalled
+                    ? 'Installed as Standalone Offline App'
+                    : 'Install App to Home Screen (Offline Barn Mode)'}
                 </span>
               </div>
-
-              <div
-                role="radiogroup"
-                aria-label="PWA update policy"
-                className="grid grid-cols-1 sm:grid-cols-3 gap-2"
-              >
-                {(
-                  [
-                    {
-                      value: 'auto',
-                      label: 'Auto Check & Prompt',
-                      desc: 'Check on load/focus and show safe apply banner',
-                    },
-                    {
-                      value: 'notify',
-                      label: 'Notify Only',
-                      desc: 'Passive banner when an update is already staged',
-                    },
-                    {
-                      value: 'pinned',
-                      label: 'Pinned (Hold Version)',
-                      desc: 'Block update checks & swaps during busy kidding/show runs',
-                    },
-                  ] as Array<{ value: PwaUpdatePolicy; label: string; desc: string }>
-                ).map((opt) => {
-                  const selected = pwaUpdate.state.policy === opt.value;
-                  return (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => {
-                        pwaUpdate.setPolicy(opt.value);
-                        setUpdateCheckFeedback(`Update policy set to "${opt.label}".`);
-                      }}
-                      className={`p-2.5 rounded-lg border text-left transition-colors ${
-                        selected
-                          ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)]'
-                          : 'bg-[var(--barn-surface)] border-[var(--barn-border)] text-[var(--barn-muted)] hover:bg-[var(--barn-subtle)]'
-                      }`}
-                    >
-                      <div className="font-semibold text-[11px] text-[var(--barn-ink)]">
-                        {opt.label}
-                      </div>
-                      <div className="text-[10px] mt-0.5 leading-snug">{opt.desc}</div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
+              {canPromptInstall && (
                 <button
                   type="button"
-                  disabled={updateCheckLock.isSubmitting || pwaUpdate.state.checking}
-                  onClick={() =>
-                    void updateCheckLock.runLocked(async () => {
-                      setUpdateCheckFeedback(null);
-                      const result = await pwaUpdate.checkNow(true);
-                      if (result === 'offline') {
-                        setUpdateCheckFeedback(
-                          'Skipped update check: device or app is currently in Offline mode.'
-                        );
-                      } else if (result === 'blocked') {
-                        setUpdateCheckFeedback(
-                          'Update blocked by remote status.json release gate.'
-                        );
-                      } else if (result === 'checked') {
-                        setUpdateCheckFeedback(
-                          'Checked uncached version.json / status.json release gate.'
-                        );
-                      } else {
-                        setUpdateCheckFeedback(
-                          'Release gate manifests unreachable right now; continuing on local cached shell.'
-                        );
-                      }
-                    })
-                  }
-                  className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+                  onClick={() => void promptInstall()}
+                  className="min-h-[36px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
                 >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 ${
-                      pwaUpdate.state.checking ? 'animate-spin' : ''
-                    }`}
-                    aria-hidden="true"
-                  />
-                  <span>Check Release Gate Now</span>
+                  Install App Now
                 </button>
-
-                {onCreateVerifiedPreUpgradeBackup && (
-                  <button
-                    type="button"
-                    disabled={preUpgradeBackupLock.isSubmitting}
-                    onClick={() =>
-                      void preUpgradeBackupLock.runLocked(async () => {
-                        setPreUpgradeFeedback(null);
-                        const res = await onCreateVerifiedPreUpgradeBackup();
-                        if (res?.verified) {
-                          setPreUpgradeFeedback(
-                            `Verified Pre-Upgrade Backup saved (${res.fileName}, SHA-256 ${res.checksumSha256.slice(
-                              0,
-                              12
-                            )}...).`
-                          );
-                        } else {
-                          setPreUpgradeFeedback(
-                            'Pre-upgrade backup verification failed — inspect Diagnostics.'
-                          );
-                        }
-                      })
-                    }
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
-                  >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>
-                      {preUpgradeBackupLock.isSubmitting
-                        ? 'Verifying Backup...'
-                        : 'Verify & Save Pre-Upgrade Backup'}
-                    </span>
-                  </button>
-                )}
-
-                {pwaUpdate.state.updateAvailable && pwaUpdate.state.policy !== 'pinned' && (
-                  <button
-                    type="button"
-                    disabled={
-                      pwaUpdate.state.applying ||
-                      Boolean(
-                        pwaUpdate.state.gateDecision &&
-                          !pwaUpdate.state.gateDecision.canProceedWithDirectSwSwap
-                      )
-                    }
-                    onClick={() => void pwaUpdate.applyUpdate()}
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold disabled:opacity-50"
-                  >
-                    {pwaUpdate.state.applying ? 'Applying Update...' : 'Apply Staged Update'}
-                  </button>
-                )}
-              </div>
-
-              {updateCheckFeedback && (
-                <p className="text-[11px] text-[var(--barn-ink)] bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-lg px-2.5 py-1.5">
-                  {updateCheckFeedback}
-                </p>
               )}
-
-              {preUpgradeFeedback && (
-                <p className="text-[11px] text-[var(--barn-sage)] bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] rounded-lg px-2.5 py-1.5 font-medium">
-                  {preUpgradeFeedback}
-                </p>
-              )}
-
-              {pwaUpdate.state.gateDecision &&
-                (!pwaUpdate.state.gateDecision.canProceedWithDirectSwSwap ||
-                  pwaUpdate.state.updateAvailable) && (
-                  <div
-                    role="status"
-                    className={`rounded-lg border px-3 py-2 text-[11px] space-y-1 ${
-                      pwaUpdate.state.gateDecision.canProceedWithDirectSwSwap
-                        ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)]'
-                        : 'bg-[var(--barn-terracotta-tint)] border-[var(--barn-terracotta)] text-[var(--barn-ink)]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 font-semibold">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      <span>{pwaUpdate.state.gateDecision.headline}</span>
-                    </div>
-                    <p className="text-[var(--barn-muted)]">
-                      {pwaUpdate.state.gateDecision.detail}
-                    </p>
-                  </div>
-                )}
             </div>
+            {isIos && !isInstalled ? (
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                On iPhone/iPad Safari: tap the <strong>Share</strong> icon and choose{' '}
+                <strong>Add to Home Screen</strong> so iOS elevates storage priority and prevents
+                7-day unvisited-tab cleanup.
+              </p>
+            ) : !isInstalled ? (
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                Use your browser menu &rarr; <strong>Install App</strong> /{' '}
+                <strong>Add to Home Screen</strong> so the app shell loads identically in Airplane
+                Mode or dead-zone barns.
+              </p>
+            ) : (
+              <p className="text-[11px] text-[var(--barn-muted)]">
+                Running in standalone offline PWA mode. Advanced storage locks, connectivity tests,
+                and release gates live inside <strong>The Techy Stuff</strong>.
+              </p>
+            )}
           </section>
 
           {/* Appearance, Light/Dark Switcher & Custom Color Picker */}
@@ -1716,16 +1300,47 @@ export function SettingsAndSyncScreen({
               </div>
             )}
 
+            {quickBackupError && (
+              <div
+                role="alert"
+                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium"
+              >
+                {quickBackupError}
+              </div>
+            )}
+
+            {quickBackupFeedback && !quickBackupError && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
+              >
+                {quickBackupFeedback}
+              </div>
+            )}
+
             {onOpenImportExportHub && (
               <div className="space-y-2.5">
-                <button
-                  type="button"
-                  onClick={() => onOpenImportExportHub('all')}
-                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-2 hover:opacity-95"
-                >
-                  <ArrowLeftRight className="w-4 h-4" aria-hidden="true" />
-                  Open Import / Export Hub
-                </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('all')}
+                    className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-2 hover:opacity-95"
+                  >
+                    <ArrowLeftRight className="w-4 h-4" aria-hidden="true" />
+                    Open Import / Export Hub
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
+                    onClick={handleDownloadTimestampedFullBackup}
+                    className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    <Download className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                    {zipExportBusy === 'json' ? 'Preparing JSON...' : 'Download Quick JSON Backup'}
+                  </button>
+                </div>
 
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                   <button
@@ -1765,231 +1380,39 @@ export function SettingsAndSyncScreen({
             )}
           </section>
 
-          <DiagnosticsAndSupportPanel
-            snapshot={snapshot}
-            deviceCapability={deviceCapability}
-            onScanDatabaseHealth={onScanDatabaseHealth}
-            onRepairDatabaseHealth={onRepairDatabaseHealth}
-            onResetDatabaseConnection={onResetDatabaseConnection}
-            onPurgeCorruptedCaches={onPurgeCorruptedCaches}
-            onLocateConflicts={onLocateConflicts}
-            onHydrateSnapshotForExport={onHydrateSnapshotForExport}
-            onAnalyzePhotoFootprint={onAnalyzePhotoFootprint}
-            onPruneOrphanPhotos={onPruneOrphanPhotos}
-            onReoptimizeOversizedPhotos={onReoptimizeOversizedPhotos}
-            onPruneFullResPhotoPayloads={onPruneFullResPhotoPayloads}
-          />
-
-          {/* Global Data Deletion & Factory Settings Restore */}
-          <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
-            <div>
-              <h3 className="font-display text-lg font-semibold">
-                Global Data Reset &amp; Factory Restore
-              </h3>
-              <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-                Per-species testing data and delete controls live at the bottom of each species hub.
-              </p>
-            </div>
-
-            {preResetBackupError && (
-              <div
-                role="alert"
-                className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] font-medium"
-              >
-                {preResetBackupError}
-              </div>
-            )}
-
-            {preResetBackupFeedback && !preResetBackupError && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="p-2.5 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs"
-              >
-                {preResetBackupFeedback}
-              </div>
-            )}
-
-            <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="space-y-0.5 max-w-md">
-                  <div className="text-xs font-semibold text-[var(--barn-ink)]">
-                    Delete All Animal Data ({snapshot.animals.length} animals · {totalBarnRecords}{' '}
-                    total records)
-                  </div>
-                  <p className="text-[11px] text-[var(--barn-muted)]">
-                    Wipes all animals, photos, breedings, cages, chores, care logs, and shows across
-                    every species, while keeping your barn settings and species schedules.
+          {/* Developer & Troubleshooting Page Launcher ("The Techy Stuff") */}
+          {onOpenTechyStuff && (
+            <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-xl font-semibold">
+                    The Techy Stuff (Developer &amp; Troubleshooting)
+                  </h2>
+                  <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                    Isolated troubleshooting workspace for advanced diagnostics, memory/tier
+                    hierarchy guidelines, OPFS &amp; IndexedDB quota checks, connectivity probes,
+                    release gates, and safeguarded resets.
                   </p>
                 </div>
-
-                {!confirmGlobalDeleteAll && (
-                  <button
-                    type="button"
-                    disabled={totalBarnRecords === 0}
-                    onClick={() => {
-                      setConfirmFactoryRestore(false);
-                      setConfirmGlobalDeleteAll(true);
-                    }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-semibold text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-40 disabled:pointer-events-none inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    Delete All Animal Data
-                  </button>
-                )}
+                <Terminal className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
               </div>
 
-              {confirmGlobalDeleteAll && (
-                <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center gap-2">
-                  {onSaveManualOpfsVaultBackup && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void onSaveManualOpfsVaultBackup('Pre-reset snapshot before deleting all animal data')
-                      }
-                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
-                    >
-                      <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                      Save Pre-Reset Vault Snapshot
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                    onClick={handleDownloadTimestampedFullBackup}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-60"
-                  >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    Download Timestamped Backup First
-                  </button>
-                  <button
-                    type="button"
-                    disabled={destructiveResetLock.isSubmitting}
-                    aria-busy={destructiveResetLock.isSubmitting}
-                    onClick={() =>
-                      void destructiveResetLock.runLocked(async () => {
-                        await onClearAllRecords();
-                        setConfirmGlobalDeleteAll(false);
-                      })
-                    }
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
-                  >
-                    {destructiveResetLock.isSubmitting && (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                    )}
-                    {destructiveResetLock.isSubmitting
-                      ? 'Deleting...'
-                      : 'Confirm Delete All Animal Data'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={destructiveResetLock.isSubmitting}
-                    onClick={() => setConfirmGlobalDeleteAll(false)}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="space-y-0.5 max-w-md">
-                  <div className="text-xs font-semibold text-[var(--barn-ink)]">
-                    Restore App to Factory Settings &amp; Data
-                  </div>
-                  <p className="text-[11px] text-[var(--barn-muted)]">
-                    Resets barn name, preferences, custom colors, and species list back to factory
-                    defaults and reloads starter sample herds.
-                  </p>
-                </div>
-
-                {!confirmFactoryRestore && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirmGlobalDeleteAll(false);
-                      setConfirmFactoryRestore(true);
-                    }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-semibold text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                    Restore Factory Settings &amp; Data
-                  </button>
-                )}
+              <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[11px] text-[var(--barn-muted)] leading-relaxed">
+                Includes permanent Tier/Memory Hierarchy documentation, Crash &amp; Heap Logs,
+                Bug Report .ZIP Bundler, DB Health Auto-Repair, Photo Footprint Pruner, Cache Purge,
+                and Factory/Sync Reset safeguards.
               </div>
 
-              {confirmFactoryRestore && (
-                <div className="pt-2 border-t border-[var(--barn-border)] flex flex-wrap items-center gap-2">
-                  {onSaveManualOpfsVaultBackup && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void onSaveManualOpfsVaultBackup('Pre-reset snapshot before factory restore')
-                      }
-                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
-                    >
-                      <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                      Save Pre-Reset Vault Snapshot
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={zipExportBusy !== null || archiveExportLock.isSubmitting}
-                    onClick={handleDownloadTimestampedFullBackup}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-60"
-                  >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    Download Timestamped Backup First
-                  </button>
-                  <button
-                    type="button"
-                    disabled={destructiveResetLock.isSubmitting}
-                    aria-busy={destructiveResetLock.isSubmitting}
-                    onClick={() =>
-                      void destructiveResetLock.runLocked(async () => {
-                        await onRestoreFactoryDefaults();
-                        setConfirmFactoryRestore(false);
-                      })
-                    }
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
-                  >
-                    {destructiveResetLock.isSubmitting && (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                    )}
-                    {destructiveResetLock.isSubmitting
-                      ? 'Restoring...'
-                      : 'Confirm Factory Restore'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={destructiveResetLock.isSubmitting}
-                    onClick={() => setConfirmFactoryRestore(false)}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <span className="text-xs text-[var(--barn-muted)]">
-                Want sample herds back without resetting your custom colors or barn name?
-              </span>
               <button
                 type="button"
-                disabled={destructiveResetLock.isSubmitting}
-                onClick={() =>
-                  void destructiveResetLock.runLocked(() => onSeedAllSpecies())
-                }
-                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap shrink-0 disabled:opacity-55"
+                onClick={onOpenTechyStuff}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)]/55 hover:bg-[var(--barn-sage-tint)] text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center justify-center gap-2 transition-colors"
               >
-                Reload 9 Sample Herds Only
+                <Terminal className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                Open &ldquo;The Techy Stuff&rdquo; Developer Console
               </button>
-            </div>
-          </section>
+            </section>
+          )}
 
           {/* Non-intrusive Help & Keyboard Shortcuts Footer */}
           <footer className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-5 py-3.5 space-y-3">

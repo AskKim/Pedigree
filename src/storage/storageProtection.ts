@@ -14,8 +14,14 @@ import {
   nowIsoUtc,
   setCoreClockSkewMs,
 } from '../core/models';
+import {
+  DiagnosticQuotaOperationKind,
+  evaluateStorageQuotaForOperation,
+  StorageQuotaEvaluationResult,
+} from '../core/techyStuffGuardrails';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
+import { isOpfsSupported } from './opfsTempStream';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 
 const ROLLING_IDB_NAME = 'community_pedigree_rolling_backups';
@@ -870,3 +876,43 @@ export function usePWAInstall() {
     promptInstall,
   };
 }
+
+export interface DiagnosticQuotaPreflightResult extends StorageQuotaEvaluationResult {
+  statusSnapshot: StorageProtectionStatus;
+}
+
+/**
+ * Checks OPFS availability and IndexedDB/StorageManager quota headroom before running
+ * heavy diagnostic ZIP dumps, photo re-optimization, or cache clearing / DB rebuilds.
+ */
+export async function verifyStorageQuotaForDiagnosticAction(options: {
+  operation: DiagnosticQuotaOperationKind;
+  operationLabel: string;
+  estimatedRequiredBytes: number;
+  requiresOpfsPreferred?: boolean;
+}): Promise<DiagnosticQuotaPreflightResult> {
+  const statusSnapshot = await checkStorageStatus();
+  const opfsSupported = isOpfsSupported();
+  const evalResult = evaluateStorageQuotaForOperation({
+    operation: options.operation,
+    operationLabel: options.operationLabel,
+    estimatedRequiredBytes: options.estimatedRequiredBytes,
+    storageStatus: statusSnapshot,
+    opfsSupported,
+    requiresOpfsPreferred: options.requiresOpfsPreferred,
+  });
+
+  if (evalResult.level !== 'ok') {
+    logDiagnosticEvent({
+      level: evalResult.level === 'blocked' ? 'error' : 'warn',
+      category: 'storage',
+      message: `${evalResult.headline}: ${evalResult.detail}`,
+    });
+  }
+
+  return {
+    ...evalResult,
+    statusSnapshot,
+  };
+}
+

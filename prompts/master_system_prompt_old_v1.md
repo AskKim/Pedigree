@@ -1,7 +1,9 @@
+<!-- DO_NOT_REMOVE_WITHOUT_CONFIRMATION: true -->
 # Community Pedigree Project AI Studio Master System Prompt
 
 > **ARCHIVED — STRICTLY FOR REFERENCE ONLY.**
-> This file is an older v1 version of the master system prompt and is retained strictly for reference only. Do not treat it as the active system prompt; see `/docs/prompts/master_system_prompt.md` for the current active master prompt.
+> This file is an older v1 version of the master system prompt and is retained strictly for reference only. Do not treat it as the active system prompt; see `/prompts/master_system_prompt.md` for the current active master prompt.
+> **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 **Last-Edited Timestamp:** 2026-11-14 6:00pm CT
 

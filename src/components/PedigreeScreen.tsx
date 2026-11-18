@@ -1149,7 +1149,7 @@ export function PedigreeScreen({
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5 max-w-full">
                 <button
                   type="button"
                   onClick={() => onOpenAnimalInHerd(subject.id)}

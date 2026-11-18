@@ -30,6 +30,7 @@ import {
   getDiagnosticSummary,
   isMemoryLikeError,
   listDiagnosticLogs,
+  markCleanSessionExit,
   recordReactCrash,
 } from '../storage/crashLogger';
 import { buildSupportBundleZipOffThread } from '../storage/offThreadWorkerClient';
@@ -298,7 +299,10 @@ export class CrashErrorBoundary extends React.Component<
             </button>
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                markCleanSessionExit();
+                window.location.reload();
+              }}
               className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--barn-border,#cfc0a8)] text-xs font-semibold inline-flex items-center gap-1.5"
             >
               <RefreshCw className="w-4 h-4" aria-hidden="true" />
@@ -312,6 +316,7 @@ export class CrashErrorBoundary extends React.Component<
                 try {
                   await purgeStaleBrowserCaches();
                 } finally {
+                  markCleanSessionExit();
                   window.location.href = `${window.location.pathname}?emergency_reset=true`;
                 }
               }}

@@ -9,7 +9,7 @@
 
 import { AlertTriangle, Home, RefreshCw, RotateCcw } from 'lucide-react';
 import React from 'react';
-import { logDiagnosticEvent, recordReactCrash } from '../storage/crashLogger';
+import { logDiagnosticEvent, markCleanSessionExit, recordReactCrash } from '../storage/crashLogger';
 
 type NamedModule = Record<string, unknown>;
 
@@ -199,7 +199,10 @@ export class RouteErrorBoundary extends React.Component<
           </button>
           <button
             type="button"
-            onClick={() => window.location.reload()}
+            onClick={() => {
+              markCleanSessionExit();
+              window.location.reload();
+            }}
             className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium inline-flex items-center gap-1.5 hover:bg-[var(--barn-subtle)]"
           >
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />

@@ -70,6 +70,18 @@ import {
   updateDiagnosticConfig,
 } from '../storage/crashLogger';
 import { getHeavyZipExportGate } from '../core/deviceCapability';
+import {
+  DESTRUCTIVE_CONFIRM_PHRASES,
+  isDestructiveActionConfirmationValid,
+  validateLogRetentionDaysOverride,
+  validateSupportRecipientEmail,
+} from '../core/techyStuffGuardrails';
+import {
+  DiagnosticQuotaPreflightResult,
+  isQuotaExceededError,
+  StorageProtectionStatus,
+  verifyStorageQuotaForDiagnosticAction,
+} from '../storage/storageProtection';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import {
   copyTextWithFallback,
@@ -82,6 +94,8 @@ import type { DeviceCapabilityController } from '../storage/deviceCapabilityDete
 interface DiagnosticsAndSupportPanelProps {
   snapshot: BarnDatabaseSnapshot;
   deviceCapability?: DeviceCapabilityController;
+  storageStatus?: StorageProtectionStatus | null;
+  onRefreshStorageStatus?: () => Promise<unknown> | void;
   onScanDatabaseHealth: () => BarnHealthReport | null;
   onRepairDatabaseHealth: () => Promise<BarnHealthRepairResult | null>;
   onResetDatabaseConnection: () => Promise<void>;
@@ -113,6 +127,7 @@ type LogFilterTab = 'all' | 'errors' | 'memory';
 export function DiagnosticsAndSupportPanel({
   snapshot,
   deviceCapability,
+  onRefreshStorageStatus,
   onScanDatabaseHealth,
   onRepairDatabaseHealth,
   onResetDatabaseConnection,
@@ -137,10 +152,15 @@ export function DiagnosticsAndSupportPanel({
   const [includeDataInBundle, setIncludeDataInBundle] = useState(true);
   const [includePhotosInBundle, setIncludePhotosInBundle] = useState(true);
   const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientEmailError, setRecipientEmailError] = useState<string | null>(null);
   const actionLock = useAsyncSubmitLock();
   const busyAction = actionLock.isSubmitting;
   const [emergencyTraceCount, setEmergencyTraceCount] = useState(0);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [quotaWarningGate, setQuotaWarningGate] = useState<{
+    preflight: DiagnosticQuotaPreflightResult;
+    attemptShare: boolean;
+  } | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
   const [improvementsFeedback, setImprovementsFeedback] = useState<string | null>(null);
   const [lastBuiltMailMeta, setLastBuiltMailMeta] = useState<{
@@ -156,6 +176,8 @@ export function DiagnosticsAndSupportPanel({
     text: string;
   } | null>(null);
   const [confirmRebuildDb, setConfirmRebuildDb] = useState(false);
+  const [rebuildConfirmPhrase, setRebuildConfirmPhrase] = useState('');
+  const [confirmClearLogs, setConfirmClearLogs] = useState(false);
   const [pendingHeavyBundleAttemptShare, setPendingHeavyBundleAttemptShare] = useState<
     boolean | null
   >(null);
@@ -234,13 +256,17 @@ export function DiagnosticsAndSupportPanel({
   };
 
   const handleRetentionChange = (days: LogRetentionDays) => {
-    const next = updateDiagnosticConfig({ retentionDays: days });
+    const validated = validateLogRetentionDaysOverride(days);
+    if (!validated.ok) return;
+    const next = updateDiagnosticConfig({ retentionDays: validated.days });
     setConfig(next);
     void refreshDiagnostics();
   };
 
   const handleSupportEmailChange = (email: string) => {
     setRecipientEmail(email);
+    const check = validateSupportRecipientEmail(email);
+    setRecipientEmailError(check.ok ? null : check.error);
   };
 
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -279,7 +305,18 @@ export function DiagnosticsAndSupportPanel({
     });
   };
 
-  const handleBuildBundle = async (attemptShare: boolean, skipCaution = false) => {
+  const handleBuildBundle = async (
+    attemptShare: boolean,
+    skipCaution = false,
+    skipQuotaWarning = false
+  ) => {
+    const emailValidation = validateSupportRecipientEmail(recipientEmail);
+    if (!emailValidation.ok) {
+      setRecipientEmailError(emailValidation.error);
+      setFeedback(emailValidation.error);
+      return;
+    }
+    setRecipientEmailError(null);
     const hasEmbeddedPhotos =
       includeDataInBundle && includePhotosInBundle && (snapshot.animalPhotos ?? []).length > 0;
     if (!skipCaution && hasEmbeddedPhotos && heavyBundleGate.requiresConfirmation) {
@@ -290,23 +327,49 @@ export function DiagnosticsAndSupportPanel({
     await actionLock.runLocked(async () => {
       setFeedback(null);
       setLastBuiltMailMeta(null);
+      setQuotaWarningGate(null);
       try {
-      const list = await listDiagnosticLogs();
-      const sum = await getDiagnosticSummary(list);
-      const bundleSnapshot =
-        includeDataInBundle && includePhotosInBundle && onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
-          : snapshot;
-      const built = await buildSupportBundleZipOffThread({
-        entries: list,
-        summary: sum,
-        snapshot: bundleSnapshot,
-        includeData: includeDataInBundle,
-        includePhotos: includePhotosInBundle,
-      });
+        const estimatedBundleBytes =
+          256 * 1024 +
+          (includeDataInBundle ? snapshot.animals.length * 1024 : 0) +
+          (hasEmbeddedPhotos ? totalPhotoBytes : 0);
 
-      const recipient = recipientEmail.trim();
-      setLastBuiltMailMeta({
+        const quotaPreflight = await verifyStorageQuotaForDiagnosticAction({
+          operation: 'support_bundle_zip',
+          operationLabel: hasEmbeddedPhotos
+            ? 'Support Bundle + Photos (.ZIP)'
+            : includeDataInBundle
+              ? 'Support Bundle + Barn Data (.ZIP)'
+              : 'Support Bundle Logs (.ZIP)',
+          estimatedRequiredBytes: estimatedBundleBytes,
+          requiresOpfsPreferred: true,
+        });
+
+        if (!quotaPreflight.allowed) {
+          setFeedback(`${quotaPreflight.headline} — ${quotaPreflight.detail}`);
+          return;
+        }
+        if (quotaPreflight.requiresConfirmation && !skipQuotaWarning) {
+          setQuotaWarningGate({ preflight: quotaPreflight, attemptShare });
+          return;
+        }
+
+        const list = await listDiagnosticLogs();
+        const sum = await getDiagnosticSummary(list);
+        const bundleSnapshot =
+          includeDataInBundle && includePhotosInBundle && onHydrateSnapshotForExport
+            ? await onHydrateSnapshotForExport(snapshot)
+            : snapshot;
+        const built = await buildSupportBundleZipOffThread({
+          entries: list,
+          summary: sum,
+          snapshot: bundleSnapshot,
+          includeData: includeDataInBundle,
+          includePhotos: includePhotosInBundle,
+        });
+
+        const recipient = emailValidation.email;
+        setLastBuiltMailMeta({
         filename: built.filename,
         summary: sum,
         includedData: built.includedData,
@@ -354,14 +417,18 @@ export function DiagnosticsAndSupportPanel({
     } catch (err) {
       logDiagnosticEvent({
         level: 'error',
-        category: 'storage',
-        message: 'Failed to create bug report bundle archive',
+        category: isQuotaExceededError(err) ? 'storage' : 'storage',
+        message: isQuotaExceededError(err)
+          ? 'Browser storage quota exceeded while building bug report archive'
+          : 'Failed to create bug report bundle archive',
         error: err,
       });
       setFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Could not build bug report bundle. Try unchecking photos if memory is low.'
+        isQuotaExceededError(err)
+          ? 'Browser storage quota exceeded while staging .ZIP bundle. Uncheck photos or use lightweight .TXT / .JSON exports.'
+          : err instanceof Error
+            ? err.message
+            : 'Could not build bug report bundle. Try unchecking photos if memory is low.'
       );
     }
     });
@@ -546,22 +613,30 @@ export function DiagnosticsAndSupportPanel({
           )}
         </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
-          <label htmlFor="support-recipient-email" className="text-[var(--barn-muted)] shrink-0">
-            Recipient Email:
-          </label>
-          <input
-            id="support-recipient-email"
-            name="support-recipient-manual"
-            type="email"
-            inputMode="email"
-            autoComplete="off"
-            spellCheck={false}
-            value={recipientEmail}
-            onChange={(e) => handleSupportEmailChange(e.target.value)}
-            placeholder="Type recipient email address"
-            className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
-          />
+        <div className="space-y-1 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <label htmlFor="support-recipient-email" className="text-[var(--barn-muted)] shrink-0">
+              Recipient Email:
+            </label>
+            <input
+              id="support-recipient-email"
+              name="support-recipient-manual"
+              type="email"
+              inputMode="email"
+              autoComplete="off"
+              spellCheck={false}
+              value={recipientEmail}
+              onChange={(e) => handleSupportEmailChange(e.target.value)}
+              placeholder="Type recipient email address"
+              aria-invalid={Boolean(recipientEmailError)}
+              className="flex-1 min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
+            />
+          </div>
+          {recipientEmailError && (
+            <p role="alert" className="text-[11px] text-[var(--barn-danger)] font-medium">
+              {recipientEmailError}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -609,6 +684,50 @@ export function DiagnosticsAndSupportPanel({
             Download Error Logs (.JSON)
           </button>
         </div>
+
+        {quotaWarningGate && (
+          <div
+            role="alert"
+            className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-xs space-y-2"
+          >
+            <div className="font-semibold text-[var(--barn-ink)]">
+              {quotaWarningGate.preflight.headline}
+            </div>
+            <p className="text-[11px] text-[var(--barn-ink)] leading-relaxed">
+              {quotaWarningGate.preflight.detail}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const share = quotaWarningGate.attemptShare;
+                  setQuotaWarningGate(null);
+                  void handleBuildBundle(share, true, true);
+                }}
+                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+              >
+                Continue Despite Low Quota
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIncludePhotosInBundle(false);
+                  setQuotaWarningGate(null);
+                }}
+                className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
+              >
+                Uncheck Photos to Save Quota
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuotaWarningGate(null)}
+                className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {pendingHeavyBundleAttemptShare !== null && (
           <div
@@ -738,15 +857,15 @@ export function DiagnosticsAndSupportPanel({
             )}
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => {
                 logDiagnosticEvent({
                   level: 'info',
                   category: 'lifecycle',
-                  message: 'Manual diagnostic test log recorded from Settings',
-                  details: { route: 'settings', animalCount: snapshot.animals.length },
+                  message: 'Manual diagnostic test log recorded from The Techy Stuff',
+                  details: { route: 'techyStuff', animalCount: snapshot.animals.length },
                 });
                 void refreshDiagnostics();
               }}
@@ -754,15 +873,39 @@ export function DiagnosticsAndSupportPanel({
             >
               Test Log
             </button>
-            <button
-              type="button"
-              disabled={entries.length === 0}
-              onClick={() => void clearAllDiagnosticLogs().then(refreshDiagnostics)}
-              className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-40 inline-flex items-center gap-1"
-            >
-              <Trash2 className="w-3 h-3" aria-hidden="true" />
-              Clear Logs
-            </button>
+            {!confirmClearLogs ? (
+              <button
+                type="button"
+                disabled={entries.length === 0}
+                onClick={() => setConfirmClearLogs(true)}
+                className="min-h-[44px] sm:min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] text-[11px] text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] disabled:opacity-40 inline-flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" aria-hidden="true" />
+                Clear Logs
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void clearAllDiagnosticLogs().then(() => {
+                      setConfirmClearLogs(false);
+                      return refreshDiagnostics();
+                    })
+                  }
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold"
+                >
+                  Confirm Clear ({entries.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearLogs(false)}
+                  className="min-h-[34px] px-2 py-1 rounded-lg border border-[var(--barn-border)] text-[11px]"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -906,10 +1049,10 @@ export function DiagnosticsAndSupportPanel({
                   }
                 })
               }
-              className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-55"
+              className="min-h-[36px] max-w-full px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 disabled:opacity-55"
             >
-              <ImageIcon className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-              Analyze Photo Storage
+              <ImageIcon className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span>Analyze Photo Storage</span>
             </button>
           </div>
 
@@ -976,6 +1119,7 @@ export function DiagnosticsAndSupportPanel({
                         const res = await onPruneOrphanPhotos();
                         const refreshed = await onAnalyzePhotoFootprint();
                         if (refreshed) setPhotoFootprint(refreshed);
+                        if (onRefreshStorageStatus) void onRefreshStorageStatus();
                         setPhotoMaintenanceFeedback(
                           res.removedCount > 0
                             ? `Removed ${res.removedCount} orphan photo(s), reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
@@ -996,9 +1140,22 @@ export function DiagnosticsAndSupportPanel({
                     disabled={busyAction || photoFootprint.oversizedPhotoIds.length === 0}
                     onClick={() =>
                       void actionLock.runLocked(async () => {
+                        const preflight = await verifyStorageQuotaForDiagnosticAction({
+                          operation: 'photo_reoptimize',
+                          operationLabel: 'Photo Re-Optimization',
+                          estimatedRequiredBytes: Math.min(
+                            photoFootprint.oversizedBytes,
+                            5 * 1024 * 1024
+                          ),
+                        });
+                        if (!preflight.allowed) {
+                          setPhotoMaintenanceFeedback(`${preflight.headline} — ${preflight.detail}`);
+                          return;
+                        }
                         const res = await onReoptimizeOversizedPhotos();
                         const refreshed = await onAnalyzePhotoFootprint();
                         if (refreshed) setPhotoFootprint(refreshed);
+                        if (onRefreshStorageStatus) void onRefreshStorageStatus();
                         setPhotoMaintenanceFeedback(
                           res.updatedCount > 0
                             ? `Re-optimized ${res.updatedCount} of ${res.oversizedFound} oversized photo(s), reclaiming ${formatByteSizePure(res.reclaimedBytes)}.`
@@ -1104,10 +1261,10 @@ export function DiagnosticsAndSupportPanel({
               const report = onScanDatabaseHealth();
               setHealthReport(report);
             }}
-            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            className="min-h-[36px] max-w-full px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
           >
-            <Wrench className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-            Scan Herd &amp; DB Health
+            <Wrench className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+            <span>Scan Herd &amp; DB Health</span>
           </button>
         </div>
 
@@ -1177,7 +1334,7 @@ export function DiagnosticsAndSupportPanel({
                         <button
                           type="button"
                           onClick={onLocateConflicts}
-                          className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap shrink-0"
+                          className="min-h-[30px] max-w-full px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
                         >
                           Locate Conflicts in Herd
                         </button>
@@ -1248,14 +1405,26 @@ export function DiagnosticsAndSupportPanel({
               void actionLock.runLocked(async () => {
                 setRecoveryFeedback(null);
                 try {
+                  const quotaCheck = await verifyStorageQuotaForDiagnosticAction({
+                    operation: 'cache_purge_rebuild',
+                    operationLabel: 'Purge Stale Caches + Retain Backup',
+                    estimatedRequiredBytes: totalPhotoBytes + snapshot.animals.length * 1024 + 256 * 1024,
+                    requiresOpfsPreferred: true,
+                  });
+                  const shouldDownloadFirst = quotaCheck.allowed;
                   const res = await onPurgeCorruptedCaches({
-                    downloadBackupFirst: true,
+                    downloadBackupFirst: shouldDownloadFirst,
                     rebuildLocalDb: false,
                   });
+                  if (onRefreshStorageStatus) void onRefreshStorageStatus();
                   setRecoveryFeedback(
-                    `Cleared ${res.cachesCleared} app cache(s) & ${res.serviceWorkersUnregistered} service worker(s), kept all herd records, and retained backup ${
-                      res.backupFilename || '(zip)'
-                    }.`
+                    `Cleared ${res.cachesCleared} app cache(s) & ${res.serviceWorkersUnregistered} service worker(s), kept all herd records${
+                      res.backupFilename
+                        ? `, and retained backup ${res.backupFilename}.`
+                        : shouldDownloadFirst
+                          ? '.'
+                          : ' (skipped pre-purge ZIP staging due to tight browser quota).'
+                    }`
                   );
                   await refreshDiagnostics();
                 } catch (err) {
@@ -1281,7 +1450,10 @@ export function DiagnosticsAndSupportPanel({
               <button
                 type="button"
                 disabled={busyAction}
-                onClick={() => setConfirmRebuildDb(true)}
+                onClick={() => {
+                  setRebuildConfirmPhrase('');
+                  setConfirmRebuildDb(true);
+                }}
                 className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)]"
               >
                 Purge &amp; Rebuild Local DB (Auto-Backup First)
@@ -1290,36 +1462,60 @@ export function DiagnosticsAndSupportPanel({
           ) : (
             <div className="p-2.5 rounded-lg bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-xs">
               <p className="text-[11px] font-medium text-[var(--barn-ink)]">
-                This will export &amp; download a complete timestamped `.ZIP` backup file to your
-                device first, then purge &amp; rebuild the local IndexedDB database cleanly.
+                This will check OPFS/IDB quota, export &amp; download a complete timestamped `.ZIP`
+                backup file to your device first, then purge &amp; rebuild local IndexedDB cleanly.
+                Type <span className="font-mono font-bold">{DESTRUCTIVE_CONFIRM_PHRASES.rebuild_local_db}</span>{' '}
+                below to arm this action:
               </p>
+              <input
+                type="text"
+                aria-label="Type confirmation phrase to rebuild local database"
+                value={rebuildConfirmPhrase}
+                onChange={(e) => setRebuildConfirmPhrase(e.target.value)}
+                placeholder={DESTRUCTIVE_CONFIRM_PHRASES.rebuild_local_db}
+                className="w-full sm:w-56 min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono text-xs"
+              />
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={busyAction}
+                  disabled={
+                    busyAction ||
+                    !isDestructiveActionConfirmationValid('rebuild_local_db', rebuildConfirmPhrase)
+                  }
                   onClick={() =>
                     void actionLock.runLocked(async () => {
                       setRecoveryFeedback(null);
+                      const quotaCheck = await verifyStorageQuotaForDiagnosticAction({
+                        operation: 'cache_purge_rebuild',
+                        operationLabel: 'Purge & Rebuild Local DB',
+                        estimatedRequiredBytes: totalPhotoBytes + snapshot.animals.length * 1024 + 256 * 1024,
+                        requiresOpfsPreferred: true,
+                      });
                       const res = await onPurgeCorruptedCaches({
-                        downloadBackupFirst: true,
+                        downloadBackupFirst: quotaCheck.allowed,
                         rebuildLocalDb: true,
                       });
                       setConfirmRebuildDb(false);
+                      setRebuildConfirmPhrase('');
+                      if (onRefreshStorageStatus) void onRefreshStorageStatus();
                       setRecoveryFeedback(
                         `Retained ${
                           res.backupFilename || 'timestamped backup'
-                        }, purged ${res.cachesCleared} cache(s), and rebuilt local IndexedDB cleanly. Use "Restore (.JSON / .ZIP)" above whenever ready.`
+                        }, purged ${res.cachesCleared} cache(s), and rebuilt local IndexedDB cleanly. Use "Restore (.JSON / .ZIP)" in Import / Export Hub whenever ready.`
                       );
                       await refreshDiagnostics();
                     })
                   }
-                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold disabled:opacity-60"
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold disabled:opacity-45"
                 >
                   Download Backup &amp; Rebuild DB
                 </button>
                 <button
                   type="button"
-                  onClick={() => setConfirmRebuildDb(false)}
+                  onClick={() => {
+                    setConfirmRebuildDb(false);
+                    setRebuildConfirmPhrase('');
+                  }}
                   className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px]"
                 >
                   Cancel

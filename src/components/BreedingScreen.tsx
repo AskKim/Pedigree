@@ -1310,7 +1310,7 @@ export function BreedingScreen({
                         {b.notes && <div className="text-xs text-[var(--barn-muted)]">{b.notes}</div>}
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <div className="flex flex-wrap items-center gap-2 max-w-full">
                         {onRecalculatePostBirthTasks &&
                           (stalePostBirthByBreedingId.get(b.id) ?? 0) > 0 && (
                             <button
@@ -1321,7 +1321,7 @@ export function BreedingScreen({
                                   onRecalculatePostBirthTasks(b.id)
                                 )
                               }
-                              className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-55"
+                              className="min-h-[44px] sm:min-h-[38px] max-w-full px-3 py-1.5 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-xs font-semibold text-[var(--barn-ink)] hover:brightness-95 inline-flex items-center gap-1.5 disabled:opacity-55"
                             >
                               {recalcTasksLock.isKeyLocked(b.id) ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />

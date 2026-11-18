@@ -20,6 +20,7 @@ import {
   UpgradeGateDecision,
   VersionManifest,
 } from '../core/upgradeGate';
+import { markCleanSessionExit } from './crashLogger';
 import {
   getAdjustedNowIsoUtc,
   getEffectiveOnlineStatus,
@@ -176,6 +177,7 @@ export function attachControllerChangeReloadGuard(
     typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined,
   reloadFn: () => void = () => {
     if (typeof window !== 'undefined' && window.location) {
+      markCleanSessionExit();
       window.location.reload();
     }
   }

@@ -308,18 +308,18 @@ export function HomeSpeciesScreen({
               onChange={(e) => setOnboardingBarnName(e.target.value)}
               className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
             />
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               <button
                 type="submit"
-                className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[42px] max-w-full px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5"
               >
-                <Check className="w-4 h-4" aria-hidden="true" />
-                Save Farm Name
+                <Check className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>Save Farm Name</span>
               </button>
               <button
                 type="button"
                 onClick={() => onSaveBarnName(snapshot.settings.barnName || 'My Barn')}
-                className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                className="min-h-[42px] max-w-full px-3 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)]"
               >
                 Use &ldquo;{snapshot.settings.barnName || 'My Barn'}&rdquo;
               </button>

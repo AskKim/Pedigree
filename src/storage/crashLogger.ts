@@ -91,7 +91,8 @@ interface SessionHeartbeat {
   lastHeapBytes: number | null;
 }
 
-const SESSION_ID = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+const SESSION_STARTED_AT_MS = Date.now();
+const SESSION_ID = `sess-${SESSION_STARTED_AT_MS.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
 let handlersInstalled = false;
 let currentRoute = 'boot';
@@ -381,6 +382,58 @@ function getCutoffTimestampMs(retentionDays: number): number {
   return Date.now() - Math.max(1, retentionDays) * 86_400_000;
 }
 
+export function shouldIgnoreConsoleDiagnosticMessage(message: string): boolean {
+  const trimmed = String(message || '').trim();
+  if (!trimmed) return false;
+  // Vite dev-client logs harmless WebSocket messages when HMR/WS is disabled behind an HTTP preview proxy
+  return /^\[vite\]\s+(?:failed to connect to websocket|server connection lost|connecting\.\.\.)/i.test(
+    trimmed
+  );
+}
+
+export function normalizeStoredDiagnosticEntry(
+  entry: DiagnosticLogEntry | null | undefined
+): DiagnosticLogEntry | null {
+  if (!entry || typeof entry.id !== 'string' || typeof entry.timestampMs !== 'number') {
+    return null;
+  }
+  if (entry.category === 'console' && shouldIgnoreConsoleDiagnosticMessage(entry.message)) {
+    return null;
+  }
+  if (
+    entry.category === 'memory' &&
+    /^Previous session \([^)]+\) terminated unexpectedly without clean pagehide/i.test(
+      entry.message || ''
+    )
+  ) {
+    let heapPct: number | null = null;
+    if (entry.details) {
+      try {
+        const parsed = JSON.parse(entry.details) as { lastHeapPercent?: unknown };
+        if (typeof parsed.lastHeapPercent === 'number' && Number.isFinite(parsed.lastHeapPercent)) {
+          heapPct = parsed.lastHeapPercent;
+        }
+      } catch {
+        // Ignore unparseable details JSON
+      }
+    }
+    if (heapPct === null) {
+      const match = /JS heap\s+([0-9]+(?:\.[0-9]+)?)%/i.exec(entry.message || '');
+      if (match) {
+        heapPct = Number(match[1]);
+      }
+    }
+    if (heapPct === null || heapPct < 70) {
+      return {
+        ...entry,
+        category: 'lifecycle',
+        level: entry.level === 'error' || entry.level === 'fatal' ? 'warn' : entry.level,
+      };
+    }
+  }
+  return entry;
+}
+
 function readRingBuffer(): DiagnosticLogEntry[] {
   if (typeof localStorage === 'undefined') return [];
   try {
@@ -389,9 +442,14 @@ function readRingBuffer(): DiagnosticLogEntry[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     const cutoff = getCutoffTimestampMs(getDiagnosticConfig().retentionDays);
-    return parsed.filter(
-      (item: any) => item && typeof item.timestampMs === 'number' && item.timestampMs >= cutoff
-    );
+    const normalized: DiagnosticLogEntry[] = [];
+    for (const item of parsed) {
+      const clean = normalizeStoredDiagnosticEntry(item as DiagnosticLogEntry);
+      if (clean && clean.timestampMs >= cutoff) {
+        normalized.push(clean);
+      }
+    }
+    return normalized;
   } catch {
     return [];
   }
@@ -649,8 +707,9 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
         tx.onabort = () => resolve([]);
       });
       for (const e of idbItems) {
-        if (e && e.timestampMs >= cutoff) {
-          byId.set(e.id, e);
+        const clean = normalizeStoredDiagnosticEntry(e);
+        if (clean && clean.timestampMs >= cutoff) {
+          byId.set(clean.id, clean);
         }
       }
     } catch {
@@ -661,8 +720,9 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
   }
 
   for (const e of readEmergencySessionTrace()) {
-    if (e.timestampMs >= cutoff && !byId.has(e.id)) {
-      byId.set(e.id, e);
+    const clean = normalizeStoredDiagnosticEntry(e);
+    if (clean && clean.timestampMs >= cutoff && !byId.has(clean.id)) {
+      byId.set(clean.id, clean);
     }
   }
 
@@ -759,10 +819,14 @@ export function logDiagnosticEvent(params: {
     stack = sanitizeLogString(params.error, 1500);
   }
 
+  const allowMemoryReclassification =
+    params.category !== 'react' &&
+    params.category !== 'lifecycle' &&
+    (params.level === 'error' || params.level === 'fatal' || params.level === 'warn');
   const memoryFaultDetected =
-    isMemoryLikeError(params.message) || (params.error ? isMemoryLikeError(params.error) : false);
-  const category: DiagnosticCategory =
-    memoryFaultDetected && params.category !== 'react' ? 'memory' : params.category;
+    allowMemoryReclassification &&
+    (isMemoryLikeError(params.message) || (params.error ? isMemoryLikeError(params.error) : false));
+  const category: DiagnosticCategory = memoryFaultDetected ? 'memory' : params.category;
 
   const entry: DiagnosticLogEntry = {
     id: generateUuid(),
@@ -818,7 +882,7 @@ function updateSessionHeartbeat(active: boolean): void {
     const hb: SessionHeartbeat = {
       sessionId: SESSION_ID,
       active,
-      startedAtMs: Date.now(),
+      startedAtMs: SESSION_STARTED_AT_MS,
       lastAliveMs: Date.now(),
       lastRoute: currentRoute,
       lastHeapPercent: mem.heapPercent,
@@ -830,11 +894,23 @@ function updateSessionHeartbeat(active: boolean): void {
   }
 }
 
-function inspectPreviousSessionUncleanExit(): void {
-  if (typeof localStorage === 'undefined') return;
+export function markCleanSessionExit(): void {
+  if (heartbeatIntervalId) {
+    clearInterval(heartbeatIntervalId);
+    heartbeatIntervalId = null;
+  }
+  if (memoryIntervalId) {
+    clearInterval(memoryIntervalId);
+    memoryIntervalId = null;
+  }
+  updateSessionHeartbeat(false);
+}
+
+export function inspectPreviousSessionUncleanExit(): DiagnosticLogEntry | null {
+  if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(SESSION_HEARTBEAT_KEY);
-    if (!raw) return;
+    if (!raw) return null;
     const prev = JSON.parse(raw) as Partial<SessionHeartbeat>;
     if (prev.active && prev.sessionId && prev.sessionId !== SESSION_ID) {
       const gapMs = prev.lastAliveMs ? Date.now() - prev.lastAliveMs : 0;
@@ -842,14 +918,17 @@ function inspectPreviousSessionUncleanExit(): void {
       const lastAliveIso = prev.lastAliveMs
         ? new Date(prev.lastAliveMs).toISOString()
         : 'unknown time';
-      logDiagnosticEvent({
+      const reasonHint = highHeap
+        ? 'Elevated JS heap — possible out-of-memory reload or mobile OS tab kill.'
+        : 'Possible mobile OS tab suspension, browser reload, or iframe unmount.';
+      return logDiagnosticEvent({
         level: highHeap ? 'error' : 'warn',
         category: highHeap ? 'memory' : 'lifecycle',
         message: `Previous session (${prev.sessionId}) terminated unexpectedly without clean pagehide (last active ${lastAliveIso}, route "${prev.lastRoute || 'unknown'}"${
           prev.lastHeapPercent !== null && prev.lastHeapPercent !== undefined
             ? `, JS heap ${prev.lastHeapPercent}%`
             : ''
-        }). Possible mobile OS tab kill / out-of-memory reload.`,
+        }). ${reasonHint}`,
         details: {
           previousSessionId: prev.sessionId,
           lastRoute: prev.lastRoute,
@@ -862,6 +941,7 @@ function inspectPreviousSessionUncleanExit(): void {
   } catch {
     // Ignore malformed heartbeat
   }
+  return null;
 }
 
 async function sampleMemoryPressure(): Promise<void> {
@@ -1076,6 +1156,9 @@ export function installGlobalCrashHandlers(): void {
     try {
       const firstErr = args.find((a) => a instanceof Error);
       const summary = args.map((a) => sanitizeLogString(a, 300)).join(' ');
+      if (shouldIgnoreConsoleDiagnosticMessage(summary)) {
+        return;
+      }
       logDiagnosticEvent({
         level: 'error',
         category: isMemoryLikeError(firstErr || summary) ? 'memory' : 'console',
@@ -1093,7 +1176,7 @@ export function installGlobalCrashHandlers(): void {
     loggingConsole = true;
     try {
       const summary = args.map((a) => sanitizeLogString(a, 300)).join(' ');
-      if (summary) {
+      if (summary && !shouldIgnoreConsoleDiagnosticMessage(summary)) {
         logDiagnosticEvent({
           level: 'warn',
           category: isMemoryLikeError(summary) ? 'memory' : 'console',
@@ -1123,35 +1206,28 @@ export function installGlobalCrashHandlers(): void {
     }
   };
 
-  const stopVisibleWatchdogs = () => {
-    if (heartbeatIntervalId) {
-      clearInterval(heartbeatIntervalId);
-      heartbeatIntervalId = null;
-    }
-    if (memoryIntervalId) {
-      clearInterval(memoryIntervalId);
-      memoryIntervalId = null;
-    }
+  const handleCleanBackgroundOrExit = () => {
+    markCleanSessionExit();
+    notifyBackgroundTransition('hidden');
   };
 
   // 4. Clean exit & visibility lifecycle hooks (shared dispatcher to BackgroundFreezeCoordinator)
-  window.addEventListener('pagehide', () => {
-    stopVisibleWatchdogs();
-    updateSessionHeartbeat(false);
-    notifyBackgroundTransition('hidden');
-  });
+  window.addEventListener('pagehide', handleCleanBackgroundOrExit);
 
-  window.addEventListener('beforeunload', () => {
-    stopVisibleWatchdogs();
-    updateSessionHeartbeat(false);
-    notifyBackgroundTransition('hidden');
+  window.addEventListener('beforeunload', handleCleanBackgroundOrExit);
+
+  document.addEventListener('freeze', handleCleanBackgroundOrExit);
+
+  document.addEventListener('resume', () => {
+    updateSessionHeartbeat(true);
+    void sampleMemoryPressure();
+    startVisibleWatchdogs();
+    notifyBackgroundTransition('visible');
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      stopVisibleWatchdogs();
-      updateSessionHeartbeat(false);
-      notifyBackgroundTransition('hidden');
+      handleCleanBackgroundOrExit();
     } else {
       updateSessionHeartbeat(true);
       void sampleMemoryPressure();

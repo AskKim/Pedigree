@@ -226,7 +226,7 @@ export function SpeciesMemoScreen({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 max-w-full">
             <div
               role="group"
               aria-label="Memo view mode"

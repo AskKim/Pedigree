@@ -763,7 +763,7 @@ export function HerdScreen({
                   </p>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 <button
                   type="button"
                   onClick={() => {
@@ -890,7 +890,7 @@ export function HerdScreen({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 max-w-full">
                   <button
                     type="button"
                     onClick={() => {
@@ -941,7 +941,7 @@ export function HerdScreen({
                   while keeping lineage links intact for descendants.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 {onRestoreArchivedHerdBundle && (
                   <button
                     type="button"
@@ -1732,7 +1732,7 @@ export function HerdScreen({
         /* Species-Isolated Herd List View with Multi-Select */
         <>
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1 min-w-0">
               <div className="relative flex-1 max-w-md">
                 <Search
                   className="w-4 h-4 text-[var(--barn-muted)] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -1797,7 +1797,7 @@ export function HerdScreen({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               <label htmlFor="herd-sort-select" className="sr-only">
                 Sort Herd Records
               </label>
@@ -1806,7 +1806,7 @@ export function HerdScreen({
                 aria-label="Sort herd list"
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as HerdSortOption)}
-                className="min-h-[42px] px-3 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium"
+                className="min-h-[42px] max-w-full px-3 py-2 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium"
               >
                 <option value="default">Sort: Default Order</option>
                 <option value="conflicts_first">Sort: Conflicts First</option>
@@ -1822,10 +1822,10 @@ export function HerdScreen({
                   setEditingAnimal(null);
                   setShowAnimalModal(true);
                 }}
-                className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[42px] max-w-full px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5"
               >
-                <Plus className="w-4 h-4" aria-hidden="true" />
-                Add {speciesProfile.name}
+                <Plus className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>Add {speciesProfile.name}</span>
               </button>
             </div>
           </div>

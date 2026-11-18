@@ -242,7 +242,7 @@ export function ArchivedHerdsModal({
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <div className="flex flex-wrap items-center gap-1.5 max-w-full">
                         {isConfirmDelete ? (
                           <>
                             <button

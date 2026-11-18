@@ -1,8 +1,70 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'node:fs/promises';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { buildPromptsCatalogManifest } from './src/core/promptsCatalog';
+
+async function scanPromptsFolderOnDisk(rootDir: string) {
+  const promptsDir = path.resolve(rootDir, 'prompts');
+  const filesByPath: Record<string, string> = {};
+  try {
+    const entries = await fs.readdir(promptsDir, { withFileTypes: true });
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
+        .map(async (entry) => {
+          const fullPath = path.join(promptsDir, entry.name);
+          const content = await fs.readFile(fullPath, 'utf8');
+          filesByPath[`prompts/${entry.name}`] = content;
+        })
+    );
+  } catch {
+    // Return empty manifest if /prompts/ directory is temporarily missing
+  }
+  return buildPromptsCatalogManifest(filesByPath, new Date().toISOString(), true);
+}
+
+function promptsDirectoryPlugin(): Plugin {
+  const rootDir = import.meta.dirname;
+  return {
+    name: 'prompts-directory-manifest',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split('?')[0] || '';
+        if (!url.endsWith('/prompts-manifest.json')) {
+          next();
+          return;
+        }
+        void scanPromptsFolderOnDisk(rootDir)
+          .then((manifest) => {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-store, max-age=0');
+            res.end(JSON.stringify(manifest));
+          })
+          .catch((err) => {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(
+              JSON.stringify({
+                error: err instanceof Error ? err.message : 'Failed to scan /prompts/ directory.',
+              })
+            );
+          });
+      });
+    },
+    async generateBundle() {
+      const manifest = await scanPromptsFolderOnDisk(rootDir);
+      this.emitFile({
+        type: 'asset',
+        fileName: 'prompts-manifest.json',
+        source: JSON.stringify(manifest, null, 2),
+      });
+    },
+  };
+}
 
 function devServiceWorkerCleanupPlugin(): Plugin {
   const selfDestructSw = `
@@ -52,6 +114,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       devServiceWorkerCleanupPlugin(),
+      promptsDirectoryPlugin(),
       VitePWA({
         registerType: 'prompt',
         includeAssets: [
@@ -146,9 +209,10 @@ export default defineConfig(() => {
       host: '0.0.0.0',
       port: 3000,
       allowedHosts: true as const,
-      // HMR and file watching are hardcoded disabled to prevent preview flickering,
+      // HMR, WebSocket server, and file watching are hardcoded disabled to prevent preview flickering,
       // mobile iframe reload loops, and AI Studio env-var prompts (production/Pages builds are unaffected).
       hmr: false,
+      ws: false as const,
       watch: null,
     },
   };

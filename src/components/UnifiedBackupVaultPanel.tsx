@@ -226,7 +226,7 @@ export function UnifiedBackupVaultPanel({
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 max-w-full">
             {opfsSupported && backupSyncStatus?.supported ? (
               backupSyncStatus.configured ? (
                 <>
@@ -333,10 +333,10 @@ export function UnifiedBackupVaultPanel({
           type="button"
           disabled={savingVault}
           onClick={() => void handleSaveSnapshot()}
-          className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+          className="min-h-[42px] max-w-full px-4 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 disabled:opacity-50 inline-flex items-center justify-center gap-1.5 sm:shrink-0"
         >
-          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-          {savingVault ? 'Saving Snapshot...' : 'Save Snapshot to Vault Now'}
+          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          <span>{savingVault ? 'Saving Snapshot...' : 'Save Snapshot to Vault Now'}</span>
         </button>
       </div>
 
@@ -382,7 +382,7 @@ export function UnifiedBackupVaultPanel({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5 max-w-full">
                   {isConfirmRestore ? (
                     <>
                       <button
@@ -486,7 +486,7 @@ export function UnifiedBackupVaultPanel({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5 max-w-full">
                   {isConfirmRestore ? (
                     <>
                       <button

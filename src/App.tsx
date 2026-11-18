@@ -39,6 +39,7 @@ import {
 import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
+import { TechyStuffErrorBoundary } from './components/TechyStuffErrorBoundary';
 import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
@@ -50,6 +51,7 @@ import {
   useConnectivityStatus,
   usePWAInstall,
 } from './storage/storageProtection';
+import { markCleanSessionExit } from './storage/crashLogger';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './utils/lazyRoute';
 import { useAccessibleDialog } from './utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from './utils/useAsyncSubmitLock';
@@ -88,6 +90,14 @@ const SettingsAndSyncScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SettingsAndSyncScreen')['SettingsAndSyncScreen']>
 >(() => import('./components/SettingsAndSyncScreen'), 'SettingsAndSyncScreen', 'Settings');
 
+const TechyStuffScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/TechyStuffScreen')['TechyStuffScreen']>
+>(() => import('./components/TechyStuffScreen'), 'TechyStuffScreen', 'The Techy Stuff');
+
+const PromptsDirectoryScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/PromptsDirectoryScreen')['PromptsDirectoryScreen']>
+>(() => import('./components/PromptsDirectoryScreen'), 'PromptsDirectoryScreen', 'Prompts Directory');
+
 const CalendarSyncConfirmModal = lazyNamedRoute<
   ComponentProps<typeof import('./components/CalendarIntegrationModals')['CalendarSyncConfirmModal']>
 >(
@@ -106,6 +116,8 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   memo: 'Species Memo',
   importExport: 'Import / Export Hub',
   settings: 'Settings',
+  techyStuff: 'The Techy Stuff',
+  prompts: 'Prompts Directory',
 };
 
 export default function App() {
@@ -309,7 +321,10 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                markCleanSessionExit();
+                window.location.reload();
+              }}
               className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium"
             >
               Reload App
@@ -317,8 +332,8 @@ export default function App() {
           </div>
         </div>
         <AsyncErrorToastHost
-          onOpenDiagnostics={() => store.setRoute('settings')}
-          isOnSettingsRoute={store.route === 'settings'}
+          onOpenDiagnostics={() => store.setRoute('techyStuff')}
+          isOnSettingsRoute={store.route === 'techyStuff'}
         />
       </main>
     );
@@ -403,13 +418,13 @@ export default function App() {
           {!isOnline && (
             <button
               type="button"
-              onClick={() => setRoute('settings')}
+              onClick={() => setRoute('techyStuff')}
               title={
                 connectivity.reason === 'manual_offline'
-                  ? 'Manual App Offline Mode enabled — click to manage in Settings'
+                  ? 'Manual App Offline Mode enabled — click to manage in The Techy Stuff'
                   : connectivity.reason === 'captive_or_unreachable'
-                  ? 'Network probe could not reach origin — operating locally'
-                  : 'Operating in offline barn mode — all edits stay safe locally'
+                  ? 'Network probe could not reach origin — click to probe in The Techy Stuff'
+                  : 'Operating in offline barn mode — click to inspect connectivity'
               }
               className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-[var(--barn-sage)] px-2.5 py-1 rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] hover:opacity-90"
             >
@@ -424,7 +439,10 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => window.location.reload()}
+            onClick={() => {
+              markCleanSessionExit();
+              window.location.reload();
+            }}
             title="Reload app preview (stays in full screen)"
             aria-label="Reload app preview"
             className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
@@ -564,12 +582,12 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 {pwaUpdate.gateDecision.status === 'requires_verified_backup' && (
                   <button
                     type="button"
                     onClick={() => void store.createAndVerifyPreUpgradeBackup()}
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                    className="min-h-[34px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
                   >
                     Verify &amp; Download Safety Backup
                   </button>
@@ -578,7 +596,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setRoute('settings')}
-                    className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold whitespace-nowrap"
+                    className="min-h-[34px] max-w-full px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold"
                   >
                     Manage Updates in Settings
                   </button>
@@ -603,12 +621,12 @@ export default function App() {
                   <strong className="text-[var(--barn-ink)]">App Update Available</strong> (passive notify mode).
                 </span>
               </span>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 {route !== 'settings' && (
                   <button
                     type="button"
                     onClick={() => setRoute('settings')}
-                    className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)]"
+                    className="min-h-[30px] max-w-full px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)]"
                   >
                     Review in Settings
                   </button>
@@ -639,7 +657,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 <button
                   type="button"
                   disabled={hasOpenModal || pwaUpdate.applying}
@@ -649,7 +667,7 @@ export default function App() {
                       ? 'Close the active editor dialog first to protect unsaved changes'
                       : 'Activate waiting update and reload cleanly'
                   }
-                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="min-h-[44px] sm:min-h-[32px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {pwaUpdate.applying
                     ? 'Applying Update...'
@@ -660,7 +678,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={dismissPwaUpdate}
-                  className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline"
                 >
                   Later
                 </button>
@@ -686,12 +704,12 @@ export default function App() {
                 </>
               )}
             </span>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               {canPromptInstall && (
                 <button
                   type="button"
                   onClick={() => void promptInstall()}
-                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
                 >
                   Install App
                 </button>
@@ -725,12 +743,12 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               {route !== 'importExport' && (
                 <button
                   type="button"
                   onClick={() => openImportExportHub('backup')}
-                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
                 >
                   Open Backups
                 </button>
@@ -738,7 +756,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={store.dismissExportCanaryWarning}
-                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline whitespace-nowrap"
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline"
               >
                 Dismiss
               </button>
@@ -859,12 +877,12 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
                 {route !== 'importExport' && (
                   <button
                     type="button"
                     onClick={() => openImportExportHub('backup')}
-                    className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+                    className="min-h-[44px] sm:min-h-[32px] max-w-full px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)]"
                   >
                     Open Backups &amp; Compatibility
                   </button>
@@ -893,12 +911,12 @@ export default function App() {
               />
               <span className="break-words">{store.errorMessage}</span>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               {route !== 'importExport' && (
                 <button
                   type="button"
                   onClick={() => openImportExportHub('backup')}
-                  className="min-h-[44px] sm:min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[30px] max-w-full px-2.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
                 >
                   Open Recovery &amp; Backups
                 </button>
@@ -918,9 +936,9 @@ export default function App() {
         {store.statusMessage && (
           <div
             role="status"
-            className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs font-medium flex items-center justify-between gap-3"
+            className="bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-[var(--barn-ink)] rounded-xl px-4 py-2.5 text-xs font-medium flex flex-wrap items-center justify-between gap-3"
           >
-            <span>{store.statusMessage}</span>
+            <span className="min-w-0 flex-1 break-words">{store.statusMessage}</span>
             <button
               type="button"
               onClick={store.clearStatusMessage}
@@ -952,7 +970,7 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
               <button
                 type="button"
                 onClick={() => {
@@ -961,7 +979,7 @@ export default function App() {
                   store.locateConflictsInHerd(targetSpecies);
                   store.dismissImportConflictAlert();
                 }}
-                className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+                className="min-h-[32px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold"
               >
                 Locate Conflicted Animals
               </button>
@@ -977,7 +995,11 @@ export default function App() {
         )}
 
         {/* Contextual Species Switcher Bar inside any Species Workspace */}
-        {route !== 'home' && route !== 'settings' && route !== 'importExport' && (
+        {route !== 'home' &&
+          route !== 'settings' &&
+          route !== 'importExport' &&
+          route !== 'techyStuff' &&
+          route !== 'prompts' && (
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <label
@@ -1346,7 +1368,6 @@ export default function App() {
             backupStatus={store.backupStatus}
             openAddSpeciesOnMount={store.openAddSpeciesInSettings}
             onConsumedOpenAddSpecies={() => store.setOpenAddSpeciesInSettings(false)}
-            onRequestPersistentStorage={store.triggerPersistentStorageRequest}
             recordBackupExport={store.recordBackupExport}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
@@ -1356,23 +1377,6 @@ export default function App() {
               void store.deleteSpeciesProfile(profile);
             }}
             onDownloadTimestampedSpeciesBackup={store.exportTimestampedSpeciesBackup}
-            onAnalyzePhotoFootprint={store.analyzePhotoStorageFootprint}
-            onPruneOrphanPhotos={store.pruneOrphanAnimalPhotos}
-            onReoptimizeOversizedPhotos={store.reoptimizeOversizedAnimalPhotos}
-            onPruneFullResPhotoPayloads={store.pruneFullResPhotoPayloadsKeepingThumbnails}
-            onScanDatabaseHealth={store.scanDatabaseHealth}
-            onRepairDatabaseHealth={store.runHealthCheckAndRepair}
-            onResetDatabaseConnection={store.resetDatabaseConnection}
-            onPurgeCorruptedCaches={store.purgeCorruptedCachesAndRecover}
-            onSeedAllSpecies={() => {
-              void store.seedAllPredefinedSpecies();
-            }}
-            onClearAllRecords={() => {
-              void store.clearAllRecordsKeepSpecies();
-            }}
-            onRestoreFactoryDefaults={() => {
-              void store.restoreFactoryDefaults();
-            }}
             onExportTasksToCalendar={store.exportTasksToCalendar}
             googleAuthConnected={store.googleAuthConnected}
             googleUserEmail={store.googleUserEmail}
@@ -1381,23 +1385,77 @@ export default function App() {
             onConnectGoogleCalendar={store.connectGoogleCalendar}
             onDisconnectGoogleCalendar={store.disconnectGoogleCalendar}
             onRefreshGoogleCalendars={store.refreshGoogleCalendars}
-            onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
             deviceCapability={deviceCapability}
             onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
             opfsSupported={store.opfsSupported}
             opfsVaultBackups={store.opfsVaultBackups}
             rollingBackups={store.rollingBackups}
-            onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
-            onCreateVerifiedPreUpgradeBackup={store.createAndVerifyPreUpgradeBackup}
             onOpenImportExportHub={openImportExportHub}
+            onOpenTechyStuff={() => setRoute('techyStuff')}
           />
-              )}
+        )}
+
+        {route === 'techyStuff' && (
+          <TechyStuffErrorBoundary
+            onExitToSettings={() => setRoute('settings')}
+            onExitToHome={() => setRoute('home')}
+          >
+            <TechyStuffScreen
+              snapshot={snapshot}
+              engineName={store.engineName}
+              storageStatus={store.storageStatus}
+              opfsSupported={store.opfsSupported}
+              opfsVaultBackups={store.opfsVaultBackups}
+              deviceCapability={deviceCapability}
+              onBackToSettings={() => setRoute('settings')}
+              onOpenImportExportHub={openImportExportHub}
+              onOpenPromptsDirectory={() => setRoute('prompts')}
+              onRefreshStorageStatus={store.refreshStorageStatus}
+              onRequestPersistentStorage={store.triggerPersistentStorageRequest}
+              onPurgeOpfsTmp={store.purgeOpfsTempWorkspace}
+              onClearLocalSyncAndReminderState={store.clearLocalSyncAndBackupReminderState}
+              recordBackupExport={store.recordBackupExport}
+              onAnalyzePhotoFootprint={store.analyzePhotoStorageFootprint}
+              onPruneOrphanPhotos={store.pruneOrphanAnimalPhotos}
+              onReoptimizeOversizedPhotos={store.reoptimizeOversizedAnimalPhotos}
+              onPruneFullResPhotoPayloads={store.pruneFullResPhotoPayloadsKeepingThumbnails}
+              onScanDatabaseHealth={store.scanDatabaseHealth}
+              onRepairDatabaseHealth={store.runHealthCheckAndRepair}
+              onResetDatabaseConnection={store.resetDatabaseConnection}
+              onPurgeCorruptedCaches={store.purgeCorruptedCachesAndRecover}
+              onLocateConflicts={() => store.locateConflictsInHerd(activeSpeciesName)}
+              onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
+              onSaveManualOpfsVaultBackup={store.saveManualOpfsVaultBackup}
+              onCreateVerifiedPreUpgradeBackup={store.createAndVerifyPreUpgradeBackup}
+              onSeedAllSpecies={() => {
+                void store.seedAllPredefinedSpecies();
+              }}
+              onClearAllRecords={() => {
+                void store.clearAllRecordsKeepSpecies();
+              }}
+              onRestoreFactoryDefaults={() => {
+                void store.restoreFactoryDefaults();
+              }}
+            />
+          </TechyStuffErrorBoundary>
+        )}
+        {route === 'prompts' && (
+          <TechyStuffErrorBoundary
+            onExitToSettings={() => setRoute('settings')}
+            onExitToHome={() => setRoute('home')}
+          >
+            <PromptsDirectoryScreen onBackToTechyStuff={() => setRoute('techyStuff')} />
+          </TechyStuffErrorBoundary>
+        )}
             </Suspense>
           </RouteErrorBoundary>
         )}
 
         {/* Quiet Desktop Keyboard Shortcuts Hint Footer */}
-        {route !== 'settings' && route !== 'importExport' && (
+        {route !== 'settings' &&
+          route !== 'importExport' &&
+          route !== 'techyStuff' &&
+          route !== 'prompts' && (
           <footer className="hidden md:flex items-center justify-between gap-4 pt-3 pb-1 border-t border-[var(--barn-border)]/60 text-[11px] text-[var(--barn-muted)]">
             <span>
               Shortcuts: <kbd className="font-mono font-semibold text-[var(--barn-ink)]">H</kbd> Home ·{' '}
@@ -1604,8 +1662,8 @@ export default function App() {
       )}
 
       <AsyncErrorToastHost
-        onOpenDiagnostics={() => setRoute('settings')}
-        isOnSettingsRoute={route === 'settings'}
+        onOpenDiagnostics={() => setRoute('techyStuff')}
+        isOnSettingsRoute={route === 'techyStuff'}
       />
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}

@@ -68,6 +68,48 @@ body {
   outline-offset: 2px;
 }
 
+@layer utilities {
+  /* Prevent 1fr CSS Grid tracks from expanding past narrow viewports or card bounds */
+  .grid > *:not([class*='min-w-']) {
+    min-width: 0;
+  }
+
+  /* Global boundary containment for wrapping flex toolbars, headers, banners, and action groups */
+  .flex-wrap > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .flex-wrap.shrink-0,
+  .flex-wrap .flex.shrink-0:not([aria-hidden='true']),
+  .flex-wrap .inline-flex.shrink-0:not([aria-hidden='true']),
+  .flex-wrap button.shrink-0,
+  .flex-wrap a.shrink-0 {
+    flex-shrink: 1;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .flex-wrap > div.flex:not(.overflow-x-auto),
+  .flex-wrap > div.inline-flex:not(.overflow-x-auto) {
+    flex-wrap: wrap;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* Give flexible text columns inside wrapping rows a minimum threshold before buttons crowd/overflow */
+  .flex-wrap > div.flex-1.min-w-0 {
+    flex-basis: min(100%, 15rem);
+  }
+
+  /* Allow nowrap buttons/links inside wrapping containers to wrap safely when narrower than container */
+  .flex-wrap button.whitespace-nowrap,
+  .flex-wrap a.whitespace-nowrap {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
 @media print {
   :root,
   .dark,

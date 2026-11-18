@@ -231,6 +231,7 @@ import {
   sweepOrphanedOpfsTmpOnBoot,
   WipedStorageRecoveryContext,
 } from '../storage/opfsStorage';
+import { purgeOpfsTmp } from '../storage/opfsTempStream';
 import { purgeStaleBrowserCaches, WebSqliteAdapter } from '../storage/webSqliteAdapter';
 import {
   getGoogleCalendarAccessToken,
@@ -266,7 +267,9 @@ export type WorkspaceRoute =
   | 'reports'
   | 'memo'
   | 'importExport'
-  | 'settings';
+  | 'settings'
+  | 'techyStuff'
+  | 'prompts';
 
 export type BreedingTaskCheckoffAction =
   | { kind: 'palpated_positive' }
@@ -513,6 +516,15 @@ export function useBarnStore() {
     setStorageStatus(status);
     return status;
   }, []);
+
+  const purgeOpfsTempWorkspace = useCallback(async (): Promise<{
+    filesRemoved: number;
+    bytesFreed: number;
+  }> => {
+    const result = await purgeOpfsTmp();
+    await refreshStorageStatus();
+    return result;
+  }, [refreshStorageStatus]);
 
   const refreshVaultAndArchives = useCallback(async () => {
     const [opfsRes, rollingRes, archivesRes, syncRes] = await Promise.allSettled([
@@ -6018,5 +6030,7 @@ export function useBarnStore() {
     runHealthCheckAndRepair,
     resetDatabaseConnection,
     purgeCorruptedCachesAndRecover,
+    purgeOpfsTempWorkspace,
+    clearLocalSyncAndBackupReminderState,
   };
 }

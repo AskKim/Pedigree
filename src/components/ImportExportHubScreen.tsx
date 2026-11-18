@@ -1232,25 +1232,25 @@ export function ImportExportHubScreen({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 max-w-full">
             {onOpenReports && (
               <button
                 type="button"
                 onClick={onOpenReports}
-                className="min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[44px] sm:min-h-[38px] max-w-full px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                Printable Reports
+                <FileSpreadsheet className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                <span>Printable Reports</span>
               </button>
             )}
             <button
               type="button"
               onClick={onOpenSettings}
-              className="min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              className="min-h-[44px] sm:min-h-[38px] max-w-full px-3.5 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
             >
-              <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-              <Settings className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-              Barn Settings
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <Settings className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span>Barn Settings</span>
             </button>
           </div>
         </div>

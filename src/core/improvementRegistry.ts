@@ -2059,6 +2059,81 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep full OPFS `/tmp` staging + `downloadTextChunks` / `downloadTempOpfsExport` in `src/utils/webFileActions.ts`, wired through `offThreadWorkerClient.ts`, `ImportExportHubScreen.tsx`, `SettingsAndSyncScreen.tsx`, and `useBarnStore.ts`.',
     ],
   },
+  {
+    id: 'IMP-033',
+    title: '"The Techy Stuff" Developer & Troubleshooting Screen, Permanent Tier Hierarchy & Production Guardrails',
+    category: 'diagnostics-sync',
+    source: 'session',
+    userIntent:
+      'Relocate advanced, non-routine operational controls out of Settings into a dedicated lazy-loaded "The Techy Stuff" developer screen with a permanent non-closeable Tier/Memory Hierarchy block, isolated error boundary, OPFS/IDB quota pre-flight checks, strict input sanitization, and multi-step destructive safeguards.',
+    summary:
+      'Introduces lazy-loaded `TechyStuffScreen` wrapped in an isolated `TechyStuffErrorBoundary`; relocates Storage Protection, Connectivity Governor, App Update Policy & Release Gate, `DiagnosticsAndSupportPanel`, and Destructive Reset Lab controls out of `SettingsAndSyncScreen` while preserving original `DeviceCapabilityCard` & Home hierarchy banners intact; embeds a permanent, non-closeable copy of the 5-tier Device Tier & Memory Hierarchy guidelines (`data-permanent-tier-hierarchy="true"`); and enforces pure TS validation/sanitization & OPFS/IDB quota pre-flight checks (`techyStuffGuardrails.ts`, `verifyStorageQuotaForDiagnosticAction`) plus multi-step armed phrase safeguards.',
+    files: [
+      'src/core/techyStuffGuardrails.ts',
+      'src/core/__tests__/techyStuffGuardrails.test.ts',
+      'src/storage/storageProtection.ts',
+      'src/components/TechyStuffErrorBoundary.tsx',
+      'src/components/TechyStuffScreen.tsx',
+      'src/components/DiagnosticsAndSupportPanel.tsx',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/hooks/useBarnStore.ts',
+      'src/App.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/techyStuffGuardrails.ts',
+        requiredSubstrings: [
+          'evaluateStorageQuotaForOperation',
+          'validateDiagnosticTriggerInput',
+          'validateSupportRecipientEmail',
+          'DESTRUCTIVE_CONFIRM_PHRASES',
+          'isDestructiveActionConfirmationValid',
+        ],
+        rationale:
+          'Pure TS developer guardrails module must stay DOM-free and enforce quota evaluations, strict input validation/sanitization, and confirmation phrases.',
+      },
+      {
+        filePath: 'src/storage/storageProtection.ts',
+        requiredSubstrings: ['verifyStorageQuotaForDiagnosticAction'],
+        rationale:
+          'Browser storage adapter must execute OPFS + IndexedDB quota pre-flight checks and log low-headroom diagnostics.',
+      },
+      {
+        filePath: 'src/components/TechyStuffErrorBoundary.tsx',
+        requiredSubstrings: ['TechyStuffErrorBoundary', 'recordReactCrash'],
+        rationale:
+          'Developer & Troubleshooting screen must stay isolated in a dedicated Error Boundary so faulty diagnostics cannot crash herd/breeding views.',
+      },
+      {
+        filePath: 'src/components/TechyStuffScreen.tsx',
+        requiredSubstrings: [
+          'TechyStuffScreen',
+          'data-permanent-tier-hierarchy="true"',
+          'DEVICE_CAPABILITY_TIER_LIST',
+          'destructiveArmed',
+        ],
+        rationale:
+          'The Techy Stuff screen must include a permanent non-closeable Tier/Memory Hierarchy block and multi-step armed safeguards for destructive actions.',
+      },
+      {
+        filePath: 'src/components/SettingsAndSyncScreen.tsx',
+        requiredSubstrings: ['onOpenTechyStuff', 'DeviceCapabilityCard'],
+        rationale:
+          'Settings must link cleanly to The Techy Stuff while keeping routine barn preferences and original DeviceCapabilityCard intact.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: ['TechyStuffScreen', 'TechyStuffErrorBoundary', "route === 'techyStuff'"],
+        rationale:
+          'Root shell must lazy-load TechyStuffScreen inside Suspense + TechyStuffErrorBoundary.',
+      },
+    ],
+    restorePlaybook: [
+      'Restore `src/core/techyStuffGuardrails.ts` and `verifyStorageQuotaForDiagnosticAction` in `src/storage/storageProtection.ts`.',
+      'Restore `src/components/TechyStuffErrorBoundary.tsx` and `src/components/TechyStuffScreen.tsx` with its permanent `data-permanent-tier-hierarchy="true"` section and `destructiveArmed` phrase gates.',
+      'Keep `techyStuff` in `WorkspaceRoute` (`useBarnStore.ts`), `SettingsAndSyncScreen.tsx` launcher (`onOpenTechyStuff`), and lazy boundary mount in `src/App.tsx`.',
+    ],
+  },
 ];
 
 /**

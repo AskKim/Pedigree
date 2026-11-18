@@ -1,9 +1,11 @@
+<!-- DO_NOT_REMOVE_WITHOUT_CONFIRMATION: true -->
 # MASTER SYSTEM PROMPT: OFFLINE-FIRST PEDIGREE PWA
 
 **Last-Edited Timestamp:** 2026-11-18
+> **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 ## 1. EXECUTION & TOKEN PROTOCOL (CRITICAL)
-- **Protect This File:** Never delete, overwrite, or edit `master_system_prompt.md` unless explicitly instructed by Kimberly in the current prompt.
+- **Protect This File:** Never delete, overwrite, remove from `/prompts/`, or edit `master_system_prompt.md` unless explicitly instructed by Kimberly in the current prompt.
 - **Read Before Write:** Read target files before proposing or applying edits. Never write diffs against assumed contents, lines, or imports.
 - **Scope Lock:** Modify *only* files/functions required by the task. No unsolicited refactoring, reformatting, or renaming.
 - **Zero Invention:** Verify npm packages in `package.json` and APIs/types against the codebase. Never invent schemas or rabbitry/genetics rules (e.g., ARBA standards, allele logic, chore offsets); ask if missing.
