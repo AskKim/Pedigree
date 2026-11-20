@@ -1,0 +1,129 @@
+name: Export Codebase to Markdown
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  export-markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate Markdown file from repository
+        id: generate
+        env:
+          REPO_FULL_NAME: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          STAMP_FILE=$(date -u +"%Y-%m-%d_%H-%M-%S")
+          STAMP_READABLE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          export STAMP_FILE
+          export STAMP_READABLE
+
+          python3 - <<'EOF'
+          import os
+          import re
+
+          repo_full_name = os.environ.get("REPO_FULL_NAME", "repository")
+          repo_name = os.environ.get("REPO_NAME", os.path.basename(os.path.abspath(".")))
+          raw_branch = os.environ.get("BRANCH_NAME", "unknown-branch")
+          safe_branch = re.sub(r"[^A-Za-z0-9._-]", "-", raw_branch)
+
+          stamp_file = os.environ.get("STAMP_FILE", "0000-00-00_00-00-00")
+          stamp_readable = os.environ.get("STAMP_READABLE", "Unknown UTC")
+
+          output_file = f"{repo_name}_{safe_branch}_combined_codebase_{stamp_file}.md"
+
+          ignore_dirs = {".git", "node_modules", "venv", "__pycache__", "dist", "build"}
+          ignore_extensions = {
+              ".png", ".jpg", ".jpeg", ".gif", ".ico",
+              ".pdf", ".zip", ".exe", ".lock", ".bin", ".woff", ".woff2"
+          }
+
+          # Map common extensions to Markdown code fence languages
+          lang_map = {
+              ".py": "python",
+              ".js": "javascript",
+              ".jsx": "jsx",
+              ".ts": "typescript",
+              ".tsx": "tsx",
+              ".html": "html",
+              ".css": "css",
+              ".scss": "scss",
+              ".json": "json",
+              ".yml": "yaml",
+              ".yaml": "yaml",
+              ".md": "markdown",
+              ".sh": "bash",
+              ".sql": "sql",
+              ".go": "go",
+              ".rs": "rust",
+              ".java": "java",
+              ".c": "c",
+              ".cpp": "cpp",
+              ".cs": "csharp",
+              ".php": "php",
+              ".rb": "ruby",
+              ".xml": "xml",
+          }
+
+          written_files = 0
+
+          with open(output_file, "w", encoding="utf-8") as outfile:
+              outfile.write(f"# Codebase Export: {repo_full_name}\n\n")
+              outfile.write(f"- **Branch:** `{raw_branch}`\n")
+              outfile.write(f"- **Generated (UTC):** {stamp_readable}\n\n")
+
+              for root, dirs, files in os.walk("."):
+                  dirs[:] = sorted([d for d in dirs if d not in ignore_dirs])
+                  for file in sorted(files):
+                      if file == output_file:
+                          continue
+
+                      ext = os.path.splitext(file)[1].lower()
+                      if ext in ignore_extensions:
+                          continue
+
+                      file_path = os.path.normpath(os.path.join(root, file))
+                      lang = lang_map.get(ext, "")
+
+                      outfile.write(f"## `{file_path}`\n\n")
+                      try:
+                          with open(file_path, "r", encoding="utf-8") as infile:
+                              content = infile.read()
+
+                          # Use 4 backticks if the file itself contains triple backticks
+                          fence = "````" if "```" in content else "```"
+                          outfile.write(f"{fence}{lang}\n{content}")
+                          if not content.endswith("\n"):
+                              outfile.write("\n")
+                          outfile.write(f"{fence}\n\n")
+                          written_files += 1
+                      except Exception as e:
+                          outfile.write(f"> Could not read file due to encoding error: `{e}`\n\n")
+
+          print(f"Wrote {written_files} files into {output_file}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as out_env:
+                  out_env.write(f"output_file={output_file}\n")
+          EOF
+
+      - name: Upload Markdown artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-${{ steps.generate.outputs.output_file }}-artifact
+          path: ${{ steps.generate.outputs.output_file }}
+          if-no-files-found: error
