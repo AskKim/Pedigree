@@ -78,6 +78,17 @@ export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
 export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
 const SQLITE_SCHEMA_VERSION = 2;
 
+type SqlJsInitConfig = NonNullable<Parameters<typeof initSqlJs>[0]> & {
+  useOldExtensionFunctions: boolean;
+};
+
+function createSqlJsInitConfig(): SqlJsInitConfig {
+  return {
+    locateFile: () => sqlWasmUrl,
+    useOldExtensionFunctions: false,
+  };
+}
+
 export interface PersistedWriteEpochMeta {
   epoch: number;
   writerTabId: string;
@@ -748,10 +759,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     };
 
     try {
-      this.SQL = await initSqlJs({
-        locateFile: () => sqlWasmUrl,
-        useOldExtensionFunctions: false,
-      });
+      this.SQL = await initSqlJs(createSqlJsInitConfig());
 
       const [savedBytes, epochMeta] = await Promise.all([
         idbGet<Uint8Array>(IDB_PRIMARY_KEY),
@@ -2450,10 +2458,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       throw new Error(headerCheck.error);
     }
     if (!this.SQL) {
-      this.SQL = await initSqlJs({
-        locateFile: () => sqlWasmUrl,
-        useOldExtensionFunctions: false,
-      });
+      this.SQL = await initSqlJs(createSqlJsInitConfig());
     }
     if (!this.SQL) {
       throw new Error('SQLite WebAssembly engine is not available in this browser.');
@@ -2477,10 +2482,7 @@ export class WebSqliteAdapter implements StorageAdapter {
   ): Promise<BarnDatabaseSnapshot> {
     return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
       if (!this.SQL) {
-        this.SQL = await initSqlJs({
-          locateFile: () => sqlWasmUrl,
-          useOldExtensionFunctions: false,
-        });
+        this.SQL = await initSqlJs(createSqlJsInitConfig());
       }
       if (!this.SQL) {
         throw new Error('SQLite WebAssembly engine is not available in this browser.');
