@@ -7,14 +7,16 @@ jobs:
   unzip:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Extract and flatten into target folder
         run: |
+          ls -la
+          ZIP_FILE=$(ls *.zip | head -n 1)
           mkdir -p temp_extract android-wrapper
-          unzip -o PWA-Wrapper-main.zip -d temp_extract
+          unzip -o "$ZIP_FILE" -d temp_extract
           shopt -s dotglob
           mv temp_extract/*/* android-wrapper/
-          rm -rf temp_extract PWA-Wrapper-main.zip
+          rm -rf temp_extract "$ZIP_FILE"
       - name: Commit extracted files
         run: |
           git config user.name "github-actions[bot]"
