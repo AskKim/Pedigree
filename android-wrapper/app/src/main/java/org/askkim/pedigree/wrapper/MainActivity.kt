@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Connects [ServiceWorkerControllerCompat] to [WebViewAssetLoader] so Service Worker fetches
-     * for `https://appassets.androidplatform.net/*` resolve from bundled APK assets offline.
+     * under `https://appassets.androidplatform.net/` resolve from bundled APK assets offline.
      */
     private fun configureServiceWorkerAssetInterceptor() {
         if (

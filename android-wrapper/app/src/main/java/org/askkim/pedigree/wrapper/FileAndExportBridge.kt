@@ -358,9 +358,9 @@ class FileAndExportBridge(
 
     /**
      * Converts HTML `<input accept="...">` extensions/MIME tokens into Android `DocumentsUI`
-     * MIME filters. Falls back to `*/*` whenever custom data extensions (`.sqlite`, `.db`, `.tsv`,
-     * `.json`, `.csv`, `.zip`) are included because many Android file providers classify them as
-     * `application/octet-stream` and would otherwise gray them out.
+     * MIME filters. Falls back to a wildcard MIME filter whenever custom data extensions (`.sqlite`,
+     * `.db`, `.tsv`, `.json`, `.csv`, `.zip`) are included because many Android file providers
+     * classify them as `application/octet-stream` and would otherwise gray them out.
      */
     private fun resolveAcceptMimeTypes(acceptTypes: Array<String>?): Array<String> {
         if (acceptTypes == null || acceptTypes.isEmpty()) {
