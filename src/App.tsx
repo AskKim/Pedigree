@@ -44,6 +44,7 @@ import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModa
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
+import { pedigreeBridge } from './native/pedigreeBridge';
 import { useDeviceCapability } from './storage/deviceCapabilityDetector';
 import { usePwaUpdateStatus } from './storage/pwaUpdateManager';
 import {
@@ -136,7 +137,8 @@ export default function App() {
   const [dismissedClockDriftBanner, setDismissedClockDriftBanner] = useState(false);
   const [dismissedWithdrawalSpecies, setDismissedWithdrawalSpecies] = useState<string[]>([]);
   const [requestedHerdWithdrawalNonce, setRequestedHerdWithdrawalNonce] = useState(0);
-  const [hasOpenModal, setHasOpenModal] = useState(false);
+  const [openDomModalCount, setOpenDomModalCount] = useState(0);
+  const hasOpenModal = openDomModalCount > 0;
   const [importExportInitialSection, setImportExportInitialSection] =
     useState<ImportExportHubSection>('all');
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
@@ -152,6 +154,9 @@ export default function App() {
   );
 
   const shortcutToastTimerRef = useRef<number | null>(null);
+  const headerLongPressTimerRef = useRef<number | null>(null);
+  const headerLongPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const headerLongPressTriggeredRef = useRef(false);
   const herdPickerModalRef = useAccessibleDialog({
     isOpen: showHerdSpeciesPicker,
     onClose: () => setShowHerdSpeciesPicker(false),
@@ -161,13 +166,154 @@ export default function App() {
     onClose: () => setShowShortcutsHelp(false),
   });
 
+  const clearHeaderLongPress = useCallback(() => {
+    if (headerLongPressTimerRef.current !== null) {
+      window.clearTimeout(headerLongPressTimerRef.current);
+      headerLongPressTimerRef.current = null;
+    }
+    headerLongPressStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return () => clearHeaderLongPress();
+  }, [clearHeaderLongPress]);
+
+  // Register app-level modals at priority 10 (LIFO) before route back unwinding
+  useEffect(() => {
+    if (!showHerdSpeciesPicker) return;
+    return pedigreeBridge.registerBackHandler(() => {
+      setShowHerdSpeciesPicker(false);
+      return true;
+    }, 10);
+  }, [showHerdSpeciesPicker]);
+
+  useEffect(() => {
+    if (!showShortcutsHelp) return;
+    return pedigreeBridge.registerBackHandler(() => {
+      setShowShortcutsHelp(false);
+      return true;
+    }, 10);
+  }, [showShortcutsHelp]);
+
+  useEffect(() => {
+    if (!store.pendingCalendarSync) return;
+    return pedigreeBridge.registerBackHandler(() => {
+      store.cancelPendingCalendarSync();
+      return true;
+    }, 10);
+  }, [store.pendingCalendarSync, store.cancelPendingCalendarSync]);
+
+  // Fallback at priority 5 for child-screen [role="dialog"] modals using useAccessibleDialog
+  useEffect(() => {
+    if (!hasOpenModal) return;
+    return pedigreeBridge.registerBackHandler(() => {
+      if (typeof document === 'undefined') return false;
+      const openDialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+      if (!openDialog) return false;
+      // Dispatch once on document; bubbles: true propagates to window without firing twice.
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      );
+      return true;
+    }, 5);
+  }, [hasOpenModal]);
+
+  // Lightweight browser history entries per open modal so stacked dialogs unwind cleanly on Back
+  const modalHistoryDepthRef = useRef(0);
+  const pendingProgrammaticBackRef = useRef(0);
+  const latestModalCloseRef = useRef({
+    hasOpenModal,
+    showHerdSpeciesPicker,
+    showShortcutsHelp,
+    pendingCalendarSync: Boolean(store.pendingCalendarSync),
+    cancelPendingCalendarSync: store.cancelPendingCalendarSync,
+  });
+  latestModalCloseRef.current = {
+    hasOpenModal,
+    showHerdSpeciesPicker,
+    showShortcutsHelp,
+    pendingCalendarSync: Boolean(store.pendingCalendarSync),
+    cancelPendingCalendarSync: store.cancelPendingCalendarSync,
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    const appModalCount =
+      (showHerdSpeciesPicker ? 1 : 0) +
+      (showShortcutsHelp ? 1 : 0) +
+      (store.pendingCalendarSync ? 1 : 0);
+    const effectiveModalDepth = Math.max(openDomModalCount, appModalCount);
+
+    if (effectiveModalDepth > modalHistoryDepthRef.current) {
+      while (modalHistoryDepthRef.current < effectiveModalDepth) {
+        modalHistoryDepthRef.current += 1;
+        try {
+          window.history.pushState(
+            { pedigreeModal: true, modalDepth: modalHistoryDepthRef.current },
+            '',
+            window.location.href
+          );
+        } catch {
+          // Ignore history restriction
+        }
+      }
+    } else if (effectiveModalDepth < modalHistoryDepthRef.current) {
+      const delta = modalHistoryDepthRef.current - effectiveModalDepth;
+      modalHistoryDepthRef.current = effectiveModalDepth;
+      const currentState = window.history.state as { pedigreeModal?: boolean } | null;
+      if (currentState && currentState.pedigreeModal) {
+        pendingProgrammaticBackRef.current += 1;
+        try {
+          window.history.go(-delta);
+        } catch {
+          pendingProgrammaticBackRef.current = Math.max(
+            0,
+            pendingProgrammaticBackRef.current - 1
+          );
+        }
+      }
+    }
+  }, [openDomModalCount, showHerdSpeciesPicker, showShortcutsHelp, store.pendingCalendarSync]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    const onModalPopState = () => {
+      if (pendingProgrammaticBackRef.current > 0) {
+        pendingProgrammaticBackRef.current -= 1;
+        return;
+      }
+      if (modalHistoryDepthRef.current <= 0) return;
+      modalHistoryDepthRef.current -= 1;
+      const current = latestModalCloseRef.current;
+      if (current.showHerdSpeciesPicker) {
+        setShowHerdSpeciesPicker(false);
+        return;
+      }
+      if (current.showShortcutsHelp) {
+        setShowShortcutsHelp(false);
+        return;
+      }
+      if (current.pendingCalendarSync) {
+        current.cancelPendingCalendarSync();
+        return;
+      }
+      if (current.hasOpenModal && typeof document !== 'undefined') {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+        );
+      }
+    };
+    window.addEventListener('popstate', onModalPopState);
+    return () => window.removeEventListener('popstate', onModalPopState);
+  }, []);
+
   useEffect(() => {
     if (typeof document === 'undefined') return;
     let rafId: number | null = null;
     const syncOpenModalState = () => {
       rafId = null;
-      const modalOpen = Boolean(document.querySelector('[role="dialog"], [aria-modal="true"]'));
-      setHasOpenModal((prev) => (prev === modalOpen ? prev : modalOpen));
+      const modalCount = document.querySelectorAll('[role="dialog"], [aria-modal="true"]').length;
+      setOpenDomModalCount((prev) => (prev === modalCount ? prev : modalCount));
     };
     syncOpenModalState();
     if (typeof MutationObserver === 'undefined') return;
@@ -364,7 +510,10 @@ export default function App() {
   ];
 
   const showInstallReminder =
-    !dismissedInstallBanner && !isInstalled && (canPromptInstall || isIos);
+    !pedigreeBridge.isNativeWrapper() &&
+    !dismissedInstallBanner &&
+    !isInstalled &&
+    (canPromptInstall || isIos);
 
   return (
     <div className="min-h-screen overflow-x-clip bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex flex-col pb-16 md:pb-8">
@@ -377,13 +526,49 @@ export default function App() {
 
       {/* 3-Zone Top Navigation Bar */}
       <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-3 lg:gap-6 overflow-x-clip">
-        {/* Zone 1: Single-line Brand Wordmark */}
+        {/* Zone 1: Compact App Icon (800ms Long-Press -> Developer Panel) + Single-line Brand Wordmark */}
         <button
           type="button"
-          onClick={() => setRoute('home')}
-          className="font-display text-base sm:text-lg font-semibold tracking-tight truncate min-w-0 text-left"
+          onClick={() => {
+            if (headerLongPressTriggeredRef.current) {
+              headerLongPressTriggeredRef.current = false;
+              return;
+            }
+            setRoute('home');
+          }}
+          onPointerDown={(e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            headerLongPressTriggeredRef.current = false;
+            headerLongPressStartRef.current = { x: e.clientX, y: e.clientY };
+            headerLongPressTimerRef.current = window.setTimeout(() => {
+              headerLongPressTriggeredRef.current = true;
+              clearHeaderLongPress();
+              if (!pedigreeBridge.openNativeDevPanel()) {
+                setRoute('techyStuff');
+              }
+            }, 800);
+          }}
+          onPointerMove={(e) => {
+            if (!headerLongPressStartRef.current) return;
+            const dx = e.clientX - headerLongPressStartRef.current.x;
+            const dy = e.clientY - headerLongPressStartRef.current.y;
+            if (Math.hypot(dx, dy) > 10) {
+              clearHeaderLongPress();
+            }
+          }}
+          onPointerUp={clearHeaderLongPress}
+          onPointerCancel={clearHeaderLongPress}
+          onPointerLeave={clearHeaderLongPress}
+          onContextMenu={(e) => e.preventDefault()}
+          className="font-display text-base sm:text-lg font-semibold tracking-tight truncate min-w-0 text-left inline-flex items-center gap-2 select-none touch-manipulation"
         >
-          Community Pedigree
+          <span
+            aria-hidden="true"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/40 text-[var(--barn-sage)]"
+          >
+            <GitFork className="w-4 h-4" />
+          </span>
+          <span className="truncate">Community Pedigree</span>
         </button>
 
         {/* Zone 2: Concise Single-Line Navigation Links */}

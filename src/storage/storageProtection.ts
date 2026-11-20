@@ -21,6 +21,7 @@ import {
 } from '../core/techyStuffGuardrails';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
+import { NativeContainerInfo, pedigreeBridge } from '../native/pedigreeBridge';
 import { isOpfsSupported } from './opfsTempStream';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 
@@ -53,6 +54,8 @@ export interface StorageProtectionStatus {
   quotaBytes: number;
   percentUsed: number;
   checkedAtIso: string;
+  isNativeWrapper: boolean;
+  nativeContainerInfo: NativeContainerInfo | null;
 }
 
 export interface RollingBackupMeta {
@@ -81,7 +84,13 @@ export function isQuotaExceededError(err: unknown): boolean {
 
 export async function requestPersistentStorage(): Promise<StorageProtectionStatus> {
   const checkedAtIso = getAdjustedNowIsoUtc();
+  const isNativeWrapper = pedigreeBridge.isNativeWrapper();
+  const nativeInfoPromise = isNativeWrapper
+    ? pedigreeBridge.getNativeContainerInfo(400)
+    : Promise.resolve(null);
+
   if (typeof navigator === 'undefined' || !navigator.storage) {
+    const nativeContainerInfo = await nativeInfoPromise;
     return {
       supported: false,
       persisted: false,
@@ -89,9 +98,12 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
       quotaBytes: 0,
       percentUsed: 0,
       checkedAtIso,
+      isNativeWrapper,
+      nativeContainerInfo,
     };
   }
 
+  // Never spoof navigator.storage.persisted() — Android WebView returns false honestly.
   let persisted = false;
   try {
     if (navigator.storage.persisted) {
@@ -116,6 +128,7 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
     // Ignore estimate failure
   }
 
+  const nativeContainerInfo = await nativeInfoPromise;
   const percentUsed =
     quotaBytes > 0 ? Math.min(100, Math.round((usageBytes / quotaBytes) * 1000) / 10) : 0;
 
@@ -126,12 +139,20 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
     quotaBytes,
     percentUsed,
     checkedAtIso,
+    isNativeWrapper,
+    nativeContainerInfo,
   };
 }
 
 export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
   const checkedAtIso = getAdjustedNowIsoUtc();
+  const isNativeWrapper = pedigreeBridge.isNativeWrapper();
+  const nativeInfoPromise = isNativeWrapper
+    ? pedigreeBridge.getNativeContainerInfo(400)
+    : Promise.resolve(null);
+
   if (typeof navigator === 'undefined' || !navigator.storage) {
+    const nativeContainerInfo = await nativeInfoPromise;
     return {
       supported: false,
       persisted: false,
@@ -139,6 +160,8 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
       quotaBytes: 0,
       percentUsed: 0,
       checkedAtIso,
+      isNativeWrapper,
+      nativeContainerInfo,
     };
   }
   let persisted = false;
@@ -156,6 +179,7 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
   } catch {
     // Ignore
   }
+  const nativeContainerInfo = await nativeInfoPromise;
   const percentUsed =
     quotaBytes > 0 ? Math.min(100, Math.round((usageBytes / quotaBytes) * 1000) / 10) : 0;
   return {
@@ -165,6 +189,8 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
     quotaBytes,
     percentUsed,
     checkedAtIso,
+    isNativeWrapper,
+    nativeContainerInfo,
   };
 }
 
@@ -870,7 +896,7 @@ export function usePWAInstall() {
   }, [deferredPrompt]);
 
   return {
-    canPromptInstall: Boolean(deferredPrompt) && !isInstalled,
+    canPromptInstall: !pedigreeBridge.isNativeWrapper() && Boolean(deferredPrompt) && !isInstalled,
     isInstalled,
     isIos,
     promptInstall,

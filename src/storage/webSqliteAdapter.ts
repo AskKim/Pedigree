@@ -750,6 +750,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     try {
       this.SQL = await initSqlJs({
         locateFile: () => sqlWasmUrl,
+        useOldExtensionFunctions: false,
       });
 
       const [savedBytes, epochMeta] = await Promise.all([
@@ -2451,6 +2452,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     if (!this.SQL) {
       this.SQL = await initSqlJs({
         locateFile: () => sqlWasmUrl,
+        useOldExtensionFunctions: false,
       });
     }
     if (!this.SQL) {
@@ -2477,6 +2479,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       if (!this.SQL) {
         this.SQL = await initSqlJs({
           locateFile: () => sqlWasmUrl,
+          useOldExtensionFunctions: false,
         });
       }
       if (!this.SQL) {

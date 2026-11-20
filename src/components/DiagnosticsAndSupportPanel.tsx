@@ -76,7 +76,9 @@ import {
   validateLogRetentionDaysOverride,
   validateSupportRecipientEmail,
 } from '../core/techyStuffGuardrails';
+import { pedigreeBridge } from '../native/pedigreeBridge';
 import {
+  checkStorageStatus,
   DiagnosticQuotaPreflightResult,
   isQuotaExceededError,
   StorageProtectionStatus,
@@ -127,6 +129,7 @@ type LogFilterTab = 'all' | 'errors' | 'memory';
 export function DiagnosticsAndSupportPanel({
   snapshot,
   deviceCapability,
+  storageStatus: storageStatusProp,
   onRefreshStorageStatus,
   onScanDatabaseHealth,
   onRepairDatabaseHealth,
@@ -187,6 +190,8 @@ export function DiagnosticsAndSupportPanel({
   const [photoFootprint, setPhotoFootprint] = useState<PhotoStorageFootprintReport | null>(null);
   const [confirmPruneFullRes, setConfirmPruneFullRes] = useState(false);
   const [photoMaintenanceFeedback, setPhotoMaintenanceFeedback] = useState<string | null>(null);
+  const [localStorageStatus, setLocalStorageStatus] = useState<StorageProtectionStatus | null>(null);
+  const resolvedStorageStatus = storageStatusProp ?? localStorageStatus;
 
   const heavyBundleGate = deviceCapability
     ? getHeavyZipExportGate(deviceCapability.assessment, deviceCapability.browserCompatibility)
@@ -202,12 +207,31 @@ export function DiagnosticsAndSupportPanel({
   }, []);
 
   useEffect(() => {
+    if (storageStatusProp !== undefined && storageStatusProp !== null) {
+      return;
+    }
+    let cancelled = false;
+    void checkStorageStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setLocalStorageStatus(status);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [storageStatusProp]);
+
+  useEffect(() => {
     void refreshDiagnostics();
     const unsub = subscribeDiagnosticLogs(() => {
       void refreshDiagnostics();
     });
     const timer = setInterval(() => {
-      void refreshDiagnostics();
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        void refreshDiagnostics();
+      }
     }, 15_000);
     return () => {
       unsub();
@@ -534,6 +558,72 @@ export function DiagnosticsAndSupportPanel({
         </div>
       </div>
 
+      {/* Honest Storage Persistence & Native Container Isolation Truth Card */}
+      {resolvedStorageStatus && (
+        <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs space-y-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold text-[var(--barn-ink)]">
+              Storage Persistence &amp; Container Status
+            </span>
+            <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+              navigator.storage.persisted() = {String(resolvedStorageStatus.persisted)}
+            </span>
+          </div>
+
+          {resolvedStorageStatus.isNativeWrapper ? (
+            <div className="space-y-1 text-[11px] text-[var(--barn-muted)]">
+              <p>
+                Running inside native wrapper container ({pedigreeBridge.getPlatform()}). Browser{' '}
+                <span className="font-mono">navigator.storage.persisted()</span> honestly reports{' '}
+                <span className="font-mono">{String(resolvedStorageStatus.persisted)}</span> in WebView;
+                data stays isolated inside the app&apos;s private sandbox.
+              </p>
+              {resolvedStorageStatus.nativeContainerInfo ? (
+                <div className="space-y-0.5 font-mono text-[11px] text-[var(--barn-ink)]">
+                  <div>
+                    WebView:{' '}
+                    {resolvedStorageStatus.nativeContainerInfo.webViewPackage || 'System WebView'}{' '}
+                    {resolvedStorageStatus.nativeContainerInfo.webViewVersion || 'unknown'}
+                  </div>
+                  {(resolvedStorageStatus.nativeContainerInfo.opfsSupportedInWebView === false ||
+                    (typeof resolvedStorageStatus.nativeContainerInfo.webViewMajorVersion ===
+                      'number' &&
+                      resolvedStorageStatus.nativeContainerInfo.webViewMajorVersion < 109)) && (
+                    <div className="font-sans text-[11px] text-[var(--barn-terracotta)] font-medium">
+                      WebView &lt;109 detected: OPFS is unavailable in this WebView; using
+                      IndexedDB/SQLite fallback safely.
+                    </div>
+                  )}
+                  {typeof resolvedStorageStatus.nativeContainerInfo.vaultSnapshotCount ===
+                    'number' && (
+                    <div>
+                      Native Backup Vault:{' '}
+                      {resolvedStorageStatus.nativeContainerInfo.vaultSnapshotCount} snapshot(s)
+                      {typeof resolvedStorageStatus.nativeContainerInfo.vaultTotalBytes ===
+                      'number'
+                        ? ` (${formatByteSizePure(
+                            resolvedStorageStatus.nativeContainerInfo.vaultTotalBytes
+                          )})`
+                        : ''}
+                      {resolvedStorageStatus.nativeContainerInfo.lastVaultBackupAt
+                        ? ` · last ${resolvedStorageStatus.nativeContainerInfo.lastVaultBackupAt}`
+                        : ''}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>Native container metadata unavailable or timed out (400ms).</div>
+              )}
+            </div>
+          ) : (
+            <p className="text-[11px] text-[var(--barn-muted)]">
+              Standard browser session · persistent lock:{' '}
+              {resolvedStorageStatus.persisted ? 'granted' : 'best-effort'}.
+            </p>
+          )}
+        </div>
+      )}
+
       {emergencyTraceCount > 0 && (
         <div
           role="status"
@@ -783,6 +873,12 @@ export function DiagnosticsAndSupportPanel({
               {mailtoHref && (
                 <a
                   href={mailtoHref}
+                  onClick={(e) => {
+                    if (pedigreeBridge.isNativeWrapper()) {
+                      e.preventDefault();
+                      pedigreeBridge.openExternalUrl(mailtoHref, 'support_email');
+                    }
+                  }}
                   className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Mail className="w-3.5 h-3.5" aria-hidden="true" />

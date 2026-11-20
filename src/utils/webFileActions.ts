@@ -9,6 +9,7 @@
  * `expo-file-system` + `expo-sharing` + `expo-document-picker`.
  */
 
+import { pedigreeBridge } from '../native/pedigreeBridge';
 import {
   isOpfsSupported,
   markTempOpfsFileActive,
@@ -21,6 +22,40 @@ import {
 
 export const OPFS_SCRATCHPAD_THRESHOLD_BYTES = 512 * 1024;
 const BLOB_DOWNLOAD_CLEANUP_DELAY_MS = 4000;
+
+async function blobToUint8Array(blob: Blob): Promise<Uint8Array> {
+  if (typeof blob.arrayBuffer === 'function') {
+    const buffer = await blob.arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(new Uint8Array(reader.result));
+      } else {
+        reject(new Error('Failed to read Blob as ArrayBuffer.'));
+      }
+    };
+    reader.onerror = () => {
+      reject(reader.error || new Error('FileReader failed to read Blob.'));
+    };
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+async function payloadToUint8Array(
+  payload: string | Uint8Array,
+  mimeType: string
+): Promise<Uint8Array> {
+  if (typeof payload !== 'string') {
+    return payload;
+  }
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(payload);
+  }
+  return blobToUint8Array(toDirectBlob(payload, mimeType));
+}
 
 function toBlobCompatibleUint8Array(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   if (
@@ -85,8 +120,31 @@ async function stagePayloadInOpfsTmp(
 async function dispatchBlobDownloadAndCleanup(
   filename: string,
   blob: Blob,
-  stagedFileName: string | null
+  stagedFileName: string | null,
+  fallbackMimeType?: string
 ): Promise<void> {
+  if (pedigreeBridge.isNativeWrapper()) {
+    try {
+      const bytes = await blobToUint8Array(blob);
+      const mimeType = blob.type || fallbackMimeType || 'application/octet-stream';
+      const res = await pedigreeBridge.exportOrShareBinary({
+        filename,
+        mimeType,
+        mode: 'save',
+        bytes,
+      });
+      if (!res.ok) {
+        throw new Error(res.error || `Native export failed for "${filename}".`);
+      }
+      return;
+    } finally {
+      if (stagedFileName) {
+        unmarkTempOpfsFileActive(stagedFileName);
+        await removeTempOpfsFile(stagedFileName);
+      }
+    }
+  }
+
   let url: string | null = null;
   let downloadDispatched = false;
 
@@ -154,7 +212,7 @@ export async function downloadTempOpfsExport(
       blob = await readTempOpfsFileAsBlob(staged.opfsTempFileName);
     }
     if (blob) {
-      await dispatchBlobDownloadAndCleanup(filename, blob, staged.opfsTempFileName);
+      await dispatchBlobDownloadAndCleanup(filename, blob, staged.opfsTempFileName, mimeType);
       return;
     }
     unmarkTempOpfsFileActive(staged.opfsTempFileName);
@@ -174,9 +232,23 @@ async function triggerBlobDownloadWithOpfsScratchpad(
   payload: string | Uint8Array,
   mimeType: string
 ): Promise<void> {
+  if (pedigreeBridge.isNativeWrapper()) {
+    const bytes = await payloadToUint8Array(payload, mimeType);
+    const res = await pedigreeBridge.exportOrShareBinary({
+      filename,
+      mimeType: mimeType || 'application/octet-stream',
+      mode: 'save',
+      bytes,
+    });
+    if (!res.ok) {
+      throw new Error(res.error || `Native export failed for "${filename}".`);
+    }
+    return;
+  }
+
   const staged = await stagePayloadInOpfsTmp('export', filename, payload);
   const blob = staged ? staged.blob : toDirectBlob(payload, mimeType);
-  await dispatchBlobDownloadAndCleanup(filename, blob, staged ? staged.fileName : null);
+  await dispatchBlobDownloadAndCleanup(filename, blob, staged ? staged.fileName : null, mimeType);
 }
 
 /**
@@ -202,7 +274,7 @@ export async function downloadTextChunks(
         { keepActiveAfterWrite: true }
       );
       if (staged) {
-        await dispatchBlobDownloadAndCleanup(filename, staged.blob, staged.fileName);
+        await dispatchBlobDownloadAndCleanup(filename, staged.blob, staged.fileName, mimeType);
         return;
       }
     } catch {
@@ -240,6 +312,27 @@ async function sharePayloadOrDownload(params: {
   text?: string;
 }): Promise<'shared' | 'downloaded'> {
   const { filename, payload, mimeType, title, text } = params;
+  if (pedigreeBridge.isNativeWrapper()) {
+    const bytes = await payloadToUint8Array(payload, mimeType);
+    const resolvedMime = mimeType || 'application/octet-stream';
+    const res = await pedigreeBridge.exportOrShareBinary({
+      filename,
+      mimeType: resolvedMime,
+      mode: 'share',
+      bytes,
+    });
+    if (res.ok) {
+      return 'shared';
+    }
+    await pedigreeBridge.exportOrShareBinary({
+      filename,
+      mimeType: resolvedMime,
+      mode: 'save',
+      bytes,
+    });
+    return 'downloaded';
+  }
+
   const hasShareApi =
     typeof navigator !== 'undefined' &&
     typeof navigator.share === 'function' &&

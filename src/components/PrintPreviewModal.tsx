@@ -14,6 +14,7 @@ import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'luci
 import { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
+import { pedigreeBridge } from '../native/pedigreeBridge';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
@@ -560,6 +561,20 @@ export function PrintPreviewModal({
     document.body.appendChild(stageEl);
     if (docTitle) {
       document.title = docTitle;
+    }
+
+    if (pedigreeBridge.isNativeWrapper()) {
+      const dispatched = pedigreeBridge.requestPrint();
+      if (!dispatched) {
+        cleanup();
+        setPrintBlockedMessage(
+          'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
+        );
+        return;
+      }
+      // Keep #barn-print-stage mounted while Android PrintManager snapshots the WebView DOM.
+      printSafetyTimerRef.current = window.setTimeout(cleanup, 120000);
+      return;
     }
 
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();

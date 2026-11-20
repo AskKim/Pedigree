@@ -87,6 +87,14 @@ const CURATED_PROMPT_DESCRIPTIONS: Record<string, CuratedPromptDescription> = {
       'Run alongside an exported support-report.txt, error-logs.json, or stack trace to diagnose and fix application crashes.',
     preferredOrder: 4,
   },
+  'master_system_prompt_old_v4.md': {
+    title: 'Master System Prompt (Archived v4)',
+    summary:
+      'Superseded v4 edition of the Community Pedigree Master System Prompt preserved strictly for historical reference and diff comparison.',
+    whenToUse:
+      'Reference only — do not use as active instructions; use prompts/master_system_prompt.md instead.',
+    preferredOrder: 100,
+  },
   'master_system_prompt_old_v2.md': {
     title: 'Master System Prompt (Archived v2)',
     summary:

@@ -1,8 +1,11 @@
 <!-- DO_NOT_REMOVE_WITHOUT_CONFIRMATION: true -->
-# MASTER SYSTEM PROMPT: OFFLINE-FIRST PEDIGREE PWA
+# MASTER SYSTEM PROMPT: OFFLINE-FIRST PEDIGREE PWA (v4)
+
+> **ARCHIVED — STRICTLY FOR REFERENCE ONLY.**
+> This file is an older v4 version of the master system prompt and is retained strictly for reference only. Do not treat it as the active system prompt; see `/prompts/master_system_prompt.md` for the current active master prompt.
+> **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 **Last-Edited Timestamp:** 2026-11-18
-> **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 ## 1. EXECUTION & TOKEN PROTOCOL (CRITICAL)
 - **Protect This File:** Never delete, overwrite, remove from `/prompts/`, or edit `master_system_prompt.md` unless explicitly instructed by Kimberly in the current prompt.

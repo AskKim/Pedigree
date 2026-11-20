@@ -249,6 +249,7 @@ import {
   downloadTextFile,
   shareTextFileOrDownload,
 } from '../utils/webFileActions';
+import { pedigreeBridge } from '../native/pedigreeBridge';
 import type { PendingGoogleCalendarSync } from '../components/CalendarIntegrationModals';
 
 function getPhotoCacheBudgetForTier(tier: number): { maxEntries: number; maxBytes: number } {
@@ -338,6 +339,8 @@ export function useBarnStore() {
   const [snapshot, setSnapshot] = useState<BarnDatabaseSnapshot | null>(null);
   snapshotRef.current = snapshot;
   const [route, setRoute] = useState<WorkspaceRoute>('home');
+  const routeHistoryRef = useRef<WorkspaceRoute[]>([]);
+  const isApplyingHistoryStepRef = useRef<boolean>(false);
   const [activeSpeciesName, setActiveSpeciesName] = useState<string>('Rabbit');
   const [selectedAnimalId, setSelectedAnimalId] = useState<string | null>(null);
   const [pedigreeAnimalId, setPedigreeAnimalId] = useState<string | null>(null);
@@ -556,6 +559,124 @@ export function useBarnStore() {
     setCurrentDiagnosticRoute(route);
   }, [route]);
 
+  // Sync WorkspaceRoute steps with browser history (without interfering with ?emergency_reset=true)
+  useEffect(() => {
+    if (isLoading || typeof window === 'undefined') return;
+    const stack = routeHistoryRef.current;
+    const isWrapped = pedigreeBridge.isNativeWrapper();
+
+    if (isApplyingHistoryStepRef.current) {
+      isApplyingHistoryStepRef.current = false;
+      return;
+    }
+
+    if (stack.length === 0) {
+      stack.push(route);
+      if (!isWrapped) {
+        try {
+          const currentState =
+            window.history.state && typeof window.history.state === 'object'
+              ? window.history.state
+              : {};
+          window.history.replaceState(
+            { ...currentState, pedigreeRoute: route },
+            '',
+            window.location.href
+          );
+        } catch {
+          // Ignore history restriction
+        }
+      }
+      return;
+    }
+
+    if (route === 'home') {
+      const alreadyAtHome = stack[stack.length - 1] === 'home';
+      routeHistoryRef.current = ['home'];
+      if (!alreadyAtHome && !isWrapped) {
+        try {
+          window.history.pushState({ pedigreeRoute: 'home' }, '', window.location.href);
+        } catch {
+          // Ignore history restriction
+        }
+      }
+      return;
+    }
+
+    if (stack[stack.length - 1] !== route) {
+      stack.push(route);
+      if (stack.length > 50) {
+        stack.splice(1, stack.length - 50);
+      }
+      if (!isWrapped) {
+        try {
+          window.history.pushState({ pedigreeRoute: route }, '', window.location.href);
+        } catch {
+          // Ignore history restriction
+        }
+      }
+    }
+  }, [route, isLoading]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    const onPopState = (event: PopStateEvent) => {
+      if (isLoading) return;
+      const state = event.state as { pedigreeRoute?: WorkspaceRoute; pedigreeModal?: boolean } | null;
+      if (state && state.pedigreeModal) {
+        return;
+      }
+      const stack = routeHistoryRef.current;
+      // If a modal history entry popped back to the already-active route, keep route stack intact
+      if (state && state.pedigreeRoute && state.pedigreeRoute === stack[stack.length - 1]) {
+        return;
+      }
+      if (stack.length > 1) {
+        stack.pop();
+      }
+      const nextRoute =
+        (state && state.pedigreeRoute) ||
+        stack[stack.length - 1] ||
+        'home';
+      isApplyingHistoryStepRef.current = true;
+      setRoute(nextRoute);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [isLoading]);
+
+  // Priority 0 LIFO route step-back handler (modals register at priority >= 5 so they unwind first)
+  useEffect(() => {
+    return pedigreeBridge.registerBackHandler(() => {
+      if (route === 'home') {
+        routeHistoryRef.current = ['home'];
+        return false;
+      }
+      const stack = routeHistoryRef.current;
+      if (stack.length > 1) {
+        stack.pop();
+        const prevRoute = stack[stack.length - 1] || 'home';
+        isApplyingHistoryStepRef.current = true;
+        setRoute(prevRoute);
+        try {
+          window.history.replaceState({ pedigreeRoute: prevRoute }, '', window.location.href);
+        } catch {
+          // Ignore history restriction
+        }
+        return true;
+      }
+      routeHistoryRef.current = ['home'];
+      isApplyingHistoryStepRef.current = true;
+      setRoute('home');
+      try {
+        window.history.replaceState({ pedigreeRoute: 'home' }, '', window.location.href);
+      } catch {
+        // Ignore history restriction
+      }
+      return true;
+    }, 0);
+  }, [route]);
+
   // Monitor Google Calendar auth state (access token is kept strictly in memory)
   useEffect(() => {
     return initGoogleCalendarAuth(
@@ -723,8 +844,10 @@ export function useBarnStore() {
           }
         }
 
+        const preserveEmergencyReset = urlParams?.get('emergency_reset') === 'true';
         if (
           typeof window !== 'undefined' &&
+          !preserveEmergencyReset &&
           (deepTaskId || deepSpecies || deepRoute)
         ) {
           try {
@@ -1034,6 +1157,53 @@ export function useBarnStore() {
     []
   );
 
+  const mirrorSnapshotToNativeVaultIfWrapped = useCallback(
+    async (
+      hydratedSnapshot: BarnDatabaseSnapshot,
+      kind: 'manual' | 'monthly' | 'pre_reset' | 'pre_upgrade'
+    ): Promise<boolean> => {
+      if (!pedigreeBridge.isNativeWrapper() || typeof TextEncoder === 'undefined') {
+        return false;
+      }
+      try {
+        const encoder = new TextEncoder();
+        const MAX_NATIVE_MIRROR_BYTES = 14 * 1024 * 1024;
+        const estimatedPhotoPayloadBytes = (hydratedSnapshot.animalPhotos ?? []).reduce(
+          (sum, photo) => sum + (photo.dataUrl?.length ?? 0),
+          0
+        );
+        let photosDehydrated = estimatedPhotoPayloadBytes > 10 * 1024 * 1024;
+        let payloadSnapshot = photosDehydrated
+          ? stripPhotoDataUrlsFromSnapshot(hydratedSnapshot)
+          : hydratedSnapshot;
+        let encoded = encoder.encode(JSON.stringify(payloadSnapshot));
+        if (!photosDehydrated && encoded.byteLength > MAX_NATIVE_MIRROR_BYTES) {
+          payloadSnapshot = stripPhotoDataUrlsFromSnapshot(hydratedSnapshot);
+          encoded = encoder.encode(JSON.stringify(payloadSnapshot));
+          photosDehydrated = true;
+        }
+        if (encoded.byteLength > 15.5 * 1024 * 1024) {
+          return false;
+        }
+        const ok = await pedigreeBridge.syncBackupSnapshotToNative({
+          snapshotId: `${kind}_${Date.now()}`,
+          createdAt: getAdjustedNowIsoUtc(),
+          format: 'json',
+          bytes: encoded,
+          metadata: {
+            kind,
+            animalCount: payloadSnapshot.animals.length,
+            photosDehydrated,
+          },
+        });
+        return ok;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
   const saveSafetyRollingBackup = useCallback(
     async (targetSnapshot: BarnDatabaseSnapshot, note?: string): Promise<void> => {
       const hydrated = await hydrateSnapshotForExport(targetSnapshot);
@@ -1045,10 +1215,11 @@ export function useBarnStore() {
               note: note || 'Automatic pre-destructive safety snapshot',
             })
           : Promise.resolve(null),
+        mirrorSnapshotToNativeVaultIfWrapped(hydrated, 'pre_reset'),
       ]);
       void refreshVaultAndArchives();
     },
-    [hydrateSnapshotForExport, refreshVaultAndArchives]
+    [hydrateSnapshotForExport, mirrorSnapshotToNativeVaultIfWrapped, refreshVaultAndArchives]
   );
 
   const loadPedigreeNeighborhood = useCallback(
@@ -1316,6 +1487,7 @@ export function useBarnStore() {
                 kind: 'monthly',
                 note: 'Scheduled 30-day automatic backup',
               });
+              void mirrorSnapshotToNativeVaultIfWrapped(hydrated, 'monthly');
               if (saved && !cancelled) {
                 void refreshVaultAndArchives();
               }
@@ -4979,7 +5151,7 @@ export function useBarnStore() {
       if (!snapshot) return null;
       try {
         const hydrated = await hydrateSnapshotForExport(snapshot);
-        const [, opfsRes] = await Promise.allSettled([
+        const [, opfsRes, nativeRes] = await Promise.allSettled([
           saveRollingSnapshotBackup(hydrated),
           isOpfsSupported()
             ? saveOpfsVaultBackup(hydrated, {
@@ -4987,9 +5159,14 @@ export function useBarnStore() {
                 note: note?.trim() || 'Manual snapshot saved to Vault',
               })
             : Promise.resolve(null),
+          mirrorSnapshotToNativeVaultIfWrapped(hydrated, 'manual'),
         ]);
         const meta = opfsRes.status === 'fulfilled' ? opfsRes.value : null;
+        const mirroredNative = nativeRes.status === 'fulfilled' && nativeRes.value;
         await refreshVaultAndArchives();
+        if (mirroredNative) {
+          void refreshStorageStatus();
+        }
         if (meta) {
           await recordBackupExport('json', meta.fileName);
           notify(
@@ -4999,7 +5176,9 @@ export function useBarnStore() {
         }
         await recordBackupExport('json', 'rolling-local-snapshot');
         notify(
-          'Saved snapshot to IndexedDB Rolling Vault (OPFS directory access is unavailable in this browser).'
+          mirroredNative
+            ? 'Saved snapshot to IndexedDB Rolling Vault and Native Android Backup Vault.'
+            : 'Saved snapshot to IndexedDB Rolling Vault (OPFS directory access is unavailable in this browser).'
         );
         return null;
       } catch (err) {
@@ -5007,7 +5186,16 @@ export function useBarnStore() {
         throw err;
       }
     },
-    [snapshot, hydrateSnapshotForExport, refreshVaultAndArchives, recordBackupExport, notify, reportPersistenceFailure]
+    [
+      snapshot,
+      hydrateSnapshotForExport,
+      mirrorSnapshotToNativeVaultIfWrapped,
+      refreshVaultAndArchives,
+      refreshStorageStatus,
+      recordBackupExport,
+      notify,
+      reportPersistenceFailure,
+    ]
   );
 
   const createAndVerifyPreUpgradeBackup = useCallback(async (): Promise<{
@@ -5025,6 +5213,7 @@ export function useBarnStore() {
       const stampSlug = formatTimestampedBackupSlug();
       const fileName = `community-pedigree-pre-upgrade-backup-${stampSlug}.json`;
       await downloadTextFile(fileName, jsonText, 'application/json');
+      const mirroredNative = await mirrorSnapshotToNativeVaultIfWrapped(hydrated, 'pre_upgrade');
       if (isOpfsSupported()) {
         await saveOpfsVaultBackup(hydrated, {
           kind: 'pre_upgrade',
@@ -5032,6 +5221,9 @@ export function useBarnStore() {
           note: `Pre-upgrade verified (${verification.checksumSha256.slice(0, 12)})`,
         }).catch(() => null);
         await refreshVaultAndArchives();
+      }
+      if (mirroredNative) {
+        void refreshStorageStatus();
       }
       await recordBackupExport('json', fileName);
       markPreUpgradeBackupVerified(verification.ok);
@@ -5050,7 +5242,9 @@ export function useBarnStore() {
   }, [
     snapshot,
     hydrateSnapshotForExport,
+    mirrorSnapshotToNativeVaultIfWrapped,
     refreshVaultAndArchives,
+    refreshStorageStatus,
     recordBackupExport,
     notify,
     reportPersistenceFailure,

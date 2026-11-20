@@ -17,7 +17,7 @@ import {
 } from '../promptsCatalog';
 
 describe('promptsCatalog — /prompts/ inventory, protection flags & active/archived split', () => {
-  it('verifies all six repository prompts live in root /prompts/ with DO_NOT_REMOVE_WITHOUT_CONFIRMATION', () => {
+  it('verifies all seven repository prompts live in root /prompts/ with DO_NOT_REMOVE_WITHOUT_CONFIRMATION', () => {
     const promptsDir = path.resolve(process.cwd(), 'prompts');
     const filenames = fs
       .readdirSync(promptsDir)
@@ -29,6 +29,7 @@ describe('promptsCatalog — /prompts/ inventory, protection flags & active/arch
       'master_system_prompt.md',
       'master_system_prompt_old_v1.md',
       'master_system_prompt_old_v2.md',
+      'master_system_prompt_old_v4.md',
       'resume_backlog_plan_prompt.md',
       'start_new_backlog_prompt.md',
     ]);
@@ -40,7 +41,7 @@ describe('promptsCatalog — /prompts/ inventory, protection flags & active/arch
 
     const manifest = buildPromptsCatalogManifest(filesByPath, '2026-11-18T10:00:00.000Z');
     expect(manifest.folderPath).toBe('/prompts');
-    expect(manifest.entries).toHaveLength(6);
+    expect(manifest.entries).toHaveLength(7);
     expect(isValidPromptsManifest(manifest)).toBe(true);
 
     for (const entry of manifest.entries) {
@@ -58,6 +59,7 @@ describe('promptsCatalog — /prompts/ inventory, protection flags & active/arch
       'fix_error_log_prompt.md',
     ]);
     expect(archived.map((e) => e.filename)).toEqual([
+      'master_system_prompt_old_v4.md',
       'master_system_prompt_old_v2.md',
       'master_system_prompt_old_v1.md',
     ]);
