@@ -556,11 +556,13 @@ function slotRoleLabel(gen: number, idx: number, speciesProfile?: SpeciesProfile
   if (gen === 4) return `2nd Great-Grand${parentRole.toLowerCase()} (${side})`;
   if (gen === 5) return `3rd Great-Grand${parentRole.toLowerCase()} (${side})`;
   if (gen === 6) return `4th Great-Grand${parentRole.toLowerCase()} (${side})`;
+  if (gen === 7) return `5th Great-Grand${parentRole.toLowerCase()} (${side})`;
+  if (gen === 8) return `6th Great-Grand${parentRole.toLowerCase()} (${side})`;
   return `G${gen} ${side} ${parentRole}`;
 }
 
 /**
- * Builds an ordered list of pedigree tree slots from Generation 0 (Subject) up to `maxGeneration` (3–6).
+ * Builds an ordered list of pedigree tree slots from Generation 0 (Subject) up to `maxGeneration` (1–8).
  * Tracks `occurrenceCount` so repeated linebred ancestors are highlighted automatically.
  */
 export function buildPedigreeSlots(
@@ -569,7 +571,7 @@ export function buildPedigreeSlots(
   maxGeneration: number = 3,
   speciesProfile?: SpeciesProfile
 ): PedigreeSlot[] {
-  const cappedGen = Math.min(6, Math.max(1, maxGeneration));
+  const cappedGen = Math.min(8, Math.max(1, maxGeneration));
   const rawGrid: (Animal | null)[][] = [];
   rawGrid[0] = [subject];
 

@@ -17,7 +17,7 @@ import {
 } from '../core/animalConflicts';
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import { analyzePairingCarrierRisks } from '../core/carrierGenetics';
-import { simulatePairingGenetics } from '../core/geneticsEngine';
+import { analyzeAlleleProvenance, simulatePairingGenetics } from '../core/geneticsEngine';
 import {
   addDaysIso,
   Animal,
@@ -53,6 +53,7 @@ import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
+import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { PairingComparisonMatrix } from './PairingComparisonMatrix';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -216,7 +217,13 @@ export function BreedingScreen({
 
   // Outcome modal state
   const [editingRecord, setEditingRecord] = useState<BreedingRecord | null>(null);
-  const closeOutcomeModal = useCallback(() => setEditingRecord(null), []);
+  const outcomeSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+  const { isLockedNow: isOutcomeLockedNow } = outcomeSubmitLock;
+  const closeOutcomeModal = useCallback(() => {
+    if (!isOutcomeLockedNow()) {
+      setEditingRecord(null);
+    }
+  }, [isOutcomeLockedNow]);
   const outcomeDialogRef = useAccessibleDialog({
     isOpen: Boolean(editingRecord),
     onClose: closeOutcomeModal,
@@ -240,7 +247,6 @@ export function BreedingScreen({
   const [outConflictError, setOutConflictError] = useState<string | null>(null);
   const [outShiftPostBirthTasks, setOutShiftPostBirthTasks] = useState(true);
   const breedingSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
-  const outcomeSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
   const recalcTasksLock = useAsyncKeyedLock();
 
   const idLabels = useMemo(
@@ -341,6 +347,16 @@ export function BreedingScreen({
     if (!selectedSire || !selectedDam) return null;
     return simulatePairingGenetics(selectedSire, selectedDam, speciesProfile.name);
   }, [selectedSire, selectedDam, speciesProfile.name]);
+
+  const sireProvenance = useMemo(() => {
+    if (!selectedSire) return null;
+    return analyzeAlleleProvenance(selectedSire, herdById, animals, speciesProfile.name);
+  }, [selectedSire, herdById, animals, speciesProfile.name]);
+
+  const damProvenance = useMemo(() => {
+    if (!selectedDam) return null;
+    return analyzeAlleleProvenance(selectedDam, herdById, animals, speciesProfile.name);
+  }, [selectedDam, herdById, animals, speciesProfile.name]);
 
   const pairingCarrierRisks = useMemo(() => {
     if (!selectedSire || !selectedDam) return [];
@@ -1075,6 +1091,39 @@ export function BreedingScreen({
                     )}
                   </div>
 
+                  {((sireProvenance && !sireProvenance.isCustomSpeciesFallback && sireProvenance.loci.length > 0) ||
+                    (damProvenance && !damProvenance.isCustomSpeciesFallback && damProvenance.loci.length > 0)) && (
+                    <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-[11px] font-medium text-[var(--barn-slate)]">
+                            Sire: {selectedSire?.name}
+                          </div>
+                          <div className="mt-0.5 break-words">
+                            <ColoredGenotypeDisplay
+                              provenance={sireProvenance}
+                              fallbackText={selectedSire?.genotypeRaw || 'Not recorded'}
+                              compact
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-medium text-[var(--barn-terracotta)]">
+                            Dam: {selectedDam?.name}
+                          </div>
+                          <div className="mt-0.5 break-words">
+                            <ColoredGenotypeDisplay
+                              provenance={damProvenance}
+                              fallbackText={selectedDam?.genotypeRaw || 'Not recorded'}
+                              compact
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <AlleleProvenanceLegend compact />
+                    </div>
+                  )}
+
                   {geneticsPreview.lethalOrHealthAlerts.length > 0 && (
                     <div className="space-y-2 text-xs">
                       {geneticsPreview.lethalOrHealthAlerts.map((alert, idx) => (
@@ -1142,7 +1191,10 @@ export function BreedingScreen({
                   )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-xs">
-                    {geneticsPreview.locusBreakdowns.map((lb) => (
+                    {geneticsPreview.locusBreakdowns.map((lb) => {
+                      const sireLocus = sireProvenance?.loci.find((l) => l.locus === lb.locus);
+                      const damLocus = damProvenance?.loci.find((l) => l.locus === lb.locus);
+                      return (
                       <div
                         key={lb.locus}
                         className="p-2.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1.5"
@@ -1150,7 +1202,27 @@ export function BreedingScreen({
                         <div className="font-semibold">
                           {lb.locusName}{' '}
                           <span className="font-mono text-[var(--barn-muted)]">
-                            ({lb.sirePair}×{lb.damPair})
+                            (
+                            {sireLocus && sireProvenance ? (
+                              <ColoredGenotypeDisplay
+                                provenance={{ ...sireProvenance, loci: [sireLocus] }}
+                                fallbackText={lb.sirePair}
+                                compact
+                              />
+                            ) : (
+                              lb.sirePair
+                            )}
+                            ×
+                            {damLocus && damProvenance ? (
+                              <ColoredGenotypeDisplay
+                                provenance={{ ...damProvenance, loci: [damLocus] }}
+                                fallbackText={lb.damPair}
+                                compact
+                              />
+                            ) : (
+                              lb.damPair
+                            )}
+                            )
                           </span>
                         </div>
                         {lb.sexSplitOutcomes ? (
@@ -1196,7 +1268,8 @@ export function BreedingScreen({
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1417,16 +1490,32 @@ export function BreedingScreen({
           role="dialog"
           aria-modal="true"
           aria-label="Update Litter Outcome"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeOutcomeModal();
+          }}
           className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4"
         >
           <form
             onSubmit={submitOutcome}
-            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 space-y-4"
+            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden"
           >
-            <h3 className="font-display text-lg font-semibold">
-              Update {speciesProfile.birthEventLabel}: {editingRecord.damName} ×{' '}
-              {editingRecord.sireName}
-            </h3>
+            <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-[var(--barn-border)] shrink-0">
+              <h3 className="font-display text-lg font-semibold">
+                Update {speciesProfile.birthEventLabel}: {editingRecord.damName} ×{' '}
+                {editingRecord.sireName}
+              </h3>
+              <button
+                type="button"
+                disabled={outcomeSubmitLock.isSubmitting}
+                onClick={closeOutcomeModal}
+                aria-label="Close Update Litter Outcome dialog"
+                className="min-h-[40px] min-w-[40px] rounded-lg hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0 disabled:opacity-55"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
 
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
@@ -1867,7 +1956,7 @@ export function BreedingScreen({
               <button
                 type="button"
                 disabled={outcomeSubmitLock.isSubmitting}
-                onClick={() => setEditingRecord(null)}
+                onClick={closeOutcomeModal}
                 className="min-h-[40px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium disabled:opacity-55"
               >
                 Cancel
@@ -1883,6 +1972,7 @@ export function BreedingScreen({
                 )}
                 {outcomeSubmitLock.isSubmitting ? 'Saving Outcome...' : 'Save Outcome'}
               </button>
+            </div>
             </div>
           </form>
         </div>

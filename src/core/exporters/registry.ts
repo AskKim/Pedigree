@@ -20,7 +20,16 @@ import {
 } from '../barnBinder';
 import { buildIcsCalendarForTasks } from '../calendarExport';
 import { buildCleanCsvExportFileName, exportAnimalsCsv } from '../csvExport';
-import { isSameSpecies, nowIsoUtc } from '../models';
+import {
+  isSameSpecies,
+  normalizeDefaultPedigreeGenerations,
+  normalizePedigreeGenerationDepth,
+  nowIsoUtc,
+} from '../models';
+import {
+  buildShareablePedigreeCardFileName,
+  generateShareablePedigreeCardHtml,
+} from '../shareablePedigreeCard';
 import {
   buildPdfReadyBarnSnapshot,
   generateEvansHtmPedigree,
@@ -115,7 +124,7 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
     compatibilityNote:
       'Embeds optional subject photo and Breeder Certification signature block on clean light paper CSS.',
     schemaFields: [
-      '3–6 Gen Ancestor Matrix',
+      '3–8 Gen Ancestor Matrix',
       'Wright COI %',
       'Genotype & Carriers',
       'Reg / GC / Legs',
@@ -133,13 +142,10 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
         throw new Error('Select an animal to export an Evans-compatible .HTM pedigree.');
       }
 
-      const depth =
-        generations ||
-        (snapshot.settings.defaultGenerations === 4 ||
-        snapshot.settings.defaultGenerations === 5 ||
-        snapshot.settings.defaultGenerations === 6
-          ? snapshot.settings.defaultGenerations
-          : 3);
+      const depth = normalizePedigreeGenerationDepth(
+        generations ?? snapshot.settings.defaultGenerations,
+        3
+      );
 
       const primaryPhoto = (snapshot.animalPhotos ?? [])
         .filter((p) => p.animalId === subject.id)
@@ -172,6 +178,74 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
     },
   },
   {
+    id: 'shareable-pedigree-card',
+    name: 'Shareable Pedigree Card',
+    formatExtension: '.HTML',
+    category: 'pedigree_document',
+    targetPlatform: 'Mobile Browser / Messaging / Buyer Packet',
+    scopeMode: 'single_animal',
+    supportsSpeciesFilter: true,
+    status: 'ready',
+    description:
+      'Lightweight standalone mobile-first HTML summary card with COI badge, honors, 3-generation tree, and optional collapsible Gen 4–8 lineage.',
+    compatibilityNote:
+      'Zero external scripts or fonts; embeds optional portrait, barn logo, and scannable QR profile badge.',
+    schemaFields: [
+      'Hero Portrait & Honors',
+      'Wright COI Badge',
+      '3-Gen Visual Grid',
+      'Collapsible Gen 4–8 Ancestry',
+      'Optional Profile QR',
+    ],
+    exportPayload(context: ExporterExecutionContext): ExportedArtifactPayload {
+      const { snapshot, animalId, generations, appBaseUrl } = context;
+      const subject =
+        snapshot.animals.find((a) => a.id === animalId) ||
+        (context.speciesName
+          ? snapshot.animals.find((a) => isSameSpecies(a.species, context.speciesName!))
+          : snapshot.animals[0]);
+
+      if (!subject) {
+        throw new Error('Select an animal to export a Shareable Pedigree Card.');
+      }
+
+      const depth = normalizePedigreeGenerationDepth(
+        generations ?? snapshot.settings.defaultGenerations,
+        3
+      );
+
+      const primaryPhoto = (snapshot.animalPhotos ?? [])
+        .filter((p) => p.animalId === subject.id)
+        .sort((a, b) => (a.isPrimary === b.isPrimary ? a.sortOrder - b.sortOrder : a.isPrimary ? -1 : 1))[0];
+
+      const html = generateShareablePedigreeCardHtml(
+        subject,
+        snapshot.animals,
+        snapshot.speciesProfiles,
+        snapshot.settings,
+        depth,
+        snapshot.settings.includePhotoOnPedigree !== false
+          ? primaryPhoto?.dataUrl || primaryPhoto?.thumbnailDataUrl
+          : undefined,
+        {
+          appBaseUrl,
+          includeQrCode: Boolean(appBaseUrl),
+        }
+      );
+
+      const filename = buildShareablePedigreeCardFileName(subject);
+      return {
+        exporterId: 'shareable-pedigree-card',
+        filename,
+        mimeType: 'text/html;charset=utf-8',
+        content: html,
+        recordCount: 1,
+        summary: `Exported lightweight ${depth}-gen Shareable Pedigree Card (${filename}) for ${subject.name}.`,
+        warnings: [],
+      };
+    },
+  },
+  {
     id: 'barn-binder-htm',
     name: 'Printable Herd & Barn Binder',
     formatExtension: '.HTM',
@@ -199,9 +273,13 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
         snapshot.speciesProfiles[0]?.name ||
         'Rabbit';
 
+      const binderGenerations = normalizeDefaultPedigreeGenerations(
+        generations ?? snapshot.settings.defaultGenerations,
+        3
+      );
       const options = buildDefaultBarnBinderOptions(snapshot.settings, {
         includeArchived: Boolean(includeArchived),
-        generations,
+        generations: binderGenerations,
       });
       const html = generateSpeciesBarnBinderHtml(snapshot, targetSpecies, options);
       const filename = buildBarnBinderFileName(

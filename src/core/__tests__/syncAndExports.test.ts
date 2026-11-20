@@ -23,6 +23,11 @@ import {
   mergeBarnSnapshots,
   parseBarnBackupJson,
 } from '../syncAndExports';
+import { resolvePedigreePrintTheme } from '../pedigreePrintStyles';
+import {
+  buildShareablePedigreeCardFileName,
+  generateShareablePedigreeCardHtml,
+} from '../shareablePedigreeCard';
 import { makeAnimal, makeEmptySnapshot, makeSettings, makeSpeciesProfile } from './testFixtures';
 
 describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen HTM exports', () => {
@@ -452,5 +457,122 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     const restored = parseBarnBackupJson(streamedJoined, makeSettings());
     expect(restored.animals).toHaveLength(10);
     expect(restored.animalPhotos).toHaveLength(1);
+  });
+
+  it('renders 7-gen and 8-gen Evans .HTM pedigrees with custom print presets locked to #FFFFFF paper', () => {
+    const gen8Sire = makeAnimal('g8-root', {
+      sex: 'Male',
+      name: 'Foundation Eighth',
+      tattoo: 'G8-1',
+    });
+    const gen7Sire = makeAnimal('g7-root', {
+      sex: 'Male',
+      name: 'Seventh Sire',
+      sireId: 'g8-root',
+    });
+    const gen6Sire = makeAnimal('g6-root', { sex: 'Male', name: 'Sixth Sire', sireId: 'g7-root' });
+    const gen5Sire = makeAnimal('g5-root', { sex: 'Male', name: 'Fifth Sire', sireId: 'g6-root' });
+    const gen4Sire = makeAnimal('g4-root', { sex: 'Male', name: 'Fourth Sire', sireId: 'g5-root' });
+    const gen3Sire = makeAnimal('g3-root', { sex: 'Male', name: 'Third Sire', sireId: 'g4-root' });
+    const gen2Sire = makeAnimal('g2-root', { sex: 'Male', name: 'Second Sire', sireId: 'g3-root' });
+    const gen1Sire = makeAnimal('g1-root', { sex: 'Male', name: 'First Sire', sireId: 'g2-root' });
+    const subject = makeAnimal('subj-ev8', {
+      sex: 'Female',
+      name: 'Eighth Gen Prospect',
+      tattoo: 'EGP8',
+      sireId: 'g1-root',
+    });
+    const animals = [
+      gen8Sire,
+      gen7Sire,
+      gen6Sire,
+      gen5Sire,
+      gen4Sire,
+      gen3Sire,
+      gen2Sire,
+      gen1Sire,
+      subject,
+    ];
+    const profiles = [makeSpeciesProfile('Rabbit')];
+    const settings = makeSettings({ barnName: 'Heritage Hutch' });
+
+    const html8 = generateEvansHtmPedigree(subject, animals, profiles, settings, 8, undefined, {
+      colorPreset: 'royal_navy',
+      borderStyle: 'double_frame',
+      layoutPreset: 'show_certificate',
+    });
+
+    expect(html8).toContain('Official 8-Generation Rabbit Pedigree Certificate');
+    expect(html8).toContain('Gen 7');
+    expect(html8).toContain('Gen 8');
+    expect(html8).toContain('Foundation Eighth');
+    expect(html8).toContain('class="cell leaf sire"');
+    expect(html8).toContain('border: 4px double #1B365D');
+    expect(html8).toContain('flex-direction: column; align-items: center; text-align: center;');
+    expect(html8).toContain('<meta name="barn-preserve-accent-ink" content="true" />');
+    expect(html8).toContain('#1B365D'); // Royal Navy primary ink
+    expect(html8).toContain('background: #ffffff !important;');
+
+    const barnTheme = resolvePedigreePrintTheme(
+      { colorPreset: 'barn_palette', borderStyle: 'modern_rounded', layoutPreset: 'compact_ledger' },
+      {
+        lightPrimary: '#E5E7EB', // very bright color should darken automatically for white-paper contrast
+        lightAccent: '#7C2D12',
+        lightMale: '#1D4ED8',
+        darkPrimary: '#22C55E',
+        darkAccent: '#F97316',
+        darkMale: '#60A5FA',
+      }
+    );
+    expect(barnTheme.paperBg).toBe('#FFFFFF');
+    expect(barnTheme.primaryHex).not.toBe('#E5E7EB');
+  });
+
+  it('builds lightweight standalone shareable pedigree cards with QR link, XSS escaping & collapsible Gen 4-8 details', () => {
+    const g5 = makeAnimal('g5-c', { sex: 'Male', name: 'Anchor G5', tattoo: 'A5', variety: 'Black' });
+    const g4 = makeAnimal('g4-c', { sex: 'Male', name: 'Anchor G4', sireId: 'g5-c' });
+    const g3 = makeAnimal('g3-c', { sex: 'Male', name: 'Anchor G3', sireId: 'g4-c' });
+    const g2 = makeAnimal('g2-c', { sex: 'Male', name: 'Anchor G2', sireId: 'g3-c' });
+    const g1 = makeAnimal('g1-c', { sex: 'Male', name: 'Anchor G1', sireId: 'g2-c' });
+    const subject = makeAnimal('subj-card', {
+      sex: 'Female',
+      name: 'Daisy <script>alert(1)</script>',
+      tattoo: 'DZY-42',
+      breed: 'Holland Lop',
+      variety: 'Broken Tort',
+      weightGrams: Math.round(62 * 28.349523125),
+      registrationNumber: 'R-9910',
+      legsCount: 3,
+      sireId: 'g1-c',
+    });
+
+    expect(buildShareablePedigreeCardFileName(subject)).toBe('pedigree-card-dzy-42.html');
+
+    const cardHtml = generateShareablePedigreeCardHtml(
+      subject,
+      [g5, g4, g3, g2, g1, subject],
+      [makeSpeciesProfile('Rabbit')],
+      makeSettings({ barnName: 'Meadowbrook Rabbitry' }),
+      6,
+      undefined,
+      {
+        colorPreset: 'heritage_burgundy',
+        borderStyle: 'modern_rounded',
+        arbaLbsOzDotNotation: true,
+        includeQrCode: true,
+        appBaseUrl: 'https://pedigree.example.org/',
+      }
+    );
+
+    expect(cardHtml).toContain('<!DOCTYPE html>');
+    expect(cardHtml).toContain('3-Generation Lineage Summary');
+    expect(cardHtml).toContain('Extended Ancestry (Gen 4&ndash;6: 2 recorded ancestors)');
+    expect(cardHtml).toContain('Anchor G5');
+    expect(cardHtml).toContain('3.14'); // 62 oz = 3 lb 14 oz
+    expect(cardHtml).toContain('Reg: R-9910');
+    expect(cardHtml).toContain('3 Legs');
+    expect(cardHtml).toContain('class="qr-svg"');
+    expect(cardHtml).not.toContain('<script>alert(1)</script>');
+    expect(cardHtml).toContain('Daisy &lt;script&gt;alert(1)&lt;/script&gt;');
   });
 });

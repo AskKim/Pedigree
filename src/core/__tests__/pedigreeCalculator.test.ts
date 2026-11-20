@@ -284,5 +284,59 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
     expect(withExternal.branchSummaries.get('3:0')?.hasKnownAncestors).toBe(true);
     expect(withExternal.branchSummaries.get('3:1')?.hasKnownAncestors).toBe(false);
   });
+
+  it('builds 7-generation (255 slots) and 8-generation (511 slots) pedigree trees with accurate role labels and viewport filtering', () => {
+    const chain: ReturnType<typeof makeAnimal>[] = [];
+    let childId = 'g8-sire-root';
+    chain.push(makeAnimal(childId, { sex: 'Male', name: 'Gen 8 Ancestor' }));
+
+    // Build an unbroken paternal line from Gen 8 down to Gen 0 subject
+    for (let g = 7; g >= 1; g--) {
+      const id = `g${g}-sire`;
+      chain.push(
+        makeAnimal(id, {
+          sex: 'Male',
+          name: `Gen ${g} Sire`,
+          sireId: childId,
+        })
+      );
+      childId = id;
+    }
+    const subject = makeAnimal('subj-8g', {
+      sex: 'Female',
+      name: '8G Subject',
+      sireId: childId,
+    });
+    chain.push(subject);
+
+    const herd = buildSpeciesHerdMap(chain, 'Rabbit');
+    const rabbitProfile = makeSpeciesProfile('Rabbit');
+
+    const slots7 = buildPedigreeSlots(subject, herd, 7, rabbitProfile);
+    expect(slots7).toHaveLength(255); // 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128
+    const gen7Slots = slots7.filter((s) => s.generation === 7);
+    expect(gen7Slots).toHaveLength(128);
+    expect(gen7Slots[0].animal?.id).toBe('g7-sire');
+    expect(gen7Slots[0].roleLabel).toContain('5th Great-Grand');
+
+    const slots8 = buildPedigreeSlots(subject, herd, 8, rabbitProfile);
+    expect(slots8).toHaveLength(511); // + 256
+    const gen8Slots = slots8.filter((s) => s.generation === 8);
+    expect(gen8Slots).toHaveLength(256);
+    expect(gen8Slots[0].animal?.id).toBe('g8-sire-root');
+    expect(gen8Slots[0].roleLabel).toContain('6th Great-Grand');
+
+    // Collapsing Gen-3 branches keeps 0..3 visible (15 slots) and counts Gen 4..8 recorded ancestors as hidden
+    const collapsed8 = buildPedigreeBranchViewport(slots8, 8, new Set());
+    expect(collapsed8.visibleSlots).toHaveLength(15);
+    expect(collapsed8.hiddenKnownAncestorsCount).toBe(5); // g4..g8 along branch 0
+    expect(collapsed8.branchSummaries.get('3:0')?.hiddenKnownAncestors).toBe(5);
+
+    // Expanding branch 0 reveals Gen 4..8 slots for that branch (15 + (2+4+8+16+32) = 77 slots)
+    const expanded8 = buildPedigreeBranchViewport(slots8, 8, new Set([0]));
+    expect(expanded8.visibleSlots).toHaveLength(77);
+    expect(expanded8.hiddenKnownAncestorsCount).toBe(0);
+  });
 });
+
 

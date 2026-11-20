@@ -62,6 +62,10 @@ import type {
   ExternalExporterDescriptor,
 } from '../core/exporters/exporterTypes';
 import {
+  normalizePedigreeGenerationDepth,
+  PedigreeGenerationDepth,
+} from '../core/models';
+import {
   BUILTIN_NON_NATIVE_EXPORTERS,
   PLANNED_EXTERNAL_SCHEMA_TARGETS,
   runExternalExporter,
@@ -343,12 +347,8 @@ export function ImportExportHubScreen({
     activeSpeciesName || snapshot.speciesProfiles[0]?.name || ''
   );
   const [exporterAnimalId, setExporterAnimalId] = useState<string>('');
-  const [exporterGenerations, setExporterGenerations] = useState<3 | 4 | 5 | 6>(
-    snapshot.settings.defaultGenerations === 4 ||
-      snapshot.settings.defaultGenerations === 5 ||
-      snapshot.settings.defaultGenerations === 6
-      ? snapshot.settings.defaultGenerations
-      : 3
+  const [exporterGenerations, setExporterGenerations] = useState<PedigreeGenerationDepth>(
+    normalizePedigreeGenerationDepth(snapshot.settings.defaultGenerations, 3)
   );
   const [binderIncludeArchived, setBinderIncludeArchived] = useState(false);
   const [exporterFeedback, setExporterFeedback] = useState<{
@@ -2601,7 +2601,7 @@ export function ImportExportHubScreen({
                 id={`${baseId}-exporter-pedigree-depth`}
                 value={exporterGenerations}
                 onChange={(e) =>
-                  setExporterGenerations(Number(e.target.value) as 3 | 4 | 5 | 6)
+                  setExporterGenerations(normalizePedigreeGenerationDepth(Number(e.target.value), 3))
                 }
                 className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium"
               >
@@ -2609,6 +2609,8 @@ export function ImportExportHubScreen({
                 <option value={4}>4 Generations</option>
                 <option value={5}>5 Generations (Compact)</option>
                 <option value={6}>6 Generations (Dense Archival)</option>
+                <option value={7}>7 Generations (Evans .HTM / Share Card)</option>
+                <option value={8}>8 Generations (Full Deep Ancestry)</option>
               </select>
             </div>
 

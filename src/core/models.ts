@@ -338,6 +338,31 @@ export function normalizeCalendarSyncSettings(raw?: unknown): CalendarSyncSettin
  *   - `""` (empty string) opens on the Multi-Species Home Landing Page.
  *   - Any configured species name (e.g. `"Rabbit"`, `"Goat"`) opens directly inside that species' hub.
  */
+export type DefaultPedigreeGenerations = 3 | 4 | 5 | 6;
+export type PedigreeGenerationDepth = 3 | 4 | 5 | 6 | 7 | 8;
+
+export function normalizePedigreeGenerationDepth(
+  value: unknown,
+  fallback: PedigreeGenerationDepth = 3
+): PedigreeGenerationDepth {
+  const n = Number(value);
+  if (n === 3 || n === 4 || n === 5 || n === 6 || n === 7 || n === 8) {
+    return n;
+  }
+  return fallback;
+}
+
+export function normalizeDefaultPedigreeGenerations(
+  value: unknown,
+  fallback: DefaultPedigreeGenerations = 3
+): DefaultPedigreeGenerations {
+  const n = Number(value);
+  if (n === 3 || n === 4 || n === 5 || n === 6) {
+    return n;
+  }
+  return fallback;
+}
+
 export interface BarnSettings {
   id: string;
   barnName: string;
@@ -346,7 +371,7 @@ export interface BarnSettings {
   currencyCode?: string;
   defaultSpecies: string;
   pinnedLandingSpecies: string;
-  defaultGenerations: 3 | 4 | 5 | 6;
+  defaultGenerations: DefaultPedigreeGenerations;
   themeMode: 'light' | 'dark';
   customColors?: CustomThemeColors;
   imageOptimizationPreset?: ImageOptimizationPresetId;
@@ -357,6 +382,7 @@ export interface BarnSettings {
   dismissedMemoAlertSignatures?: Record<string, string>;
   speciesHubBlockOrder?: Record<string, SpeciesHubBlockId[]>;
   includePhotoOnPedigree?: boolean;
+  breederLogoDataUrl?: string;
   calendarSync?: CalendarSyncSettings;
   autoOffloadRetiredToOpfs?: boolean;
   lastBackupMeta?: {
@@ -1182,6 +1208,35 @@ export function formatWeight(weightGrams: number, unit: WeightUnit): string {
     return `${lbs + 1} lb 0 oz`;
   }
   return `${lbs} lb ${oz} oz`;
+}
+
+/**
+ * Formats weight in traditional ARBA `lbs.oz` dot notation (e.g., `10.04` for 10 lb 4 oz).
+ */
+export function formatWeightArbaLbsOzDot(weightGrams: number): string {
+  if (!weightGrams || !Number.isFinite(weightGrams) || weightGrams <= 0) {
+    return 'Unweighed';
+  }
+  const totalOunces = weightGrams / 28.349523125;
+  const rawLbs = Math.floor(totalOunces / 16);
+  const rawOz = Math.round(totalOunces - rawLbs * 16);
+  const lbs = rawOz === 16 ? rawLbs + 1 : rawLbs;
+  const oz = rawOz === 16 ? 0 : rawOz;
+  return `${lbs}.${String(oz).padStart(2, '0')}`;
+}
+
+/**
+ * Formats pedigree weights using either standard unit display or ARBA `lbs.oz` dot notation.
+ */
+export function formatPedigreeWeight(
+  weightGrams: number,
+  unit: WeightUnit,
+  useArbaLbsOzDot = false
+): string {
+  if (!weightGrams || !Number.isFinite(weightGrams) || weightGrams <= 0) {
+    return 'Unweighed';
+  }
+  return useArbaLbsOzDot ? formatWeightArbaLbsOzDot(weightGrams) : formatWeight(weightGrams, unit);
 }
 
 /**

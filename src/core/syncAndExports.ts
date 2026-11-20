@@ -26,6 +26,7 @@ import {
   CageLocation,
   CareLog,
   CareLogType,
+  formatPedigreeWeight,
   formatReadableDate,
   formatSexForSpecies,
   formatWeight,
@@ -41,12 +42,14 @@ import {
   normalizeHousingUnitType,
   normalizeIgnoredConflicts,
   normalizeOwnershipType,
+  normalizePedigreeGenerationDepth,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
   nowEpochMs,
   nowIsoUtc,
+  PedigreeGenerationDepth,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
   resolveSpeciesWeightUnit,
@@ -63,6 +66,12 @@ import {
   createSpeciesCoiEvaluator,
   PedigreeSlot,
 } from './pedigreeCalculator';
+import {
+  PedigreeBorderStyleId,
+  PedigreeColorPresetId,
+  PedigreeLayoutPresetId,
+  resolvePedigreePrintTheme,
+} from './pedigreePrintStyles';
 import { buildAnimalProfileDeepLink, renderQrSvg } from './qrCode';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
@@ -670,6 +679,11 @@ export function parseBarnBackupJson(
       typeof rawSettings.includePhotoOnPedigree === 'boolean'
         ? rawSettings.includePhotoOnPedigree
         : fallbackSettings.includePhotoOnPedigree ?? false,
+    breederLogoDataUrl:
+      rawSettings.breederLogoDataUrl === ''
+        ? undefined
+        : sanitizeSafeRasterImageDataUrl(rawSettings.breederLogoDataUrl) ||
+          fallbackSettings.breederLogoDataUrl,
     calendarSync: normalizeCalendarSyncSettings(
       rawSettings.calendarSync ?? fallbackSettings.calendarSync
     ),
@@ -1093,56 +1107,92 @@ function escapeHtml(raw: string): string {
   return escapeSafeHtml(raw);
 }
 
+export type PedigreePrintOrientation = 'landscape' | 'portrait';
+
 export interface PedigreePrintOptions {
+  /** Page orientation for 8.5" x 11" printing & PDF export (default: 'landscape'). */
+  orientation?: PedigreePrintOrientation;
   /** Include animal & ancestor weights (default: true). */
   showWeights?: boolean;
+  /** Format weights using traditional ARBA `lbs.oz` decimal dot notation (e.g., `10.04`). */
+  arbaLbsOzDotNotation?: boolean;
   /** Include coat color genotype strings (default: true when omitted for API compatibility). */
   showGenotypes?: boolean;
   /** Include bottom breeder certification & signature footer (default: true). */
   showBreederFooter?: boolean;
   /** Optional breeder phone, email, or website line shown in footer when enabled. */
   breederContactLine?: string;
+  /** Include breeder/rabbitry logo in header block when available (default: true). */
+  showBreederLogo?: boolean;
+  /** Optional per-preview override logo raster data URL (defaults to `settings.breederLogoDataUrl`). */
+  breederLogoDataUrl?: string;
+  /** Print accent palette preset (all paper backgrounds remain strict `#FFFFFF`). */
+  colorPreset?: PedigreeColorPresetId;
+  /** Pedigree framing and border style preset. */
+  borderStyle?: PedigreeBorderStyleId;
+  /** Pedigree header & density layout preset. */
+  layoutPreset?: PedigreeLayoutPresetId;
 }
 
 /**
  * Generates a standardized, self-contained `.HTM` multi-generation pedigree file compatible
  * with Evans Rabbit Register / ARBA breeder sharing conventions and direct PDF printing.
- * Supports 3, 4, 5, and 6 generations plus optional embedded primary portrait photo
- * and customer pedigree print customization options.
+ * Supports 3 through 8 generations, Landscape/Portrait 8.5"x11" sizing, customizable print
+ * border/color/layout presets, optional breeder logo, ARBA `lbs.oz` dot weight notation,
+ * and embedded primary portrait photo.
  */
 export function generateEvansHtmPedigree(
   subject: Animal,
   allAnimals: Animal[],
   speciesProfiles: SpeciesProfile[],
   settings: BarnSettings,
-  generations: 3 | 4 | 5 | 6 = 3,
+  generations: PedigreeGenerationDepth = 3,
   primaryPhotoDataUrl?: string,
   printOptions?: PedigreePrintOptions
 ): string {
+  const depth = normalizePedigreeGenerationDepth(generations, 3);
   const sp = resolveSpeciesProfile(subject.species, speciesProfiles);
   const herdById = buildSpeciesHerdMap(allAnimals, subject.species);
-  const slots = buildPedigreeSlots(subject, herdById, generations, sp);
+  const slots = buildPedigreeSlots(subject, herdById, depth, sp);
   const coi = calculateAnimalCoi(subject, herdById);
+  const theme = resolvePedigreePrintTheme(printOptions, settings.customColors);
 
+  const orientation: PedigreePrintOrientation =
+    printOptions?.orientation === 'portrait' ? 'portrait' : 'landscape';
+  const isPortrait = orientation === 'portrait';
   const showWeights = printOptions?.showWeights ?? true;
+  const arbaLbsOzDotNotation = Boolean(printOptions?.arbaLbsOzDotNotation);
   const showGenotypes = printOptions?.showGenotypes ?? true;
   const showBreederFooter = printOptions?.showBreederFooter ?? true;
   const breederContactLine = (printOptions?.breederContactLine || '').trim();
+  const showBreederLogo = printOptions?.showBreederLogo ?? true;
+  const rawLogoUrl =
+    printOptions?.breederLogoDataUrl !== undefined
+      ? printOptions.breederLogoDataUrl
+      : settings.breederLogoDataUrl;
+  const safeLogo = showBreederLogo ? sanitizeSafeRasterImageDataUrl(rawLogoUrl) : '';
+  const effectiveWeightUnit = resolveSpeciesWeightUnit(sp, settings);
 
   const slotMap = new Map<string, PedigreeSlot>();
   for (const sl of slots) {
     slotMap.set(`${sl.generation}:${sl.slotIndex}`, sl);
   }
 
-  const compactMode = generations >= 5;
+  const ultraCompactMode = depth >= 7;
+  const compactMode = depth >= 5 || theme.layoutPreset === 'compact_ledger';
+  const tightMode = compactMode || (isPortrait && depth >= 4);
+  const isShowCert = theme.layoutPreset === 'show_certificate';
+  const preserveColorInk =
+    theme.colorPreset !== 'classic_sage' && !theme.isMonochrome;
 
   let anyAncestorGeno = false;
   const renderAncestorCell = (gen: number, idx: number, rowspan: number): string => {
     const slot = slotMap.get(`${gen}:${idx}`);
     const a = slot?.animal;
     const roleTag = idx % 2 === 0 ? sp.maleLabel : sp.femaleLabel;
+    const isTinyLeaf = ultraCompactMode && rowspan <= 2;
     if (!a) {
-      return `<td rowspan="${rowspan}" class="cell empty">
+      return `<td rowspan="${rowspan}" class="cell empty${isTinyLeaf ? ' leaf' : ''}">
         <div class="role">${escapeHtml(roleTag)} &mdash; Unknown</div>
       </td>`;
     }
@@ -1154,17 +1204,19 @@ export function generateEvansHtmPedigree(
       herdById,
       includeCleared: true,
     });
-    const carrierText = formatCompactCarrierDisclosure(a, {
-      herdById,
-      includeCleared: true,
-      ultraCompact: compactMode,
-      maxItemsPerGroup: compactMode ? 2 : 4,
-    });
+    const carrierText = isTinyLeaf
+      ? ''
+      : formatCompactCarrierDisclosure(a, {
+          herdById,
+          includeCleared: true,
+          ultraCompact: compactMode,
+          maxItemsPerGroup: compactMode ? 2 : 4,
+        });
     const metaParts = [
       a.tattoo ? `ID: ${escapeHtml(a.tattoo)}` : '',
       !compactMode && a.variety ? escapeHtml(a.variety) : '',
       showWeights && !compactMode && a.weightGrams > 0
-        ? escapeHtml(formatWeight(a.weightGrams, resolveSpeciesWeightUnit(sp, settings)))
+        ? escapeHtml(formatPedigreeWeight(a.weightGrams, effectiveWeightUnit, arbaLbsOzDotNotation))
         : '',
     ].filter(Boolean);
 
@@ -1173,6 +1225,12 @@ export function generateEvansHtmPedigree(
       a.grandChampionNumber ? `GC: ${escapeHtml(a.grandChampionNumber)}` : '',
       a.legsCount > 0 ? `Legs: ${a.legsCount}` : '',
     ].filter(Boolean);
+
+    if (isTinyLeaf) {
+      return `<td rowspan="${rowspan}" class="cell leaf ${idx % 2 === 0 ? 'sire' : 'dam'}">
+      <div class="name">${escapeHtml(a.name)}${a.tattoo ? ` <span class="meta">(${escapeHtml(a.tattoo)})</span>` : ''}</div>
+    </td>`;
+    }
 
     return `<td rowspan="${rowspan}" class="cell ${idx % 2 === 0 ? 'sire' : 'dam'}">
       <div class="name">${escapeHtml(a.name)}</div>
@@ -1184,13 +1242,13 @@ export function generateEvansHtmPedigree(
     </td>`;
   };
 
-  const totalRows = 1 << generations;
+  const totalRows = 1 << depth;
   const tableRowsHtml: string[] = [];
 
   for (let r = 0; r < totalRows; r++) {
     const cells: string[] = [];
-    for (let g = 1; g <= generations; g++) {
-      const span = 1 << (generations - g);
+    for (let g = 1; g <= depth; g++) {
+      const span = 1 << (depth - g);
       if (r % span === 0) {
         const slotIdx = Math.floor(r / span);
         cells.push(renderAncestorCell(g, slotIdx, span));
@@ -1214,106 +1272,141 @@ export function generateEvansHtmPedigree(
     '<th>Grandparents (Gen 2)</th>',
     '<th>Great-Grandparents (Gen 3)</th>',
   ];
-  if (generations >= 4) genHeaders.push('<th>4th Generation (Gen 4)</th>');
-  if (generations >= 5) genHeaders.push('<th>5th Generation (Gen 5)</th>');
-  if (generations >= 6) genHeaders.push('<th>6th Generation (Gen 6)</th>');
+  if (depth >= 4) genHeaders.push('<th>4th Generation (Gen 4)</th>');
+  if (depth >= 5) genHeaders.push('<th>5th Generation (Gen 5)</th>');
+  if (depth >= 6) genHeaders.push('<th>6th Generation (Gen 6)</th>');
+  if (depth >= 7) genHeaders.push('<th>7th Generation (Gen 7)</th>');
+  if (depth >= 8) genHeaders.push('<th>8th Generation (Gen 8)</th>');
+
+  const pageWidthCss = isPortrait ? '8.5in' : '11in';
+  const frameCss =
+    theme.borderStyle === 'double_frame'
+      ? `border: 4px double ${theme.borderHex}; padding: ${ultraCompactMode ? '8px' : '12px'}; background: #ffffff;`
+      : theme.borderStyle === 'modern_rounded'
+      ? `border: 1.5px solid ${theme.borderHex}; border-radius: 12px; padding: ${ultraCompactMode ? '8px' : '12px'}; background: #ffffff;`
+      : 'background: #ffffff;';
+  const subjectBorderCss =
+    theme.borderStyle === 'modern_rounded'
+      ? `border: 1.5px solid ${theme.borderHex}; border-radius: 8px;`
+      : theme.borderStyle === 'minimal_lines'
+      ? `border: 1px solid ${theme.cellBorderHex};`
+      : `border: 1px solid ${theme.borderHex};`;
+  const cellBorderCss =
+    theme.borderStyle === 'minimal_lines'
+      ? `0.75px solid ${theme.cellBorderHex}`
+      : `1px solid ${theme.cellBorderHex}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="color-scheme" content="light only" />
+<meta name="barn-page-orientation" content="${orientation}" />
+<meta name="barn-preserve-accent-ink" content="${preserveColorInk ? 'true' : 'false'}" />
 <title>Pedigree - ${escapeHtml(subject.name)} (${escapeHtml(subject.tattoo || subject.id)})</title>
 <style>
-  @page { size: landscape; margin: ${compactMode ? '8mm' : '12mm'}; }
-  :root, html, body { color-scheme: light only; background: #ffffff; color: #1e241e; }
-  body { font-family: Georgia, "Times New Roman", serif; margin: ${compactMode ? '8px' : '16px'}; }
-  .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2d5a3d; padding-bottom: 8px; margin-bottom: 10px; }
-  .barn-title { font-size: 20px; font-weight: bold; color: #1e3f2a; }
-  .sub-title { font-size: 11.5px; color: #434d42; }
-  .subject-wrap { border: 1px solid #999; padding: 10px 14px; margin-bottom: 10px; background: #ffffff; display: flex; align-items: center; gap: 16px; }
-  .subject-photo { width: 84px; height: 84px; object-fit: cover; border-radius: 6px; border: 1px solid #8c8678; flex-shrink: 0; }
-  .subject-box { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; flex: 1; }
+  @page { size: letter ${orientation}; margin: ${ultraCompactMode ? '6mm' : compactMode ? '8mm' : isPortrait ? '10mm' : '12mm'}; }
+  :root, html, body { color-scheme: light only; background: #ffffff; color: ${theme.inkHex}; }
+  body { font-family: Georgia, "Times New Roman", serif; margin: ${ultraCompactMode ? '6px' : compactMode ? '8px' : '16px'}; max-width: ${pageWidthCss}; }
+  .pedigree-frame { ${frameCss} }
+  .header { display: flex; ${isShowCert ? 'flex-direction: column; align-items: center; text-align: center;' : 'justify-content: space-between; align-items: flex-end;'} gap: ${isShowCert ? '4px' : '12px'}; border-bottom: ${theme.borderStyle === 'minimal_lines' ? '1px' : '2px'} solid ${theme.borderHex}; padding-bottom: ${theme.layoutPreset === 'compact_ledger' ? '5px' : '8px'}; margin-bottom: ${theme.layoutPreset === 'compact_ledger' ? '6px' : '10px'}; }
+  .header-brand { display: flex; align-items: center; gap: 10px; min-width: 0; ${isShowCert ? 'justify-content: center;' : ''} }
+  .barn-logo { max-height: ${compactMode ? '36px' : '52px'}; max-width: ${compactMode ? '96px' : '140px'}; width: auto; height: auto; object-fit: contain; border-radius: 4px; flex-shrink: 0; }
+  .barn-title { font-size: ${isShowCert ? (isPortrait ? '20px' : '22px') : theme.layoutPreset === 'compact_ledger' ? '16px' : isPortrait ? '18px' : '20px'}; font-weight: bold; color: ${theme.primaryHex}; letter-spacing: ${isShowCert ? '0.02em' : 'normal'}; }
+  .sub-title { font-size: ${ultraCompactMode || theme.layoutPreset === 'compact_ledger' ? '10px' : isPortrait ? '10.5px' : '11.5px'}; color: ${theme.mutedInkHex}; }
+  .subject-wrap { ${subjectBorderCss} padding: ${theme.layoutPreset === 'compact_ledger' ? '5px 9px' : isPortrait ? '8px 11px' : '10px 14px'}; margin-bottom: ${theme.layoutPreset === 'compact_ledger' ? '6px' : '10px'}; background: #ffffff; display: flex; align-items: center; gap: ${isPortrait ? '12px' : '16px'}; }
+  .subject-photo { width: ${theme.layoutPreset === 'compact_ledger' ? '58px' : isPortrait ? '72px' : '84px'}; height: ${theme.layoutPreset === 'compact_ledger' ? '58px' : isPortrait ? '72px' : '84px'}; object-fit: cover; border-radius: 6px; border: 1px solid ${theme.cellBorderHex}; flex-shrink: 0; }
+  .subject-box { display: flex; flex-wrap: wrap; gap: ${theme.layoutPreset === 'compact_ledger' ? '4px 12px' : isPortrait ? '6px 14px' : '8px 18px'}; font-size: ${theme.layoutPreset === 'compact_ledger' ? '10.5px' : isPortrait ? '11.5px' : '12.5px'}; flex: 1; }
   table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; background: #ffffff; }
-  table.pedigree th { background: #ffffff; color: #1e3f2a; font-size: ${compactMode ? '10px' : '12px'}; padding: ${compactMode ? '4px' : '6px'}; text-align: left; border: 1px solid #2d5a3d; border-bottom: 2px solid #2d5a3d; }
-  td.cell { border: 1px solid #b8b3a8; padding: ${compactMode ? '2px 4px' : '6px 8px'}; vertical-align: middle; font-size: ${compactMode ? '9px' : '11.5px'}; line-height: ${compactMode ? '1.15' : '1.35'}; word-break: break-word; background: #ffffff; }
-  td.sire { background: #ffffff; border-left: 3px solid #366685; }
-  td.dam { background: #ffffff; border-left: 3px solid #8c3f20; }
+  table.pedigree thead { display: table-header-group; }
+  table.pedigree tr { break-inside: avoid; page-break-inside: avoid; }
+  table.pedigree th { background: #ffffff; color: ${theme.primaryHex}; font-size: ${ultraCompactMode ? '8px' : tightMode ? '9.5px' : '12px'}; padding: ${ultraCompactMode ? '3px' : tightMode ? '4px' : '6px'}; text-align: left; border: ${cellBorderCss}; border-bottom: ${theme.borderStyle === 'minimal_lines' ? '1.5px' : '2px'} solid ${theme.borderHex}; }
+  td.cell { border: ${cellBorderCss}; padding: ${ultraCompactMode ? '1px 3px' : compactMode ? '2px 4px' : tightMode ? '4px 5px' : '6px 8px'}; vertical-align: middle; font-size: ${ultraCompactMode ? '7.2px' : compactMode ? '8.5px' : tightMode ? '10px' : '11.5px'}; line-height: ${ultraCompactMode ? '1.08' : compactMode ? '1.15' : '1.3'}; word-break: break-word; background: #ffffff; break-inside: avoid; page-break-inside: avoid; }
+  td.cell.leaf { padding: 1px 3px; font-size: 6.8px; line-height: 1.05; }
+  td.sire { background: #ffffff; border-left: ${ultraCompactMode ? '2px' : '3px'} solid ${theme.sireHex}; }
+  td.dam { background: #ffffff; border-left: ${ultraCompactMode ? '2px' : '3px'} solid ${theme.damHex}; }
   td.empty { color: #555555; font-style: italic; background: #ffffff; }
-  .name { font-weight: bold; font-size: ${compactMode ? '9.5px' : '12.5px'}; color: #111; }
-  .meta { color: #333; font-family: "Courier New", monospace; font-size: ${compactMode ? '8.5px' : '10.5px'}; }
-  .geno { color: #1e3f2a; font-family: "Courier New", monospace; font-size: 10px; margin-top: 2px; }
-  .carrier { color: #6e3b1b; font-family: Arial, Helvetica, sans-serif; font-size: ${compactMode ? '8px' : '9.5px'}; font-weight: 600; margin-top: 2px; line-height: 1.2; }
-  .genetics-notice { margin-top: 8px; font-size: 10px; color: #434d42; font-family: Arial, Helvetica, sans-serif; background: #ffffff; }
-  .footer { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #333; border-top: 1px solid #ccc; padding-top: 8px; }
-  .footer-contact { width: 100%; font-size: 10.5px; color: #1e3f2a; font-weight: bold; }
+  .name { font-weight: bold; font-size: ${ultraCompactMode ? '7.5px' : compactMode ? '9px' : tightMode ? '11px' : '12.5px'}; color: #111; }
+  td.cell.leaf .name { font-size: 7px; }
+  .meta { color: #333; font-family: "Courier New", monospace; font-size: ${ultraCompactMode ? '6.8px' : compactMode ? '8px' : tightMode ? '9.5px' : '10.5px'}; }
+  .geno { color: ${theme.primaryHex}; font-family: "Courier New", monospace; font-size: ${tightMode ? '9px' : '10px'}; margin-top: 2px; }
+  .carrier { color: ${theme.accentHex}; font-family: Arial, Helvetica, sans-serif; font-size: ${compactMode ? '8px' : '9.5px'}; font-weight: 600; margin-top: 2px; line-height: 1.2; }
+  .genetics-notice { margin-top: 8px; font-size: 10px; color: ${theme.mutedInkHex}; font-family: Arial, Helvetica, sans-serif; background: #ffffff; }
+  .footer { margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 11px; color: #333; border-top: 1px solid ${theme.cellBorderHex}; padding-top: 8px; background: #ffffff; }
+  .footer-contact { width: 100%; font-size: 10.5px; color: ${theme.primaryHex}; font-weight: bold; }
   @media print {
-    :root, html, body, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .genetics-notice, .footer {
+    body { max-width: none; margin: 0; }
+    :root, html, body, .pedigree-frame, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .genetics-notice, .footer {
       color-scheme: light only !important;
       background: #ffffff !important;
       background-color: #ffffff !important;
-      color: #000000 !important;
+      ${preserveColorInk ? '' : 'color: #000000 !important;'}
     }
     * {
-      -webkit-print-color-adjust: economy !important;
-      print-color-adjust: economy !important;
+      -webkit-print-color-adjust: ${preserveColorInk ? 'exact' : 'economy'} !important;
+      print-color-adjust: ${preserveColorInk ? 'exact' : 'economy'} !important;
     }
   }
 </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <div class="barn-title">${escapeHtml(settings.barnName || 'Community Pedigree')}</div>
-      <div class="sub-title">Official ${generations}-Generation ${escapeHtml(subject.species)} Pedigree Certificate${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
+  <div class="pedigree-frame">
+    <div class="header">
+      <div class="header-brand">
+        ${safeLogo ? `<img class="barn-logo" src="${safeLogo}" alt="${escapeHtml(settings.barnName || 'Barn Logo')}" />` : ''}
+        <div>
+          <div class="barn-title">${escapeHtml(settings.barnName || 'Community Pedigree')}</div>
+          <div class="sub-title">Official ${depth}-Generation ${escapeHtml(subject.species)} Pedigree Certificate${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
+        </div>
+      </div>
+      <div class="sub-title">Generated ${escapeHtml(formatReadableDate(nowIsoUtc().slice(0, 10)))} &middot; Wright COI: ${coi.coiPercent.toFixed(2)}% (${escapeHtml(coi.risk.label)})</div>
     </div>
-    <div class="sub-title">Generated ${escapeHtml(formatReadableDate(nowIsoUtc().slice(0, 10)))} &middot; Wright COI: ${coi.coiPercent.toFixed(2)}% (${escapeHtml(coi.risk.label)})</div>
-  </div>
 
-  <div class="subject-wrap">
-    ${safePhoto ? `<img class="subject-photo" src="${safePhoto}" alt="${escapeHtml(subject.name)}" />` : ''}
-    <div class="subject-box">
-      <div><strong>Name:</strong> ${escapeHtml(subject.name)}</div>
-      <div><strong>Tattoo / ID:</strong> ${escapeHtml(subject.tattoo || 'Unmarked')}</div>
-      <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
-      <div><strong>Sex:</strong> ${escapeHtml(formatSexForSpecies(subject.sex, sp))}</div>
-      <div><strong>DOB:</strong> ${escapeHtml(formatReadableDate(subject.birthDateIso))}</div>
-      ${showWeights ? `<div><strong>Weight:</strong> ${escapeHtml(formatWeight(subject.weightGrams, resolveSpeciesWeightUnit(sp, settings)))}</div>` : ''}
-      ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
-      ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
-      ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
-      ${subject.rufusLevel ? `<div><strong>Rufus Intensity:</strong> ${escapeHtml(subject.rufusLevel)}</div>` : ''}
-      ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
-      ${subjectCarriers ? `<div><strong>Carrier Disclosures:</strong> ${escapeHtml(subjectCarriers)}</div>` : ''}
+    <div class="subject-wrap">
+      ${safePhoto ? `<img class="subject-photo" src="${safePhoto}" alt="${escapeHtml(subject.name)}" />` : ''}
+      <div class="subject-box">
+        <div><strong>Name:</strong> ${escapeHtml(subject.name)}</div>
+        <div><strong>Tattoo / ID:</strong> ${escapeHtml(subject.tattoo || 'Unmarked')}</div>
+        <div><strong>Breed &amp; Variety:</strong> ${escapeHtml(subject.breed)} ${escapeHtml(subject.variety)}</div>
+        <div><strong>Sex:</strong> ${escapeHtml(formatSexForSpecies(subject.sex, sp))}</div>
+        <div><strong>DOB:</strong> ${escapeHtml(formatReadableDate(subject.birthDateIso))}</div>
+        ${showWeights ? `<div><strong>Weight:</strong> ${escapeHtml(formatPedigreeWeight(subject.weightGrams, effectiveWeightUnit, arbaLbsOzDotNotation))}</div>` : ''}
+        ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
+        ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
+        ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
+        ${subject.rufusLevel ? `<div><strong>Rufus Intensity:</strong> ${escapeHtml(subject.rufusLevel)}</div>` : ''}
+        ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
+        ${subjectCarriers ? `<div><strong>Carrier Disclosures:</strong> ${escapeHtml(subjectCarriers)}</div>` : ''}
+      </div>
     </div>
+
+    <table class="pedigree">
+      <thead>
+        <tr>
+          ${genHeaders.join('\n          ')}
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRowsHtml.join('\n        ')}
+      </tbody>
+    </table>
+
+    ${
+      (showGenotypes && (Boolean(subjectGeno) || anyAncestorGeno)) || Boolean(subject.rufusLevel)
+        ? `<div class="genetics-notice"><strong>Notice:</strong> Color genetics, Rufus intensity &amp; genotype calculation is under development and incomplete (unverified).</div>`
+        : ''
+    }
+
+    ${
+      showBreederFooter
+        ? `<div class="footer">
+      ${breederContactLine ? `<div class="footer-contact">${escapeHtml(breederContactLine)}</div>` : ''}
+      <div>I hereby certify that this pedigree is correct to the best of my knowledge and belief.</div>
+      <div>Breeder Signature: ___________________________ &nbsp;&nbsp; Date: _______________</div>
+    </div>`
+        : ''
+    }
   </div>
-
-  <table class="pedigree">
-    <thead>
-      <tr>
-        ${genHeaders.join('\n        ')}
-      </tr>
-    </thead>
-    <tbody>
-      ${tableRowsHtml.join('\n      ')}
-    </tbody>
-  </table>
-
-  ${
-    (showGenotypes && (Boolean(subjectGeno) || anyAncestorGeno)) || Boolean(subject.rufusLevel)
-      ? `<div class="genetics-notice"><strong>Notice:</strong> Color genetics, Rufus intensity &amp; genotype calculation is under development and incomplete (unverified).</div>`
-      : ''
-  }
-
-  ${
-    showBreederFooter
-      ? `<div class="footer">
-    ${breederContactLine ? `<div class="footer-contact">${escapeHtml(breederContactLine)}</div>` : ''}
-    <div>I hereby certify that this pedigree is correct to the best of my knowledge and belief.</div>
-    <div>Breeder Signature: ___________________________ &nbsp;&nbsp; Date: _______________</div>
-  </div>`
-      : ''
-  }
 </body>
 </html>`;
 }

@@ -19,6 +19,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Share2,
   ShieldAlert,
   ZoomIn,
   ZoomOut,
@@ -40,6 +41,7 @@ import {
   formatWeight,
   getSpeciesIdentifierLabels,
   isAnimalArchived,
+  PedigreeGenerationDepth,
   resolveSpeciesWeightUnit,
   SpeciesProfile,
 } from '../core/models';
@@ -52,9 +54,14 @@ import {
   PedigreeSlot,
   wouldCreateCycle,
 } from '../core/pedigreeCalculator';
+import {
+  buildShareablePedigreeCardFileName,
+  generateShareablePedigreeCardHtml,
+} from '../core/shareablePedigreeCard';
 import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
+import { buildAndDownloadPedigreePdf } from '../utils/webPdfActions';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
@@ -67,9 +74,9 @@ interface PedigreeScreenProps {
   speciesProfiles: SpeciesProfile[];
   settings: BarnSettings;
   selectedSubjectId: string | null;
-  generations: 3 | 4 | 5 | 6;
+  generations: PedigreeGenerationDepth;
   onSelectSubject: (id: string) => void;
-  onChangeGenerations: (gens: 3 | 4 | 5 | 6) => void;
+  onChangeGenerations: (gens: PedigreeGenerationDepth) => void;
   onOpenAnimalInHerd: (id: string) => void;
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
   onSaveAnimal: (
@@ -84,6 +91,7 @@ interface PedigreeScreenProps {
   onCheckPedigreeBranchesHaveAncestors?: (
     animalIds: string[]
   ) => Promise<Record<string, boolean>>;
+  onUpdateBreederLogo?: (dataUrl: string | undefined) => void;
 }
 
 const MIN_TREE_ZOOM = 0.2;
@@ -110,6 +118,7 @@ export function PedigreeScreen({
   onLoadFullPhoto,
   onLoadPedigreeNeighborhood,
   onCheckPedigreeBranchesHaveAncestors,
+  onUpdateBreederLogo,
 }: PedigreeScreenProps) {
   const {
     speciesProfile,
@@ -136,15 +145,22 @@ export function PedigreeScreen({
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [pedigreeDocMode, setPedigreeDocMode] = useState<'formal_certificate' | 'shareable_card'>('formal_certificate');
   const [hydratedSubjectPhoto, setHydratedSubjectPhoto] = useState<{
     photoId: string;
     dataUrl: string;
   } | null>(null);
   const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
+    orientation: 'landscape',
     showWeights: true,
+    arbaLbsOzDotNotation: false,
     showGenotypes: false,
     showBreederFooter: true,
     breederContactLine: '',
+    showBreederLogo: true,
+    colorPreset: 'classic_sage',
+    borderStyle: 'classic_rule',
+    layoutPreset: 'evans_standard',
   });
 
   const closeLinkingDialog = useCallback(() => setLinkingSlot(null), []);
@@ -501,23 +517,27 @@ export function PedigreeScreen({
     [fetchAndMergeBranchAncestors]
   );
 
-  const handleOpenPrintModal = useCallback(async () => {
-    if (!subject) return;
-    if (onLoadPedigreeNeighborhood && generations >= 4) {
-      setPrintHydrating(true);
-      try {
-        const fullRows = await onLoadPedigreeNeighborhood([subject.id], generations);
-        setLazyAncestorsById((prev) => {
-          const next = new Map(prev);
-          for (const a of fullRows) next.set(a.id, a);
-          return next;
-        });
-      } finally {
-        setPrintHydrating(false);
+  const handleOpenPrintModal = useCallback(
+    async (docMode: 'formal_certificate' | 'shareable_card' = 'formal_certificate') => {
+      if (!subject) return;
+      setPedigreeDocMode(docMode);
+      if (onLoadPedigreeNeighborhood && generations >= 4) {
+        setPrintHydrating(true);
+        try {
+          const fullRows = await onLoadPedigreeNeighborhood([subject.id], generations);
+          setLazyAncestorsById((prev) => {
+            const next = new Map(prev);
+            for (const a of fullRows) next.set(a.id, a);
+            return next;
+          });
+        } finally {
+          setPrintHydrating(false);
+        }
       }
-    }
-    setShowPrintModal(true);
-  }, [subject, onLoadPedigreeNeighborhood, generations]);
+      setShowPrintModal(true);
+    },
+    [subject, onLoadPedigreeNeighborhood, generations]
+  );
 
   const coi = subject ? coiByAnimalId.get(subject.id) : null;
 
@@ -770,10 +790,12 @@ export function PedigreeScreen({
     setZoom(Math.round(fit * 1000) / 1000);
   };
 
-  // Dynamic card dimensions across 3, 4, 5, and 6 generations (memoized before early return)
+  // Dynamic card dimensions across 3 through 8 generations (memoized before early return)
   const layoutConfig = useMemo(
     () =>
-      generations === 6
+      generations >= 7
+        ? { colWidth: 158, cardWidth: 138, cardHeight: 38, rowPitch: 44, compact: true }
+        : generations === 6
         ? { colWidth: 174, cardWidth: 150, cardHeight: 44, rowPitch: 50, compact: true }
         : generations === 5
         ? { colWidth: 198, cardWidth: 170, cardHeight: 56, rowPitch: 64, compact: true }
@@ -1091,8 +1113,8 @@ export function PedigreeScreen({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
-              {([3, 4, 5, 6] as const).map((g) => (
+            <div className="flex flex-wrap items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
+              {([3, 4, 5, 6, 7, 8] as const).map((g) => (
                 <button
                   key={g}
                   type="button"
@@ -1124,16 +1146,34 @@ export function PedigreeScreen({
               type="button"
               disabled={printHydrating}
               aria-busy={printHydrating}
-              onClick={() => void handleOpenPrintModal()}
+              onClick={() => void handleOpenPrintModal('formal_certificate')}
               className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
             >
               <FileText className="w-3.5 h-3.5" aria-hidden="true" />
               {printHydrating ? 'Loading Ancestors...' : 'Export .HTM / Print PDF'}
             </button>
+            <button
+              type="button"
+              disabled={printHydrating}
+              onClick={() => void handleOpenPrintModal('shareable_card')}
+              title="Open lightweight mobile-ready standalone .HTML pedigree card for easy sharing"
+              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-65"
+            >
+              <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
+              Share Card
+            </button>
             <PedigreePrintNotice compact />
             <ColorGeneticsNotice compact />
           </div>
         </div>
+
+        {generations >= 7 && (
+          <div className="rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] px-3 py-2 text-[11px] text-[var(--barn-muted)]">
+            <strong className="text-[var(--barn-ink)]">On-Demand {generations}-Gen Mode:</strong>{' '}
+            Gen 4–{generations} branches expand lazily inside the tree to keep mobile memory light.
+            Download .PDF builds a legible multi-page US Letter chart ({generations === 7 ? '2 sheets: Sire & Dam lines' : '4 sheets: one per Grandparent quadrant'}).
+          </div>
+        )}
 
         {/* Pedigree Subject / Tree Conflict Alert or Retained Soft Warning */}
         {(() => {
@@ -2033,41 +2073,93 @@ export function PedigreeScreen({
         />
       )}
 
-      {showPrintModal && (
-        <PrintPreviewModal
-          title={`${generations}-Generation Pedigree — ${subject.name}`}
-          filename={`pedigree-${subject.tattoo || subject.id}-${generations}gen.htm`}
-          htmlContent={generateEvansHtmPedigree(
-            subject,
-            Array.from(
-              new Map<string, Animal>([
-                ...Array.from(lazyAncestorsById.entries()),
-                ...allAnimals.map((a): [string, Animal] => [a.id, a]),
-              ]).values()
-            ),
-            speciesProfiles,
-            settings,
-            generations,
-            settings.includePhotoOnPedigree
-              ? subjectPrimaryPhoto?.dataUrl ||
-                  (hydratedSubjectPhoto &&
-                  hydratedSubjectPhoto.photoId === subjectPrimaryPhoto?.id
-                    ? hydratedSubjectPhoto.dataUrl
-                    : subjectPrimaryPhoto?.thumbnailDataUrl)
-              : undefined,
-            pedigreePrintOptions
-          )}
-          includePrimaryPhoto={settings.includePhotoOnPedigree}
-          onToggleIncludePrimaryPhoto={onToggleIncludePhotoOnPedigree}
-          pedigreePrintOptions={pedigreePrintOptions}
-          onChangePedigreePrintOptions={setPedigreePrintOptions}
-          headerNotice={<PedigreePrintNotice />}
-          onClose={() => {
-            setShowPrintModal(false);
-            setHydratedSubjectPhoto(null);
-          }}
-        />
-      )}
+      {showPrintModal && (() => {
+        const mergedPrintAnimals = Array.from(
+          new Map<string, Animal>([
+            ...Array.from(lazyAncestorsById.entries()),
+            ...allAnimals.map((a): [string, Animal] => [a.id, a]),
+          ]).values()
+        );
+        const resolvedSubjectPhotoForPrint = settings.includePhotoOnPedigree
+          ? subjectPrimaryPhoto?.dataUrl ||
+              (hydratedSubjectPhoto &&
+              hydratedSubjectPhoto.photoId === subjectPrimaryPhoto?.id
+                ? hydratedSubjectPhoto.dataUrl
+                : subjectPrimaryPhoto?.thumbnailDataUrl)
+          : undefined;
+        const appBaseUrl =
+          typeof window !== 'undefined'
+            ? `${window.location.origin}${window.location.pathname}`
+            : undefined;
+        const isShareableCard = pedigreeDocMode === 'shareable_card';
+        return (
+          <PrintPreviewModal
+            title={
+              isShareableCard
+                ? `Shareable Pedigree Card — ${subject.name}`
+                : `${generations}-Generation Pedigree — ${subject.name}`
+            }
+            filename={
+              isShareableCard
+                ? buildShareablePedigreeCardFileName(subject)
+                : `pedigree-${subject.tattoo || subject.id}-${generations}gen.htm`
+            }
+            htmlContent={
+              isShareableCard
+                ? generateShareablePedigreeCardHtml(
+                    subject,
+                    mergedPrintAnimals,
+                    speciesProfiles,
+                    settings,
+                    generations,
+                    resolvedSubjectPhotoForPrint,
+                    {
+                      ...pedigreePrintOptions,
+                      appBaseUrl,
+                      includeQrCode: Boolean(appBaseUrl),
+                    }
+                  )
+                : generateEvansHtmPedigree(
+                    subject,
+                    mergedPrintAnimals,
+                    speciesProfiles,
+                    settings,
+                    generations,
+                    resolvedSubjectPhotoForPrint,
+                    pedigreePrintOptions
+                  )
+            }
+            includePrimaryPhoto={settings.includePhotoOnPedigree}
+            onToggleIncludePrimaryPhoto={onToggleIncludePhotoOnPedigree}
+            pedigreePrintOptions={pedigreePrintOptions}
+            onChangePedigreePrintOptions={setPedigreePrintOptions}
+            pedigreeDocMode={pedigreeDocMode}
+            onChangePedigreeDocMode={setPedigreeDocMode}
+            breederLogoDataUrl={settings.breederLogoDataUrl}
+            onUpdateBreederLogo={onUpdateBreederLogo}
+            onDownloadPdf={
+              isShareableCard
+                ? undefined
+                : () =>
+                    buildAndDownloadPedigreePdf({
+                      subject,
+                      allAnimals: mergedPrintAnimals,
+                      speciesProfiles,
+                      settings,
+                      generations,
+                      printOptions: pedigreePrintOptions,
+                      primaryPhotoDataUrl: resolvedSubjectPhotoForPrint,
+                      pdfFilename: `pedigree-${subject.tattoo || subject.id}-${generations}gen.pdf`,
+                    })
+            }
+            headerNotice={<PedigreePrintNotice />}
+            onClose={() => {
+              setShowPrintModal(false);
+              setHydratedSubjectPhoto(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

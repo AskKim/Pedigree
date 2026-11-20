@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (37)
+## Logged Improvements (40)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -779,4 +779,65 @@ npm run lint && npm run build
 1. Restore `src/core/pairingMatrix.ts` and its unit tests in `src/core/__tests__/pairingMatrix.test.ts`.
 2. Restore `src/components/PairingComparisonMatrix.tsx` with anchor role toggle, candidate multi-select, COI/bottleneck/carrier/variety columns, and `ColorGeneticsNotice`.
 3. Mount `<PairingComparisonMatrix />` and `handleLoadPairingFromMatrix` inside `src/components/BreedingScreen.tsx`.
+
+### IMP-038: Color-Coded Allele Provenance, Unique-Ancestor Dimming & ARBA Registration Flags
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Color-code alleles by inheritance provenance (sire vs. dam vs. offspring vs. manual), dim unique non-convergent ancestors on pedigree trees to highlight linebred convergence, and flag Gen 0–3 pedigree nodes in red when missing ARBA registration fields would block registration.
+- **Summary:** Adds a pure TypeScript allele provenance classifier (`analyzeAlleleProvenance` in `geneticsEngine.ts`) and pedigree convergence + ARBA 3-generation registration evaluator (`pedigreeAnalysis.ts`), a reusable color-coded genotype renderer (`ColoredGenotypeDisplay.tsx`), Dim Unique convergence spotlighting and red ARBA registration deficiency overlays on `PedigreeScreen`, and provenance displays with legend across `HerdScreen` and `BreedingScreen`.
+- **Tracked Files:** `src/core/geneticsEngine.ts`, `src/core/pedigreeAnalysis.ts`, `src/core/__tests__/pedigreeAnalysis.test.ts`, `src/components/ColoredGenotypeDisplay.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/HerdScreen.tsx`, `src/components/BreedingScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/geneticsEngine.ts` must contain `analyzeAlleleProvenance`, `AlleleProvenanceSource`, `AnimalAlleleProvenanceResult` — *Pure TS allele provenance classifier must support Mendelian elimination, offspring inference, X-linked loci, and custom species isolation without DOM dependencies.*
+- `src/core/pedigreeAnalysis.ts` must contain `isArbaRegistrationSpecies`, `evaluateAnimalArbaRegistration`, `analyzePedigreeTree` — *Pure TS pedigree convergence and ARBA registration evaluator must scope ARBA rules to Rabbit/Cavy Gen 0–3 nodes and remain zero-DOM.*
+- `src/components/ColoredGenotypeDisplay.tsx` must contain `ColoredGenotypeDisplay`, `AlleleProvenanceLegend` — *Reusable provenance renderer must style Sire, Dam, Offspring, Manual, and Unverified alleles with accessible labels and legend.*
+- `src/components/PedigreeScreen.tsx` must contain `analyzePedigreeTree`, `analyzeAlleleProvenance`, `dimUniqueAncestors`, `showRegistrationFlags`, `ColoredGenotypeDisplay` — *PedigreeScreen must wire Dim Unique convergence spotlighting, ARBA registration flags, and color-coded node alleles.*
+- `src/components/HerdScreen.tsx` must contain `analyzeAlleleProvenance`, `ColoredGenotypeDisplay` — *HerdScreen Genetics & Allele Inference card must display color-coded allele provenance and uncommitted inference previews.*
+- `src/components/BreedingScreen.tsx` must contain `analyzeAlleleProvenance`, `ColoredGenotypeDisplay`, `AlleleProvenanceLegend` — *BreedingScreen Coat Color Punnett panel must display color-coded Sire/Dam allele provenance alongside locus pair highlights.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `analyzeAlleleProvenance` in `src/core/geneticsEngine.ts` and `src/core/pedigreeAnalysis.ts` with unit tests in `src/core/__tests__/pedigreeAnalysis.test.ts`.
+2. Restore `src/components/ColoredGenotypeDisplay.tsx` (`ColoredGenotypeDisplay` + `AlleleProvenanceLegend`).
+3. Keep Dim Unique, ARBA Reg Flags, and provenance wiring in `PedigreeScreen.tsx`, `HerdScreen.tsx`, and `BreedingScreen.tsx`.
+
+### IMP-039: Pedigree Print Orientation Toggle, Optional Breeder Logo, ARBA lbs.oz Notation & Direct Offline PDF Export
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Allow breeders to switch ARBA pedigrees between Landscape and Portrait 8.5"x11", attach a rabbitry/barn logo in the header, toggle ARBA lbs.oz decimal dot weights, and download a .PDF file directly 100% offline.
+- **Summary:** Adds Landscape/Portrait 8.5"x11" print orientation, optional barn/rabbitry raster logo header upload (`BarnSettings.breederLogoDataUrl`), ARBA `lbs.oz` dot weight notation (`formatWeightArbaLbsOzDot`, e.g., `10.04`), and a zero-dependency pure TypeScript 100% offline PDF 1.4 binary generator (`buildPedigreePdfBytes` in `pdfExporter.ts` + `webPdfActions.ts`) with direct Download .PDF in `PrintPreviewModal`.
+- **Tracked Files:** `src/core/models.ts`, `src/core/syncAndExports.ts`, `src/core/pdfExporter.ts`, `src/core/__tests__/pdfExporter.test.ts`, `src/utils/webPdfActions.ts`, `src/storage/webSqliteAdapter.ts`, `src/components/SettingsAndSyncScreen.tsx`, `src/components/PrintPreviewModal.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/HerdScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `breederLogoDataUrl`, `formatWeightArbaLbsOzDot`, `formatPedigreeWeight` — *BarnSettings must persist optional breederLogoDataUrl and models.ts must expose pure ARBA lbs.oz dot notation formatters.*
+- `src/core/syncAndExports.ts` must contain `PedigreePrintOrientation`, `arbaLbsOzDotNotation`, `showBreederLogo`, `barn-logo` — *generateEvansHtmPedigree must support Landscape/Portrait @page sizing, ARBA lbs.oz dot weights, and header logo rendering.*
+- `src/core/pdfExporter.ts` must contain `buildPedigreePdfBytes`, `PdfRasterImage`, `/DCTDecode` — *Pure TS offline PDF 1.4 generator must emit valid PDF binaries with JPEG XObjects and zero DOM dependencies.*
+- `src/components/PrintPreviewModal.tsx` must contain `onDownloadPdf`, `Download .PDF`, `ARBA lbs.oz (10.04)`, `Portrait (8.5` — *PrintPreviewModal must expose orientation toggle, lbs.oz dot toggle, logo controls, and direct Download .PDF action.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `breederLogoDataUrl`, `formatWeightArbaLbsOzDot`, and `formatPedigreeWeight` in `src/core/models.ts` and `webSqliteAdapter.ts` extra_settings_json.
+2. Restore `src/core/pdfExporter.ts`, `src/utils/webPdfActions.ts`, and `src/core/__tests__/pdfExporter.test.ts`.
+3. Keep orientation, ARBA lbs.oz, logo upload/toggle, and `onDownloadPdf` wired across `SettingsAndSyncScreen.tsx`, `PrintPreviewModal.tsx`, `PedigreeScreen.tsx`, and `HerdScreen.tsx`.
+
+### IMP-040: 8-Generation Pedigree Tree Mode, Custom Print Styling Presets & Shareable HTML Pedigree Cards
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Let breeders view and export up to 8 generations on demand, customize pedigree print borders, colors, and layouts safely on crisp white paper, and export lightweight standalone shareable pedigree HTML cards.
+- **Summary:** Extends pedigree traversal, SQLite neighborhood loading, Evans .HTM output, and pure-TS offline PDF 1.4 export (auto-paginating 7-gen into 2 sheets and 8-gen into 4 grandparent quadrants) up to 8 generations on demand while keeping startup defaults capped at 3–6G; adds white-paper-locked color/border/layout print presets (`pedigreePrintStyles.ts`) and lightweight standalone mobile `.HTML` shareable pedigree cards (`shareablePedigreeCard.ts`).
+- **Tracked Files:** `src/core/models.ts`, `src/core/pedigreeCalculator.ts`, `src/core/pedigreePrintStyles.ts`, `src/core/shareablePedigreeCard.ts`, `src/core/syncAndExports.ts`, `src/core/pdfExporter.ts`, `src/core/exporters/exporterTypes.ts`, `src/core/exporters/registry.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/PrintPreviewModal.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/HerdScreen.tsx`, `src/components/ImportExportHubScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `DefaultPedigreeGenerations`, `PedigreeGenerationDepth`, `normalizePedigreeGenerationDepth`, `normalizeDefaultPedigreeGenerations` — *models.ts must separate 3–6G startup defaults from on-demand 3–8G PedigreeGenerationDepth.*
+- `src/core/pedigreePrintStyles.ts` must contain `PEDIGREE_COLOR_PRESETS`, `PEDIGREE_BORDER_STYLES`, `PEDIGREE_LAYOUT_PRESETS`, `resolvePedigreePrintTheme` — *Pure TS print preset engine must define color, border, and layout presets locked to #FFFFFF paper.*
+- `src/core/shareablePedigreeCard.ts` must contain `generateShareablePedigreeCardHtml`, `buildShareablePedigreeCardFileName`, `ShareablePedigreeCardOptions` — *Pure TS shareable HTML pedigree card generator must render zero-DOM self-contained cards with collapsible Gen 4–8 ancestry.*
+- `src/core/exporters/registry.ts` must contain `shareable-pedigree-card`, `generateShareablePedigreeCardHtml` — *Exporters registry must expose Shareable Pedigree Card (.HTML) alongside 8-gen Evans .HTM.*
+- `src/components/PrintPreviewModal.tsx` must contain `pedigreeDocMode`, `onChangePedigreeDocMode`, `PEDIGREE_COLOR_PRESETS`, `PEDIGREE_BORDER_STYLES`, `PEDIGREE_LAYOUT_PRESETS` — *PrintPreviewModal must allow switching between Formal Certificate and Shareable Card and picking color, border, and layout presets.*
+- `src/storage/webSqliteAdapter.ts` must contain `Math.min(8, Math.max(0, Math.floor(maxDepth)))`, `MAX_RECORDS = 512` — *SQLite neighborhood loader must fetch up to 8 generations with expanded ancestor node cap (512).*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `PedigreeGenerationDepth` (`3..8`) and normalizers in `src/core/models.ts` plus Gen 7–8 `slotRoleLabel`/`buildPedigreeSlots` in `src/core/pedigreeCalculator.ts`.
+2. Restore `src/core/pedigreePrintStyles.ts`, `src/core/shareablePedigreeCard.ts`, multi-page 7–8G sheets in `src/core/pdfExporter.ts`, and `shareable-pedigree-card` in `src/core/exporters/registry.ts`.
+3. Preserve 7/8-gen toggles, style preset selectors, and `pedigreeDocMode` wiring across `webSqliteAdapter.ts`, `useBarnStore.ts`, `PrintPreviewModal.tsx`, `PedigreeScreen.tsx`, `HerdScreen.tsx`, and `ImportExportHubScreen.tsx`.
 

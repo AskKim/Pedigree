@@ -2427,6 +2427,237 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Mount `<PairingComparisonMatrix />` and `handleLoadPairingFromMatrix` inside `src/components/BreedingScreen.tsx`.',
     ],
   },
+  {
+    id: 'IMP-038',
+    title: 'Color-Coded Allele Provenance, Unique-Ancestor Dimming & ARBA Registration Flags',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Adds a pure TypeScript allele provenance classifier (`analyzeAlleleProvenance` in `geneticsEngine.ts`) and pedigree convergence + ARBA 3-generation registration evaluator (`pedigreeAnalysis.ts`), a reusable color-coded genotype renderer (`ColoredGenotypeDisplay.tsx`), Dim Unique convergence spotlighting and red ARBA registration deficiency overlays on `PedigreeScreen`, and provenance displays with legend across `HerdScreen` and `BreedingScreen`.',
+    userIntent:
+      'Color-code alleles by inheritance provenance (sire vs. dam vs. offspring vs. manual), dim unique non-convergent ancestors on pedigree trees to highlight linebred convergence, and flag Gen 0–3 pedigree nodes in red when missing ARBA registration fields would block registration.',
+    files: [
+      'src/core/geneticsEngine.ts',
+      'src/core/pedigreeAnalysis.ts',
+      'src/core/__tests__/pedigreeAnalysis.test.ts',
+      'src/components/ColoredGenotypeDisplay.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/BreedingScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/geneticsEngine.ts',
+        requiredSubstrings: [
+          'analyzeAlleleProvenance',
+          'AlleleProvenanceSource',
+          'AnimalAlleleProvenanceResult',
+        ],
+        rationale:
+          'Pure TS allele provenance classifier must support Mendelian elimination, offspring inference, X-linked loci, and custom species isolation without DOM dependencies.',
+      },
+      {
+        filePath: 'src/core/pedigreeAnalysis.ts',
+        requiredSubstrings: [
+          'isArbaRegistrationSpecies',
+          'evaluateAnimalArbaRegistration',
+          'analyzePedigreeTree',
+        ],
+        rationale:
+          'Pure TS pedigree convergence and ARBA registration evaluator must scope ARBA rules to Rabbit/Cavy Gen 0–3 nodes and remain zero-DOM.',
+      },
+      {
+        filePath: 'src/components/ColoredGenotypeDisplay.tsx',
+        requiredSubstrings: ['ColoredGenotypeDisplay', 'AlleleProvenanceLegend'],
+        rationale:
+          'Reusable provenance renderer must style Sire, Dam, Offspring, Manual, and Unverified alleles with accessible labels and legend.',
+      },
+      {
+        filePath: 'src/components/PedigreeScreen.tsx',
+        requiredSubstrings: [
+          'analyzePedigreeTree',
+          'analyzeAlleleProvenance',
+          'dimUniqueAncestors',
+          'showRegistrationFlags',
+          'ColoredGenotypeDisplay',
+        ],
+        rationale:
+          'PedigreeScreen must wire Dim Unique convergence spotlighting, ARBA registration flags, and color-coded node alleles.',
+      },
+      {
+        filePath: 'src/components/HerdScreen.tsx',
+        requiredSubstrings: ['analyzeAlleleProvenance', 'ColoredGenotypeDisplay'],
+        rationale:
+          'HerdScreen Genetics & Allele Inference card must display color-coded allele provenance and uncommitted inference previews.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: [
+          'analyzeAlleleProvenance',
+          'ColoredGenotypeDisplay',
+          'AlleleProvenanceLegend',
+        ],
+        rationale:
+          'BreedingScreen Coat Color Punnett panel must display color-coded Sire/Dam allele provenance alongside locus pair highlights.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `analyzeAlleleProvenance` in `src/core/geneticsEngine.ts` and `src/core/pedigreeAnalysis.ts` with unit tests in `src/core/__tests__/pedigreeAnalysis.test.ts`.',
+      'Restore `src/components/ColoredGenotypeDisplay.tsx` (`ColoredGenotypeDisplay` + `AlleleProvenanceLegend`).',
+      'Keep Dim Unique, ARBA Reg Flags, and provenance wiring in `PedigreeScreen.tsx`, `HerdScreen.tsx`, and `BreedingScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-039',
+    title: 'Pedigree Print Orientation Toggle, Optional Breeder Logo, ARBA lbs.oz Notation & Direct Offline PDF Export',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Adds Landscape/Portrait 8.5"x11" print orientation, optional barn/rabbitry raster logo header upload (`BarnSettings.breederLogoDataUrl`), ARBA `lbs.oz` dot weight notation (`formatWeightArbaLbsOzDot`, e.g., `10.04`), and a zero-dependency pure TypeScript 100% offline PDF 1.4 binary generator (`buildPedigreePdfBytes` in `pdfExporter.ts` + `webPdfActions.ts`) with direct Download .PDF in `PrintPreviewModal`.',
+    userIntent:
+      'Allow breeders to switch ARBA pedigrees between Landscape and Portrait 8.5"x11", attach a rabbitry/barn logo in the header, toggle ARBA lbs.oz decimal dot weights, and download a .PDF file directly 100% offline.',
+    files: [
+      'src/core/models.ts',
+      'src/core/syncAndExports.ts',
+      'src/core/pdfExporter.ts',
+      'src/core/__tests__/pdfExporter.test.ts',
+      'src/utils/webPdfActions.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/components/SettingsAndSyncScreen.tsx',
+      'src/components/PrintPreviewModal.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/HerdScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/models.ts',
+        requiredSubstrings: [
+          'breederLogoDataUrl',
+          'formatWeightArbaLbsOzDot',
+          'formatPedigreeWeight',
+        ],
+        rationale:
+          'BarnSettings must persist optional breederLogoDataUrl and models.ts must expose pure ARBA lbs.oz dot notation formatters.',
+      },
+      {
+        filePath: 'src/core/syncAndExports.ts',
+        requiredSubstrings: [
+          'PedigreePrintOrientation',
+          'arbaLbsOzDotNotation',
+          'showBreederLogo',
+          'barn-logo',
+        ],
+        rationale:
+          'generateEvansHtmPedigree must support Landscape/Portrait @page sizing, ARBA lbs.oz dot weights, and header logo rendering.',
+      },
+      {
+        filePath: 'src/core/pdfExporter.ts',
+        requiredSubstrings: ['buildPedigreePdfBytes', 'PdfRasterImage', '/DCTDecode'],
+        rationale:
+          'Pure TS offline PDF 1.4 generator must emit valid PDF binaries with JPEG XObjects and zero DOM dependencies.',
+      },
+      {
+        filePath: 'src/components/PrintPreviewModal.tsx',
+        requiredSubstrings: ['onDownloadPdf', 'Download .PDF', 'ARBA lbs.oz (10.04)', 'Portrait (8.5'],
+        rationale:
+          'PrintPreviewModal must expose orientation toggle, lbs.oz dot toggle, logo controls, and direct Download .PDF action.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `breederLogoDataUrl`, `formatWeightArbaLbsOzDot`, and `formatPedigreeWeight` in `src/core/models.ts` and `webSqliteAdapter.ts` extra_settings_json.',
+      'Restore `src/core/pdfExporter.ts`, `src/utils/webPdfActions.ts`, and `src/core/__tests__/pdfExporter.test.ts`.',
+      'Keep orientation, ARBA lbs.oz, logo upload/toggle, and `onDownloadPdf` wired across `SettingsAndSyncScreen.tsx`, `PrintPreviewModal.tsx`, `PedigreeScreen.tsx`, and `HerdScreen.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-040',
+    title: '8-Generation Pedigree Tree Mode, Custom Print Styling Presets & Shareable HTML Pedigree Cards',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Extends pedigree traversal, SQLite neighborhood loading, Evans .HTM output, and pure-TS offline PDF 1.4 export (auto-paginating 7-gen into 2 sheets and 8-gen into 4 grandparent quadrants) up to 8 generations on demand while keeping startup defaults capped at 3–6G; adds white-paper-locked color/border/layout print presets (`pedigreePrintStyles.ts`) and lightweight standalone mobile `.HTML` shareable pedigree cards (`shareablePedigreeCard.ts`).',
+    userIntent:
+      'Let breeders view and export up to 8 generations on demand, customize pedigree print borders, colors, and layouts safely on crisp white paper, and export lightweight standalone shareable pedigree HTML cards.',
+    files: [
+      'src/core/models.ts',
+      'src/core/pedigreeCalculator.ts',
+      'src/core/pedigreePrintStyles.ts',
+      'src/core/shareablePedigreeCard.ts',
+      'src/core/syncAndExports.ts',
+      'src/core/pdfExporter.ts',
+      'src/core/exporters/exporterTypes.ts',
+      'src/core/exporters/registry.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/PrintPreviewModal.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/HerdScreen.tsx',
+      'src/components/ImportExportHubScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/models.ts',
+        requiredSubstrings: [
+          'DefaultPedigreeGenerations',
+          'PedigreeGenerationDepth',
+          'normalizePedigreeGenerationDepth',
+          'normalizeDefaultPedigreeGenerations',
+        ],
+        rationale:
+          'models.ts must separate 3–6G startup defaults from on-demand 3–8G PedigreeGenerationDepth.',
+      },
+      {
+        filePath: 'src/core/pedigreePrintStyles.ts',
+        requiredSubstrings: [
+          'PEDIGREE_COLOR_PRESETS',
+          'PEDIGREE_BORDER_STYLES',
+          'PEDIGREE_LAYOUT_PRESETS',
+          'resolvePedigreePrintTheme',
+        ],
+        rationale:
+          'Pure TS print preset engine must define color, border, and layout presets locked to #FFFFFF paper.',
+      },
+      {
+        filePath: 'src/core/shareablePedigreeCard.ts',
+        requiredSubstrings: [
+          'generateShareablePedigreeCardHtml',
+          'buildShareablePedigreeCardFileName',
+          'ShareablePedigreeCardOptions',
+        ],
+        rationale:
+          'Pure TS shareable HTML pedigree card generator must render zero-DOM self-contained cards with collapsible Gen 4–8 ancestry.',
+      },
+      {
+        filePath: 'src/core/exporters/registry.ts',
+        requiredSubstrings: ['shareable-pedigree-card', 'generateShareablePedigreeCardHtml'],
+        rationale:
+          'Exporters registry must expose Shareable Pedigree Card (.HTML) alongside 8-gen Evans .HTM.',
+      },
+      {
+        filePath: 'src/components/PrintPreviewModal.tsx',
+        requiredSubstrings: [
+          'pedigreeDocMode',
+          'onChangePedigreeDocMode',
+          'PEDIGREE_COLOR_PRESETS',
+          'PEDIGREE_BORDER_STYLES',
+          'PEDIGREE_LAYOUT_PRESETS',
+        ],
+        rationale:
+          'PrintPreviewModal must allow switching between Formal Certificate and Shareable Card and picking color, border, and layout presets.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: ['Math.min(8, Math.max(0, Math.floor(maxDepth)))', 'MAX_RECORDS = 512'],
+        rationale:
+          'SQLite neighborhood loader must fetch up to 8 generations with expanded ancestor node cap (512).',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `PedigreeGenerationDepth` (`3..8`) and normalizers in `src/core/models.ts` plus Gen 7–8 `slotRoleLabel`/`buildPedigreeSlots` in `src/core/pedigreeCalculator.ts`.',
+      'Restore `src/core/pedigreePrintStyles.ts`, `src/core/shareablePedigreeCard.ts`, multi-page 7–8G sheets in `src/core/pdfExporter.ts`, and `shareable-pedigree-card` in `src/core/exporters/registry.ts`.',
+      'Preserve 7/8-gen toggles, style preset selectors, and `pedigreeDocMode` wiring across `webSqliteAdapter.ts`, `useBarnStore.ts`, `PrintPreviewModal.tsx`, `PedigreeScreen.tsx`, `HerdScreen.tsx`, and `ImportExportHubScreen.tsx`.',
+    ],
+  },
 ];
 
 /**

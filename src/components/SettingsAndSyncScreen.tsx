@@ -17,6 +17,7 @@ import {
   FolderSync,
   HardDrive,
   HelpCircle,
+  Image as ImageIcon,
   LogOut,
   Moon,
   Palette,
@@ -27,8 +28,9 @@ import {
   Sun,
   Terminal,
   Upload,
+  X,
 } from 'lucide-react';
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { BackupStatusEvaluation } from '../core/backupStatus';
 import { VaultBackupMetadata } from '../core/backupVault';
 import { CALENDAR_ALARM_LEAD_OPTIONS } from '../core/calendarExport';
@@ -58,7 +60,9 @@ import {
   DEFAULT_WARM_THEME_COLORS,
   WARM_THEME_PRESETS,
 } from '../core/themePalette';
+import { sanitizeSafeRasterImageDataUrl } from '../core/inputSanitization';
 import { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
+import { optimizeImageFile } from '../storage/webImageOptimizer';
 import {
   RollingBackupMeta,
   StorageProtectionStatus,
@@ -167,6 +171,12 @@ export function SettingsAndSyncScreen({
   const [includePhotoOnPedigree, setIncludePhotoOnPedigree] = useState<boolean>(
     Boolean(settings.includePhotoOnPedigree)
   );
+  const [breederLogoDataUrl, setBreederLogoDataUrl] = useState<string>(
+    sanitizeSafeRasterImageDataUrl(settings.breederLogoDataUrl)
+  );
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [autoOffloadRetiredToOpfs, setAutoOffloadRetiredToOpfs] = useState<boolean>(
     Boolean(settings.autoOffloadRetiredToOpfs)
   );
@@ -197,6 +207,7 @@ export function SettingsAndSyncScreen({
     setImageOptimizationPreset(settings.imageOptimizationPreset || 'balanced');
     setShowHomeSummaryGrid(settings.showHomeSummaryGrid !== false);
     setIncludePhotoOnPedigree(Boolean(settings.includePhotoOnPedigree));
+    setBreederLogoDataUrl(sanitizeSafeRasterImageDataUrl(settings.breederLogoDataUrl));
     setAutoOffloadRetiredToOpfs(Boolean(settings.autoOffloadRetiredToOpfs));
   }, [settings]);
 
@@ -256,8 +267,38 @@ export function SettingsAndSyncScreen({
       imageOptimizationPreset,
       showHomeSummaryGrid,
       includePhotoOnPedigree,
+      breederLogoDataUrl: breederLogoDataUrl || undefined,
       autoOffloadRetiredToOpfs,
     });
+  };
+
+  const handleUploadBreederLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLogoError(null);
+    setLogoUploading(true);
+    try {
+      const optimized = await optimizeImageFile(file, 'compact');
+      const nextUrl = sanitizeSafeRasterImageDataUrl(
+        optimized.thumbnailDataUrl || optimized.dataUrl
+      );
+      if (!nextUrl) {
+        throw new Error('Could not process the selected logo image.');
+      }
+      setBreederLogoDataUrl(nextUrl);
+      onUpdateSettings({ breederLogoDataUrl: nextUrl }, { silent: true });
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : 'Could not optimize logo image.');
+    } finally {
+      setLogoUploading(false);
+    }
+  };
+
+  const handleClearBreederLogo = () => {
+    setLogoError(null);
+    setBreederLogoDataUrl('');
+    onUpdateSettings({ breederLogoDataUrl: undefined }, { silent: true });
   };
 
   const handleDownloadTimestampedFullBackup = async () => {
@@ -432,6 +473,69 @@ export function SettingsAndSyncScreen({
                   className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
                 />
               </div>
+            </div>
+
+            {/* Optional Barn / Rabbitry Logo for Printed Pedigrees */}
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {breederLogoDataUrl ? (
+                    <img
+                      src={breederLogoDataUrl}
+                      alt={`${barnName || 'Barn'} logo`}
+                      className="h-11 max-w-[110px] w-auto object-contain rounded-lg border border-[var(--barn-border)] bg-white p-1 shrink-0"
+                    />
+                  ) : (
+                    <div className="h-11 w-11 rounded-lg border border-dashed border-[var(--barn-border)] bg-[var(--barn-surface)] flex items-center justify-center shrink-0 text-[var(--barn-muted)]">
+                      <ImageIcon className="w-5 h-5" aria-hidden="true" />
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-[var(--barn-ink)]">
+                      Barn / Rabbitry Logo (Pedigree Header)
+                    </div>
+                    <p className="text-[11px] text-[var(--barn-muted)]">
+                      Optional raster logo (PNG/JPG/WebP) printed next to your barn title on formal pedigrees &amp; PDFs.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    onChange={handleUploadBreederLogo}
+                    className="sr-only"
+                    aria-label="Upload barn or rabbitry logo"
+                  />
+                  <button
+                    type="button"
+                    disabled={logoUploading}
+                    onClick={() => logoInputRef.current?.click()}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                    {logoUploading ? 'Optimizing...' : breederLogoDataUrl ? 'Change Logo' : 'Upload Logo'}
+                  </button>
+                  {breederLogoDataUrl && (
+                    <button
+                      type="button"
+                      onClick={handleClearBreederLogo}
+                      aria-label="Remove barn logo"
+                      className="min-h-[36px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-danger)]/10 text-xs font-medium text-[var(--barn-danger)] inline-flex items-center gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+              {logoError && (
+                <p role="alert" className="text-[11px] text-[var(--barn-danger)]">
+                  {logoError}
+                </p>
+              )}
             </div>
 
             {/* Image Storage Optimization Profile */}

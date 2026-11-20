@@ -13,6 +13,7 @@
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import {
+  sanitizeSafeRasterImageDataUrl,
   validateSqliteFileHeader,
 } from '../core/inputSanitization';
 import {
@@ -1143,6 +1144,10 @@ export class WebSqliteAdapter implements StorageAdapter {
               ? extraSettings.speciesHubBlockOrder
               : {},
           includePhotoOnPedigree: Boolean(extraSettings.includePhotoOnPedigree),
+          breederLogoDataUrl:
+            typeof extraSettings.breederLogoDataUrl === 'string'
+              ? sanitizeSafeRasterImageDataUrl(extraSettings.breederLogoDataUrl) || undefined
+              : undefined,
           calendarSync: normalizeCalendarSyncSettings(extraSettings.calendarSync),
           lastBackupMeta:
             extraSettings.lastBackupMeta && typeof extraSettings.lastBackupMeta === 'object'
@@ -1577,10 +1582,10 @@ export class WebSqliteAdapter implements StorageAdapter {
   async queryPedigreeNeighborhood(rootIds: string[], maxDepth: number): Promise<Animal[]> {
     const cleanRoots = Array.from(new Set(rootIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
     if (cleanRoots.length === 0) return [];
-    const boundedDepth = Math.min(6, Math.max(0, Math.floor(maxDepth)));
+    const boundedDepth = Math.min(8, Math.max(0, Math.floor(maxDepth)));
     await this.syncFromPersistedStorageIfStale();
 
-    const MAX_RECORDS = 256;
+    const MAX_RECORDS = 512;
     const collected: Animal[] = [];
     const visited = new Set<string>();
     let frontier = cleanRoots;
@@ -1821,6 +1826,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       dismissedMemoAlertSignatures: s.dismissedMemoAlertSignatures ?? {},
       speciesHubBlockOrder: s.speciesHubBlockOrder ?? {},
       includePhotoOnPedigree: s.includePhotoOnPedigree ?? false,
+      breederLogoDataUrl: s.breederLogoDataUrl
+        ? sanitizeSafeRasterImageDataUrl(s.breederLogoDataUrl) || undefined
+        : undefined,
       calendarSync: s.calendarSync ? normalizeCalendarSyncSettings(s.calendarSync) : undefined,
       lastBackupMeta: s.lastBackupMeta ?? undefined,
       backupReminderSnoozedUntilMs: s.backupReminderSnoozedUntilMs ?? undefined,

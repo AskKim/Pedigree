@@ -10,16 +10,45 @@
  * or download.
  */
 
-import { AlertCircle, Download, Loader2, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  Download,
+  FileDown,
+  Loader2,
+  Printer,
+  Share2,
+  ShieldAlert,
+  Upload,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import React, { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
 import {
   BATCH_PRINT_LAYOUTS,
   BatchPrintOptions,
   getBatchPrintLayoutSpec,
 } from '../core/batchPrint';
+import { sanitizeSafeRasterImageDataUrl } from '../core/inputSanitization';
+import {
+  PEDIGREE_BORDER_STYLES,
+  PEDIGREE_COLOR_PRESETS,
+  PEDIGREE_LAYOUT_PRESETS,
+  PEDIGREE_QUICK_STYLE_PRESETS,
+  PedigreeBorderStyleId,
+  PedigreeColorPresetId,
+  PedigreeLayoutPresetId,
+} from '../core/pedigreePrintStyles';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { pedigreeBridge } from '../native/pedigreeBridge';
+import {
+  dismissAsyncErrorToast,
+  emitAsyncErrorToast,
+  isMemoryLikeError,
+  logDiagnosticEvent,
+} from '../storage/crashLogger';
+import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
@@ -29,6 +58,91 @@ const MAX_PREVIEW_ZOOM = 2.5;
 
 function clampPreviewZoom(value: number): number {
   return Math.min(MAX_PREVIEW_ZOOM, Math.max(MIN_PREVIEW_ZOOM, value));
+}
+
+export type PrintPreviewFileActionKind = 'download' | 'share' | 'pdf';
+
+export interface PrintPreviewFileError {
+  action: PrintPreviewFileActionKind;
+  title: string;
+  detail: string;
+}
+
+export function isPrintPreviewAbortError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { name?: unknown }).name === 'AbortError';
+}
+
+export function formatPrintPreviewFileError(
+  action: PrintPreviewFileActionKind,
+  filename: string,
+  err: unknown
+): PrintPreviewFileError {
+  const rawDetail =
+    err instanceof Error && err.message.trim()
+      ? err.message.trim()
+      : typeof err === 'string' && err.trim()
+      ? err.trim()
+      : 'An unexpected file export error occurred.';
+
+  const safeName = filename.trim() || (action === 'pdf' ? 'document.pdf' : 'document.htm');
+  const title =
+    action === 'share'
+      ? 'Could Not Share .HTM File'
+      : action === 'pdf'
+      ? 'Could Not Export .PDF File'
+      : 'Could Not Download .HTM File';
+  const detail =
+    action === 'share'
+      ? `Sharing "${safeName}" failed (${rawDetail}). Try Download .HTM or Print / Save PDF.`
+      : action === 'pdf'
+      ? `Exporting "${safeName}" as PDF failed (${rawDetail}). Try Print / Save PDF or Download .HTM.`
+      : `Downloading "${safeName}" failed (${rawDetail}). Free device storage or try Print / Save PDF.`;
+
+  return { action, title, detail };
+}
+
+export async function runPrintPreviewFileAction(params: {
+  action: PrintPreviewFileActionKind;
+  filename: string;
+  task: () => Promise<unknown>;
+  isMounted: () => boolean;
+  onBeforeStart: () => void;
+  onError: (err: PrintPreviewFileError, toastId: string | null) => void;
+  onFinish: () => void;
+}): Promise<boolean> {
+  params.onBeforeStart();
+  try {
+    await params.task();
+    return true;
+  } catch (err: unknown) {
+    if (isPrintPreviewAbortError(err)) {
+      return false;
+    }
+    const formatted = formatPrintPreviewFileError(params.action, params.filename, err);
+    const memoryLike = isMemoryLikeError(err);
+    logDiagnosticEvent({
+      level: 'error',
+      category: memoryLike ? 'memory' : 'storage',
+      message: `${formatted.title}: ${formatted.detail}`,
+      error: err,
+      details: { action: params.action, filename: params.filename },
+    });
+    const toast = emitAsyncErrorToast({
+      title: formatted.title,
+      detail: formatted.detail,
+      severity: 'error',
+      sticky: true,
+      category: memoryLike ? 'memory' : 'storage',
+      canOpenDiagnostics: true,
+    });
+    if (params.isMounted()) {
+      params.onError(formatted, toast?.id ?? null);
+    }
+    return false;
+  } finally {
+    params.onFinish();
+  }
 }
 
 interface PrintPreviewModalProps {
@@ -42,6 +156,11 @@ interface PrintPreviewModalProps {
   onToggleIncludeCageCardQr?: (include: boolean) => void;
   pedigreePrintOptions?: PedigreePrintOptions;
   onChangePedigreePrintOptions?: (next: PedigreePrintOptions) => void;
+  pedigreeDocMode?: 'formal_certificate' | 'shareable_card';
+  onChangePedigreeDocMode?: (mode: 'formal_certificate' | 'shareable_card') => void;
+  breederLogoDataUrl?: string;
+  onUpdateBreederLogo?: (dataUrl: string | undefined) => void;
+  onDownloadPdf?: () => Promise<void>;
   binderPrintOptions?: BarnBinderOptions;
   onChangeBinderPrintOptions?: (next: BarnBinderOptions) => void;
   binderArchivedCount?: number;
@@ -64,6 +183,11 @@ export function PrintPreviewModal({
   onToggleIncludeCageCardQr,
   pedigreePrintOptions,
   onChangePedigreePrintOptions,
+  pedigreeDocMode = 'formal_certificate',
+  onChangePedigreeDocMode,
+  breederLogoDataUrl,
+  onUpdateBreederLogo,
+  onDownloadPdf,
   binderPrintOptions,
   onChangeBinderPrintOptions,
   binderArchivedCount = 0,
@@ -82,6 +206,10 @@ export function PrintPreviewModal({
   const [zoom, setZoom] = useState<number>(1);
   const [fitZoom, setFitZoom] = useState<number>(1);
   const [printBlockedMessage, setPrintBlockedMessage] = useState<string | null>(null);
+  const [fileActionBusy, setFileActionBusy] = useState<PrintPreviewFileActionKind | null>(null);
+  const [fileActionError, setFileActionError] = useState<PrintPreviewFileError | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [docSize, setDocSize] = useState<{ width: number; height: number }>({
     width: 980,
     height: 760,
@@ -91,6 +219,9 @@ export function PrintPreviewModal({
   const docSizeRef = useRef(docSize);
   docSizeRef.current = docSize;
 
+  const isMountedRef = useRef(true);
+  const fileActionInFlightRef = useRef(false);
+  const lastFileToastIdRef = useRef<string | null>(null);
   const initializedContentRef = useRef<string | null>(null);
   const wheelSyncTimerRef = useRef<number | null>(null);
   const printFallbackTimerRef = useRef<number | null>(null);
@@ -100,7 +231,9 @@ export function PrintPreviewModal({
   const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (wheelSyncTimerRef.current !== null) {
         window.clearTimeout(wheelSyncTimerRef.current);
       }
@@ -388,11 +521,104 @@ export function PrintPreviewModal({
     cleanupDocListenersRef.current = attachPinchAndWheelListeners(doc, true);
   };
 
-  const handleDownloadHtm = async () => {
+  const dismissFileActionError = useCallback(() => {
+    setFileActionError(null);
+    if (lastFileToastIdRef.current) {
+      dismissAsyncErrorToast(lastFileToastIdRef.current);
+      lastFileToastIdRef.current = null;
+    }
+  }, []);
+
+  const executeFileAction = async (
+    action: PrintPreviewFileActionKind,
+    task: () => Promise<unknown>,
+    overrideFilename?: string
+  ) => {
+    if (fileActionInFlightRef.current) return;
+    fileActionInFlightRef.current = true;
+    await runPrintPreviewFileAction({
+      action,
+      filename: overrideFilename || filename,
+      task,
+      isMounted: () => isMountedRef.current,
+      onBeforeStart: () => {
+        dismissFileActionError();
+        setFileActionBusy(action);
+      },
+      onError: (formatted, toastId) => {
+        lastFileToastIdRef.current = toastId;
+        setFileActionError(formatted);
+      },
+      onFinish: () => {
+        fileActionInFlightRef.current = false;
+        if (isMountedRef.current) {
+          setFileActionBusy(null);
+        }
+      },
+    });
+  };
+
+  const handleDownloadHtm = () =>
+    executeFileAction('download', () => downloadTextFile(filename, htmlContent, 'text/html'));
+
+  const pdfFilename = useMemo(
+    () =>
+      filename.toLowerCase().endsWith('.pdf')
+        ? filename
+        : `${filename.replace(/\.html?$/i, '')}.pdf`,
+    [filename]
+  );
+
+  const handleDownloadPdf = () => {
+    if (!onDownloadPdf) return;
+    return executeFileAction('pdf', onDownloadPdf, pdfFilename);
+  };
+
+  const effectiveBreederLogoUrl = useMemo(
+    () =>
+      sanitizeSafeRasterImageDataUrl(
+        pedigreePrintOptions?.breederLogoDataUrl !== undefined
+          ? pedigreePrintOptions.breederLogoDataUrl
+          : breederLogoDataUrl
+      ),
+    [pedigreePrintOptions?.breederLogoDataUrl, breederLogoDataUrl]
+  );
+
+  const handleUploadPreviewLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !onChangePedigreePrintOptions || !pedigreePrintOptions) return;
+    dismissFileActionError();
+    setLogoUploading(true);
     try {
-      await downloadTextFile(filename, htmlContent, 'text/html');
-    } catch {
-      // Download error handled safely without unhandled rejection
+      const optimized = await optimizeImageFile(file, 'compact');
+      const nextUrl = sanitizeSafeRasterImageDataUrl(
+        optimized.thumbnailDataUrl || optimized.dataUrl
+      );
+      if (!nextUrl) {
+        throw new Error('Could not process the selected logo image.');
+      }
+      onUpdateBreederLogo?.(nextUrl);
+      onChangePedigreePrintOptions({
+        ...pedigreePrintOptions,
+        showBreederLogo: true,
+        breederLogoDataUrl: nextUrl,
+      });
+    } catch (err) {
+      if (isMountedRef.current) {
+        setFileActionError({
+          action: 'download',
+          title: 'Could Not Load Barn Logo',
+          detail:
+            err instanceof Error
+              ? err.message
+              : 'Please select a valid PNG, JPG, or WebP logo image.',
+        });
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setLogoUploading(false);
+      }
     }
   };
 
@@ -407,18 +633,15 @@ export function PrintPreviewModal({
     }
   }, [filename]);
 
-  const handleShareHtm = async () => {
-    try {
-      await shareTextFileOrDownload({
+  const handleShareHtm = () =>
+    executeFileAction('share', () =>
+      shareTextFileOrDownload({
         filename,
         content: htmlContent,
         mimeType: 'text/html',
         title,
-      });
-    } catch {
-      // Fallback handled cleanly
-    }
-  };
+      })
+    );
 
   const handlePrint = () => {
     setPrintBlockedMessage(null);
@@ -715,7 +938,8 @@ export function PrintPreviewModal({
             <button
               type="button"
               onClick={handleShareHtm}
-              disabled={!canShareHtml}
+              disabled={!canShareHtml || fileActionBusy !== null}
+              aria-busy={fileActionBusy === 'share'}
               aria-describedby={!canShareHtml ? shareReasonId : undefined}
               title={
                 canShareHtml
@@ -723,13 +947,17 @@ export function PrintPreviewModal({
                   : 'Native file sharing is unavailable in this browser — use Download .HTM instead.'
               }
               className={`min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
-                canShareHtml
+                canShareHtml && fileActionBusy === null
                   ? 'hover:bg-[var(--barn-subtle)]'
                   : 'bg-[var(--barn-canvas)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
               }`}
             >
-              <Share2 className="w-4 h-4" aria-hidden="true" />
-              Share .HTM
+              {fileActionBusy === 'share' ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Share2 className="w-4 h-4" aria-hidden="true" />
+              )}
+              {fileActionBusy === 'share' ? 'Sharing...' : 'Share .HTM'}
             </button>
             {!canShareHtml && (
               <span id={shareReasonId} className="sr-only">
@@ -739,11 +967,42 @@ export function PrintPreviewModal({
             <button
               type="button"
               onClick={handleDownloadHtm}
-              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              disabled={fileActionBusy !== null}
+              aria-busy={fileActionBusy === 'download'}
+              className={`min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
+                fileActionBusy === null
+                  ? 'hover:bg-[var(--barn-subtle)]'
+                  : 'opacity-60 cursor-not-allowed'
+              }`}
             >
-              <Download className="w-4 h-4" aria-hidden="true" />
-              Download .HTM
+              {fileActionBusy === 'download' ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Download className="w-4 h-4" aria-hidden="true" />
+              )}
+              {fileActionBusy === 'download' ? 'Saving...' : 'Download .HTM'}
             </button>
+            {onDownloadPdf && (
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={fileActionBusy !== null}
+                aria-busy={fileActionBusy === 'pdf'}
+                title="Generate and download a 100% offline .PDF file directly"
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
+                  fileActionBusy === null
+                    ? 'hover:bg-[var(--barn-subtle)]'
+                    : 'opacity-60 cursor-not-allowed'
+                }`}
+              >
+                {fileActionBusy === 'pdf' ? (
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <FileDown className="w-4 h-4" aria-hidden="true" />
+                )}
+                {fileActionBusy === 'pdf' ? 'Building PDF...' : 'Download .PDF'}
+              </button>
+            )}
             <button
               type="button"
               onClick={handlePrint}
@@ -764,7 +1023,179 @@ export function PrintPreviewModal({
         </div>
 
         {pedigreePrintOptions && onChangePedigreePrintOptions && (
-          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75 flex flex-wrap items-center gap-3 text-xs">
+          <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75 flex flex-wrap items-center gap-2.5 sm:gap-3 text-xs">
+            {onChangePedigreeDocMode && (
+              <div
+                role="group"
+                aria-label="Pedigree export format"
+                className="inline-flex items-center p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+              >
+                <button
+                  type="button"
+                  aria-pressed={pedigreeDocMode === 'formal_certificate'}
+                  onClick={() => onChangePedigreeDocMode('formal_certificate')}
+                  className={`min-h-[28px] px-2.5 py-0.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    pedigreeDocMode === 'formal_certificate'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Formal Certificate
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={pedigreeDocMode === 'shareable_card'}
+                  onClick={() => onChangePedigreeDocMode('shareable_card')}
+                  className={`min-h-[28px] px-2.5 py-0.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    pedigreeDocMode === 'shareable_card'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Shareable Card (.HTML)
+                </button>
+              </div>
+            )}
+
+            {pedigreeDocMode !== 'shareable_card' && (
+              <div
+                role="group"
+                aria-label="Page orientation"
+                className="inline-flex items-center p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+              >
+                <button
+                  type="button"
+                  aria-pressed={(pedigreePrintOptions.orientation ?? 'landscape') === 'landscape'}
+                  onClick={() =>
+                    onChangePedigreePrintOptions({
+                      ...pedigreePrintOptions,
+                      orientation: 'landscape',
+                    })
+                  }
+                  className={`min-h-[28px] px-2.5 py-0.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    (pedigreePrintOptions.orientation ?? 'landscape') === 'landscape'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Landscape (11&times;8.5)
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={pedigreePrintOptions.orientation === 'portrait'}
+                  onClick={() =>
+                    onChangePedigreePrintOptions({
+                      ...pedigreePrintOptions,
+                      orientation: 'portrait',
+                    })
+                  }
+                  className={`min-h-[28px] px-2.5 py-0.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    pedigreePrintOptions.orientation === 'portrait'
+                      ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                      : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                  }`}
+                >
+                  Portrait (8.5&times;11)
+                </button>
+              </div>
+            )}
+
+            <label className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="text-[11px] font-medium text-[var(--barn-muted)]">Colors:</span>
+              <select
+                aria-label="Pedigree print color preset"
+                value={pedigreePrintOptions.colorPreset ?? 'classic_sage'}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    colorPreset: e.target.value as PedigreeColorPresetId,
+                  })
+                }
+                className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium"
+              >
+                {PEDIGREE_COLOR_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="text-[11px] font-medium text-[var(--barn-muted)]">Border:</span>
+              <select
+                aria-label="Pedigree border style"
+                value={pedigreePrintOptions.borderStyle ?? 'classic_rule'}
+                onChange={(e) =>
+                  onChangePedigreePrintOptions({
+                    ...pedigreePrintOptions,
+                    borderStyle: e.target.value as PedigreeBorderStyleId,
+                  })
+                }
+                className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium"
+              >
+                {PEDIGREE_BORDER_STYLES.map((styleSpec) => (
+                  <option key={styleSpec.id} value={styleSpec.id}>
+                    {styleSpec.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {pedigreeDocMode !== 'shareable_card' && (
+              <label className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span className="text-[11px] font-medium text-[var(--barn-muted)]">Layout:</span>
+                <select
+                  aria-label="Pedigree layout preset"
+                  value={pedigreePrintOptions.layoutPreset ?? 'evans_standard'}
+                  onChange={(e) =>
+                    onChangePedigreePrintOptions({
+                      ...pedigreePrintOptions,
+                      layoutPreset: e.target.value as PedigreeLayoutPresetId,
+                    })
+                  }
+                  className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium"
+                >
+                  {PEDIGREE_LAYOUT_PRESETS.map((layoutSpec) => (
+                    <option key={layoutSpec.id} value={layoutSpec.id}>
+                      {layoutSpec.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <div className="inline-flex flex-wrap items-center gap-1">
+              {PEDIGREE_QUICK_STYLE_PRESETS.map((qp) => {
+                const isActive =
+                  (pedigreePrintOptions.colorPreset ?? 'classic_sage') === qp.colorPreset &&
+                  (pedigreePrintOptions.borderStyle ?? 'classic_rule') === qp.borderStyle &&
+                  (pedigreePrintOptions.layoutPreset ?? 'evans_standard') === qp.layoutPreset;
+                return (
+                  <button
+                    key={qp.id}
+                    type="button"
+                    title={qp.description}
+                    onClick={() =>
+                      onChangePedigreePrintOptions({
+                        ...pedigreePrintOptions,
+                        colorPreset: qp.colorPreset,
+                        borderStyle: qp.borderStyle,
+                        layoutPreset: qp.layoutPreset,
+                      })
+                    }
+                    className={`min-h-[26px] px-2 py-0.5 rounded-md border text-[10.5px] font-medium whitespace-nowrap transition-colors ${
+                      isActive
+                        ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)] font-semibold'
+                        : 'border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                    }`}
+                  >
+                    {qp.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
               <input
                 type="checkbox"
@@ -780,6 +1211,26 @@ export function PrintPreviewModal({
               <span>Show Weights</span>
             </label>
 
+            {(pedigreePrintOptions.showWeights ?? true) && (
+              <label
+                title="Display weights in traditional ARBA lbs.oz dot format (e.g., 10.04)"
+                className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap"
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(pedigreePrintOptions.arbaLbsOzDotNotation)}
+                  onChange={(e) =>
+                    onChangePedigreePrintOptions({
+                      ...pedigreePrintOptions,
+                      arbaLbsOzDotNotation: e.target.checked,
+                    })
+                  }
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>ARBA lbs.oz (10.04)</span>
+              </label>
+            )}
+
             <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
               <input
                 type="checkbox"
@@ -794,6 +1245,72 @@ export function PrintPreviewModal({
               />
               <span>Include Coat Genotypes (Unverified · Under Dev)</span>
             </label>
+
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              onChange={handleUploadPreviewLogo}
+              className="sr-only"
+              aria-label="Upload breeder logo for pedigree header"
+            />
+            {effectiveBreederLogoUrl ? (
+              <div className="inline-flex items-center gap-1.5">
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={pedigreePrintOptions.showBreederLogo ?? true}
+                    onChange={(e) =>
+                      onChangePedigreePrintOptions({
+                        ...pedigreePrintOptions,
+                        showBreederLogo: e.target.checked,
+                      })
+                    }
+                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>Show Barn Logo</span>
+                </label>
+                {onUpdateBreederLogo && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={logoUploading}
+                      onClick={() => logoInputRef.current?.click()}
+                      className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-medium whitespace-nowrap"
+                    >
+                      {logoUploading ? 'Loading...' : 'Change Logo'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateBreederLogo(undefined);
+                        onChangePedigreePrintOptions({
+                          ...pedigreePrintOptions,
+                          showBreederLogo: false,
+                          breederLogoDataUrl: '',
+                        });
+                      }}
+                      aria-label="Remove barn logo"
+                      className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] hover:bg-[var(--barn-danger)]/10 text-[11px] font-medium text-[var(--barn-danger)] whitespace-nowrap"
+                    >
+                      Clear Logo
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : (
+              onUpdateBreederLogo && (
+                <button
+                  type="button"
+                  disabled={logoUploading}
+                  onClick={() => logoInputRef.current?.click()}
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                  {logoUploading ? 'Loading Logo...' : 'Upload Barn Logo'}
+                </button>
+              )
+            )}
 
             <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
               <input
@@ -1266,6 +1783,35 @@ export function PrintPreviewModal({
           </div>
         )}
 
+        {fileActionError && (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="px-3 sm:px-5 py-2.5 bg-[var(--barn-danger)]/10 border-b border-[var(--barn-danger)]/40 flex items-start justify-between gap-2 text-xs text-[var(--barn-ink)]"
+          >
+            <div className="flex items-start gap-2 min-w-0">
+              <ShieldAlert
+                className="w-4 h-4 shrink-0 mt-0.5 text-[var(--barn-danger)]"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-semibold">{fileActionError.title}</div>
+                <p className="leading-snug text-[var(--barn-muted)] break-words">
+                  {fileActionError.detail}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissFileActionError}
+              aria-label="Dismiss file export error"
+              className="shrink-0 min-h-[32px] min-w-[32px] rounded-md hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center"
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+
         {printBlockedMessage && (
           <div
             role="status"
@@ -1291,7 +1837,8 @@ export function PrintPreviewModal({
             <div className="flex flex-wrap items-center gap-2 sm:shrink-0 pl-6 sm:pl-0">
               <button
                 type="button"
-                disabled={!canShareHtml}
+                disabled={!canShareHtml || fileActionBusy !== null}
+                aria-busy={fileActionBusy === 'share'}
                 onClick={handleShareHtm}
                 title={
                   canShareHtml
@@ -1299,21 +1846,33 @@ export function PrintPreviewModal({
                     : 'Native file sharing is unavailable in this browser — use Download .HTM instead.'
                 }
                 className={`min-h-[34px] px-3 py-1 rounded-md text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap ${
-                  canShareHtml
+                  canShareHtml && fileActionBusy === null
                     ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
                     : 'border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] opacity-55 cursor-not-allowed'
                 }`}
               >
-                <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
-                Share .HTM
+                {fileActionBusy === 'share' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                {fileActionBusy === 'share' ? 'Sharing...' : 'Share .HTM'}
               </button>
               <button
                 type="button"
+                disabled={fileActionBusy !== null}
+                aria-busy={fileActionBusy === 'download'}
                 onClick={handleDownloadHtm}
-                className="min-h-[34px] px-3 py-1 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                className={`min-h-[34px] px-3 py-1 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap ${
+                  fileActionBusy !== null ? 'opacity-60 cursor-not-allowed' : ''
+                }`}
               >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                Download .HTM
+                {fileActionBusy === 'download' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                {fileActionBusy === 'download' ? 'Saving...' : 'Download .HTM'}
               </button>
               {!canShareHtml && (
                 <span className="text-[11px] text-[var(--barn-muted)]">

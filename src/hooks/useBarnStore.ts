@@ -59,11 +59,13 @@ import {
   isSameSpecies,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
+  normalizeDefaultPedigreeGenerations,
   normalizeIgnoredConflicts,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
   normalizeUltrasoundResult,
+  PedigreeGenerationDepth,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
   ServiceFeeDirection,
@@ -350,7 +352,7 @@ export function useBarnStore() {
   const [activeSpeciesName, setActiveSpeciesName] = useState<string>('Rabbit');
   const [selectedAnimalId, setSelectedAnimalId] = useState<string | null>(null);
   const [pedigreeAnimalId, setPedigreeAnimalId] = useState<string | null>(null);
-  const [pedigreeGenerations, setPedigreeGenerations] = useState<3 | 4 | 5 | 6>(3);
+  const [pedigreeGenerations, setPedigreeGenerations] = useState<PedigreeGenerationDepth>(3);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
   const [highlightedCageId, setHighlightedCageId] = useState<string | null>(null);
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
@@ -1314,7 +1316,7 @@ export function useBarnStore() {
         new Set(rootIds.filter((id) => typeof id === 'string' && id.trim().length > 0))
       );
       if (cleanRoots.length === 0) return [];
-      const boundedDepth = Math.min(6, Math.max(0, Math.floor(maxDepth)));
+      const boundedDepth = Math.min(8, Math.max(0, Math.floor(maxDepth)));
       const adapter = adapterRef.current;
 
       const resolvedMap = new Map<string, Animal>();
@@ -6238,10 +6240,13 @@ export function useBarnStore() {
   );
 
   const handleSetPedigreeGenerations = useCallback(
-    (gen: 3 | 4 | 5 | 6) => {
+    (gen: PedigreeGenerationDepth) => {
       setPedigreeGenerations(gen);
-      if (snapshot && snapshot.settings.defaultGenerations !== gen) {
-        void updateSettings({ defaultGenerations: gen }, { silent: true });
+      if (snapshot && gen <= 6) {
+        const persistedDepth = normalizeDefaultPedigreeGenerations(gen);
+        if (snapshot.settings.defaultGenerations !== persistedDepth) {
+          void updateSettings({ defaultGenerations: persistedDepth }, { silent: true });
+        }
       }
     },
     [snapshot, updateSettings]

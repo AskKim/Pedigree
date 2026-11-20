@@ -1440,6 +1440,9 @@ export default function App() {
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
             onLoadPedigreeNeighborhood={store.loadPedigreeNeighborhood}
             onCheckPedigreeBranchesHaveAncestors={store.checkPedigreeBranchesHaveAncestors}
+            onUpdateBreederLogo={(dataUrl) => {
+              void store.updateSettings({ breederLogoDataUrl: dataUrl }, { silent: true });
+            }}
           />
         )}
 

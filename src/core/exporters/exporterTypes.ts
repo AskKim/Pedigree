@@ -10,7 +10,7 @@
  * automated tests, and React Native / Expo.
  */
 
-import type { BarnDatabaseSnapshot } from '../models';
+import type { BarnDatabaseSnapshot, PedigreeGenerationDepth } from '../models';
 
 export type ExporterCategory =
   | 'spreadsheet'
@@ -33,8 +33,8 @@ export interface ExporterExecutionContext {
   speciesName?: string;
   /** Required when `scopeMode === 'single_animal'`. */
   animalId?: string;
-  /** Pedigree chart depth override (3..6). Defaults to `snapshot.settings.defaultGenerations`. */
-  generations?: 3 | 4 | 5 | 6;
+  /** Pedigree chart depth override (3..8). Defaults to `snapshot.settings.defaultGenerations`. */
+  generations?: PedigreeGenerationDepth;
   /** Optional toggle for binder/report exporters that filter archived stock. */
   includeArchived?: boolean;
   /** Optional base URL for `.ICS` deep links back into the app. */

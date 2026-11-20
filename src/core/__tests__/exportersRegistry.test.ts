@@ -42,11 +42,22 @@ describe('exporters/registry — extensible non-native format exporters', () => 
       snapshot,
       speciesName: 'Rabbit',
       animalId: rabbit.id,
-      generations: 4,
+      generations: 8,
     });
     expect(evans.filename.endsWith('.htm')).toBe(true);
     expect(evans.content).toContain(rabbit.name);
-    expect(evans.content).toContain('4-Generation');
+    expect(evans.content).toContain('8-Generation');
+
+    const card = runExternalExporter('shareable-pedigree-card', {
+      snapshot,
+      speciesName: 'Rabbit',
+      animalId: rabbit.id,
+      generations: 6,
+    });
+    expect(card.filename.endsWith('.html')).toBe(true);
+    expect(card.mimeType).toBe('text/html;charset=utf-8');
+    expect(card.content).toContain(rabbit.name);
+    expect(card.content).toContain('3-Generation Lineage Summary');
 
     const binder = runExternalExporter('barn-binder-htm', {
       snapshot,

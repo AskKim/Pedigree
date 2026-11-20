@@ -594,6 +594,7 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'dismissedMemoAlertSignatures',
     'speciesHubBlockOrder',
     'includePhotoOnPedigree',
+    'breederLogoDataUrl',
     'calendarSync',
     '_rev',
   ]),

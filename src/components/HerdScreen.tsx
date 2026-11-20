@@ -51,6 +51,7 @@ import {
   HerdCarrierFilterMode,
 } from '../core/carrierGenetics';
 import {
+  analyzeAlleleProvenance,
   formatGenotypeArray,
   getGeneticsSpecForSpecies,
   inferHiddenAlleles,
@@ -93,16 +94,22 @@ import {
   resolveBatchPrintAnimals,
 } from '../core/batchPrint';
 import {
+  buildShareablePedigreeCardFileName,
+  generateShareablePedigreeCardHtml,
+} from '../core/shareablePedigreeCard';
+import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
   PedigreePrintOptions,
 } from '../core/syncAndExports';
 import { ArchivedHerdIndexEntry } from '../core/backupVault';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
+import { buildAndDownloadPedigreePdf } from '../utils/webPdfActions';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
 import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
+import { ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
@@ -276,11 +283,20 @@ export function HerdScreen({
   const [showArchivedHerdsModal, setShowArchivedHerdsModal] = useState(false);
 
   // Print preview state
+  const [pedigreeDocMode, setPedigreeDocMode] = useState<'formal_certificate' | 'shareable_card'>(
+    'formal_certificate'
+  );
   const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
+    orientation: 'landscape',
     showWeights: true,
+    arbaLbsOzDotNotation: false,
     showGenotypes: false,
     showBreederFooter: true,
     breederContactLine: '',
+    showBreederLogo: true,
+    colorPreset: 'classic_sage',
+    borderStyle: 'classic_rule',
+    layoutPreset: 'evans_standard',
   });
   const [previewDoc, setPreviewDoc] = useState<{
     title: string;
@@ -606,6 +622,16 @@ export function HerdScreen({
     [activeAnimal, herdById, animals, speciesProfile.name]
   );
 
+  const activeAlleleProvenance = useMemo(
+    () =>
+      activeAnimal
+        ? analyzeAlleleProvenance(activeAnimal, herdById, animals, speciesProfile.name, {
+            includeInferred: true,
+          })
+        : null,
+    [activeAnimal, herdById, animals, speciesProfile.name]
+  );
+
   const activeCarriers = useMemo(
     () => getAnimalCarrierDisclosures(activeAnimal),
     [activeAnimal]
@@ -744,6 +770,7 @@ export function HerdScreen({
       : undefined;
     setBatchPrintSubjects(null);
     setBatchHydratedPhotos({});
+    setPedigreeDocMode('formal_certificate');
     setPreviewDoc({
       title: `Formal Pedigree (.HTM / PDF) — ${subject.name}`,
       filename: `pedigree-${subject.tattoo || subject.id}.htm`,
@@ -1428,14 +1455,18 @@ export function HerdScreen({
                   activeAnimal.genotype.length > 0 ||
                   speciesGeneticsSpec ||
                   activeAnimal.rufusLevel) && (
-                  <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm">
-                    <span className="font-mono">
-                      {activeAnimal.genotypeRaw ||
+                  <div className="flex flex-wrap items-start justify-between gap-3 px-3 py-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm">
+                    <ColoredGenotypeDisplay
+                      provenance={activeAlleleProvenance}
+                      fallbackText={
+                        activeAnimal.genotypeRaw ||
                         formatGenotypeArray(activeAnimal.genotype) ||
-                        'No loci entered yet'}
-                    </span>
+                        'No loci entered yet'
+                      }
+                      showLegend
+                    />
                     {activeAnimal.rufusLevel && (
-                      <span className="text-xs font-medium text-[var(--barn-terracotta)]">
+                      <span className="text-xs font-medium text-[var(--barn-terracotta)] shrink-0">
                         Rufus Intensity: {activeAnimal.rufusLevel}
                       </span>
                     )}
@@ -2522,73 +2553,128 @@ export function HerdScreen({
         />
       )}
 
-      {previewDoc && (
-        <PrintPreviewModal
-          title={previewDoc.title}
-          filename={previewDoc.filename}
-          htmlContent={
-            previewDoc.pedigreeSubject
-              ? generateEvansHtmPedigree(
-                  previewDoc.pedigreeSubject,
-                  allAnimals,
-                  speciesProfiles,
-                  settings,
-                  settings.defaultGenerations,
-                  (() => {
-                    if (!settings.includePhotoOnPedigree) return undefined;
-                    const primaryRec = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
-                    if (!primaryRec) return undefined;
-                    return (
-                      primaryRec.dataUrl ||
-                      (hydratedPedigreePhoto?.photoId === primaryRec.id
-                        ? hydratedPedigreePhoto.dataUrl
-                        : primaryRec.thumbnailDataUrl)
-                    );
-                  })(),
-                  pedigreePrintOptions
-                )
-              : previewDoc.cageCardSubject
-                ? generateThermalCageCardHtml(
-                    previewDoc.cageCardSubject,
-                    allAnimals,
-                    speciesProfiles,
-                    settings,
-                    {
-                      includeQrCode: includeThermalCageCardQr,
-                      appBaseUrl,
-                    }
-                  )
-                : previewDoc.html
-          }
-          includePrimaryPhoto={
-            previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
-          }
-          onToggleIncludePrimaryPhoto={
-            previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
-          }
-          includeCageCardQr={
-            previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
-          }
-          onToggleIncludeCageCardQr={
-            previewDoc.cageCardSubject ? setIncludeThermalCageCardQr : undefined
-          }
-          pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
-          onChangePedigreePrintOptions={
-            previewDoc.isPedigree ? setPedigreePrintOptions : undefined
-          }
-          headerNotice={
-            previewDoc.isPedigree ? (
-              <PedigreePrintNotice />
-            ) : previewDoc.hasGenetics ? (
-              <ColorGeneticsNotice compact />
-            ) : undefined
-          }
-          onClose={() => {
-            setPreviewDoc(null);
-            setHydratedPedigreePhoto(null);
-          }}
-        />
-      )}
+      {previewDoc && (() => {
+        const resolvedPedigreeSubject = previewDoc.pedigreeSubject;
+        const resolvedPedigreePhoto =
+          resolvedPedigreeSubject && settings.includePhotoOnPedigree
+            ? (() => {
+                const primaryRec = primaryPhotoByAnimalId.get(resolvedPedigreeSubject.id);
+                if (!primaryRec) return undefined;
+                return (
+                  primaryRec.dataUrl ||
+                  (hydratedPedigreePhoto?.photoId === primaryRec.id
+                    ? hydratedPedigreePhoto.dataUrl
+                    : primaryRec.thumbnailDataUrl)
+                );
+              })()
+            : undefined;
+        const isShareableCard =
+          Boolean(resolvedPedigreeSubject) && pedigreeDocMode === 'shareable_card';
+        return (
+          <PrintPreviewModal
+            title={
+              isShareableCard && resolvedPedigreeSubject
+                ? `Shareable Pedigree Card — ${resolvedPedigreeSubject.name}`
+                : previewDoc.title
+            }
+            filename={
+              isShareableCard && resolvedPedigreeSubject
+                ? buildShareablePedigreeCardFileName(resolvedPedigreeSubject)
+                : previewDoc.filename
+            }
+            htmlContent={
+              resolvedPedigreeSubject
+                ? isShareableCard
+                  ? generateShareablePedigreeCardHtml(
+                      resolvedPedigreeSubject,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
+                      settings.defaultGenerations,
+                      resolvedPedigreePhoto,
+                      {
+                        ...pedigreePrintOptions,
+                        appBaseUrl,
+                        includeQrCode: Boolean(appBaseUrl),
+                      }
+                    )
+                  : generateEvansHtmPedigree(
+                      resolvedPedigreeSubject,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
+                      settings.defaultGenerations,
+                      resolvedPedigreePhoto,
+                      pedigreePrintOptions
+                    )
+                : previewDoc.cageCardSubject
+                  ? generateThermalCageCardHtml(
+                      previewDoc.cageCardSubject,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
+                      {
+                        includeQrCode: includeThermalCageCardQr,
+                        appBaseUrl,
+                      }
+                    )
+                  : previewDoc.html
+            }
+            includePrimaryPhoto={
+              previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
+            }
+            onToggleIncludePrimaryPhoto={
+              previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
+            }
+            includeCageCardQr={
+              previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
+            }
+            onToggleIncludeCageCardQr={
+              previewDoc.cageCardSubject ? setIncludeThermalCageCardQr : undefined
+            }
+            pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
+            onChangePedigreePrintOptions={
+              previewDoc.isPedigree ? setPedigreePrintOptions : undefined
+            }
+            pedigreeDocMode={previewDoc.isPedigree ? pedigreeDocMode : undefined}
+            onChangePedigreeDocMode={
+              previewDoc.isPedigree ? setPedigreeDocMode : undefined
+            }
+            breederLogoDataUrl={previewDoc.isPedigree ? settings.breederLogoDataUrl : undefined}
+            onUpdateBreederLogo={
+              previewDoc.isPedigree && onUpdateSettings
+                ? (dataUrl) => onUpdateSettings({ breederLogoDataUrl: dataUrl }, { silent: true })
+                : undefined
+            }
+            onDownloadPdf={
+              resolvedPedigreeSubject && !isShareableCard
+                ? () =>
+                    buildAndDownloadPedigreePdf({
+                      subject: resolvedPedigreeSubject,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
+                      generations: settings.defaultGenerations,
+                      printOptions: pedigreePrintOptions,
+                      primaryPhotoDataUrl: resolvedPedigreePhoto,
+                      pdfFilename: `${previewDoc.filename.replace(/\.html?$/i, '')}.pdf`,
+                    })
+                : undefined
+            }
+            headerNotice={
+              previewDoc.isPedigree ? (
+                <PedigreePrintNotice />
+              ) : previewDoc.hasGenetics ? (
+                <ColorGeneticsNotice compact />
+              ) : undefined
+            }
+            onClose={() => {
+              setPreviewDoc(null);
+              setHydratedPedigreePhoto(null);
+            }}
+          />
+        );
+      })()}
 
       {batchPrintSubjects && batchPrintSubjects.length > 0 && (
         <PrintPreviewModal
