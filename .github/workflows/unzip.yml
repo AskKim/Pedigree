@@ -11,10 +11,10 @@ jobs:
       - name: Extract and flatten into target folder
         run: |
           mkdir -p temp_extract android-wrapper
-          unzip -o pwa-wrapper-main.zip -d temp_extract
+          unzip -o PWA-Wrapper-main.zip -d temp_extract
           shopt -s dotglob
           mv temp_extract/*/* android-wrapper/
-          rm -rf temp_extract pwa-wrapper-main.zip
+          rm -rf temp_extract PWA-Wrapper-main.zip
       - name: Commit extracted files
         run: |
           git config user.name "github-actions[bot]"
