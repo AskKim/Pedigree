@@ -1,4 +1,4 @@
-name: Unzip Archive
+name: Extract Android Wrapper
 on:
   workflow_dispatch:
 permissions:
@@ -8,14 +8,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Extract and clean up zip
+      - name: Extract and flatten into target folder
         run: |
-          unzip -o archive-wrapper.zip
-          rm archive.zip
+          mkdir -p temp_extract android-wrapper
+          unzip -o pwa-wrapper-main.zip -d temp_extract
+          shopt -s dotglob
+          mv temp_extract/*/* android-wrapper/
+          rm -rf temp_extract pwa-wrapper-main.zip
       - name: Commit extracted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "Extract archive contents"
+          git commit -m "Add Android wrapper files"
           git push
