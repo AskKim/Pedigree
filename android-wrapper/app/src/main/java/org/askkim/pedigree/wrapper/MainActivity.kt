@@ -31,6 +31,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.ServiceWorkerClientCompat
@@ -41,6 +42,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * Main host Activity for the Community Pedigree Android Wrapper (`org.askkim.pedigree.wrapper`).
@@ -104,6 +106,10 @@ class MainActivity : AppCompatActivity() {
             WindowInsetsCompat.CONSUMED
         }
         setContentView(rootContainer)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
 
         assetLoader = WebViewAssetLoader.Builder()
             .setDomain(ASSET_HOST)
@@ -200,9 +206,9 @@ class MainActivity : AppCompatActivity() {
         val overrideUrl = prefs.getString(KEY_DEBUG_TARGET_URL, null)?.trim()
         if (!overrideUrl.isNullOrEmpty() && isAllowedDebugTargetUrl(overrideUrl)) {
             val uri = Uri.parse(overrideUrl)
-            val host = uri.host?.lowercase() ?: return
+            val host = uri.host?.lowercase(Locale.US) ?: return
             activeStartUrl = overrideUrl
-            activeOrigin = "https://$host" + if (uri.port != -1) ":${uri.port}" else ""
+            activeOrigin = "https://$host" + if (uri.port != -1 && uri.port != 443) ":${uri.port}" else ""
         }
     }
 
@@ -213,7 +219,12 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             return false
         }
-        return uri.scheme?.lowercase() == "https" && uri.host?.lowercase() == DEBUG_PAGES_HOST
+        val path = uri.path.orEmpty()
+        return uri.scheme?.lowercase(Locale.US) == "https" &&
+            uri.userInfo == null &&
+            (uri.port == -1 || uri.port == 443) &&
+            uri.host?.lowercase(Locale.US) == DEBUG_PAGES_HOST &&
+            (path == DEBUG_PAGES_PATH_PREFIX || path.startsWith("$DEBUG_PAGES_PATH_PREFIX/"))
     }
 
     /**
@@ -244,7 +255,7 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest
             ): WebResourceResponse? {
                 val uri = request.url
-                if (uri.scheme?.lowercase() == "https" && uri.host?.lowercase() == ASSET_HOST) {
+                if (uri.scheme?.lowercase(Locale.US) == "https" && uri.host?.lowercase(Locale.US) == ASSET_HOST) {
                     return assetLoader.shouldInterceptRequest(uri)
                 }
                 return super.shouldInterceptRequest(view, request)
@@ -477,14 +488,11 @@ class MainActivity : AppCompatActivity() {
 
             "BEGIN_BINARY_TRANSFER" -> {
                 nativeBackupVault.clearPendingSnapshot()
-                fileAndExportBridge.beginBinaryTransfer(requestId, payload)
-                val hasInlineBase64 = payload != null &&
-                    !payload.isNull("base64Data") &&
-                    payload.optString("base64Data", "").isNotEmpty()
-                pendingBinaryTarget = if (hasInlineBase64) {
-                    PendingBinaryTarget.NONE
-                } else {
+                val expectsBinaryFrame = fileAndExportBridge.beginBinaryTransfer(requestId, payload)
+                pendingBinaryTarget = if (expectsBinaryFrame) {
                     PendingBinaryTarget.EXPORT
+                } else {
+                    PendingBinaryTarget.NONE
                 }
             }
 
@@ -798,7 +806,7 @@ class MainActivity : AppCompatActivity() {
     ) : ServiceWorkerClientCompat() {
         override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
             val url = request.url
-            if (url.scheme?.lowercase() == "https" && url.host?.lowercase() == ASSET_HOST) {
+            if (url.scheme?.lowercase(Locale.US) == "https" && url.host?.lowercase(Locale.US) == ASSET_HOST) {
                 return loader.shouldInterceptRequest(url)
             }
             return null
@@ -810,6 +818,7 @@ class MainActivity : AppCompatActivity() {
         private const val ASSET_ORIGIN = "https://$ASSET_HOST"
         private const val ASSET_START_URL = "$ASSET_ORIGIN/index.html"
         private const val DEBUG_PAGES_HOST = "askkim.github.io"
+        private const val DEBUG_PAGES_PATH_PREFIX = "/Pedigree"
         private const val DEBUG_PREFS_NAME = "pedigree_wrapper_debug_prefs"
         private const val KEY_DEBUG_TARGET_URL = "debug_target_url"
         private const val BRIDGE_OBJECT_NAME = "pedigreeNative"

@@ -11,11 +11,10 @@
     <string name="file_picker_unavailable">No file picker available on this device</string>
     <string name="print_unavailable">Printing is unavailable on this device</string>
     <string name="external_link_unavailable">No app available to open this link</string>
-    <string name="shortcut_target_package" translatable="false">org.askkim.pedigree.wrapper</string>
     <string name="shortcut_diagnostics_short">Diagnostics</string>
     <string name="shortcut_diagnostics_long">Open Diagnostics &amp; Vault</string>
     <string name="dev_panel_title">Developer &amp; Diagnostics Panel</string>
     <string name="dev_panel_copied">Diagnostic JSON copied to clipboard</string>
     <string name="dev_panel_copy_failed">Clipboard unavailable</string>
-    <string name="dev_panel_debug_url_invalid">Debug URL must use https://askkim.github.io/</string>
+    <string name="dev_panel_debug_url_invalid">Debug URL must use https://askkim.github.io/Pedigree/</string>
 </resources>

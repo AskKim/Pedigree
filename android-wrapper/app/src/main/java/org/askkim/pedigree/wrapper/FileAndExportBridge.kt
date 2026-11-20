@@ -7,6 +7,7 @@ package org.askkim.pedigree.wrapper
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -129,13 +130,18 @@ class FileAndExportBridge(
      * following `TYPE_ARRAY_BUFFER` frame knows where to write. Also supports an inline
      * `base64Data` fallback for legacy WebViews without `WEB_MESSAGE_ARRAY_BUFFER`.
      */
-    fun beginBinaryTransfer(requestId: String, payload: JSONObject?) {
-        if (destroyed || payload == null) return
+    fun beginBinaryTransfer(requestId: String, payload: JSONObject?): Boolean {
+        if (destroyed || payload == null) {
+            pendingTransfer = null
+            return false
+        }
 
-        val rawFilename = payload.optString("filename", "pedigree-export.bin")
+        val rawFilename = if (payload.isNull("filename")) "pedigree-export.bin" else payload.optString("filename", "pedigree-export.bin")
         val filename = sanitizeFilename(rawFilename)
-        val mimeType = sanitizeMimeType(payload.optString("mimeType", "application/octet-stream"))
-        val mode = if (payload.optString("mode", "save").equals("share", ignoreCase = true)) {
+        val rawMimeType = if (payload.isNull("mimeType")) "application/octet-stream" else payload.optString("mimeType", "application/octet-stream")
+        val mimeType = sanitizeMimeType(rawMimeType)
+        val rawMode = if (payload.isNull("mode")) "save" else payload.optString("mode", "save")
+        val mode = if (rawMode.equals("share", ignoreCase = true)) {
             TransferMode.SHARE
         } else {
             TransferMode.SAVE
@@ -149,7 +155,7 @@ class FileAndExportBridge(
             val decoded = try {
                 Base64.decode(inlineBase64, Base64.DEFAULT)
             } catch (_: IllegalArgumentException) {
-                return
+                return false
             }
             dispatchBinaryTransfer(
                 PendingBinaryTransfer(
@@ -161,7 +167,7 @@ class FileAndExportBridge(
                 ),
                 decoded
             )
-            return
+            return false
         }
 
         pendingTransfer = PendingBinaryTransfer(
@@ -171,6 +177,7 @@ class FileAndExportBridge(
             mode = mode,
             expectedByteLength = expectedByteLength
         )
+        return true
     }
 
     /** Clears any staged transfer metadata when a frame mismatch or WebView teardown occurs. */
@@ -305,6 +312,7 @@ class FileAndExportBridge(
                         type = mimeType
                         putExtra(Intent.EXTRA_STREAM, contentUri)
                         putExtra(Intent.EXTRA_SUBJECT, filename)
+                        clipData = ClipData.newRawUri(filename, contentUri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     val chooser = Intent.createChooser(sendIntent, filename).apply {
@@ -479,7 +487,7 @@ class FileAndExportBridge(
         val expectedByteLength: Long
     )
 
-    private data class PendingSavePayload(
+    private class PendingSavePayload(
         val filename: String,
         val bytes: ByteArray
     )

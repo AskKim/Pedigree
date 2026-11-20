@@ -55,7 +55,7 @@ class NativeBackupVault(
         val rejectOversized: Boolean
     )
 
-    private data class QueuedSnapshotWrite(
+    private class QueuedSnapshotWrite(
         val header: PendingSnapshotHeader,
         val bytes: ByteArray
     )

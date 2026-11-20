@@ -75,7 +75,7 @@ class ExternalNavigationBridge(
             return true
         }
 
-        val requestOrigin = "https://$host" + if (uri.port != -1) ":${uri.port}" else ""
+        val requestOrigin = "https://$host" + if (uri.port != -1 && uri.port != 443) ":${uri.port}" else ""
         if (requestOrigin == activeOrigin) {
             return false
         }

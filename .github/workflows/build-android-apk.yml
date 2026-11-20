@@ -63,6 +63,7 @@ jobs:
       - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
+          build-root-directory: android-wrapper
           gradle-version: "8.13"
 
       - name: Decode release keystore if secrets are configured
@@ -84,22 +85,15 @@ jobs:
       - name: Accept Android SDK licenses
         run: |
           SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
           if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
             yes | "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           fi
+          test -f "$SDK_DIR/licenses/android-sdk-license"
 
-      - name: Build Debug & Release APKs
+      - name: Build Debug APK
         working-directory: android-wrapper
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: gradle assembleDebug assembleRelease --no-daemon
-
-      - name: Clean up temporary keystore
-        if: always() && steps.keystore.outputs.keystore_path != ''
-        run: rm -f "${{ steps.keystore.outputs.keystore_path }}"
+        run: gradle assembleDebug --no-daemon
 
       - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
@@ -107,6 +101,19 @@ jobs:
           name: community-pedigree-debug-apk
           path: android-wrapper/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Build Release APK
+        working-directory: android-wrapper
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Clean up temporary keystore
+        if: always() && steps.keystore.outputs.keystore_path != ''
+        run: rm -f "${{ steps.keystore.outputs.keystore_path }}"
 
       - name: Upload Release APK artifact
         uses: actions/upload-artifact@v4

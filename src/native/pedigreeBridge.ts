@@ -297,7 +297,23 @@ export class PedigreeBridge {
           },
         };
         androidObj.postMessage(JSON.stringify(metaEnvelope));
-        androidObj.postMessage(toSlicedArrayBuffer(bytes));
+        try {
+          androidObj.postMessage(toSlicedArrayBuffer(bytes));
+        } catch (_arrayBufErr) {
+          // Fallback for legacy Android WebViews (<116) without WEB_MESSAGE_ARRAY_BUFFER
+          const fallbackEnvelope: NativeEnvelope = {
+            type: 'BEGIN_BINARY_TRANSFER',
+            requestId: requestId,
+            payload: {
+              filename: options.filename,
+              mimeType: options.mimeType,
+              mode: options.mode,
+              byteLength: bytes.byteLength,
+              base64Data: uint8ArrayToBase64(bytes),
+            },
+          };
+          androidObj.postMessage(JSON.stringify(fallbackEnvelope));
+        }
         return { ok: true, handledBy: 'android' };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to stream binary to Android';
@@ -505,7 +521,24 @@ export class PedigreeBridge {
           },
         };
         androidObj.postMessage(JSON.stringify(envelope));
-        androidObj.postMessage(toSlicedArrayBuffer(bytes));
+        try {
+          androidObj.postMessage(toSlicedArrayBuffer(bytes));
+        } catch (_arrayBufErr) {
+          // Fallback for legacy Android WebViews (<116) without WEB_MESSAGE_ARRAY_BUFFER
+          const fallbackEnvelope: NativeEnvelope = {
+            type: 'SYNC_BACKUP_SNAPSHOT',
+            requestId: requestId,
+            payload: {
+              snapshotId: snapshot.snapshotId,
+              createdAt: snapshot.createdAt,
+              format: snapshot.format,
+              byteLength: bytes.byteLength,
+              base64Data: uint8ArrayToBase64(bytes),
+              metadata: snapshot.metadata || {},
+            },
+          };
+          androidObj.postMessage(JSON.stringify(fallbackEnvelope));
+        }
         return Promise.resolve(true);
       } catch (err) {
         this.recordDiagnostic(

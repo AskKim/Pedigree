@@ -4,7 +4,7 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
--keep class org.askkim.pedigree.wrapper.MainActivity { *; }
--keep class org.askkim.pedigree.wrapper.BuildConfig { *; }
 -keep class androidx.webkit.** { *; }
+-keep interface org.chromium.support_lib_boundary.** { *; }
 -dontwarn androidx.webkit.**
+-dontwarn org.chromium.support_lib_boundary.**

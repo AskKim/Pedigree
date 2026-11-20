@@ -354,6 +354,80 @@ describe('PedigreeBridge', () => {
       expect(meta.payload.byteLength).toBe(4);
       expect(Array.from(new Uint8Array(posted[1] as ArrayBuffer))).toEqual([80, 75, 3, 4]);
     });
+
+    it('falls back to inline base64Data when ArrayBuffer postMessage throws during binary export', async () => {
+      const { pedigreeNative, posted } = setupAndroidMock();
+      pedigreeNative.postMessage.mockImplementation((msg: string | ArrayBuffer) => {
+        if (msg instanceof ArrayBuffer) {
+          throw new TypeError('ArrayBuffer unsupported in legacy WebView');
+        }
+        posted.push(msg);
+      });
+      bridge = createPedigreeBridge();
+
+      const result = await bridge.exportOrShareBinary({
+        filename: 'legacy-export.txt',
+        mimeType: 'text/plain',
+        mode: 'save',
+        bytes: new Uint8Array([72, 105]), // "Hi"
+      });
+
+      expect(result).toEqual({ ok: true, handledBy: 'android' });
+      expect(posted).toHaveLength(2);
+      const initialMeta = JSON.parse(posted[0] as string);
+      const fallbackMeta = JSON.parse(posted[1] as string);
+      expect(initialMeta.type).toBe('BEGIN_BINARY_TRANSFER');
+      expect(initialMeta.payload.base64Data).toBeUndefined();
+      expect(fallbackMeta).toEqual({
+        type: 'BEGIN_BINARY_TRANSFER',
+        requestId: initialMeta.requestId,
+        payload: {
+          filename: 'legacy-export.txt',
+          mimeType: 'text/plain',
+          mode: 'save',
+          byteLength: 2,
+          base64Data: 'SGk=',
+        },
+      });
+    });
+
+    it('falls back to inline base64Data when ArrayBuffer postMessage throws during backup snapshot sync', async () => {
+      const { pedigreeNative, posted } = setupAndroidMock();
+      pedigreeNative.postMessage.mockImplementation((msg: string | ArrayBuffer) => {
+        if (msg instanceof ArrayBuffer) {
+          throw new TypeError('ArrayBuffer unsupported in legacy WebView');
+        }
+        posted.push(msg);
+      });
+      bridge = createPedigreeBridge();
+
+      const ok = await bridge.syncBackupSnapshotToNative({
+        snapshotId: 'snap_legacy',
+        createdAt: '2026-11-20T09:50:00.000Z',
+        format: 'json',
+        bytes: new Uint8Array([123, 125]), // "{}"
+        metadata: { herdCount: 3 },
+      });
+
+      expect(ok).toBe(true);
+      expect(posted).toHaveLength(2);
+      const initialMeta = JSON.parse(posted[0] as string);
+      const fallbackMeta = JSON.parse(posted[1] as string);
+      expect(initialMeta.type).toBe('SYNC_BACKUP_SNAPSHOT');
+      expect(initialMeta.payload.base64Data).toBeUndefined();
+      expect(fallbackMeta).toEqual({
+        type: 'SYNC_BACKUP_SNAPSHOT',
+        requestId: initialMeta.requestId,
+        payload: {
+          snapshotId: 'snap_legacy',
+          createdAt: '2026-11-20T09:50:00.000Z',
+          format: 'json',
+          byteLength: 2,
+          base64Data: 'e30=',
+          metadata: { herdCount: 3 },
+        },
+      });
+    });
   });
 
   describe('iOS WKScriptMessageHandler serialization', () => {

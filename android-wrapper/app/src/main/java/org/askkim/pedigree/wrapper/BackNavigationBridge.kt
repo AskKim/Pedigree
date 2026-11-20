@@ -15,6 +15,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.JavaScriptReplyProxy
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -178,9 +179,10 @@ class BackNavigationBridge(
         } catch (_: Exception) {
             return false
         }
-        val scheme = uri.scheme?.lowercase() ?: return false
-        val host = uri.host?.lowercase() ?: return false
-        val currentOrigin = "$scheme://$host" + if (uri.port != -1) ":${uri.port}" else ""
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: return false
+        val host = uri.host?.lowercase(Locale.US) ?: return false
+        val isDefaultPort = (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
+        val currentOrigin = "$scheme://$host" + if (uri.port != -1 && !isDefaultPort) ":${uri.port}" else ""
         if (currentOrigin != activeOriginProvider()) {
             return false
         }

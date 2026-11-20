@@ -8,3 +8,12 @@ coverage/
 !.env.example
 public/assets/aistudio/*.zip
 public/assets/aistudio/Screenshot_*.jpg
+android-wrapper/.gradle/
+android-wrapper/**/build/
+android-wrapper/local.properties
+android-wrapper/app/src/main/assets/www/*
+!android-wrapper/app/src/main/assets/www/.gitkeep
+*.apk
+*.aab
+*.jks
+*.keystore

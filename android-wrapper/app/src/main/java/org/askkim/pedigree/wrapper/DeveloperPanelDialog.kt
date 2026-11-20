@@ -220,7 +220,7 @@ class DeveloperPanelDialog(
                 setSingleLine(true)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 typeface = Typeface.MONOSPACE
-                hint = "https://askkim.github.io/..."
+                hint = "https://askkim.github.io/Pedigree/"
             }
             container.addView(urlInput)
 
@@ -543,7 +543,8 @@ class DeveloperPanelDialog(
         }
         val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
         val host = uri.host?.lowercase(Locale.US) ?: return null
-        return "$scheme://$host" + if (uri.port != -1) ":${uri.port}" else ""
+        val isDefaultPort = (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
+        return "$scheme://$host" + if (uri.port != -1 && !isDefaultPort) ":${uri.port}" else ""
     }
 
     private fun decodeJsStringResult(raw: String?): String? {
@@ -562,8 +563,12 @@ class DeveloperPanelDialog(
         } catch (_: Exception) {
             return false
         }
+        val path = uri.path.orEmpty()
         return uri.scheme?.lowercase(Locale.US) == "https" &&
-            uri.host?.lowercase(Locale.US) == DEBUG_ALLOWED_HOST
+            uri.userInfo == null &&
+            (uri.port == -1 || uri.port == 443) &&
+            uri.host?.lowercase(Locale.US) == DEBUG_ALLOWED_HOST &&
+            (path == DEBUG_ALLOWED_PATH_PREFIX || path.startsWith("$DEBUG_ALLOWED_PATH_PREFIX/"))
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -586,5 +591,6 @@ class DeveloperPanelDialog(
     companion object {
         private const val STORAGE_PROBE_TIMEOUT_MS = 500L
         private const val DEBUG_ALLOWED_HOST = "askkim.github.io"
+        private const val DEBUG_ALLOWED_PATH_PREFIX = "/Pedigree"
     }
 }
