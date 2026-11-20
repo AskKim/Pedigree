@@ -93,9 +93,12 @@ class FileAndExportBridge(
      */
     fun onShowFileChooser(
         @Suppress("UNUSED_PARAMETER") webView: WebView?,
-        filePathCallback: ValueCallback<Array<Uri>>,
+        filePathCallback: ValueCallback<Array<Uri>>?,
         fileChooserParams: WebChromeClient.FileChooserParams?
     ): Boolean {
+        if (filePathCallback == null) {
+            return false
+        }
         if (destroyed) {
             filePathCallback.onReceiveValue(null)
             return true

@@ -236,13 +236,13 @@ class NativeBackupVault(
         if (destroyed || ioExecutor.isShutdown) return
 
         // Conflate rapid sync bursts to a single pending slot so queued snapshot RAM stays <= 16 MiB.
-        val shouldScheduleDrain: Boolean
-        synchronized(pendingWriteLock) {
+        val shouldScheduleDrain = synchronized(pendingWriteLock) {
             latestQueuedWrite = QueuedSnapshotWrite(header, bytes)
-            shouldScheduleDrain = !drainScheduled
-            if (shouldScheduleDrain) {
+            val shouldStart = !drainScheduled
+            if (shouldStart) {
                 drainScheduled = true
             }
+            shouldStart
         }
 
         if (!shouldScheduleDrain) return
@@ -261,15 +261,14 @@ class NativeBackupVault(
 
     private fun drainPendingWritesBlocking() {
         while (!destroyed) {
-            val nextWrite: QueuedSnapshotWrite?
-            synchronized(pendingWriteLock) {
-                nextWrite = latestQueuedWrite
+            val nextWrite = synchronized(pendingWriteLock) {
+                val queued = latestQueuedWrite
                 latestQueuedWrite = null
-                if (nextWrite == null) {
+                if (queued == null) {
                     drainScheduled = false
-                    return
                 }
-            }
+                queued
+            } ?: return
             persistSnapshotBlocking(nextWrite.header, nextWrite.bytes)
         }
         synchronized(pendingWriteLock) {
@@ -474,10 +473,10 @@ class NativeBackupVault(
 
     private fun computeDirectoryBytesReadOnly(root: File): Long {
         var total = 0L
-        val stack = ArrayDeque<File>()
-        stack.addLast(root)
+        val stack = ArrayList<File>()
+        stack.add(root)
         while (stack.isNotEmpty()) {
-            val current = stack.removeLast()
+            val current = stack.removeAt(stack.lastIndex)
             val path = try {
                 current.toPath()
             } catch (_: Exception) {
@@ -489,7 +488,7 @@ class NativeBackupVault(
             } else if (current.isDirectory) {
                 val children = current.listFiles() ?: continue
                 for (child in children) {
-                    stack.addLast(child)
+                    stack.add(child)
                 }
             }
         }

@@ -323,7 +323,7 @@ class MainActivity : AppCompatActivity() {
         wv.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
-                filePathCallback: ValueCallback<Array<Uri>>,
+                filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
                 return fileAndExportBridge.onShowFileChooser(
