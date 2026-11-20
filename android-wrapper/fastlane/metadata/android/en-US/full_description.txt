@@ -1,0 +1,8 @@
+Community Pedigree is an offline-first livestock pedigree, herd management, and breeding record workspace built for breeders in low-connectivity barns and shows.
+
+Features:
+- Works completely offline from local device storage with automatic native backup vault snapshots.
+- Manage herd profiles, lineage pedigrees, breeding logs, memos, and printable cage cards or Barn Binders.
+- Import and export backups (.zip, .json, .csv, .tsv, .sqlite, .db) via Android's native file picker and Share Sheet.
+- Built-in native Diagnostics & Storage Truth Panel (accessible via 800ms header icon hold, 5-tap top-right corner, or launcher shortcut) with zero tracking and no PII in diagnostic exports.
+- Licensed under GNU AGPLv3+ with zero proprietary analytics or ad SDKs.

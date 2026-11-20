@@ -1,0 +1,5 @@
+Initial Android wrapper release (v1.0.0):
+- Offline-first WebViewAssetLoader shell at https://appassets.androidplatform.net
+- Native Back navigation unwinding, file import/export, Share Sheet, and PrintManager support
+- Native Backup Vault mirror (5-snapshot rotation with SHA-256 deduplication)
+- Unified Developer & Diagnostics Panel with Storage Truth Card and 100-event ring buffer

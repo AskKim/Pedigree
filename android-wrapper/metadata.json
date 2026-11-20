@@ -1,0 +1,6 @@
+{
+  "name": "PWA Wrapper",
+  "description": "Native wrapper bridge and companion shell for Community Pedigree (AGPL-3.0-or-later).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

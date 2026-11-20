@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Community Pedigree</string>
+    <string name="render_crash_title">WebView Renderer Interrupted</string>
+    <string name="render_crash_body">The offline page renderer stopped unexpectedly. Your local barn data remains safely stored.</string>
+    <string name="render_crash_retry">Reload App</string>
+    <string name="press_back_again_to_exit">Press Back again to exit</string>
+    <string name="export_saved">Saved %1$s</string>
+    <string name="export_save_failed">Could not save file</string>
+    <string name="export_share_unavailable">No app available to share this file</string>
+    <string name="file_picker_unavailable">No file picker available on this device</string>
+    <string name="print_unavailable">Printing is unavailable on this device</string>
+    <string name="external_link_unavailable">No app available to open this link</string>
+    <string name="shortcut_target_package" translatable="false">org.askkim.pedigree.wrapper</string>
+    <string name="shortcut_diagnostics_short">Diagnostics</string>
+    <string name="shortcut_diagnostics_long">Open Diagnostics &amp; Vault</string>
+    <string name="dev_panel_title">Developer &amp; Diagnostics Panel</string>
+    <string name="dev_panel_copied">Diagnostic JSON copied to clipboard</string>
+    <string name="dev_panel_copy_failed">Clipboard unavailable</string>
+    <string name="dev_panel_debug_url_invalid">Debug URL must use https://askkim.github.io/</string>
+</resources>
