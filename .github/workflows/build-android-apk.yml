@@ -30,15 +30,21 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Setup Bun
+        if: hashFiles('bun.lock', 'bun.lockb') != ''
+        uses: oven-sh/setup-bun@v2
+
       # Builds and verifies the TypeScript bridge + web bundle before packaging into Android assets.
       # Ensure Vite builds with `--base=/` so all asset URLs resolve cleanly from
       # https://appassets.androidplatform.net/index.html.
       - name: Install PWA dependencies, verify & build dist/
         run: |
-          if [ -f package-lock.json ]; then
+          if [ -f bun.lock ] || [ -f bun.lockb ]; then
+            bun install --frozen-lockfile || bun install
+          elif [ -f package-lock.json ]; then
             npm ci
           else
-            npm install --no-audit --no-fund
+            npm install --legacy-peer-deps --no-audit --no-fund
           fi
           npm run verify:improvements
           npm test
