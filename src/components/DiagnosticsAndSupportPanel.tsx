@@ -151,6 +151,7 @@ export function DiagnosticsAndSupportPanel({
   const basePanelId = useId();
   const logViewerId = `${basePanelId}-log-viewer`;
   const improvementsLogId = `${basePanelId}-improvements-log`;
+  const nativeDiagDescId = `${basePanelId}-native-wrapper-diagnostics-desc`;
 
   const [includeDataInBundle, setIncludeDataInBundle] = useState(true);
   const [includePhotosInBundle, setIncludePhotosInBundle] = useState(true);
@@ -621,6 +622,31 @@ export function DiagnosticsAndSupportPanel({
               {resolvedStorageStatus.persisted ? 'granted' : 'best-effort'}.
             </p>
           )}
+        </div>
+      )}
+
+      {pedigreeBridge.isNativeWrapper() && (
+        <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="space-y-0.5 min-w-0 flex-1">
+            <div className="font-semibold text-[var(--barn-ink)]">
+              Native Wrapper Diagnostics &amp; Vault Inspector
+            </div>
+            <p id={nativeDiagDescId} className="text-[11px] text-[var(--barn-muted)]">
+              Open the native Android wrapper diagnostics dialog to inspect WebView runtime info,
+              storage truth metrics, native backup vault snapshots, and ring-buffer events.
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-describedby={nativeDiagDescId}
+            onClick={() => {
+              pedigreeBridge.openDevPanel();
+            }}
+            className="min-h-[44px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0"
+          >
+            <Wrench className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>Android Wrapper Diagnostics</span>
+          </button>
         </div>
       )}
 

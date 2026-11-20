@@ -25,7 +25,11 @@ import {
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCompactCarrierDisclosure } from '../core/carrierGenetics';
-import { formatGenotypeArray } from '../core/geneticsEngine';
+import {
+  analyzeAlleleProvenance,
+  AnimalAlleleProvenanceResult,
+  formatGenotypeArray,
+} from '../core/geneticsEngine';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import {
   Animal,
@@ -39,6 +43,7 @@ import {
   resolveSpeciesWeightUnit,
   SpeciesProfile,
 } from '../core/models';
+import { analyzePedigreeTree } from '../core/pedigreeAnalysis';
 import {
   buildPedigreeBranchViewport,
   buildPedigreeSlots,
@@ -51,6 +56,7 @@ import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndE
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { AnimalEditorModal } from './AnimalEditorModal';
+import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
@@ -116,6 +122,8 @@ export function PedigreeScreen({
   } = activeData;
 
   const [zoom, setZoom] = useState<number>(1);
+  const [dimUniqueAncestors, setDimUniqueAncestors] = useState<boolean>(true);
+  const [showRegistrationFlags, setShowRegistrationFlags] = useState<boolean>(true);
   const [expandedGen3Branches, setExpandedGen3Branches] = useState<Set<number>>(() => new Set());
   const [lazyAncestorsById, setLazyAncestorsById] = useState<Map<string, Animal>>(() => new Map());
   const [externalKnownGen4Branches, setExternalKnownGen4Branches] = useState<Set<number>>(
@@ -392,6 +400,33 @@ export function PedigreeScreen({
       ),
     [slots, generations, expandedGen3Branches, externalKnownGen4Branches]
   );
+
+  const treeAnalysis = useMemo(() => {
+    if (!subject) return null;
+    return analyzePedigreeTree(subject, slots, speciesProfile.name);
+  }, [subject, slots, speciesProfile.name]);
+
+  const isConvergenceDimmingActive = Boolean(
+    dimUniqueAncestors && treeAnalysis?.hasConvergentAncestors
+  );
+  const isArbaFlagOverlayActive = Boolean(
+    showRegistrationFlags && treeAnalysis?.isArbaSpecies
+  );
+
+  const { provenanceByAnimalId, hasVisibleGenotypes } = useMemo(() => {
+    const map = new Map<string, AnimalAlleleProvenanceResult>();
+    let anyGeno = false;
+    for (const sl of branchViewport.visibleSlots) {
+      const a = sl.animal;
+      if (!a || map.has(a.id)) continue;
+      const prov = analyzeAlleleProvenance(a, activePedigreeMap, animals, speciesProfile.name);
+      map.set(a.id, prov);
+      if (!prov.isCustomSpeciesFallback && prov.loci.length > 0) {
+        anyGeno = true;
+      }
+    }
+    return { provenanceByAnimalId: map, hasVisibleGenotypes: anyGeno };
+  }, [branchViewport.visibleSlots, activePedigreeMap, animals, speciesProfile.name]);
 
   const fetchAndMergeBranchAncestors = useCallback(
     async (branchIndices: number[]) => {
@@ -743,9 +778,21 @@ export function PedigreeScreen({
         : generations === 5
         ? { colWidth: 198, cardWidth: 170, cardHeight: 56, rowPitch: 64, compact: true }
         : generations === 4
-        ? { colWidth: 235, cardWidth: 198, cardHeight: 78, rowPitch: 88, compact: false }
-        : { colWidth: 265, cardWidth: 222, cardHeight: 90, rowPitch: 108, compact: false },
-    [generations]
+        ? {
+            colWidth: 235,
+            cardWidth: 198,
+            cardHeight: isArbaFlagOverlayActive ? 88 : 78,
+            rowPitch: isArbaFlagOverlayActive ? 98 : 88,
+            compact: false,
+          }
+        : {
+            colWidth: 265,
+            cardWidth: 222,
+            cardHeight: isArbaFlagOverlayActive ? 104 : 90,
+            rowPitch: isArbaFlagOverlayActive ? 118 : 108,
+            compact: false,
+          },
+    [generations, isArbaFlagOverlayActive]
   );
 
   const { colWidth, cardWidth, cardHeight, rowPitch, compact } = layoutConfig;
@@ -754,7 +801,7 @@ export function PedigreeScreen({
 
   const { nodeCoords, connectorPaths, canvasWidth, canvasHeight } = useMemo(() => {
     const coords = new Map<string, { x: number; y: number; slot: PedigreeSlot }>();
-    const paths: Array<{ d: string; isSire: boolean; isKnown: boolean }> = [];
+    const paths: Array<{ d: string; isSire: boolean; isKnown: boolean; targetIsUnique: boolean }> = [];
     if (branchViewport.visibleSlots.length === 0) {
       return {
         nodeCoords: coords,
@@ -890,6 +937,10 @@ export function PedigreeScreen({
             d: `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`,
             isSire,
             isKnown: Boolean(target.slot.animal),
+            targetIsUnique:
+              target.slot.generation >= 1 &&
+              Boolean(target.slot.animal) &&
+              target.slot.occurrenceCount <= 1,
           });
         }
       }
@@ -1181,10 +1232,72 @@ export function PedigreeScreen({
           );
         })()}
 
+        {/* ARBA Registration Readiness Summary Banner */}
+        {isArbaFlagOverlayActive && treeAnalysis && treeAnalysis.blockingNodeCount > 0 && (
+          <div
+            role="status"
+            className="rounded-xl border border-[var(--barn-danger)]/75 bg-[var(--barn-danger)]/8 px-3.5 py-2.5 text-xs flex flex-wrap items-start justify-between gap-2.5"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertTriangle
+                className="w-4 h-4 text-[var(--barn-danger)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="space-y-0.5 min-w-0">
+                <div className="font-semibold text-[var(--barn-ink)]">
+                  ARBA Registration Blockers Detected ({treeAnalysis.blockingNodeCount} 3-gen{' '}
+                  {treeAnalysis.blockingNodeCount === 1 ? 'node' : 'nodes'})
+                </div>
+                {treeAnalysis.subjectRegistration?.isBlocking && (
+                  <div className="text-[11px] text-[var(--barn-danger)] font-medium">
+                    Subject ({subject.name}):{' '}
+                    {treeAnalysis.subjectRegistration.deficiencies.map((d) => d.label).join(' · ')}
+                  </div>
+                )}
+                <div className="text-[11px] text-[var(--barn-muted)]">
+                  {treeAnalysis.blockingAnimalNodeCount >
+                  (treeAnalysis.subjectRegistration?.isBlocking ? 1 : 0)
+                    ? `${
+                        treeAnalysis.blockingAnimalNodeCount -
+                        (treeAnalysis.subjectRegistration?.isBlocking ? 1 : 0)
+                      } recorded 3-gen ancestor${
+                        treeAnalysis.blockingAnimalNodeCount -
+                          (treeAnalysis.subjectRegistration?.isBlocking ? 1 : 0) ===
+                        1
+                          ? ''
+                          : 's'
+                      } missing required ARBA fields`
+                    : ''}
+                  {treeAnalysis.blockingAnimalNodeCount >
+                    (treeAnalysis.subjectRegistration?.isBlocking ? 1 : 0) &&
+                  treeAnalysis.missingAncestorSlotCount > 0
+                    ? ' · '
+                    : ''}
+                  {treeAnalysis.missingAncestorSlotCount > 0
+                    ? `${treeAnalysis.missingAncestorSlotCount} missing Gen 1–3 ancestor slot${
+                        treeAnalysis.missingAncestorSlotCount === 1 ? '' : 's'
+                      } highlighted in red below`
+                    : ''}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenAnimalInHerd(subject.id)}
+              className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--barn-danger)]/60 bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] shrink-0"
+            >
+              Edit Subject Fields
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--barn-muted)] border-t border-[var(--barn-border)] pt-2.5">
-          <span>
-            Pinch with two fingers to zoom (20%–200%), drag to pan, and swipe edges to scroll page
-          </span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span>
+              Pinch with two fingers to zoom (20%–200%), drag to pan, and swipe edges to scroll page
+            </span>
+            {hasVisibleGenotypes && <AlleleProvenanceLegend compact />}
+          </div>
           {subjectPrimaryPhoto && (
             <label className="inline-flex items-center gap-2 cursor-pointer text-[var(--barn-ink)] font-medium">
               <input
@@ -1240,7 +1353,45 @@ export function PedigreeScreen({
             )}
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              aria-pressed={dimUniqueAncestors}
+              onClick={() => setDimUniqueAncestors((v) => !v)}
+              title={
+                treeAnalysis?.hasConvergentAncestors
+                  ? 'Gray out unique (non-convergent) ancestors to spotlight repeated linebred ancestors'
+                  : 'No repeated linebred ancestors in this chart (will automatically dim unique ancestors when convergence exists)'
+              }
+              className={`min-h-[34px] px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors ${
+                isConvergenceDimmingActive
+                  ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)] font-semibold'
+                  : 'border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:bg-[var(--barn-subtle)]'
+              }`}
+            >
+              {treeAnalysis?.hasConvergentAncestors
+                ? `Dim Unique (${treeAnalysis.convergentAnimalIds.size} conv.)`
+                : 'Dim Unique'}
+            </button>
+
+            {treeAnalysis?.isArbaSpecies && (
+              <button
+                type="button"
+                aria-pressed={showRegistrationFlags}
+                onClick={() => setShowRegistrationFlags((v) => !v)}
+                title="Highlight Gen 0–3 nodes in red when missing ARBA registration fields (tattoo, breed, variety, weight, DOB, or 3-gen lineage)"
+                className={`min-h-[34px] px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors ${
+                  showRegistrationFlags
+                    ? treeAnalysis.blockingNodeCount > 0
+                      ? 'bg-[var(--barn-danger)]/12 border-[var(--barn-danger)] text-[var(--barn-danger)] font-semibold'
+                      : 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)] font-semibold'
+                    : 'border-[var(--barn-border)] bg-[var(--barn-surface)] text-[var(--barn-muted)] hover:bg-[var(--barn-subtle)]'
+                }`}
+              >
+                ARBA Reg{showRegistrationFlags && treeAnalysis.blockingNodeCount > 0 ? ` (${treeAnalysis.blockingNodeCount})` : ''}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleFitTreeWidth}
@@ -1312,30 +1463,35 @@ export function PedigreeScreen({
               height={canvasHeight}
               className="absolute inset-0 pointer-events-none"
             >
-              {connectorPaths.map((cp, idx) => (
-                <path
-                  key={idx}
-                  d={cp.d}
-                  fill="none"
-                  stroke={
-                    cp.isKnown
-                      ? cp.isSire
-                        ? 'var(--barn-slate)'
-                        : 'var(--barn-terracotta)'
-                      : 'currentColor'
-                  }
-                  className={
-                    cp.isKnown
-                      ? undefined
-                      : 'text-[var(--barn-border)] dark:text-[var(--barn-muted)]/70'
-                  }
-                  strokeDasharray={cp.isKnown ? undefined : '4 4'}
-                  strokeWidth={cp.isKnown ? (compact ? '1.5' : '2') : '1.4'}
-                />
-              ))}
+              {connectorPaths.map((cp, idx) => {
+                const isDimmedPath = isConvergenceDimmingActive && cp.targetIsUnique;
+                return (
+                  <path
+                    key={idx}
+                    d={cp.d}
+                    fill="none"
+                    stroke={
+                      cp.isKnown && !isDimmedPath
+                        ? cp.isSire
+                          ? 'var(--barn-slate)'
+                          : 'var(--barn-terracotta)'
+                        : 'currentColor'
+                    }
+                    strokeOpacity={isDimmedPath ? 0.32 : 1}
+                    className={
+                      cp.isKnown && !isDimmedPath
+                        ? undefined
+                        : 'text-[var(--barn-border)] dark:text-[var(--barn-muted)]/70'
+                    }
+                    strokeDasharray={cp.isKnown ? undefined : '4 4'}
+                    strokeWidth={cp.isKnown ? (compact ? '1.5' : '2') : '1.4'}
+                  />
+                );
+              })}
             </svg>
 
             {Array.from(nodeCoords.values()).map(({ x, y, slot }) => {
+              const slotKey = `${slot.generation}:${slot.slotIndex}`;
               const a = slot.animal;
               const isSubject = slot.generation === 0;
               const isLinebred = slot.occurrenceCount > 1;
@@ -1344,10 +1500,19 @@ export function PedigreeScreen({
               const nodeConflict = a ? conflictsByAnimalId.get(a.id) : undefined;
               const hasUrgentConflict = Boolean(nodeConflict?.hasActiveConflict);
               const hasSoftConflict = Boolean(nodeConflict?.isIgnoredWithSoftWarning);
+              const regStatus = isArbaFlagOverlayActive
+                ? treeAnalysis?.registrationBySlotKey.get(slotKey)
+                : undefined;
+              const hasRegBlocker = Boolean(regStatus?.isBlocking);
+              const isDimmedUnique = Boolean(
+                isConvergenceDimmingActive && a && !isSubject && !isLinebred
+              );
 
               return (
                 <div
-                  key={`${slot.generation}:${slot.slotIndex}`}
+                  key={slotKey}
+                  data-dimmed-unique={isDimmedUnique ? 'true' : undefined}
+                  data-arba-blocked={hasRegBlocker ? 'true' : undefined}
                   style={{
                     left: `${x}px`,
                     top: `${y}px`,
@@ -1356,15 +1521,23 @@ export function PedigreeScreen({
                   }}
                   className={`absolute rounded-xl border ${
                     compact ? 'px-2 py-1' : 'px-3 py-2'
-                  } flex flex-col justify-between transition-colors ${
+                  } flex flex-col justify-between transition-all ${
                     a
-                      ? hasUrgentConflict
+                      ? hasRegBlocker
+                        ? `bg-[var(--barn-danger)]/10 border-[var(--barn-danger)] border-[1.5px]${
+                            isDimmedUnique ? ' opacity-85' : ''
+                          }`
+                        : hasUrgentConflict
                         ? 'bg-[var(--barn-terracotta-tint)]/75 border-[var(--barn-terracotta)] border-[1.5px]'
                         : hasSoftConflict
                         ? 'bg-[var(--barn-canvas)] border-[var(--barn-terracotta)]/70 border-dashed border-[1.5px]'
                         : isSubject || isLinebred
                         ? 'bg-[var(--barn-sage-tint)]/75 border-[var(--barn-sage)] border-[1.5px]'
+                        : isDimmedUnique
+                        ? 'bg-[var(--barn-subtle)]/55 border-[var(--barn-border)]/75 opacity-55 grayscale-[70%]'
                         : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+                      : hasRegBlocker
+                      ? 'bg-[var(--barn-danger)]/8 border-dashed border-[var(--barn-danger)] border-[1.5px]'
                       : 'bg-[var(--barn-canvas)]/65 dark:bg-[var(--barn-subtle)]/75 border-dashed border-[var(--barn-border)] dark:border-[var(--barn-muted)]/60'
                   }`}
                 >
@@ -1379,6 +1552,14 @@ export function PedigreeScreen({
                       ultraCompact: compact,
                       maxItemsPerGroup: compact ? 2 : 3,
                     });
+                    const animalProvenance = provenanceByAnimalId.get(a.id);
+                    const hasGenoText = Boolean(
+                      a.genotypeRaw || formatGenotypeArray(a.genotype)
+                    );
+                    const regShortList =
+                      hasRegBlocker && regStatus
+                        ? regStatus.deficiencies.map((d) => d.shortLabel).join(', ')
+                        : '';
                     return (
                       <>
                         <div className="flex items-center justify-between gap-1 min-w-0">
@@ -1399,14 +1580,33 @@ export function PedigreeScreen({
                               compact ? 'text-[10.5px] leading-tight' : 'text-xs'
                             }`}
                             title={
-                              nodeConflict?.hasAnyConflict
-                                ? `${a.name} — ${nodeConflict.headlineReasons.join('; ')}`
-                                : `${a.name} — click to focus`
+                              [
+                                a.name,
+                                hasRegBlocker && regStatus ? regStatus.summaryText : '',
+                                nodeConflict?.hasAnyConflict
+                                  ? nodeConflict.headlineReasons.join('; ')
+                                  : '',
+                                isDimmedUnique ? 'Unique (non-convergent) ancestor' : '',
+                                !hasRegBlocker && !nodeConflict?.hasAnyConflict
+                                  ? 'Click to focus'
+                                  : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' — ')
                             }
                           >
                             {a.name}
                           </button>
                           <div className="flex items-center gap-1 shrink-0">
+                            {hasRegBlocker && regStatus && (
+                              <span
+                                title={regStatus.summaryText}
+                                className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-[var(--barn-danger)]"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5" aria-hidden="true" />
+                                {!compact ? 'ARBA' : 'Reg!'}
+                              </span>
+                            )}
                             {nodeConflict?.hasAnyConflict && (
                               <span
                                 title={nodeConflict.headlineReasons.join('; ')}
@@ -1427,13 +1627,22 @@ export function PedigreeScreen({
                         {!compact ? (
                           <>
                             <div className="text-[11px] text-[var(--barn-muted)] font-mono truncate">
-                              {a.tattoo || 'No ID'} · {a.variety || a.breed}
+                              {a.tattoo || 'No ID'} · {a.variety || a.breed || 'No variety'}
                               {a.weightGrams > 0
                                 ? ` · ${formatWeight(a.weightGrams, resolveSpeciesWeightUnit(speciesProfile, settings))}`
                                 : ''}
                             </div>
 
-                            {cardCarrier && (
+                            {hasRegBlocker && regStatus && (
+                              <div
+                                title={regStatus.summaryText}
+                                className="text-[9.5px] font-semibold text-[var(--barn-danger)] truncate leading-tight"
+                              >
+                                Missing: {regShortList}
+                              </div>
+                            )}
+
+                            {cardCarrier && !hasRegBlocker && (
                               <div
                                 title={fullCarrier}
                                 className="text-[10px] font-medium text-[var(--barn-terracotta)] truncate leading-tight"
@@ -1446,16 +1655,22 @@ export function PedigreeScreen({
                               <span
                                 className={
                                   a.sex === 'Male'
-                                    ? 'text-[var(--barn-slate)] font-medium'
-                                    : 'text-[var(--barn-terracotta)] font-medium'
+                                    ? 'text-[var(--barn-slate)] font-medium shrink-0'
+                                    : 'text-[var(--barn-terracotta)] font-medium shrink-0'
                                 }
                               >
                                 {formatSexForSpecies(a.sex, speciesProfile)}
                               </span>
                               <span className="font-mono truncate">
-                                {a.genotypeRaw ||
-                                  formatGenotypeArray(a.genotype) ||
-                                  a.registrationNumber}
+                                {hasGenoText ? (
+                                  <ColoredGenotypeDisplay
+                                    provenance={animalProvenance}
+                                    fallbackText={a.genotypeRaw || formatGenotypeArray(a.genotype)}
+                                    compact
+                                  />
+                                ) : (
+                                  a.registrationNumber
+                                )}
                               </span>
                             </div>
                           </>
@@ -1467,13 +1682,22 @@ export function PedigreeScreen({
                                 ? ` · ${a.variety || a.breed}`
                                 : ''}
                             </div>
-                            {cardCarrier && (
+                            {hasRegBlocker && regStatus ? (
                               <div
-                                title={fullCarrier}
-                                className="text-[8.5px] font-medium text-[var(--barn-terracotta)] truncate leading-none"
+                                title={regStatus.summaryText}
+                                className="text-[8.5px] font-semibold text-[var(--barn-danger)] truncate leading-none"
                               >
-                                {cardCarrier}
+                                Missing: {regShortList}
                               </div>
+                            ) : (
+                              cardCarrier && (
+                                <div
+                                  title={fullCarrier}
+                                  className="text-[8.5px] font-medium text-[var(--barn-terracotta)] truncate leading-none"
+                                >
+                                  {cardCarrier}
+                                </div>
+                              )
                             )}
                           </>
                         )}
@@ -1481,13 +1705,25 @@ export function PedigreeScreen({
                     );
                   })() : (
                     <div
-                      className={`h-full flex items-center justify-between gap-1.5 text-[var(--barn-muted)] dark:text-[var(--barn-ink)]/85 ${
-                        compact ? 'text-[10px]' : 'text-xs'
-                      }`}
+                      title={hasRegBlocker && regStatus ? regStatus.summaryText : undefined}
+                      className={`h-full flex items-center justify-between gap-1.5 ${
+                        hasRegBlocker
+                          ? 'text-[var(--barn-danger)]'
+                          : 'text-[var(--barn-muted)] dark:text-[var(--barn-ink)]/85'
+                      } ${compact ? 'text-[10px]' : 'text-xs'}`}
                     >
-                      <span className="truncate font-medium">
-                        {compact ? 'Unknown' : `Unknown ${isMaleSlot ? speciesProfile.maleLabel : speciesProfile.femaleLabel}`}
-                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">
+                          {compact
+                            ? 'Unknown'
+                            : `Unknown ${isMaleSlot ? speciesProfile.maleLabel : speciesProfile.femaleLabel}`}
+                        </div>
+                        {!compact && hasRegBlocker && (
+                          <div className="text-[9.5px] font-semibold text-[var(--barn-danger)] truncate">
+                            Blocks 3-gen ARBA reg
+                          </div>
+                        )}
+                      </div>
                       {canLinkMissing && (
                         <button
                           type="button"

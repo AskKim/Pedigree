@@ -10,9 +10,14 @@
  * or download.
  */
 
-import { AlertCircle, Download, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertCircle, Download, Loader2, Printer, Share2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { BarnBinderOptions } from '../core/barnBinder';
+import {
+  BATCH_PRINT_LAYOUTS,
+  BatchPrintOptions,
+  getBatchPrintLayoutSpec,
+} from '../core/batchPrint';
 import type { PedigreePrintOptions } from '../core/syncAndExports';
 import { pedigreeBridge } from '../native/pedigreeBridge';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
@@ -33,11 +38,18 @@ interface PrintPreviewModalProps {
   headerNotice?: ReactNode;
   includePrimaryPhoto?: boolean;
   onToggleIncludePrimaryPhoto?: (include: boolean) => void;
+  includeCageCardQr?: boolean;
+  onToggleIncludeCageCardQr?: (include: boolean) => void;
   pedigreePrintOptions?: PedigreePrintOptions;
   onChangePedigreePrintOptions?: (next: PedigreePrintOptions) => void;
   binderPrintOptions?: BarnBinderOptions;
   onChangeBinderPrintOptions?: (next: BarnBinderOptions) => void;
   binderArchivedCount?: number;
+  batchPrintOptions?: BatchPrintOptions;
+  onChangeBatchPrintOptions?: (next: BatchPrintOptions) => void;
+  batchAnimalCount?: number;
+  batchPageCount?: number;
+  batchPhotoHydrating?: boolean;
   onClose: () => void;
 }
 
@@ -48,11 +60,18 @@ export function PrintPreviewModal({
   headerNotice,
   includePrimaryPhoto,
   onToggleIncludePrimaryPhoto,
+  includeCageCardQr,
+  onToggleIncludeCageCardQr,
   pedigreePrintOptions,
   onChangePedigreePrintOptions,
   binderPrintOptions,
   onChangeBinderPrintOptions,
   binderArchivedCount = 0,
+  batchPrintOptions,
+  onChangeBatchPrintOptions,
+  batchAnimalCount = 0,
+  batchPageCount = 0,
+  batchPhotoHydrating = false,
   onClose,
 }: PrintPreviewModalProps) {
   const shareReasonId = useId();
@@ -650,6 +669,18 @@ export function PrintPreviewModal({
               </label>
             )}
 
+            {onToggleIncludeCageCardQr && (
+              <label className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium inline-flex items-center gap-2 cursor-pointer select-none whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={Boolean(includeCageCardQr)}
+                  onChange={(e) => onToggleIncludeCageCardQr(e.target.checked)}
+                  className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                />
+                <span>QR Profile Code</span>
+              </label>
+            )}
+
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -977,12 +1008,261 @@ export function PrintPreviewModal({
           </div>
         )}
 
-        {(headerNotice || pedigreePrintOptions?.showGenotypes || binderPrintOptions) && (
+        {batchPrintOptions && onChangeBatchPrintOptions && (() => {
+          const activeSpec = getBatchPrintLayoutSpec(batchPrintOptions.layout);
+          const showCutLinesToggle =
+            activeSpec.supportsCutLines &&
+            !(
+              batchPrintOptions.layout === 'photo_cards_4x6' &&
+              batchPrintOptions.photoCardPaperMode === 'photo_4x6'
+            );
+
+          return (
+            <div className="px-3 sm:px-5 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/80 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div
+                  role="group"
+                  aria-label="Batch print layout"
+                  className="inline-flex flex-wrap items-center p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] gap-0.5"
+                >
+                  {BATCH_PRINT_LAYOUTS.map((spec) => (
+                    <button
+                      key={spec.id}
+                      type="button"
+                      aria-pressed={batchPrintOptions.layout === spec.id}
+                      title={spec.description}
+                      onClick={() =>
+                        onChangeBatchPrintOptions({
+                          ...batchPrintOptions,
+                          layout: spec.id,
+                        })
+                      }
+                      className={`min-h-[30px] px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
+                        batchPrintOptions.layout === spec.id
+                          ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                          : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                      }`}
+                    >
+                      {spec.shortLabel}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 font-mono tabular-nums text-[11px] text-[var(--barn-muted)]">
+                  <span>
+                    {batchAnimalCount} animal{batchAnimalCount === 1 ? '' : 's'} &middot;{' '}
+                    {batchPageCount} page{batchPageCount === 1 ? '' : 's'}
+                  </span>
+                  {batchPhotoHydrating && (
+                    <span className="inline-flex items-center gap-1 text-[var(--barn-sage)] font-sans">
+                      <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                      Loading photos...
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
+                {activeSpec.supportsGenerations && (
+                  <div
+                    role="group"
+                    aria-label="Batch pedigree depth"
+                    className="inline-flex items-center gap-1 p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+                  >
+                    <span className="px-1.5 text-[11px] text-[var(--barn-muted)]">Depth:</span>
+                    {([3, 4, 5, 6] as const).map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        aria-pressed={batchPrintOptions.generations === g}
+                        onClick={() =>
+                          onChangeBatchPrintOptions({
+                            ...batchPrintOptions,
+                            generations: g,
+                          })
+                        }
+                        className={`min-h-[26px] px-2 py-0.5 rounded-md font-mono text-[11px] font-semibold transition-colors ${
+                          batchPrintOptions.generations === g
+                            ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                            : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                        }`}
+                      >
+                        {g}G
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {activeSpec.supportsPaperMode && (
+                  <div
+                    role="group"
+                    aria-label="4x6 photo card paper layout"
+                    className="inline-flex items-center gap-0.5 p-0.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)]"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={batchPrintOptions.photoCardPaperMode === 'letter_2up'}
+                      onClick={() =>
+                        onChangeBatchPrintOptions({
+                          ...batchPrintOptions,
+                          photoCardPaperMode: 'letter_2up',
+                        })
+                      }
+                      className={`min-h-[26px] px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
+                        batchPrintOptions.photoCardPaperMode === 'letter_2up'
+                          ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] font-semibold'
+                          : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                      }`}
+                    >
+                      2-Up Letter Sheet
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={batchPrintOptions.photoCardPaperMode === 'photo_4x6'}
+                      onClick={() =>
+                        onChangeBatchPrintOptions({
+                          ...batchPrintOptions,
+                          photoCardPaperMode: 'photo_4x6',
+                        })
+                      }
+                      className={`min-h-[26px] px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
+                        batchPrintOptions.photoCardPaperMode === 'photo_4x6'
+                          ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] font-semibold'
+                          : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                      }`}
+                    >
+                      Direct 4×6 Paper
+                    </button>
+                  </div>
+                )}
+
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={batchPrintOptions.includePhotos}
+                    onChange={(e) =>
+                      onChangeBatchPrintOptions({
+                        ...batchPrintOptions,
+                        includePhotos: e.target.checked,
+                      })
+                    }
+                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>Include Photos</span>
+                </label>
+
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={batchPrintOptions.showWeights}
+                    onChange={(e) =>
+                      onChangeBatchPrintOptions({
+                        ...batchPrintOptions,
+                        showWeights: e.target.checked,
+                      })
+                    }
+                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>Show Weights</span>
+                </label>
+
+                {activeSpec.supportsQrCode && (
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      checked={batchPrintOptions.includeQrCodes}
+                      onChange={(e) =>
+                        onChangeBatchPrintOptions({
+                          ...batchPrintOptions,
+                          includeQrCodes: e.target.checked,
+                        })
+                      }
+                      className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                    />
+                    <span>QR Profile Codes</span>
+                  </label>
+                )}
+
+                {showCutLinesToggle && (
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      checked={batchPrintOptions.includeCutLines}
+                      onChange={(e) =>
+                        onChangeBatchPrintOptions({
+                          ...batchPrintOptions,
+                          includeCutLines: e.target.checked,
+                        })
+                      }
+                      className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                    />
+                    <span>Cut Guides</span>
+                  </label>
+                )}
+
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={batchPrintOptions.showGenotypes}
+                    onChange={(e) =>
+                      onChangeBatchPrintOptions({
+                        ...batchPrintOptions,
+                        showGenotypes: e.target.checked,
+                      })
+                    }
+                    className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>Include Coat Genotypes (Unverified · Under Dev)</span>
+                </label>
+
+                {activeSpec.supportsBreederFooter && (
+                  <>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer select-none whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        checked={batchPrintOptions.showBreederFooter}
+                        onChange={(e) =>
+                          onChangeBatchPrintOptions({
+                            ...batchPrintOptions,
+                            showBreederFooter: e.target.checked,
+                          })
+                        }
+                        className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                      />
+                      <span>Breeder Footer</span>
+                    </label>
+
+                    {batchPrintOptions.showBreederFooter && (
+                      <input
+                        type="text"
+                        value={batchPrintOptions.breederContactLine}
+                        onChange={(e) =>
+                          onChangeBatchPrintOptions({
+                            ...batchPrintOptions,
+                            breederContactLine: e.target.value,
+                          })
+                        }
+                        placeholder="Optional breeder website or contact footer line..."
+                        aria-label="Optional breeder website or contact footer line"
+                        className="flex-1 min-w-[200px] min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs text-[var(--barn-ink)] placeholder:text-[var(--barn-muted)]"
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {(headerNotice ||
+          pedigreePrintOptions?.showGenotypes ||
+          binderPrintOptions ||
+          batchPrintOptions?.showGenotypes) && (
           <div className="px-3 sm:px-5 py-2 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/60 flex flex-wrap items-center gap-2">
             {headerNotice}
-            {(pedigreePrintOptions?.showGenotypes || binderPrintOptions) && (
-              <ColorGeneticsNotice compact />
-            )}
+            {(pedigreePrintOptions?.showGenotypes ||
+              binderPrintOptions ||
+              batchPrintOptions?.showGenotypes) && <ColorGeneticsNotice compact />}
           </div>
         )}
 

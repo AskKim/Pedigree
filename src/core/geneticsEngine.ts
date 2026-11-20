@@ -1528,6 +1528,573 @@ export function inferHiddenAlleles(
   };
 }
 
+export type AlleleProvenanceSource = 'sire' | 'dam' | 'offspring' | 'manual' | 'unknown';
+
+export interface AnnotatedAllele {
+  allele: string;
+  source: AlleleProvenanceSource;
+  detail: string;
+  isInferredUncommitted?: boolean;
+}
+
+export interface AnnotatedLocusPair {
+  locus: string;
+  locusName: string;
+  allele1: AnnotatedAllele;
+  allele2: AnnotatedAllele;
+}
+
+export interface AnimalAlleleProvenanceResult {
+  speciesName: string;
+  isCustomSpeciesFallback: boolean;
+  rawFallback: string;
+  loci: AnnotatedLocusPair[];
+  counts: Record<AlleleProvenanceSource, number>;
+  hasAnyProvenance: boolean;
+}
+
+function parentHasAllele(pair: GenotypeAllelePair | undefined, allele: string): boolean {
+  if (!pair || !allele || allele === '_') return false;
+  return pair.allele1 === allele || pair.allele2 === allele;
+}
+
+function parentIsHomozygousFor(pair: GenotypeAllelePair | undefined, allele: string): boolean {
+  if (!pair || !allele || allele === '_') return false;
+  return pair.allele1 === allele && pair.allele2 === allele;
+}
+
+function parentCanSupplyAllele(pair: GenotypeAllelePair | undefined, allele: string): boolean {
+  if (!pair || !allele || allele === '_') return false;
+  return (
+    pair.allele1 === allele ||
+    pair.allele2 === allele ||
+    pair.allele1 === '_' ||
+    pair.allele2 === '_'
+  );
+}
+
+function parentFullyKnownWithout(pair: GenotypeAllelePair | undefined, allele: string): boolean {
+  if (!pair || !allele || allele === '_') return false;
+  return (
+    pair.allele1 !== '_' &&
+    pair.allele2 !== '_' &&
+    pair.allele1 !== allele &&
+    pair.allele2 !== allele
+  );
+}
+
+/**
+ * Classifies per-allele provenance (`sire`, `dam`, `offspring`, `manual`, or `unknown`)
+ * across all recorded (and optionally uncommitted inferred) coat-color loci for an animal.
+ * Strictly species-scoped with zero DOM dependencies.
+ */
+export function analyzeAlleleProvenance(
+  subject: Animal,
+  herdById: Map<string, Animal>,
+  allSpeciesAnimals: Animal[],
+  speciesName?: string,
+  options?: { includeInferred?: boolean }
+): AnimalAlleleProvenanceResult {
+  const effectiveSpecies = speciesName || subject.species || 'Rabbit';
+  const spec = getGeneticsSpecForSpecies(effectiveSpecies);
+  const emptyCounts: Record<AlleleProvenanceSource, number> = {
+    sire: 0,
+    dam: 0,
+    offspring: 0,
+    manual: 0,
+    unknown: 0,
+  };
+
+  if (!spec) {
+    return {
+      speciesName: effectiveSpecies,
+      isCustomSpeciesFallback: true,
+      rawFallback: (subject.genotypeRaw || '').trim(),
+      loci: [],
+      counts: emptyCounts,
+      hasAnyProvenance: false,
+    };
+  }
+
+  const savedPairs = getAnimalPairsForSpecies(subject, effectiveSpecies);
+  const savedByLocus = new Map<string, GenotypeAllelePair>();
+  for (const p of savedPairs) {
+    savedByLocus.set(p.locus, p);
+  }
+
+  const workingPairs = options?.includeInferred
+    ? inferHiddenAlleles(subject, herdById, allSpeciesAnimals, effectiveSpecies).updatedPairs
+    : savedPairs;
+
+  if (workingPairs.length === 0) {
+    return {
+      speciesName: spec.displayName,
+      isCustomSpeciesFallback: false,
+      rawFallback: (subject.genotypeRaw || '').trim(),
+      loci: [],
+      counts: emptyCounts,
+      hasAnyProvenance: false,
+    };
+  }
+
+  const sire = subject.sireId ? herdById.get(subject.sireId) : undefined;
+  const dam = subject.damId ? herdById.get(subject.damId) : undefined;
+  const sireByLocus = new Map<string, GenotypeAllelePair>();
+  const damByLocus = new Map<string, GenotypeAllelePair>();
+
+  if (sire) {
+    for (const p of getAnimalPairsForSpecies(sire, effectiveSpecies)) {
+      sireByLocus.set(p.locus, p);
+    }
+  }
+  if (dam) {
+    for (const p of getAnimalPairsForSpecies(dam, effectiveSpecies)) {
+      damByLocus.set(p.locus, p);
+    }
+  }
+
+  const offspring = allSpeciesAnimals.filter(
+    (a) => a.id !== subject.id && (a.sireId === subject.id || a.damId === subject.id)
+  );
+  const offspringPairsList = offspring.map((kid) => ({
+    kid,
+    byLocus: new Map(
+      getAnimalPairsForSpecies(kid, effectiveSpecies).map((p) => [p.locus, p] as const)
+    ),
+  }));
+
+  const loci: AnnotatedLocusPair[] = [];
+  const counts: Record<AlleleProvenanceSource, number> = { ...emptyCounts };
+
+  for (const rawPair of workingPairs) {
+    const locusDef = spec.loci.find((l) => l.locus === rawPair.locus);
+    const norm = normalizePairWithSpec(locusDef, rawPair.allele1, rawPair.allele2);
+    const a1 = norm.allele1;
+    const a2 = norm.allele2;
+
+    const savedPair = savedByLocus.get(rawPair.locus);
+    const savedNorm = savedPair
+      ? normalizePairWithSpec(locusDef, savedPair.allele1, savedPair.allele2)
+      : null;
+
+    let uncommitted1 = false;
+    let uncommitted2 = false;
+    if (options?.includeInferred && savedNorm) {
+      const savedSlots = [savedNorm.allele1, savedNorm.allele2].filter((x) => x !== '_');
+      const consumeSaved = (al: string): boolean => {
+        if (al === '_') return false;
+        const idx = savedSlots.indexOf(al);
+        if (idx !== -1) {
+          savedSlots.splice(idx, 1);
+          return false;
+        }
+        return true;
+      };
+      uncommitted1 = consumeSaved(a1);
+      uncommitted2 = consumeSaved(a2);
+    }
+
+    const sireLocus = sireByLocus.get(rawPair.locus);
+    const damLocus = damByLocus.get(rawPair.locus);
+
+    let ann1: AnnotatedAllele =
+      a1 === '_'
+        ? { allele: '_', source: 'unknown', detail: 'Unverified allele slot (_)' }
+        : { allele: a1, source: 'manual', detail: 'Manually recorded allele' };
+    let ann2: AnnotatedAllele =
+      a2 === '_'
+        ? { allele: '_', source: 'unknown', detail: 'Unverified allele slot (_)' }
+        : { allele: a2, source: 'manual', detail: 'Manually recorded allele' };
+
+    if (locusDef?.inheritanceMode === 'x_linked') {
+      if (subject.sex === 'Male' || a2 === 'Y') {
+        if (a2 === 'Y') {
+          ann2 = {
+            allele: 'Y',
+            source: 'sire',
+            detail: sire
+              ? `Y chromosome inherited from Sire (${sire.name})`
+              : 'Y chromosome (inherited from Sire)',
+          };
+        }
+        if (a1 !== '_') {
+          if (dam && parentHasAllele(damLocus, a1)) {
+            ann1 = {
+              allele: a1,
+              source: 'dam',
+              detail: `X-linked '${a1}' inherited from Dam (${dam.name})`,
+            };
+          } else {
+            ann1 = {
+              allele: a1,
+              source: 'manual',
+              detail: 'Manually recorded X-linked allele',
+            };
+          }
+        }
+      } else {
+        // Female XX (or unknown sex) X-linked locus
+        const sonProofByAllele = new Map<string, string>();
+        for (const { kid, byLocus } of offspringPairsList) {
+          if (kid.sex !== 'Male') continue;
+          const kLocus = byLocus.get(rawPair.locus);
+          if (kLocus && kLocus.allele1 !== '_' && !sonProofByAllele.has(kLocus.allele1)) {
+            sonProofByAllele.set(kLocus.allele1, kid.name);
+          }
+        }
+
+        const sireX = sire && sireLocus && sireLocus.allele1 !== '_' ? sireLocus.allele1 : null;
+        let sireAssignedIdx: 1 | 2 | null = null;
+        if (sireX) {
+          if (a1 === sireX) {
+            ann1 = {
+              allele: a1,
+              source: 'sire',
+              detail: `X-linked '${sireX}' inherited from Sire (${sire!.name})`,
+            };
+            sireAssignedIdx = 1;
+          } else if (a2 === sireX) {
+            ann2 = {
+              allele: a2,
+              source: 'sire',
+              detail: `X-linked '${sireX}' inherited from Sire (${sire!.name})`,
+            };
+            sireAssignedIdx = 2;
+          }
+        }
+
+        const resolveFemaleOther = (al: string, isUncommitted: boolean): AnnotatedAllele => {
+          if (al === '_') {
+            return { allele: '_', source: 'unknown', detail: 'Unverified allele slot (_)' };
+          }
+          if (dam && parentHasAllele(damLocus, al)) {
+            return {
+              allele: al,
+              source: 'dam',
+              detail: `X-linked '${al}' inherited from Dam (${dam.name})`,
+            };
+          }
+          const sonName = sonProofByAllele.get(al);
+          if (sonName && (a1 !== a2 || isUncommitted)) {
+            return {
+              allele: al,
+              source: 'offspring',
+              detail: `Inferred from son ${sonName} (${al}Y)`,
+            };
+          }
+          return { allele: al, source: 'manual', detail: 'Manually recorded X-linked allele' };
+        };
+
+        if (sireAssignedIdx === 1) {
+          ann2 = resolveFemaleOther(a2, uncommitted2);
+        } else if (sireAssignedIdx === 2) {
+          ann1 = resolveFemaleOther(a1, uncommitted1);
+        } else {
+          // Neither matched a recorded Sire X; check homozygous Dam or son proof
+          if (dam && a1 !== '_' && parentIsHomozygousFor(damLocus, a1)) {
+            ann1 = {
+              allele: a1,
+              source: 'dam',
+              detail: `Dam (${dam.name}) is homozygous ${a1}${a1} and passes '${a1}'`,
+            };
+            if (a2 !== '_') {
+              const sonName = sonProofByAllele.get(a2);
+              if (sonName && (a1 !== a2 || uncommitted2)) {
+                ann2 = {
+                  allele: a2,
+                  source: 'offspring',
+                  detail: `Inferred from son ${sonName} (${a2}Y)`,
+                };
+              }
+            }
+          } else if (dam && a2 !== '_' && parentIsHomozygousFor(damLocus, a2)) {
+            ann2 = {
+              allele: a2,
+              source: 'dam',
+              detail: `Dam (${dam.name}) is homozygous ${a2}${a2} and passes '${a2}'`,
+            };
+            if (a1 !== '_') {
+              const sonName = sonProofByAllele.get(a1);
+              if (sonName && (a1 !== a2 || uncommitted1)) {
+                ann1 = {
+                  allele: a1,
+                  source: 'offspring',
+                  detail: `Inferred from son ${sonName} (${a1}Y)`,
+                };
+              }
+            }
+          } else {
+            if (a1 !== '_' && sonProofByAllele.has(a1) && (a1 !== a2 || uncommitted1)) {
+              ann1 = {
+                allele: a1,
+                source: 'offspring',
+                detail: `Inferred from son ${sonProofByAllele.get(a1)} (${a1}Y)`,
+              };
+            }
+            if (a2 !== '_' && sonProofByAllele.has(a2) && (a1 !== a2 || uncommitted2)) {
+              ann2 = {
+                allele: a2,
+                source: 'offspring',
+                detail: `Inferred from son ${sonProofByAllele.get(a2)} (${a2}Y)`,
+              };
+            }
+          }
+        }
+      }
+    } else {
+      // Autosomal locus provenance
+      const topDominant = locusDef?.alleles[0];
+      const offspringProofByAllele = new Map<string, string>();
+      for (const { kid, byLocus } of offspringPairsList) {
+        const kLocus = byLocus.get(rawPair.locus);
+        if (
+          kLocus &&
+          kLocus.allele1 !== '_' &&
+          kLocus.allele1 === kLocus.allele2 &&
+          kLocus.allele1 !== topDominant &&
+          !offspringProofByAllele.has(kLocus.allele1)
+        ) {
+          offspringProofByAllele.set(kLocus.allele1, kid.name);
+        }
+      }
+
+      if (a1 !== '_' && a2 === '_') {
+        const sireGuar = Boolean(sire && parentIsHomozygousFor(sireLocus, a1));
+        const damGuar = Boolean(dam && parentIsHomozygousFor(damLocus, a1));
+
+        if (sireGuar && !damGuar) {
+          ann1 = {
+            allele: a1,
+            source: 'sire',
+            detail: `Inherited from homozygous Sire (${sire!.name}, ${a1}${a1})`,
+          };
+        } else if (damGuar && !sireGuar) {
+          ann1 = {
+            allele: a1,
+            source: 'dam',
+            detail: `Inherited from homozygous Dam (${dam!.name}, ${a1}${a1})`,
+          };
+        } else if (sireGuar && damGuar) {
+          ann1 = {
+            allele: a1,
+            source: 'sire',
+            detail: `Inherited from homozygous Sire (${sire!.name}) & Dam (${dam!.name})`,
+          };
+        } else if (
+          sire &&
+          dam &&
+          parentHasAllele(sireLocus, a1) &&
+          parentFullyKnownWithout(damLocus, a1)
+        ) {
+          ann1 = {
+            allele: a1,
+            source: 'sire',
+            detail: `Inherited from Sire (${sire.name}); Dam (${dam.name}) does not carry '${a1}'`,
+          };
+        } else if (
+          sire &&
+          dam &&
+          parentHasAllele(damLocus, a1) &&
+          parentFullyKnownWithout(sireLocus, a1)
+        ) {
+          ann1 = {
+            allele: a1,
+            source: 'dam',
+            detail: `Inherited from Dam (${dam.name}); Sire (${sire.name}) does not carry '${a1}'`,
+          };
+        } else if (offspringProofByAllele.has(a1)) {
+          ann1 = {
+            allele: a1,
+            source: 'offspring',
+            detail: `Proven by offspring ${offspringProofByAllele.get(a1)} (${a1}${a1})`,
+          };
+        }
+      } else if (a1 !== '_' && a2 !== '_') {
+        if (a1 === a2) {
+          // Homozygous pair: one allele came from Sire and one from Dam
+          const sireMatch = Boolean(sire && parentHasAllele(sireLocus, a1));
+          const damMatch = Boolean(dam && parentHasAllele(damLocus, a2));
+          if (sireMatch && damMatch) {
+            ann1 = {
+              allele: a1,
+              source: 'sire',
+              detail: `Inherited from Sire (${sire!.name})`,
+            };
+            ann2 = {
+              allele: a2,
+              source: 'dam',
+              detail: `Inherited from Dam (${dam!.name})`,
+            };
+          } else if (sireMatch) {
+            ann1 = {
+              allele: a1,
+              source: 'sire',
+              detail: `Inherited from Sire (${sire!.name})`,
+            };
+            if (uncommitted2 && offspringProofByAllele.has(a2)) {
+              ann2 = {
+                allele: a2,
+                source: 'offspring',
+                detail: `Inferred from offspring ${offspringProofByAllele.get(a2)} (${a2}${a2})`,
+              };
+            }
+          } else if (damMatch) {
+            ann1 = {
+              allele: a1,
+              source: 'dam',
+              detail: `Inherited from Dam (${dam!.name})`,
+            };
+            if (uncommitted2 && offspringProofByAllele.has(a2)) {
+              ann2 = {
+                allele: a2,
+                source: 'offspring',
+                detail: `Inferred from offspring ${offspringProofByAllele.get(a2)} (${a2}${a2})`,
+              };
+            }
+          } else if (uncommitted2 && offspringProofByAllele.has(a2)) {
+            ann2 = {
+              allele: a2,
+              source: 'offspring',
+              detail: `Inferred from offspring ${offspringProofByAllele.get(a2)} (${a2}${a2})`,
+            };
+          }
+        } else {
+          // Heterozygous pair (a1 !== a2)
+          let assigned1 = false;
+          let assigned2 = false;
+
+          if (sire && sireLocus && dam && damLocus) {
+            const validS1D2 =
+              parentCanSupplyAllele(sireLocus, a1) && parentCanSupplyAllele(damLocus, a2);
+            const validD1S2 =
+              parentCanSupplyAllele(damLocus, a1) && parentCanSupplyAllele(sireLocus, a2);
+
+            if (validS1D2 && !validD1S2) {
+              if (parentHasAllele(sireLocus, a1) || parentFullyKnownWithout(damLocus, a1)) {
+                ann1 = {
+                  allele: a1,
+                  source: 'sire',
+                  detail: `Inherited from Sire (${sire.name})`,
+                };
+                assigned1 = true;
+              }
+              if (parentHasAllele(damLocus, a2) || parentFullyKnownWithout(sireLocus, a2)) {
+                ann2 = {
+                  allele: a2,
+                  source: 'dam',
+                  detail: `Inherited from Dam (${dam.name})`,
+                };
+                assigned2 = true;
+              }
+            } else if (validD1S2 && !validS1D2) {
+              if (parentHasAllele(damLocus, a1) || parentFullyKnownWithout(sireLocus, a1)) {
+                ann1 = {
+                  allele: a1,
+                  source: 'dam',
+                  detail: `Inherited from Dam (${dam.name})`,
+                };
+                assigned1 = true;
+              }
+              if (parentHasAllele(sireLocus, a2) || parentFullyKnownWithout(damLocus, a2)) {
+                ann2 = {
+                  allele: a2,
+                  source: 'sire',
+                  detail: `Inherited from Sire (${sire.name})`,
+                };
+                assigned2 = true;
+              }
+            }
+          } else if (sire && sireLocus) {
+            if (
+              parentIsHomozygousFor(sireLocus, a1) ||
+              (parentHasAllele(sireLocus, a1) && parentFullyKnownWithout(sireLocus, a2))
+            ) {
+              ann1 = {
+                allele: a1,
+                source: 'sire',
+                detail: `Inherited from Sire (${sire.name})`,
+              };
+              assigned1 = true;
+            } else if (
+              parentIsHomozygousFor(sireLocus, a2) ||
+              (parentHasAllele(sireLocus, a2) && parentFullyKnownWithout(sireLocus, a1))
+            ) {
+              ann2 = {
+                allele: a2,
+                source: 'sire',
+                detail: `Inherited from Sire (${sire.name})`,
+              };
+              assigned2 = true;
+            }
+          } else if (dam && damLocus) {
+            if (
+              parentIsHomozygousFor(damLocus, a1) ||
+              (parentHasAllele(damLocus, a1) && parentFullyKnownWithout(damLocus, a2))
+            ) {
+              ann1 = {
+                allele: a1,
+                source: 'dam',
+                detail: `Inherited from Dam (${dam.name})`,
+              };
+              assigned1 = true;
+            } else if (
+              parentIsHomozygousFor(damLocus, a2) ||
+              (parentHasAllele(damLocus, a2) && parentFullyKnownWithout(damLocus, a1))
+            ) {
+              ann2 = {
+                allele: a2,
+                source: 'dam',
+                detail: `Inherited from Dam (${dam.name})`,
+              };
+              assigned2 = true;
+            }
+          }
+
+          if (!assigned1 && offspringProofByAllele.has(a1)) {
+            ann1 = {
+              allele: a1,
+              source: 'offspring',
+              detail: `Inferred from offspring ${offspringProofByAllele.get(a1)} (${a1}${a1})`,
+            };
+          }
+          if (!assigned2 && offspringProofByAllele.has(a2)) {
+            ann2 = {
+              allele: a2,
+              source: 'offspring',
+              detail: `Inferred from offspring ${offspringProofByAllele.get(a2)} (${a2}${a2})`,
+            };
+          }
+        }
+      }
+    }
+
+    if (uncommitted1) ann1.isInferredUncommitted = true;
+    if (uncommitted2) ann2.isInferredUncommitted = true;
+
+    counts[ann1.source] += 1;
+    counts[ann2.source] += 1;
+
+    loci.push({
+      locus: rawPair.locus,
+      locusName: locusDef?.name ?? `Locus ${rawPair.locus}`,
+      allele1: ann1,
+      allele2: ann2,
+    });
+  }
+
+  const hasAnyProvenance =
+    counts.sire > 0 || counts.dam > 0 || counts.offspring > 0;
+
+  return {
+    speciesName: spec.displayName,
+    isCustomSpeciesFallback: false,
+    rawFallback: formatGenotypeArray(workingPairs),
+    loci,
+    counts,
+    hasAnyProvenance,
+  };
+}
+
 export interface LocusOutcomeEntry {
   genotype: string;
   probabilityPercent: number;

@@ -20,6 +20,7 @@ import {
   ArrowLeft,
   ArrowRightLeft,
   CheckCircle2,
+  ClipboardCheck,
   Edit3,
   FileText,
   GitFork,
@@ -83,6 +84,15 @@ import {
 import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
+  BatchPrintOptions,
+  buildBatchPrintFileName,
+  buildDefaultBatchPrintOptions,
+  computeBatchPrintPageCount,
+  generateBatchPrintHtml,
+  getBatchPrintLayoutSpec,
+  resolveBatchPrintAnimals,
+} from '../core/batchPrint';
+import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
   PedigreePrintOptions,
@@ -136,6 +146,7 @@ interface HerdScreenProps {
   requestedWithdrawalFocusNonce?: number;
   onConsumeWithdrawalFocus?: () => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
+  onLoadFullPhotosBatch?: (photoIds: string[]) => Promise<Record<string, string>>;
   opfsSupported?: boolean;
   archivedHerdBundles?: ArchivedHerdIndexEntry[];
   onOffloadAnimalsToOpfsArchive?: (animalIds: string[]) => Promise<unknown> | void;
@@ -145,6 +156,7 @@ interface HerdScreenProps {
   ) => Promise<void>;
   onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
   onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
+  onOpenBarnBench?: () => void;
   onUpdateSettings?: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
 }
 
@@ -194,12 +206,14 @@ export function HerdScreen({
   requestedWithdrawalFocusNonce,
   onConsumeWithdrawalFocus,
   onLoadFullPhoto,
+  onLoadFullPhotosBatch,
   opfsSupported = false,
   archivedHerdBundles = [],
   onOffloadAnimalsToOpfsArchive,
   onRestoreArchivedHerdBundle,
   onDownloadArchivedHerdBundle,
   onDeleteArchivedHerdBundle,
+  onOpenBarnBench,
   onUpdateSettings,
 }: HerdScreenProps) {
   const {
@@ -235,6 +249,9 @@ export function HerdScreen({
     setCheckedIds([]);
     setConfirmBatchDelete(false);
     setMigrationModalState(null);
+    setBatchPrintSubjects(null);
+    setBatchHydratedPhotos({});
+    setBatchPhotoHydrating(false);
     setCarrierFilterMode('all');
     setCarrierTraitQuery('');
   }, [speciesProfile.name]);
@@ -272,11 +289,19 @@ export function HerdScreen({
     isPedigree?: boolean;
     hasGenetics?: boolean;
     pedigreeSubject?: Animal;
+    cageCardSubject?: Animal;
   } | null>(null);
+  const [includeThermalCageCardQr, setIncludeThermalCageCardQr] = useState(true);
   const [hydratedPedigreePhoto, setHydratedPedigreePhoto] = useState<{
     photoId: string;
     dataUrl: string;
   } | null>(null);
+  const [batchPrintSubjects, setBatchPrintSubjects] = useState<Animal[] | null>(null);
+  const [batchPrintOptions, setBatchPrintOptions] = useState<BatchPrintOptions>(() =>
+    buildDefaultBatchPrintOptions(settings)
+  );
+  const [batchHydratedPhotos, setBatchHydratedPhotos] = useState<Record<string, string>>({});
+  const [batchPhotoHydrating, setBatchPhotoHydrating] = useState(false);
 
   useEffect(() => {
     if (!previewDoc?.isPedigree || !previewDoc.pedigreeSubject || !settings.includePhotoOnPedigree) {
@@ -303,6 +328,74 @@ export function HerdScreen({
     primaryPhotoByAnimalId,
     onLoadFullPhoto,
     hydratedPedigreePhoto,
+  ]);
+
+  useEffect(() => {
+    if (!batchPrintSubjects || batchPrintSubjects.length === 0 || !batchPrintOptions.includePhotos) {
+      setBatchPhotoHydrating(false);
+      return;
+    }
+    const layoutSpec = getBatchPrintLayoutSpec(batchPrintOptions.layout);
+    if (!layoutSpec.prefersFullResPhotos) {
+      setBatchPhotoHydrating(false);
+      return;
+    }
+
+    const missingPhotoIds: string[] = [];
+    for (const animal of batchPrintSubjects) {
+      if (missingPhotoIds.length >= 40) break;
+      const primary = primaryPhotoByAnimalId.get(animal.id);
+      if (primary && !primary.dataUrl && !(primary.id in batchHydratedPhotos)) {
+        missingPhotoIds.push(primary.id);
+      }
+    }
+    if (missingPhotoIds.length === 0) {
+      setBatchPhotoHydrating(false);
+      return;
+    }
+
+    let cancelled = false;
+    setBatchPhotoHydrating(true);
+
+    const hydrate = async () => {
+      try {
+        const nextEntries: Record<string, string> = {};
+        if (onLoadFullPhotosBatch) {
+          const loaded = await onLoadFullPhotosBatch(missingPhotoIds);
+          for (const photoId of missingPhotoIds) {
+            nextEntries[photoId] = loaded[photoId] || '';
+          }
+        } else if (onLoadFullPhoto) {
+          for (const photoId of missingPhotoIds) {
+            if (cancelled) return;
+            const url = await onLoadFullPhoto(photoId);
+            nextEntries[photoId] = url || '';
+          }
+        }
+        if (!cancelled && Object.keys(nextEntries).length > 0) {
+          setBatchHydratedPhotos((prev) => ({ ...prev, ...nextEntries }));
+        }
+      } catch {
+        // Fall back cleanly to thumbnails when full-res hydration fails
+      } finally {
+        if (!cancelled) {
+          setBatchPhotoHydrating(false);
+        }
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    batchPrintSubjects,
+    batchPrintOptions.includePhotos,
+    batchPrintOptions.layout,
+    primaryPhotoByAnimalId,
+    batchHydratedPhotos,
+    onLoadFullPhotosBatch,
+    onLoadFullPhoto,
   ]);
 
   // Quick Cage-Side Care/Weight Log state
@@ -649,6 +742,8 @@ export function HerdScreen({
           ? hydratedPedigreePhoto.dataUrl
           : primaryPhotoRecord.thumbnailDataUrl)
       : undefined;
+    setBatchPrintSubjects(null);
+    setBatchHydratedPhotos({});
     setPreviewDoc({
       title: `Formal Pedigree (.HTM / PDF) — ${subject.name}`,
       filename: `pedigree-${subject.tattoo || subject.id}.htm`,
@@ -665,6 +760,74 @@ export function HerdScreen({
       ),
     });
   };
+
+  const openBatchPrintPreview = () => {
+    const resolved = resolveBatchPrintAnimals(
+      checkedIds,
+      filteredAnimals,
+      animals,
+      speciesProfile.name
+    );
+    if (resolved.length === 0) return;
+    setPreviewDoc(null);
+    setHydratedPedigreePhoto(null);
+    setBatchHydratedPhotos({});
+    setBatchPrintSubjects(resolved);
+  };
+
+  const batchPhotoDataUrlByAnimalId = useMemo<Record<string, string> | undefined>(() => {
+    if (!batchPrintSubjects || !batchPrintOptions.includePhotos) return undefined;
+    const map: Record<string, string> = {};
+    for (const animal of batchPrintSubjects) {
+      const primary = primaryPhotoByAnimalId.get(animal.id);
+      if (!primary) continue;
+      const src =
+        primary.dataUrl || batchHydratedPhotos[primary.id] || primary.thumbnailDataUrl || '';
+      if (src) {
+        map[animal.id] = src;
+      }
+    }
+    return map;
+  }, [
+    batchPrintSubjects,
+    batchPrintOptions.includePhotos,
+    primaryPhotoByAnimalId,
+    batchHydratedPhotos,
+  ]);
+
+  const appBaseUrl =
+    typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '';
+
+  const batchPrintHtml = useMemo(() => {
+    if (!batchPrintSubjects || batchPrintSubjects.length === 0) return '';
+    return generateBatchPrintHtml({
+      subjects: batchPrintSubjects,
+      allAnimals,
+      speciesProfiles,
+      settings,
+      speciesName: speciesProfile.name,
+      options: batchPrintOptions,
+      photoDataUrlByAnimalId: batchPhotoDataUrlByAnimalId,
+      appBaseUrl,
+    });
+  }, [
+    batchPrintSubjects,
+    allAnimals,
+    speciesProfiles,
+    settings,
+    speciesProfile.name,
+    batchPrintOptions,
+    batchPhotoDataUrlByAnimalId,
+    appBaseUrl,
+  ]);
+
+  const batchPrintPageCount = useMemo(
+    () =>
+      batchPrintSubjects
+        ? computeBatchPrintPageCount(batchPrintSubjects.length, batchPrintOptions)
+        : 0,
+    [batchPrintSubjects, batchPrintOptions]
+  );
 
   return (
     <div className="space-y-5">
@@ -1034,8 +1197,13 @@ export function HerdScreen({
                           activeAnimal,
                           allAnimals,
                           speciesProfiles,
-                          settings
+                          settings,
+                          {
+                            includeQrCode: includeThermalCageCardQr,
+                            appBaseUrl,
+                          }
                         ),
+                        cageCardSubject: activeAnimal,
                         hasGenetics: Boolean(
                           activeAnimal.genotypeRaw || activeAnimal.genotype.length > 0
                         ),
@@ -1816,6 +1984,18 @@ export function HerdScreen({
                 <option value="newest_dob">Sort: Newest DOB</option>
               </select>
 
+              {onOpenBarnBench && (
+                <button
+                  type="button"
+                  onClick={onOpenBarnBench}
+                  title="Open fast sequential Barn Bench entry mode (Shortcut: K)"
+                  className="min-h-[42px] max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] text-[var(--barn-ink)] hover:brightness-105 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+                >
+                  <ClipboardCheck className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  <span>Barn Bench</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => {
@@ -1891,6 +2071,16 @@ export function HerdScreen({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={openBatchPrintPreview}
+                    title="Print cage cards, 4-up mini pedigree sheets, 4×6 photo cards, or stacked pedigrees in one pass"
+                    className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                    Batch Print ({checkedIds.length})
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -2357,13 +2547,30 @@ export function HerdScreen({
                   })(),
                   pedigreePrintOptions
                 )
-              : previewDoc.html
+              : previewDoc.cageCardSubject
+                ? generateThermalCageCardHtml(
+                    previewDoc.cageCardSubject,
+                    allAnimals,
+                    speciesProfiles,
+                    settings,
+                    {
+                      includeQrCode: includeThermalCageCardQr,
+                      appBaseUrl,
+                    }
+                  )
+                : previewDoc.html
           }
           includePrimaryPhoto={
             previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
           }
           onToggleIncludePrimaryPhoto={
             previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
+          }
+          includeCageCardQr={
+            previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
+          }
+          onToggleIncludeCageCardQr={
+            previewDoc.cageCardSubject ? setIncludeThermalCageCardQr : undefined
           }
           pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
           onChangePedigreePrintOptions={
@@ -2379,6 +2586,32 @@ export function HerdScreen({
           onClose={() => {
             setPreviewDoc(null);
             setHydratedPedigreePhoto(null);
+          }}
+        />
+      )}
+
+      {batchPrintSubjects && batchPrintSubjects.length > 0 && (
+        <PrintPreviewModal
+          title={`Batch Print — ${getBatchPrintLayoutSpec(batchPrintOptions.layout).label} (${batchPrintSubjects.length} ${speciesProfile.name})`}
+          filename={buildBatchPrintFileName(
+            settings.barnName,
+            speciesProfile.name,
+            batchPrintOptions.layout,
+            batchPrintSubjects.length
+          )}
+          htmlContent={batchPrintHtml}
+          batchPrintOptions={batchPrintOptions}
+          onChangeBatchPrintOptions={setBatchPrintOptions}
+          batchAnimalCount={batchPrintSubjects.length}
+          batchPageCount={batchPrintPageCount}
+          batchPhotoHydrating={batchPhotoHydrating}
+          headerNotice={
+            batchPrintOptions.layout !== 'cage_cards' ? <PedigreePrintNotice /> : undefined
+          }
+          onClose={() => {
+            setBatchPrintSubjects(null);
+            setBatchHydratedPhotos({});
+            setBatchPhotoHydrating(false);
           }}
         />
       )}

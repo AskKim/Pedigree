@@ -38,6 +38,7 @@ import {
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeHousingUnitType,
   normalizeIgnoredConflicts,
   normalizeOwnershipType,
   normalizeRufusLevel,
@@ -62,6 +63,7 @@ import {
   createSpeciesCoiEvaluator,
   PedigreeSlot,
 } from './pedigreeCalculator';
+import { buildAnimalProfileDeepLink, renderQrSvg } from './qrCode';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
   escapeSafeHtml,
@@ -835,16 +837,42 @@ export function parseBarnBackupJson(
 
   const cages: CageLocation[] = (Array.isArray(raw.cages) ? raw.cages : [])
     .filter(isObj)
-    .map((c: any) => ({
-      id: safeId(c.id),
-      species: sanitizeSingleLineText(c.species, 100) || 'Rabbit',
-      label: sanitizeSingleLineText(c.label || '', 120),
-      section: sanitizeSingleLineText(c.section || '', 120),
-      capacity: Math.max(1, Math.round(finiteNonNeg(c.capacity, 1))),
-      notes: sanitizePlainText(c.notes || '', 10_000),
-      createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : ts,
-      updatedAt: typeof c.updatedAt === 'string' && c.updatedAt ? c.updatedAt : ts,
-    }));
+    .map((c: any) => {
+      const unitType = normalizeHousingUnitType(c.unitType);
+      const feedLotName = sanitizeSingleLineText(c.feedLotName || '', 120);
+      const feedStockRemaining = finiteNonNeg(c.feedStockRemaining, 0);
+      const feedStockUnit = sanitizeSingleLineText(c.feedStockUnit || '', 30);
+      const dailyRationNote = sanitizeSingleLineText(c.dailyRationNote || '', 120);
+      const feedLowThreshold = finiteNonNeg(c.feedLowThreshold, 0);
+      const maintenanceIntervalDays = Math.min(
+        3650,
+        Math.round(finiteNonNeg(c.maintenanceIntervalDays, 0))
+      );
+      const maintenanceTaskLabel = sanitizeSingleLineText(c.maintenanceTaskLabel || '', 120);
+      const rawLastMaint =
+        typeof c.lastMaintenanceDateIso === 'string' ? c.lastMaintenanceDateIso.trim() : '';
+      const lastMaintenanceDateIso = /^\d{4}-\d{2}-\d{2}$/.test(rawLastMaint) ? rawLastMaint : '';
+
+      return {
+        id: safeId(c.id),
+        species: sanitizeSingleLineText(c.species, 100) || 'Rabbit',
+        label: sanitizeSingleLineText(c.label || '', 120),
+        section: sanitizeSingleLineText(c.section || '', 120),
+        capacity: Math.max(1, Math.round(finiteNonNeg(c.capacity, 1))),
+        notes: sanitizePlainText(c.notes || '', 10_000),
+        ...(unitType ? { unitType } : {}),
+        ...(feedLotName ? { feedLotName } : {}),
+        ...(feedStockRemaining > 0 ? { feedStockRemaining } : {}),
+        ...(feedStockUnit ? { feedStockUnit } : {}),
+        ...(dailyRationNote ? { dailyRationNote } : {}),
+        ...(feedLowThreshold > 0 ? { feedLowThreshold } : {}),
+        ...(maintenanceIntervalDays > 0 ? { maintenanceIntervalDays } : {}),
+        ...(maintenanceTaskLabel ? { maintenanceTaskLabel } : {}),
+        ...(lastMaintenanceDateIso ? { lastMaintenanceDateIso } : {}),
+        createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : ts,
+        updatedAt: typeof c.updatedAt === 'string' && c.updatedAt ? c.updatedAt : ts,
+      };
+    });
 
   const mapLegacyBreedingStatus = (st: string): BreedingStatus => {
     if (st === 'Confirmed Pregnant' || st === 'Palpated Positive') return 'Palpated Positive';
@@ -1342,20 +1370,41 @@ export function exportSpeciesBackupJson(
   );
 }
 
+export interface ThermalCageCardOptions {
+  /** Embed a scannable QR code jumping straight to the animal's local PWA profile. */
+  includeQrCode?: boolean;
+  /** Origin + pathname of the PWA (e.g. `https://example.github.io/Pedigree/`). */
+  appBaseUrl?: string;
+}
+
 /**
- * Generates a compact printable Cage Card / Bluetooth Thermal Label HTML layout (e.g. 4" x 2" label).
+ * Generates a compact printable Cage Card / Bluetooth Thermal Label HTML layout (e.g. 4" x 2.25" label)
+ * with an optional scannable QR code pointing straight to the animal's local PWA profile.
  */
 export function generateThermalCageCardHtml(
   animal: Animal,
   allAnimals: Animal[],
   speciesProfiles: SpeciesProfile[],
-  settings: BarnSettings
+  settings: BarnSettings,
+  options?: ThermalCageCardOptions
 ): string {
   const sp = resolveSpeciesProfile(animal.species, speciesProfiles);
   const herdById = buildSpeciesHerdMap(allAnimals, animal.species);
   const sire = animal.sireId ? herdById.get(animal.sireId) : undefined;
   const dam = animal.damId ? herdById.get(animal.damId) : undefined;
   const geno = animal.genotypeRaw || formatGenotypeArray(animal.genotype);
+  const shouldIncludeQr = options?.includeQrCode !== false && Boolean(options?.appBaseUrl);
+  const profileUrl = shouldIncludeQr
+    ? buildAnimalProfileDeepLink(options?.appBaseUrl, animal)
+    : '';
+  const qrSvg = profileUrl
+    ? renderQrSvg(profileUrl, {
+        sizePx: 74,
+        quietZone: 2,
+        ariaLabel: `QR code to open ${animal.name || animal.tattoo || 'animal'} profile`,
+        className: 'qr-svg',
+      })
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1368,14 +1417,19 @@ export function generateThermalCageCardHtml(
   :root, html, body { color-scheme: light only; background: #ffffff; color: #000000; }
   body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 8px; }
   .card { border: 2px solid #000; padding: 8px 10px; max-width: 3.75in; background: #ffffff; color: #000000; }
-  .top { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+  .top { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid #000; padding-bottom: 4px; gap: 8px; }
   .tattoo { font-family: "Courier New", monospace; font-size: 18px; font-weight: bold; }
-  .cage { font-family: "Courier New", monospace; font-size: 12px; font-weight: bold; }
-  .name { font-size: 15px; font-weight: bold; margin-top: 4px; }
-  .row { font-size: 11px; margin-top: 3px; display: flex; justify-content: space-between; gap: 8px; }
-  .mono { font-family: "Courier New", monospace; font-size: 10.5px; margin-top: 4px; }
+  .cage { font-family: "Courier New", monospace; font-size: 12px; font-weight: bold; text-align: right; }
+  .content { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 4px; }
+  .details { flex: 1; min-width: 0; }
+  .name { font-size: 14.5px; font-weight: bold; line-height: 1.15; }
+  .row { font-size: 10.5px; margin-top: 3px; display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+  .mono { font-family: "Courier New", monospace; font-size: 10px; margin-top: 4px; border-top: 1px solid #cccccc; padding-top: 3px; }
+  .qr-box { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; border: 1px solid #cccccc; padding: 2px; background: #ffffff; }
+  .qr-svg { display: block; width: 72px; height: 72px; }
+  .qr-cap { font-family: "Courier New", monospace; font-size: 7px; font-weight: bold; letter-spacing: 0.04em; text-transform: uppercase; color: #111111; }
   @media print {
-    :root, html, body, .card {
+    :root, html, body, .card, .qr-box {
       color-scheme: light only !important;
       background: #ffffff !important;
       background-color: #ffffff !important;
@@ -1394,16 +1448,28 @@ export function generateThermalCageCardHtml(
       <span class="tattoo">${escapeHtml(animal.tattoo || 'NO-ID')}</span>
       <span class="cage">${escapeHtml(animal.cageLocation || settings.barnName)}</span>
     </div>
-    <div class="name">${escapeHtml(animal.name)}</div>
-    <div class="row">
-      <span>${escapeHtml(animal.breed)} ${escapeHtml(animal.variety)}</span>
-      <span><strong>${escapeHtml(formatSexForSpecies(animal.sex, sp))}</strong> &middot; DOB: ${escapeHtml(animal.birthDateIso || 'N/A')}</span>
-    </div>
-    <div class="row">
-      <span>Sire: ${escapeHtml(sire ? `${sire.name} (${sire.tattoo})` : 'Unknown')}</span>
-    </div>
-    <div class="row">
-      <span>Dam: ${escapeHtml(dam ? `${dam.name} (${dam.tattoo})` : 'Unknown')}</span>
+    <div class="content">
+      <div class="details">
+        <div class="name">${escapeHtml(animal.name)}</div>
+        <div class="row">
+          <span>${escapeHtml(animal.breed)} ${escapeHtml(animal.variety)}</span>
+          <span><strong>${escapeHtml(formatSexForSpecies(animal.sex, sp))}</strong> &middot; DOB: ${escapeHtml(animal.birthDateIso || 'N/A')}</span>
+        </div>
+        <div class="row">
+          <span>Sire: ${escapeHtml(sire ? `${sire.name} (${sire.tattoo})` : 'Unknown')}</span>
+        </div>
+        <div class="row">
+          <span>Dam: ${escapeHtml(dam ? `${dam.name} (${dam.tattoo})` : 'Unknown')}</span>
+        </div>
+      </div>
+      ${
+        qrSvg
+          ? `<div class="qr-box" data-qr-url="${escapeHtml(profileUrl)}">
+              ${qrSvg}
+              <span class="qr-cap">Scan Profile</span>
+            </div>`
+          : ''
+      }
     </div>
     <div class="mono">
       Wt: ${escapeHtml(formatWeight(animal.weightGrams, resolveSpeciesWeightUnit(sp, settings)))}

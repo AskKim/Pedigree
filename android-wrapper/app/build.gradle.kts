@@ -1,5 +1,5 @@
 /*
- * Community Pedigree Android Wrapper
+ * Pedigree Android Wrapper
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 

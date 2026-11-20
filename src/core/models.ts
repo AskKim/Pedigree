@@ -542,8 +542,36 @@ export interface Animal {
   updatedAt: string;
 }
 
+export type HousingUnitType = 'hutch' | 'cage' | 'pen' | 'stall' | 'pasture' | 'colony';
+
+export const HOUSING_UNIT_TYPES: ReadonlyArray<{ value: HousingUnitType; label: string }> = [
+  { value: 'hutch', label: 'Hutch' },
+  { value: 'cage', label: 'Cage' },
+  { value: 'pen', label: 'Pen' },
+  { value: 'stall', label: 'Stall' },
+  { value: 'pasture', label: 'Pasture / Paddock' },
+  { value: 'colony', label: 'Colony / Group Run' },
+];
+
+export function normalizeHousingUnitType(raw: unknown): HousingUnitType | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const clean = raw.trim().toLowerCase();
+  if (
+    clean === 'hutch' ||
+    clean === 'cage' ||
+    clean === 'pen' ||
+    clean === 'stall' ||
+    clean === 'pasture' ||
+    clean === 'colony'
+  ) {
+    return clean;
+  }
+  return undefined;
+}
+
 /**
  * Physical cage, hutch, pen, stall, or pasture location scoped to a species.
+ * Optional feedlot inventory and recurring maintenance fields power the visual Facility Pen Board.
  */
 export interface CageLocation {
   id: string;
@@ -552,6 +580,15 @@ export interface CageLocation {
   section: string;
   capacity: number;
   notes: string;
+  unitType?: HousingUnitType;
+  feedLotName?: string;
+  feedStockRemaining?: number;
+  feedStockUnit?: string;
+  dailyRationNote?: string;
+  feedLowThreshold?: number;
+  maintenanceIntervalDays?: number;
+  maintenanceTaskLabel?: string;
+  lastMaintenanceDateIso?: string; // YYYY-MM-DD or ""
   _rev?: number;
   createdAt: string;
   updatedAt: string;

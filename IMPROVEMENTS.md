@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (33)
+## Logged Improvements (37)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -698,3 +698,85 @@ npm run lint && npm run build
 1. Restore `src/core/techyStuffGuardrails.ts` and `verifyStorageQuotaForDiagnosticAction` in `src/storage/storageProtection.ts`.
 2. Restore `src/components/TechyStuffErrorBoundary.tsx` and `src/components/TechyStuffScreen.tsx` with its permanent `data-permanent-tier-hierarchy="true"` section and `destructiveArmed` phrase gates.
 3. Keep `techyStuff` in `WorkspaceRoute` (`useBarnStore.ts`), `SettingsAndSyncScreen.tsx` launcher (`onOpenTechyStuff`), and lazy boundary mount in `src/App.tsx`.
+
+### IMP-034: "Barn Bench" Fast Sequential Batch Entry Mode
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Let breeders walk down a cage row logging weights, body condition scores, nail trims, or cage moves rapidly with auto-advance and minimal modal switching.
+- **Summary:** Adds a tap-friendly, strictly species-isolated Barn Bench sequential chore sheet filtered by barn row/section, herd status, and search text; supports rapid cage-by-cage logging of weights (in species unit), 1-tap BCS presets, nail trims, cage moves with live capacity warnings, and notes with auto-advance, transactional batch care-log writes (`saveCareLogsBatch`), and field-level sync outbox recording.
+- **Tracked Files:** `src/core/barnBench.ts`, `src/core/__tests__/barnBench.test.ts`, `src/storage/storageAdapter.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/BarnBenchScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/components/HerdScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/barnBench.ts` must contain `extractSpeciesCageSections`, `buildBarnBenchQueue`, `buildBarnBenchCommitPlan`, `findNextBarnBenchIndex`, `BARN_BENCH_BCS_PRESETS` — *Pure TS Barn Bench queue builder, commit planner, and auto-advance selector must remain DOM-free and species-isolated.*
+- `src/storage/webSqliteAdapter.ts` must contain `saveCareLogsBatch` — *Transactional batch CareLog persistence prevents multi-flush overhead when logging combined bench entries.*
+- `src/hooks/useBarnStore.ts` must contain `| 'bench'`, `commitBarnBenchEntry`, `buildBarnBenchCommitPlan` — *Store must expose the bench route and queued atomic commitBarnBenchEntry action with outbox sync ops.*
+- `src/components/BarnBenchScreen.tsx` must contain `BarnBenchScreen`, `evaluateCageAssignmentCapacityWarning`, `useAsyncSubmitLock`, `findNextBarnBenchIndex` — *Barn Bench screen must guard async commits against double-taps, check cage capacity on moves, and auto-advance cleanly.*
+- `src/App.tsx` must contain `BarnBenchScreen`, `route === 'bench'`, `k: { route: 'bench'` — *Root shell must lazy-load BarnBenchScreen under route === bench with keyboard shortcut K.*
+
+**Restoration Playbook if Overwritten:**
+1. Restore `src/core/barnBench.ts` and `src/core/__tests__/barnBench.test.ts`.
+2. Keep `saveCareLogsBatch` on `StorageAdapter` and `WebSqliteAdapter` and `commitBarnBenchEntry` + `bench` route in `src/hooks/useBarnStore.ts`.
+3. Keep lazy `BarnBenchScreen` mounted in `src/App.tsx` with `K` shortcut and launchers in `SpeciesDashboardScreen.tsx` and `HerdScreen.tsx`.
+
+### IMP-035: Batch Cage Card, Compact Mini-Sheet & Pedigree Printing from Herd Multi-Select
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Print cage cards, 4-up mini pedigrees, 4x6 photo cards, or stacked pedigrees for multiple selected animals in one pass for shows, auctions, or transport.
+- **Summary:** Allows breeders to multi-select animals in `HerdScreen` and generate a single printable `.HTM` / Print-to-PDF sheet across four formats: 8-up kennel/cage cards, 1/4-page (4-up) mini 3-gen pedigree sheets, 3-generation 4x6 photo cards (2-up Letter or direct 4x6 paper), and stacked formal 3–6G pedigrees, backed by pure TS HTML generation (`batchPrint.ts`), bounded on-demand batch photo hydration (`loadAnimalPhotoDataUrlsBatch`), and live layout/option controls in `PrintPreviewModal`.
+- **Tracked Files:** `src/core/batchPrint.ts`, `src/core/__tests__/batchPrint.test.ts`, `src/hooks/useBarnStore.ts`, `src/App.tsx`, `src/components/PrintPreviewModal.tsx`, `src/components/HerdScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/batchPrint.ts` must contain `BATCH_PRINT_LAYOUTS`, `generateBatchPrintHtml`, `resolveBatchPrintAnimals`, `computeBatchPrintPageCount`, `buildBatchPrintFileName` — *Pure TS batch print engine must remain DOM-free and support cage cards, 4-up mini sheets, 4x6 photo cards, and stacked pedigrees.*
+- `src/hooks/useBarnStore.ts` must contain `loadAnimalPhotoDataUrlsBatch` — *Store must expose bounded on-demand batch photo hydration without retaining full-res images in reactive snapshot RAM.*
+- `src/components/PrintPreviewModal.tsx` must contain `batchPrintOptions`, `onChangeBatchPrintOptions`, `BATCH_PRINT_LAYOUTS` — *Print preview modal must render live layout switcher and batch print options toolbar.*
+- `src/components/HerdScreen.tsx` must contain `openBatchPrintPreview`, `generateBatchPrintHtml`, `resolveBatchPrintAnimals`, `Batch Print (` — *HerdScreen multi-select bulk bar must launch batch print previews and clean up hydrated photos on close.*
+
+**Restoration Playbook if Overwritten:**
+1. Restore `src/core/batchPrint.ts` and `src/core/__tests__/batchPrint.test.ts`.
+2. Keep `loadAnimalPhotoDataUrlsBatch` exported from `src/hooks/useBarnStore.ts` and passed as `onLoadFullPhotosBatch` to `HerdScreen` in `src/App.tsx`.
+3. Keep `batchPrintOptions` controls in `src/components/PrintPreviewModal.tsx` and multi-select `Batch Print` wiring in `src/components/HerdScreen.tsx`.
+
+### IMP-036: QR-Coded Cage Cards & Visual Hutch-Row / Facility Pen Board
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Embed scannable QR codes on printable cage cards that open the animal profile route directly in the PWA, and provide a visual Hutch-by-Hutch / Cage Row & Pasture Board grouping pens by barn section with linked feedlot inventories and recurring maintenance reminders.
+- **Summary:** Adds a zero-dependency pure TS ISO/IEC 18004 QR code encoder and single-path SVG renderer (`qrCode.ts`), embeds toggleable scannable QR profile deep links into both thermal single cage cards (`generateThermalCageCardHtml`) and 8-up batch cage cards (`batchPrint.ts`), parses `?route=herd&animalId=...` and `?route=dashboard&cageId=...` on startup in `useBarnStore.ts`, extends `CageLocation` and SQLite/JSON serialization with housing unit type, feedlot inventory, and recurring maintenance schedules, and adds the pure `facilityBoard.ts` engine plus interactive `FacilityPenBoard` inside `SpeciesDashboardScreen` (with compact list toggle, full-screen board modal, quick stock adjustments, 1-click maintenance logging/task scheduling, and pen/row QR card printing).
+- **Tracked Files:** `src/core/qrCode.ts`, `src/core/facilityBoard.ts`, `src/core/models.ts`, `src/core/batchPrint.ts`, `src/core/syncAndExports.ts`, `src/core/__tests__/qrCode.test.ts`, `src/core/__tests__/facilityBoard.test.ts`, `src/core/__tests__/batchPrint.test.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/FacilityPenBoard.tsx`, `src/components/PrintPreviewModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/qrCode.ts` must contain `encodeQrMatrix`, `renderQrSvg`, `buildAnimalProfileDeepLink`, `buildCageBoardDeepLink`, `parseAppDeepLinkParams` — *Pure TS offline QR encoder, vector SVG renderer, and deep-link helpers must remain zero-DOM and self-contained.*
+- `src/core/facilityBoard.ts` must contain `buildFacilityBoardModel`, `evaluateCageMaintenanceStatus`, `evaluateCageFeedStatus`, `buildCageMaintenanceTaskDraft`, `matchesFacilityBoardFilter` — *Pure TS facility board grouping, feedlot rollups, and UTC calendar maintenance evaluators must remain DOM-free.*
+- `src/core/batchPrint.ts` must contain `includeQrCodes`, `supportsQrCode`, `buildAnimalProfileDeepLink` — *8-up batch cage cards must support scannable QR profile codes via includeQrCodes.*
+- `src/core/syncAndExports.ts` must contain `ThermalCageCardOptions`, `buildAnimalProfileDeepLink`, `renderQrSvg` — *Single thermal cage cards must embed optional QR profile deep links and backup JSON must preserve extended CageLocation metadata.*
+- `src/storage/webSqliteAdapter.ts` must contain `feed_lot_name`, `maintenance_interval_days`, `last_maintenance_date_iso` — *SQLite cages table and idempotent migrations must persist housing type, feedlot inventory, and maintenance schedule columns.*
+- `src/hooks/useBarnStore.ts` must contain `parseAppDeepLinkParams`, `highlightedCageId`, `setHighlightedCageId` — *Store startup deep-link handler must resolve scanned QR animalId and cageId routes cleanly.*
+- `src/components/FacilityPenBoard.tsx` must contain `FacilityPenBoard`, `buildCageMaintenanceTaskDraft`, `onPrintCageCardsForAnimals` — *Visual Hutch-Row & Pasture Board must display grouped pens, feedlot controls, maintenance checkoffs, and QR cage card printing.*
+- `src/components/SpeciesDashboardScreen.tsx` must contain `FacilityPenBoard`, `facilityBoardModel`, `handlePrintCageCardsForAnimals`, `highlightedCageId` — *Species dashboard Cages & Pens block must mount FacilityPenBoard alongside compact list view, full-screen board modal, and QR card print preview.*
+
+**Restoration Playbook if Overwritten:**
+1. Restore `src/core/qrCode.ts`, `src/core/facilityBoard.ts`, and their tests in `src/core/__tests__/qrCode.test.ts` and `src/core/__tests__/facilityBoard.test.ts`.
+2. Keep extended `CageLocation` fields in `src/core/models.ts`, SQLite columns/migrations in `src/storage/webSqliteAdapter.ts`, and JSON round-trip parsing in `src/core/syncAndExports.ts`.
+3. Keep QR code rendering in `src/core/syncAndExports.ts` (`generateThermalCageCardHtml`) and `src/core/batchPrint.ts` (`includeQrCodes`) wired to `PrintPreviewModal.tsx`, `HerdScreen.tsx`, and `SpeciesDashboardScreen.tsx`.
+4. Keep `FacilityPenBoard.tsx` mounted in `SpeciesDashboardScreen.tsx` and `highlightedCageId` deep-link resolution in `useBarnStore.ts` and `src/App.tsx`.
+
+### IMP-037: Side-by-Side Multi-Candidate Pairing Comparison Matrix (Breeding Lab)
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Compare one dam against multiple candidate sires (or vice versa) in a single Breeding Lab table showing COI %, shared bottleneck ancestors, carrier risk flags, and predicted coat varieties side by side.
+- **Summary:** Adds a pure TypeScript multi-candidate pairing matrix engine (`pairingMatrix.ts`) and interactive `PairingComparisonMatrix` table inside `BreedingScreen` so breeders can compare one Dam against multiple candidate Sires (or one Sire against multiple candidate Dams) side by side for projected Wright COI %, shared bottleneck ancestors, carrier and genetic health/lethal risk flags, and predicted coat varieties, with 1-click loading into the Cage-Side Pairing Logger.
+- **Tracked Files:** `src/core/pairingMatrix.ts`, `src/core/__tests__/pairingMatrix.test.ts`, `src/components/PairingComparisonMatrix.tsx`, `src/components/BreedingScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/pairingMatrix.ts` must contain `buildPairingComparisonMatrix`, `selectDefaultMatrixCandidateIds`, `createSpeciesCoiEvaluator`, `analyzePairingCarrierRisksFromAnalyses`, `simulatePairingGenetics` — *Pure TS multi-candidate comparison matrix must share one species COI evaluator, run carrier lineage + Punnett simulations, and remain zero-DOM.*
+- `src/components/PairingComparisonMatrix.tsx` must contain `PairingComparisonMatrix`, `buildPairingComparisonMatrix`, `ColorGeneticsNotice`, `onLoadPairingInLogger` — *Breeding Lab comparison matrix UI must render anchor/candidate selectors, sort/filter controls, coat genetics notice, and Load in Logger wiring.*
+- `src/components/BreedingScreen.tsx` must contain `PairingComparisonMatrix`, `handleLoadPairingFromMatrix` — *BreedingScreen must mount PairingComparisonMatrix and connect Load in Logger to the Cage-Side Pairing Logger.*
+
+**Restoration Playbook if Overwritten:**
+1. Restore `src/core/pairingMatrix.ts` and its unit tests in `src/core/__tests__/pairingMatrix.test.ts`.
+2. Restore `src/components/PairingComparisonMatrix.tsx` with anchor role toggle, candidate multi-select, COI/bottleneck/carrier/variety columns, and `ColorGeneticsNotice`.
+3. Mount `<PairingComparisonMatrix />` and `handleLoadPairingFromMatrix` inside `src/components/BreedingScreen.tsx`.
+

@@ -9,7 +9,7 @@
  */
 
 import { AlertTriangle, Loader2, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   findLitterOffspringTattooConflicts,
   isOverrideConfirmationValid,
@@ -53,6 +53,7 @@ import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
+import { PairingComparisonMatrix } from './PairingComparisonMatrix';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
 interface BreedingScreenProps {
@@ -105,6 +106,7 @@ export function BreedingScreen({
 }: BreedingScreenProps) {
   const { speciesProfile, animals, herdById, breedings, tasks } = activeData;
   const baseId = useId();
+  const loggerSectionRef = useRef<HTMLElement | null>(null);
   const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
   const [ledgerQuery, setLedgerQuery] = useState('');
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState<'all' | BreedingStatus>('all');
@@ -591,11 +593,27 @@ export function BreedingScreen({
     });
   };
 
+  const handleLoadPairingFromMatrix = useCallback(
+    (nextSireId: string, nextDamId: string) => {
+      setQuickAddSire(false);
+      setQuickAddDam(false);
+      setSireId(nextSireId);
+      setDamId(nextDamId);
+      if (loggerSectionRef.current && typeof loggerSectionRef.current.scrollIntoView === 'function') {
+        loggerSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    },
+    []
+  );
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left 6 Columns: Cage-Side Pairing Logger & Master Task List Preview */}
-        <section className="lg:col-span-6 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-5">
+        <section
+          ref={loggerSectionRef}
+          className="lg:col-span-6 bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-5"
+        >
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h2 className="font-display text-xl font-semibold">
@@ -1187,6 +1205,17 @@ export function BreedingScreen({
           })()}
         </section>
       </div>
+
+      {/* Side-by-Side Multi-Candidate Pairing Comparison Matrix */}
+      <PairingComparisonMatrix
+        speciesProfile={speciesProfile}
+        males={males}
+        females={females}
+        herdById={herdById}
+        activeSireId={selectedSire?.id}
+        activeDamId={selectedDam?.id}
+        onLoadPairingInLogger={handleLoadPairingFromMatrix}
+      />
 
       {/* Species Breeding & Litter History Ledger */}
       <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">

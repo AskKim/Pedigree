@@ -76,6 +76,7 @@ describe('PedigreeBridge', () => {
       expect(bridge.getPlatform()).toBe('web');
       expect(bridge.isNativeWrapper()).toBe(false);
       expect(bridge.openNativeDevPanel()).toBe(false);
+      expect(bridge.openDevPanel()).toBe(false);
     });
 
     it('resolves getNativeContainerInfo immediately to null in standard browser', async () => {
@@ -427,6 +428,17 @@ describe('PedigreeBridge', () => {
           metadata: { herdCount: 3 },
         },
       });
+    });
+
+    it('posts OPEN_DEV_PANEL via openDevPanel() on Android', () => {
+      const { posted } = setupAndroidMock();
+      bridge = createPedigreeBridge();
+
+      expect(bridge.openDevPanel()).toBe(true);
+      expect(posted).toHaveLength(1);
+      const envelope = JSON.parse(posted[0] as string);
+      expect(envelope.type).toBe('OPEN_DEV_PANEL');
+      expect(typeof envelope.requestId).toBe('string');
     });
   });
 

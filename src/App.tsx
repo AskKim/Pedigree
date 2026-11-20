@@ -67,6 +67,10 @@ const HerdScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/HerdScreen')['HerdScreen']>
 >(() => import('./components/HerdScreen'), 'HerdScreen', 'Herd Registry');
 
+const BarnBenchScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/BarnBenchScreen')['BarnBenchScreen']>
+>(() => import('./components/BarnBenchScreen'), 'BarnBenchScreen', 'Barn Bench');
+
 const BreedingScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/BreedingScreen')['BreedingScreen']>
 >(() => import('./components/BreedingScreen'), 'BreedingScreen', 'Breeding Lab');
@@ -111,6 +115,7 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   home: 'All Species',
   dashboard: 'Species Dashboard',
   herd: 'Herd Registry',
+  bench: 'Barn Bench',
   breeding: 'Breeding Lab',
   pedigree: 'Pedigree Explorer',
   reports: 'Reports',
@@ -154,9 +159,6 @@ export default function App() {
   );
 
   const shortcutToastTimerRef = useRef<number | null>(null);
-  const headerLongPressTimerRef = useRef<number | null>(null);
-  const headerLongPressStartRef = useRef<{ x: number; y: number } | null>(null);
-  const headerLongPressTriggeredRef = useRef(false);
   const herdPickerModalRef = useAccessibleDialog({
     isOpen: showHerdSpeciesPicker,
     onClose: () => setShowHerdSpeciesPicker(false),
@@ -165,18 +167,6 @@ export default function App() {
     isOpen: showShortcutsHelp,
     onClose: () => setShowShortcutsHelp(false),
   });
-
-  const clearHeaderLongPress = useCallback(() => {
-    if (headerLongPressTimerRef.current !== null) {
-      window.clearTimeout(headerLongPressTimerRef.current);
-      headerLongPressTimerRef.current = null;
-    }
-    headerLongPressStartRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    return () => clearHeaderLongPress();
-  }, [clearHeaderLongPress]);
 
   // Register app-level modals at priority 10 (LIFO) before route back unwinding
   useEffect(() => {
@@ -396,6 +386,7 @@ export default function App() {
         h: { route: 'home', label: 'All Species' },
         d: { route: 'dashboard', label: 'Dashboard' },
         r: { route: 'herd', label: 'Herd' },
+        k: { route: 'bench', label: 'Barn Bench' },
         b: { route: 'breeding', label: 'Breeding' },
         p: { route: 'pedigree', label: 'Pedigree' },
         o: { route: 'reports', label: 'Reports' },
@@ -526,49 +517,13 @@ export default function App() {
 
       {/* 3-Zone Top Navigation Bar */}
       <header className="sticky top-0 z-30 h-14 w-full bg-[var(--barn-surface)]/95 backdrop-blur-md border-b border-[var(--barn-border)] px-3 sm:px-6 flex items-center justify-between gap-2 md:gap-3 lg:gap-6 overflow-x-clip">
-        {/* Zone 1: Compact App Icon (800ms Long-Press -> Developer Panel) + Single-line Brand Wordmark */}
+        {/* Zone 1: Single-line Brand Wordmark */}
         <button
           type="button"
-          onClick={() => {
-            if (headerLongPressTriggeredRef.current) {
-              headerLongPressTriggeredRef.current = false;
-              return;
-            }
-            setRoute('home');
-          }}
-          onPointerDown={(e) => {
-            if (e.pointerType === 'mouse' && e.button !== 0) return;
-            headerLongPressTriggeredRef.current = false;
-            headerLongPressStartRef.current = { x: e.clientX, y: e.clientY };
-            headerLongPressTimerRef.current = window.setTimeout(() => {
-              headerLongPressTriggeredRef.current = true;
-              clearHeaderLongPress();
-              if (!pedigreeBridge.openNativeDevPanel()) {
-                setRoute('techyStuff');
-              }
-            }, 800);
-          }}
-          onPointerMove={(e) => {
-            if (!headerLongPressStartRef.current) return;
-            const dx = e.clientX - headerLongPressStartRef.current.x;
-            const dy = e.clientY - headerLongPressStartRef.current.y;
-            if (Math.hypot(dx, dy) > 10) {
-              clearHeaderLongPress();
-            }
-          }}
-          onPointerUp={clearHeaderLongPress}
-          onPointerCancel={clearHeaderLongPress}
-          onPointerLeave={clearHeaderLongPress}
-          onContextMenu={(e) => e.preventDefault()}
-          className="font-display text-base sm:text-lg font-semibold tracking-tight truncate min-w-0 text-left inline-flex items-center gap-2 select-none touch-manipulation"
+          onClick={() => setRoute('home')}
+          className="font-display text-base sm:text-lg font-semibold tracking-tight truncate min-w-0 text-left"
         >
-          <span
-            aria-hidden="true"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)]/40 text-[var(--barn-sage)]"
-          >
-            <GitFork className="w-4 h-4" />
-          </span>
-          <span className="truncate">Community Pedigree</span>
+          Pedigree
         </button>
 
         {/* Zone 2: Concise Single-Line Navigation Links */}
@@ -1352,6 +1307,8 @@ export default function App() {
             }}
             highlightedTaskId={store.highlightedTaskId}
             onClearHighlightedTask={() => store.setHighlightedTaskId(null)}
+            highlightedCageId={store.highlightedCageId}
+            onClearHighlightedCage={() => store.setHighlightedCageId(null)}
             onHideSummaryGrid={() => {
               void store.updateSettings(
                 { showHomeSummaryGrid: false },
@@ -1412,15 +1369,30 @@ export default function App() {
             requestedWithdrawalFocusNonce={requestedHerdWithdrawalNonce}
             onConsumeWithdrawalFocus={() => setRequestedHerdWithdrawalNonce(0)}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
+            onLoadFullPhotosBatch={store.loadAnimalPhotoDataUrlsBatch}
             opfsSupported={store.opfsSupported}
             archivedHerdBundles={store.archivedHerdBundles}
             onOffloadAnimalsToOpfsArchive={store.offloadAnimalsToOpfsArchive}
             onRestoreArchivedHerdBundle={store.restoreArchivedHerdBundle}
             onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
             onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
+            onOpenBarnBench={() => setRoute('bench')}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
+          />
+        )}
+
+        {route === 'bench' && (
+          <BarnBenchScreen
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onCommitEntry={store.commitBarnBenchEntry}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
+            onBackToHub={() => setRoute('dashboard')}
           />
         )}
 
@@ -1646,6 +1618,7 @@ export default function App() {
               Shortcuts: <kbd className="font-mono font-semibold text-[var(--barn-ink)]">H</kbd> Home ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">D</kbd> Dashboard ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">R</kbd> Herd ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">K</kbd> Bench ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
@@ -1802,6 +1775,7 @@ export default function App() {
                 { key: 'H', label: 'All Species Home', desc: 'View barn summary & species hub list' },
                 { key: 'D', label: 'Species Dashboard', desc: 'Open active species overview & tasks' },
                 { key: 'R', label: 'Herd Registry', desc: 'Open Herd (or Select Livestock Herd from Home)' },
+                { key: 'K', label: 'Barn Bench', desc: 'Fast sequential cage-row entry for weights, BCS, trims & moves' },
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },

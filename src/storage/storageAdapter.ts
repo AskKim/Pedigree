@@ -96,8 +96,9 @@ export interface StorageAdapter {
   deleteTask(id: string): Promise<void>;
   deleteTasksBatch(ids: string[]): Promise<void>;
 
-  /** Upserts or deletes a CareLog entry. */
+  /** Upserts or deletes CareLog entries (single or transactional batch). */
   saveCareLog(log: CareLog): Promise<void>;
+  saveCareLogsBatch?(logs: CareLog[]): Promise<void>;
   deleteCareLog(id: string): Promise<void>;
 
   /** Upserts or deletes a ShowEvent. */

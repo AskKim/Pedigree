@@ -1,5 +1,5 @@
 /*
- * Community Pedigree Android Wrapper
+ * Pedigree Android Wrapper
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
@@ -16,7 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 
 /**
  * Handles `REQUEST_PRINT` messages from `pedigreeBridge` using Android's [PrintManager]
- * and `webView.createPrintDocumentAdapter("Community Pedigree")`.
+ * and `webView.createPrintDocumentAdapter("Pedigree")`.
  *
  * Why is this bridge needed?
  * Inside Android `WebView`, calling JavaScript `window.print()` directly is a silent no-op.
@@ -68,6 +68,6 @@ class PrintBridge(
     }
 
     companion object {
-        private const val PRINT_DOCUMENT_NAME = "Community Pedigree"
+        private const val PRINT_DOCUMENT_NAME = "Pedigree"
     }
 }

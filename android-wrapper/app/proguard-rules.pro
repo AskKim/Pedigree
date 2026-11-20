@@ -1,4 +1,4 @@
-# ProGuard / R8 rules for Community Pedigree Android Wrapper
+# ProGuard / R8 rules for Pedigree Android Wrapper
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 -keepattributes SourceFile,LineNumberTable

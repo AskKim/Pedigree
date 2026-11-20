@@ -1,4 +1,4 @@
-// Top-level build file for Community Pedigree Android Wrapper
+// Top-level build file for Pedigree Android Wrapper
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 plugins {

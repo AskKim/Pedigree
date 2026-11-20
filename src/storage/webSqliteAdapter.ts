@@ -29,6 +29,7 @@ import {
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeHousingUnitType,
   normalizeIgnoredConflicts,
   normalizeOwnershipType,
   normalizeRufusLevel,
@@ -211,6 +212,15 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     section TEXT NOT NULL,
     capacity INTEGER NOT NULL,
     notes TEXT NOT NULL,
+    unit_type TEXT NOT NULL DEFAULT '',
+    feed_lot_name TEXT NOT NULL DEFAULT '',
+    feed_stock_remaining REAL NOT NULL DEFAULT 0,
+    feed_stock_unit TEXT NOT NULL DEFAULT '',
+    daily_ration_note TEXT NOT NULL DEFAULT '',
+    feed_low_threshold REAL NOT NULL DEFAULT 0,
+    maintenance_interval_days INTEGER NOT NULL DEFAULT 0,
+    maintenance_task_label TEXT NOT NULL DEFAULT '',
+    last_maintenance_date_iso TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -524,6 +534,15 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE care_logs ADD COLUMN ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE animals ADD COLUMN offloaded_archive_key TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE animals ADD COLUMN offloaded_at_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE cages ADD COLUMN unit_type TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE cages ADD COLUMN feed_lot_name TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE cages ADD COLUMN feed_stock_remaining REAL NOT NULL DEFAULT 0;',
+    "ALTER TABLE cages ADD COLUMN feed_stock_unit TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE cages ADD COLUMN daily_ration_note TEXT NOT NULL DEFAULT '';",
+    'ALTER TABLE cages ADD COLUMN feed_low_threshold REAL NOT NULL DEFAULT 0;',
+    'ALTER TABLE cages ADD COLUMN maintenance_interval_days INTEGER NOT NULL DEFAULT 0;',
+    "ALTER TABLE cages ADD COLUMN maintenance_task_label TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE cages ADD COLUMN last_maintenance_date_iso TEXT NOT NULL DEFAULT '';",
   ];
   for (const stmt of alterStatements) {
     try {
@@ -1245,18 +1264,38 @@ export class WebSqliteAdapter implements StorageAdapter {
       updatedAt: String(r.updated_at),
     }));
 
-    const cages: CageLocation[] = runQuery('SELECT * FROM cages ORDER BY label ASC').map(
-      (r) => ({
+    const cages: CageLocation[] = runQuery('SELECT * FROM cages ORDER BY label ASC').map((r) => {
+      const unitType = normalizeHousingUnitType(r.unit_type);
+      const feedLotName = r.feed_lot_name ? String(r.feed_lot_name) : '';
+      const feedStockRemaining = finiteNonNeg(r.feed_stock_remaining, 0);
+      const feedStockUnit = r.feed_stock_unit ? String(r.feed_stock_unit) : '';
+      const dailyRationNote = r.daily_ration_note ? String(r.daily_ration_note) : '';
+      const feedLowThreshold = finiteNonNeg(r.feed_low_threshold, 0);
+      const maintenanceIntervalDays = Math.round(finiteNonNeg(r.maintenance_interval_days, 0));
+      const maintenanceTaskLabel = r.maintenance_task_label ? String(r.maintenance_task_label) : '';
+      const lastMaintenanceDateIso = r.last_maintenance_date_iso
+        ? String(r.last_maintenance_date_iso)
+        : '';
+      return {
         id: String(r.id),
         species: String(r.species),
         label: String(r.label),
         section: String(r.section),
         capacity: Math.max(1, finiteNonNeg(r.capacity, 1)),
         notes: String(r.notes),
+        ...(unitType ? { unitType } : {}),
+        ...(feedLotName ? { feedLotName } : {}),
+        ...(feedStockRemaining > 0 ? { feedStockRemaining } : {}),
+        ...(feedStockUnit ? { feedStockUnit } : {}),
+        ...(dailyRationNote ? { dailyRationNote } : {}),
+        ...(feedLowThreshold > 0 ? { feedLowThreshold } : {}),
+        ...(maintenanceIntervalDays > 0 ? { maintenanceIntervalDays } : {}),
+        ...(maintenanceTaskLabel ? { maintenanceTaskLabel } : {}),
+        ...(lastMaintenanceDateIso ? { lastMaintenanceDateIso } : {}),
         createdAt: String(r.created_at),
         updatedAt: String(r.updated_at),
-      })
-    );
+      };
+    });
 
     const breedings: BreedingRecord[] = runQuery(
       'SELECT * FROM breedings ORDER BY bred_date_iso DESC'
@@ -1938,9 +1977,33 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertCageRow(c: CageLocation): void {
     this.db?.run(
       `INSERT OR REPLACE INTO cages
-       (id, species, label, section, capacity, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [c.id, c.species, c.label, c.section, c.capacity, c.notes, c.createdAt, c.updatedAt]
+       (id, species, label, section, capacity, notes, unit_type, feed_lot_name, feed_stock_remaining, feed_stock_unit, daily_ration_note, feed_low_threshold, maintenance_interval_days, maintenance_task_label, last_maintenance_date_iso, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        c.id,
+        c.species,
+        c.label,
+        c.section,
+        c.capacity,
+        c.notes,
+        c.unitType || '',
+        c.feedLotName || '',
+        Number.isFinite(Number(c.feedStockRemaining)) && Number(c.feedStockRemaining) > 0
+          ? Number(c.feedStockRemaining)
+          : 0,
+        c.feedStockUnit || '',
+        c.dailyRationNote || '',
+        Number.isFinite(Number(c.feedLowThreshold)) && Number(c.feedLowThreshold) > 0
+          ? Number(c.feedLowThreshold)
+          : 0,
+        Number.isFinite(Number(c.maintenanceIntervalDays)) && Number(c.maintenanceIntervalDays) > 0
+          ? Math.round(Number(c.maintenanceIntervalDays))
+          : 0,
+        c.maintenanceTaskLabel || '',
+        c.lastMaintenanceDateIso || '',
+        c.createdAt,
+        c.updatedAt,
+      ]
     );
   }
 
@@ -2407,6 +2470,32 @@ export class WebSqliteAdapter implements StorageAdapter {
         const idx = this.fallbackSnapshot.careLogs.findIndex((l) => l.id === log.id);
         if (idx >= 0) this.fallbackSnapshot.careLogs[idx] = log;
         else this.fallbackSnapshot.careLogs.push(log);
+      }
+    });
+  }
+
+  async saveCareLogsBatch(logs: CareLog[]): Promise<void> {
+    if (logs.length === 0) return;
+    await this.withLockedWrite('saveCareLogsBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
+        try {
+          for (const log of logs) this.upsertCareLogRow(log);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error so root exception surfaces cleanly
+          }
+          throw e;
+        }
+      } else if (this.fallbackSnapshot) {
+        for (const log of logs) {
+          const idx = this.fallbackSnapshot.careLogs.findIndex((l) => l.id === log.id);
+          if (idx >= 0) this.fallbackSnapshot.careLogs[idx] = log;
+          else this.fallbackSnapshot.careLogs.push(log);
+        }
       }
     });
   }

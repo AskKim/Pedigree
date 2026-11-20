@@ -463,6 +463,10 @@ export class PedigreeBridge {
     });
   }
 
+  public openDevPanel(): boolean {
+    return this.openNativeDevPanel();
+  }
+
   public getNativeContainerInfo(timeoutMs = 400): Promise<NativeContainerInfo | null> {
     this.ensureListenersAttached();
     if (!this.isNativeWrapper()) {

@@ -22,13 +22,18 @@ import {
   CalendarPlus,
   Check,
   CheckSquare,
+  ClipboardCheck,
   Download,
   Edit3,
   GripVertical,
+  LayoutGrid,
   Link2,
+  List,
   Loader2,
+  Maximize2,
   Pin,
   Plus,
+  QrCode,
   RefreshCw,
   Settings,
   ShieldAlert,
@@ -53,8 +58,16 @@ import {
   normalizeCageLabelKey,
   ShowWithdrawalConflictEvaluation,
 } from '../core/barnAlerts';
-import { formatSystemTaskTitle } from '../core/calendarExport';
 import {
+  BatchPrintOptions,
+  buildBatchPrintFileName,
+  buildDefaultBatchPrintOptions,
+  generateBatchPrintHtml,
+} from '../core/batchPrint';
+import { formatSystemTaskTitle } from '../core/calendarExport';
+import { buildFacilityBoardModel } from '../core/facilityBoard';
+import {
+  Animal,
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
@@ -62,6 +75,8 @@ import {
   CageLocation,
   formatBreedingStatusForSpecies,
   formatReadableDate,
+  HOUSING_UNIT_TYPES,
+  HousingUnitType,
   normalizeSpeciesHubBlockOrder,
   SHOW_SANCTIONS,
   ShowEvent,
@@ -80,6 +95,7 @@ import {
   buildBarnBinderFileName,
   buildDefaultBarnBinderOptions,
   generateSpeciesBarnBinderHtml,
+  generateThermalCageCardHtml,
   SpeciesBackupReason,
 } from '../core/syncAndExports';
 import {
@@ -93,6 +109,7 @@ import {
   BreedingTaskCheckoffAction,
   WorkspaceRoute,
 } from '../hooks/useBarnStore';
+import { FacilityPenBoard } from './FacilityPenBoard';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
@@ -145,6 +162,8 @@ interface SpeciesDashboardScreenProps {
   onCopyTaskAppLink?: (task: BarnTask) => void;
   highlightedTaskId?: string | null;
   onClearHighlightedTask?: () => void;
+  highlightedCageId?: string | null;
+  onClearHighlightedCage?: () => void;
   onHideSummaryGrid?: () => void;
   onLocateConflicts?: () => void;
   onOpenSettings: () => void;
@@ -188,6 +207,8 @@ export function SpeciesDashboardScreen({
   onCopyTaskAppLink,
   highlightedTaskId,
   onClearHighlightedTask,
+  highlightedCageId,
+  onClearHighlightedCage,
   onHideSummaryGrid,
   onLocateConflicts,
   onOpenSettings,
@@ -314,10 +335,21 @@ export function SpeciesDashboardScreen({
   const [taskDueIso, setTaskDueIso] = useState(today);
   const [taskAnimalId, setTaskAnimalId] = useState('');
 
-  // Cage form & quick-assignment state
+  // Cage form, visual Facility Pen Board & quick-assignment state
+  const [cageViewMode, setCageViewMode] = useState<'board' | 'list'>('board');
+  const [showFullFacilityBoard, setShowFullFacilityBoard] = useState(false);
+  const [showCageAdvancedFields, setShowCageAdvancedFields] = useState(false);
   const [cageLabel, setCageLabel] = useState('');
   const [cageSection, setCageSection] = useState('Main Row');
   const [cageCapacity, setCageCapacity] = useState('1');
+  const [cageUnitType, setCageUnitType] = useState<HousingUnitType | ''>('');
+  const [cageFeedLotName, setCageFeedLotName] = useState('');
+  const [cageFeedStockRemaining, setCageFeedStockRemaining] = useState('');
+  const [cageFeedStockUnit, setCageFeedStockUnit] = useState('lbs');
+  const [cageFeedLowThreshold, setCageFeedLowThreshold] = useState('');
+  const [cageDailyRationNote, setCageDailyRationNote] = useState('');
+  const [cageMaintLabel, setCageMaintLabel] = useState('');
+  const [cageMaintIntervalDays, setCageMaintIntervalDays] = useState('');
   const [editingCageId, setEditingCageId] = useState<string | null>(null);
   const [editingCageLabel, setEditingCageLabel] = useState('');
   const [editingCageSection, setEditingCageSection] = useState('');
@@ -329,6 +361,23 @@ export function SpeciesDashboardScreen({
     animalName: string;
     warning: CageAssignmentCapacityWarning;
   } | null>(null);
+
+  // QR Cage Card Print Preview state (single pen or batch row/facility)
+  const [cageQrPrintState, setCageQrPrintState] = useState<{
+    animals: Animal[];
+    titleContext: string;
+  } | null>(null);
+  const [includeSingleCardQr, setIncludeSingleCardQr] = useState(true);
+  const [cageBatchPrintOptions, setCageBatchPrintOptions] = useState<BatchPrintOptions>(() => ({
+    ...buildDefaultBatchPrintOptions(settings),
+    layout: 'cage_cards',
+    includeQrCodes: true,
+  }));
+
+  const appBaseUrl = useMemo(() => {
+    if (typeof window === 'undefined' || !window.location) return '';
+    return `${window.location.origin}${window.location.pathname}`;
+  }, []);
 
   // Show form state
   const [showName, setShowName] = useState('');
@@ -364,7 +413,14 @@ export function SpeciesDashboardScreen({
 
   useEffect(() => {
     setActiveBirthCheckoffTaskId(null);
+    setShowFullFacilityBoard(false);
+    setCageQrPrintState(null);
   }, [speciesProfile.name]);
+
+  useEffect(() => {
+    if (!highlightedCageId) return;
+    setCageViewMode('board');
+  }, [highlightedCageId]);
 
   const activeBreedingStock = animals.filter((a) => a.status === 'Active' && !a.archived).length;
   const activeGestations = useMemo(
@@ -404,10 +460,99 @@ export function SpeciesDashboardScreen({
     () => evaluateSpeciesCagesOccupancy(cages, animals, speciesProfile.name),
     [cages, animals, speciesProfile.name]
   );
+  const facilityBoardModel = useMemo(
+    () =>
+      buildFacilityBoardModel({
+        cages,
+        animals,
+        tasks,
+        speciesName: speciesProfile.name,
+        todayIso: today,
+      }),
+    [cages, animals, tasks, speciesProfile.name, today]
+  );
   const assignableAnimals = useMemo(
     () => animals.filter((a) => isCageOccupyingAnimal(a)),
     [animals]
   );
+
+  const handlePrintCageCardsForAnimals = (targetAnimals: Animal[], titleContext: string) => {
+    if (targetAnimals.length === 0) return;
+    setIncludeSingleCardQr(true);
+    setCageBatchPrintOptions({
+      ...buildDefaultBatchPrintOptions(settings),
+      layout: 'cage_cards',
+      includeQrCodes: true,
+    });
+    setCageQrPrintState({ animals: targetAnimals, titleContext });
+  };
+
+  const photoDataUrlByAnimalId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const photo of snapshot.animalPhotos) {
+      const url = photo.thumbnailDataUrl || photo.dataUrl || '';
+      if (!url) continue;
+      if (photo.isPrimary || !map[photo.animalId]) {
+        map[photo.animalId] = url;
+      }
+    }
+    return map;
+  }, [snapshot.animalPhotos]);
+
+  const cageQrPreviewDoc = useMemo(() => {
+    if (!cageQrPrintState || cageQrPrintState.animals.length === 0) return null;
+    if (cageQrPrintState.animals.length === 1) {
+      const single = cageQrPrintState.animals[0];
+      const safeName = (single.tattoo || single.name || 'animal')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-');
+      return {
+        mode: 'single' as const,
+        title: `QR Cage Card — ${single.name}`,
+        filename: `${safeName}-qr-cage-card.html`,
+        html: generateThermalCageCardHtml(
+          single,
+          animals,
+          snapshot.speciesProfiles,
+          settings,
+          {
+            includeQrCode: includeSingleCardQr,
+            appBaseUrl,
+          }
+        ),
+      };
+    }
+    return {
+      mode: 'batch' as const,
+      title: `QR Cage Cards — ${cageQrPrintState.titleContext} (${cageQrPrintState.animals.length})`,
+      filename: buildBatchPrintFileName(
+        settings.barnName,
+        speciesProfile.name,
+        cageBatchPrintOptions.layout,
+        cageQrPrintState.animals.length
+      ),
+      html: generateBatchPrintHtml({
+        subjects: cageQrPrintState.animals,
+        allAnimals: animals,
+        speciesProfiles: snapshot.speciesProfiles,
+        settings,
+        speciesName: speciesProfile.name,
+        options: cageBatchPrintOptions,
+        photoDataUrlByAnimalId,
+        appBaseUrl,
+      }),
+    };
+  }, [
+    cageQrPrintState,
+    speciesProfile,
+    settings,
+    includeSingleCardQr,
+    appBaseUrl,
+    cageBatchPrintOptions,
+    animals,
+    snapshot.speciesProfiles,
+    photoDataUrlByAnimalId,
+  ]);
 
   const visibleTasks = tasks.filter((t) => (taskFilter === 'open' ? !t.completed : t.completed));
 
@@ -438,15 +583,43 @@ export function SpeciesDashboardScreen({
     e.preventDefault();
     if (!cageLabel.trim()) return;
     await cageSubmitLock.runLocked(async () => {
+      const parsedStock = Number(cageFeedStockRemaining.trim());
+      const parsedLow = Number(cageFeedLowThreshold.trim());
+      const parsedInterval = Number(cageMaintIntervalDays.trim());
       const saved = await onSaveCage({
         species: speciesProfile.name,
         label: cageLabel.trim(),
         section: cageSection.trim(),
         capacity: Math.max(1, Math.round(Number(cageCapacity) || 1)),
         notes: '',
+        unitType: cageUnitType || undefined,
+        feedLotName: cageFeedLotName.trim() || undefined,
+        feedStockRemaining:
+          cageFeedStockRemaining.trim() && Number.isFinite(parsedStock) && parsedStock > 0
+            ? Math.round(parsedStock * 100) / 100
+            : undefined,
+        feedStockUnit: cageFeedLotName.trim() ? cageFeedStockUnit.trim() || 'lbs' : undefined,
+        feedLowThreshold:
+          cageFeedLowThreshold.trim() && Number.isFinite(parsedLow) && parsedLow > 0
+            ? Math.round(parsedLow * 100) / 100
+            : undefined,
+        dailyRationNote: cageDailyRationNote.trim() || undefined,
+        maintenanceTaskLabel: cageMaintLabel.trim() || undefined,
+        maintenanceIntervalDays:
+          cageMaintIntervalDays.trim() && Number.isFinite(parsedInterval) && parsedInterval > 0
+            ? Math.min(365, Math.round(parsedInterval))
+            : undefined,
       });
       if (saved !== false) {
         setCageLabel('');
+        setCageUnitType('');
+        setCageFeedLotName('');
+        setCageFeedStockRemaining('');
+        setCageFeedLowThreshold('');
+        setCageDailyRationNote('');
+        setCageMaintLabel('');
+        setCageMaintIntervalDays('');
+        setShowCageAdvancedFields(false);
         setShowNewCageForm(false);
       }
     });
@@ -463,6 +636,15 @@ export function SpeciesDashboardScreen({
         section: editingCageSection.trim(),
         capacity: Math.max(1, Math.round(Number(editingCageCapacity) || 1)),
         notes: cage.notes || '',
+        unitType: cage.unitType,
+        feedLotName: cage.feedLotName,
+        feedStockRemaining: cage.feedStockRemaining,
+        feedStockUnit: cage.feedStockUnit,
+        dailyRationNote: cage.dailyRationNote,
+        feedLowThreshold: cage.feedLowThreshold,
+        maintenanceIntervalDays: cage.maintenanceIntervalDays,
+        maintenanceTaskLabel: cage.maintenanceTaskLabel,
+        lastMaintenanceDateIso: cage.lastMaintenanceDateIso,
       });
       if (saved !== false) {
         setEditingCageId(null);
@@ -946,6 +1128,27 @@ export function SpeciesDashboardScreen({
           <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch gap-2 max-w-full">
             <button
               type="button"
+              onClick={() => onNavigate('bench')}
+              className="bg-[var(--barn-surface)] border-2 border-[var(--barn-sage)] hover:bg-[var(--barn-sage-tint)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors shadow-sm"
+            >
+              <span className="inline-flex items-center gap-2.5 min-w-0">
+                <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
+                  <ClipboardCheck className="w-4 h-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                    Barn Bench Mode
+                  </span>
+                  <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
+                    Fast row weights, BCS &amp; trims
+                  </span>
+                </span>
+              </span>
+              <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
               onClick={() => onNavigate('memo')}
               className="bg-[var(--barn-sage-tint)] border-2 border-[var(--barn-sage)] hover:brightness-105 rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-all shadow-sm"
             >
@@ -989,6 +1192,27 @@ export function SpeciesDashboardScreen({
         </div>
       ) : (
         <div className="flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onNavigate('bench')}
+            className="w-full sm:w-auto max-w-full bg-[var(--barn-surface)] border-2 border-[var(--barn-sage)] hover:bg-[var(--barn-sage-tint)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-colors shadow-sm"
+          >
+            <span className="inline-flex items-center gap-2.5 min-w-0">
+              <span className="w-7 h-7 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] inline-flex items-center justify-center shrink-0">
+                <ClipboardCheck className="w-4 h-4" aria-hidden="true" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                  Barn Bench Mode
+                </span>
+                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight">
+                  Fast row weights, BCS &amp; trims
+                </span>
+              </span>
+            </span>
+            <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+          </button>
+
           <button
             type="button"
             onClick={openBinderPreview}
@@ -1906,18 +2130,90 @@ export function SpeciesDashboardScreen({
                           </span>
                         </div>
                         <p className="text-xs text-[var(--barn-muted)]">
-                          Live cage occupancy &amp; quick occupant assignment
+                          Visual hutch-row board, feedlot links &amp; QR cage cards
                           {cagesOccupancySummary.shouldShowOverCapacityAlert && (
                             <span className="ml-1.5 font-semibold text-[var(--barn-danger)] font-mono tabular-nums">
                               · {cagesOccupancySummary.totalOverCapacityCount} over capacity
+                            </span>
+                          )}
+                          {facilityBoardModel.totals.maintenanceDueOrOverdue > 0 && (
+                            <span className="ml-1.5 font-semibold text-[var(--barn-terracotta)] font-mono tabular-nums">
+                              · {facilityBoardModel.totals.maintenanceDueOrOverdue} maint due
+                            </span>
+                          )}
+                          {facilityBoardModel.totals.lowFeedPens > 0 && (
+                            <span className="ml-1.5 font-semibold text-[var(--barn-terracotta)] font-mono tabular-nums">
+                              · {facilityBoardModel.totals.lowFeedPens} low feed
                             </span>
                           )}
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 max-w-full">
+                    <div className="flex flex-wrap items-center gap-1.5 max-w-full">
                       {renderReorderControls()}
+                      <div
+                        role="group"
+                        aria-label="Housing view mode"
+                        className="inline-flex rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] p-0.5"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setCageViewMode('board')}
+                          aria-pressed={cageViewMode === 'board'}
+                          title="Visual Hutch-Row & Pen Board"
+                          className={`min-h-[32px] px-2 py-1 rounded-md text-[11px] font-medium inline-flex items-center gap-1 ${
+                            cageViewMode === 'board'
+                              ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                              : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                          }`}
+                        >
+                          <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Board</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCageViewMode('list')}
+                          aria-pressed={cageViewMode === 'list'}
+                          title="Compact Cage List"
+                          className={`min-h-[32px] px-2 py-1 rounded-md text-[11px] font-medium inline-flex items-center gap-1 ${
+                            cageViewMode === 'list'
+                              ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold'
+                              : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                          }`}
+                        >
+                          <List className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>List</span>
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowFullFacilityBoard(true)}
+                        title="Expand full-screen Hutch-Row & Pasture Board"
+                        className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span className="hidden sm:inline">Expand</span>
+                      </button>
+                      {facilityBoardModel.totals.totalOccupants > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allHoused = facilityBoardModel.sections.flatMap((s) =>
+                              s.pens.flatMap((p) => p.occupancy.occupants)
+                            );
+                            handlePrintCageCardsForAnimals(
+                              allHoused,
+                              `${speciesProfile.name} Facility`
+                            );
+                          }}
+                          title="Print QR-coded cage cards for all housed animals"
+                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
+                        >
+                          <QrCode className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                          <span className="hidden sm:inline">QR Cards</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         aria-expanded={showNewCageForm}
@@ -1955,14 +2251,112 @@ export function SpeciesDashboardScreen({
                           className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
                         />
                       </div>
-                      <input
-                        type="text"
-                        aria-label="Row or barn section"
-                        placeholder="Row / Barn Section"
-                        value={cageSection}
-                        onChange={(e) => setCageSection(e.target.value)}
-                        className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
-                      />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          aria-label="Row or barn section"
+                          placeholder="Row / Barn Section (e.g., Row A, North Pasture)"
+                          value={cageSection}
+                          onChange={(e) => setCageSection(e.target.value)}
+                          className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                        />
+                        <select
+                          aria-label="Housing unit type"
+                          value={cageUnitType}
+                          onChange={(e) =>
+                            setCageUnitType(e.target.value as HousingUnitType | '')
+                          }
+                          className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                        >
+                          <option value="">Unit Type (Auto-detect)</option>
+                          {HOUSING_UNIT_TYPES.map((t) => (
+                            <option key={t.value} value={t.value}>
+                              {t.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowCageAdvancedFields((v) => !v)}
+                        className="text-[11px] font-medium text-[var(--barn-sage)] hover:underline"
+                      >
+                        {showCageAdvancedFields
+                          ? 'Hide Feedlot Inventory & Maintenance Schedule'
+                          : '+ Link Feedlot Inventory & Recurring Maintenance (Optional)'}
+                      </button>
+                      {showCageAdvancedFields && (
+                        <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <input
+                              type="text"
+                              aria-label="Feedlot or feed bin name"
+                              placeholder="Feedlot / Bin (e.g., 16% Pellet Bin)"
+                              value={cageFeedLotName}
+                              onChange={(e) => setCageFeedLotName(e.target.value)}
+                              className="sm:col-span-2 min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                            />
+                            <input
+                              type="text"
+                              aria-label="Daily ration note"
+                              placeholder="Daily ration (e.g., 4 oz/head)"
+                              value={cageDailyRationNote}
+                              onChange={(e) => setCageDailyRationNote(e.target.value)}
+                              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                            />
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.5"
+                              aria-label="Feed stock remaining"
+                              placeholder="Stock qty"
+                              value={cageFeedStockRemaining}
+                              onChange={(e) => setCageFeedStockRemaining(e.target.value)}
+                              className="min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                            />
+                            <input
+                              type="text"
+                              aria-label="Feed stock unit"
+                              placeholder="Unit (lbs/bales)"
+                              value={cageFeedStockUnit}
+                              onChange={(e) => setCageFeedStockUnit(e.target.value)}
+                              className="min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                            />
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.5"
+                              aria-label="Low feed warning threshold"
+                              placeholder="Low alert at"
+                              value={cageFeedLowThreshold}
+                              onChange={(e) => setCageFeedLowThreshold(e.target.value)}
+                              className="min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                            />
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <input
+                              type="text"
+                              aria-label="Recurring maintenance task label"
+                              placeholder="Maintenance task (e.g., Sanitize & bedding)"
+                              value={cageMaintLabel}
+                              onChange={(e) => setCageMaintLabel(e.target.value)}
+                              className="sm:col-span-2 min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                            />
+                            <input
+                              type="number"
+                              min={1}
+                              max={365}
+                              aria-label="Maintenance interval in days"
+                              placeholder="Every N days"
+                              value={cageMaintIntervalDays}
+                              onChange={(e) => setCageMaintIntervalDays(e.target.value)}
+                              className="min-h-[34px] px-2 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-mono tabular-nums"
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
@@ -1987,7 +2381,23 @@ export function SpeciesDashboardScreen({
                     </form>
                   )}
 
-                  {cages.length === 0 ? (
+                  {cageViewMode === 'board' ? (
+                    <FacilityPenBoard
+                      speciesProfile={speciesProfile}
+                      cages={cages}
+                      animals={animals}
+                      assignableAnimals={assignableAnimals}
+                      boardModel={facilityBoardModel}
+                      highlightedCageId={highlightedCageId}
+                      onClearHighlightedCage={onClearHighlightedCage}
+                      onOpenAnimal={onOpenAnimal}
+                      onSaveCage={onSaveCage}
+                      onDeleteCage={onDeleteCage}
+                      onAssignAnimalToCage={onAssignAnimalToCage}
+                      onSaveTask={onSaveTask}
+                      onPrintCageCardsForAnimals={handlePrintCageCardsForAnimals}
+                    />
+                  ) : cages.length === 0 ? (
                     <p className="text-sm text-[var(--barn-muted)]">No locations added yet.</p>
                   ) : (
                     <div className="divide-y divide-[var(--barn-border)] max-h-[28rem] overflow-y-auto">
@@ -2543,6 +2953,61 @@ export function SpeciesDashboardScreen({
 
       {/* Dedicated Per-Species Hub Settings at Bottom */}
       {speciesSettingsSection}
+
+      {/* Full-Screen Hutch-Row & Facility Pen Board Modal */}
+      {showFullFacilityBoard && (
+        <FacilityPenBoard
+          fullScreen
+          onCloseFullScreen={() => setShowFullFacilityBoard(false)}
+          speciesProfile={speciesProfile}
+          cages={cages}
+          animals={animals}
+          assignableAnimals={assignableAnimals}
+          boardModel={facilityBoardModel}
+          highlightedCageId={highlightedCageId}
+          onClearHighlightedCage={onClearHighlightedCage}
+          onOpenAnimal={(animalId) => {
+            setShowFullFacilityBoard(false);
+            onOpenAnimal(animalId);
+          }}
+          onSaveCage={onSaveCage}
+          onDeleteCage={onDeleteCage}
+          onAssignAnimalToCage={onAssignAnimalToCage}
+          onSaveTask={onSaveTask}
+          onPrintCageCardsForAnimals={handlePrintCageCardsForAnimals}
+        />
+      )}
+
+      {/* QR-Coded Cage Cards Print Preview (Single Thermal Card or 8-Up Batch Sheet) */}
+      {cageQrPreviewDoc && (
+        <PrintPreviewModal
+          title={cageQrPreviewDoc.title}
+          filename={cageQrPreviewDoc.filename}
+          htmlContent={cageQrPreviewDoc.html}
+          includeCageCardQr={
+            cageQrPreviewDoc.mode === 'single' ? includeSingleCardQr : undefined
+          }
+          onToggleIncludeCageCardQr={
+            cageQrPreviewDoc.mode === 'single' ? setIncludeSingleCardQr : undefined
+          }
+          batchPrintOptions={
+            cageQrPreviewDoc.mode === 'batch' ? cageBatchPrintOptions : undefined
+          }
+          onChangeBatchPrintOptions={
+            cageQrPreviewDoc.mode === 'batch' ? setCageBatchPrintOptions : undefined
+          }
+          batchAnimalCount={
+            cageQrPreviewDoc.mode === 'batch' ? cageQrPrintState?.animals.length : undefined
+          }
+          headerNotice={
+            <p className="text-[11px] text-[var(--barn-muted)]">
+              Scanning any printed QR code with a phone camera opens that animal&apos;s local
+              profile directly in this PWA.
+            </p>
+          }
+          onClose={() => setCageQrPrintState(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Community Pedigree</string>
+    <string name="app_name">Pedigree</string>
     <string name="render_crash_title">WebView Renderer Interrupted</string>
     <string name="render_crash_body">The offline page renderer stopped unexpectedly. Your local barn data remains safely stored.</string>
     <string name="render_crash_retry">Reload App</string>

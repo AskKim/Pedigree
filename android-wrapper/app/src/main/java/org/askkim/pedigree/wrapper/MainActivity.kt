@@ -1,5 +1,5 @@
 /*
- * Community Pedigree Android Wrapper
+ * Pedigree Android Wrapper
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
@@ -45,7 +45,7 @@ import org.json.JSONObject
 import java.util.Locale
 
 /**
- * Main host Activity for the Community Pedigree Android Wrapper (`org.askkim.pedigree.wrapper`).
+ * Main host Activity for the Pedigree Android Wrapper (`org.askkim.pedigree.wrapper`).
  *
  * Architecture & Security Responsibilities:
  * 1. **Offline Asset Hosting**: Serves bundled Vite `dist/` assets from `assets/www/` at virtual

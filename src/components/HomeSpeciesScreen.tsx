@@ -346,7 +346,7 @@ export function HomeSpeciesScreen({
         <div className="space-y-1.5 max-w-2xl">
           <div className="space-y-0.5">
             <p className="text-xs text-[var(--barn-muted)]">
-              Multi-Species Pedigree &amp; Management System
+              Community Pedigree &mdash; Multi-Species Management System
             </p>
             <p className="text-xs text-[var(--barn-muted)]">
               100% local app ownership — offline-first with zero cloud lock-in.

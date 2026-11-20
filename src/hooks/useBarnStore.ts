@@ -25,6 +25,10 @@ import {
   PreRestoreArchiveInspection,
 } from '../core/archiveInspector';
 import {
+  BarnBenchBatchEntryDraft,
+  buildBarnBenchCommitPlan,
+} from '../core/barnBench';
+import {
   analyzePhotoStorageFootprintPure,
   PhotoStorageFootprintReport,
   pruneFullResPayloadsFromSnapshotPure,
@@ -93,6 +97,7 @@ import {
   CoiAnalysis,
   createSpeciesCoiEvaluator,
 } from '../core/pedigreeCalculator';
+import { parseAppDeepLinkParams } from '../core/qrCode';
 import {
   buildFullPredefinedSampleSnapshot,
   buildSampleDataForSpecies,
@@ -263,6 +268,7 @@ export type WorkspaceRoute =
   | 'home'
   | 'dashboard'
   | 'herd'
+  | 'bench'
   | 'breeding'
   | 'pedigree'
   | 'reports'
@@ -346,6 +352,7 @@ export function useBarnStore() {
   const [pedigreeAnimalId, setPedigreeAnimalId] = useState<string | null>(null);
   const [pedigreeGenerations, setPedigreeGenerations] = useState<3 | 4 | 5 | 6>(3);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
+  const [highlightedCageId, setHighlightedCageId] = useState<string | null>(null);
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
   const [googleAuthConnected, setGoogleAuthConnected] = useState<boolean>(false);
   const [googleCalendars, setGoogleCalendars] = useState<GoogleCalendarOption[]>([]);
@@ -798,37 +805,65 @@ export function useBarnStore() {
         setSyncConflicts(conflicts);
         void refreshVaultAndArchives();
 
-        const urlParams =
-          typeof window !== 'undefined'
-            ? new URLSearchParams(window.location.search)
-            : null;
-        const deepTaskId = (urlParams?.get('taskId') || '').trim();
-        const deepSpecies = (urlParams?.get('species') || '').trim();
-        const deepRoute = (urlParams?.get('route') || '').trim();
-        const deepTask = deepTaskId
-          ? initial.tasks.find((t) => t.id === deepTaskId)
+        const deepTarget = parseAppDeepLinkParams(
+          typeof window !== 'undefined' ? window.location.search : ''
+        );
+        const deepTask = deepTarget.taskId
+          ? initial.tasks.find((t) => t.id === deepTarget.taskId)
+          : undefined;
+        const deepAnimal = deepTarget.animalId
+          ? initial.animals.find((a) => a.id === deepTarget.animalId)
+          : undefined;
+        const deepCage = deepTarget.cageId
+          ? initial.cages.find((c) => c.id === deepTarget.cageId)
           : undefined;
 
-        if (deepTask) {
+        if (deepAnimal) {
+          setActiveSpeciesName(deepAnimal.species);
+          setSelectedAnimalId(deepAnimal.id);
+          setRoute('herd');
+        } else if (deepCage) {
+          setActiveSpeciesName(deepCage.species);
+          setHighlightedCageId(deepCage.id);
+          setRoute('dashboard');
+        } else if (deepTask) {
           setActiveSpeciesName(deepTask.species);
           setRoute('dashboard');
           setHighlightedTaskId(deepTask.id);
-        } else if (deepSpecies) {
+        } else if (deepTarget.species) {
           const matchedDeepSpecies = initial.speciesProfiles.find((sp) =>
-            isSameSpecies(sp.name, deepSpecies)
+            isSameSpecies(sp.name, deepTarget.species)
           );
           if (matchedDeepSpecies) {
             setActiveSpeciesName(matchedDeepSpecies.name);
-            setRoute(deepRoute === 'herd' ? 'herd' : 'dashboard');
+            setRoute(deepTarget.route === 'herd' ? 'herd' : 'dashboard');
           } else {
             setActiveSpeciesName(initial.settings.defaultSpecies || 'Rabbit');
             setRoute('home');
           }
-          if (deepTaskId) {
+          if (deepTarget.animalId) {
+            setStatusMessage(
+              'Scanned animal profile was not found in local records on this device (it may have been deleted or live on another device).'
+            );
+          } else if (deepTarget.cageId) {
+            setStatusMessage(
+              'Linked cage or pen was not found in local records (it may have been deleted).'
+            );
+          } else if (deepTarget.taskId) {
             setStatusMessage(
               'Linked calendar chore was not found in local records (it may have been deleted).'
             );
           }
+        } else if (deepTarget.animalId || deepTarget.cageId || deepTarget.taskId) {
+          setActiveSpeciesName(initial.settings.defaultSpecies || 'Rabbit');
+          setRoute('home');
+          setStatusMessage(
+            deepTarget.animalId
+              ? 'Scanned animal profile was not found in local records on this device.'
+              : deepTarget.cageId
+                ? 'Linked cage or pen was not found in local records on this device.'
+                : 'Linked calendar chore was not found in local records on this device.'
+          );
         } else {
           const pinned = (initial.settings.pinnedLandingSpecies || '').trim();
           const matchedPinned = pinned
@@ -844,11 +879,10 @@ export function useBarnStore() {
           }
         }
 
-        const preserveEmergencyReset = urlParams?.get('emergency_reset') === 'true';
         if (
           typeof window !== 'undefined' &&
-          !preserveEmergencyReset &&
-          (deepTaskId || deepSpecies || deepRoute)
+          !deepTarget.emergencyReset &&
+          deepTarget.hasDeepLink
         ) {
           try {
             window.history.replaceState({}, '', window.location.pathname);
@@ -1135,6 +1169,58 @@ export function useBarnStore() {
       return inState?.thumbnailDataUrl || null;
     },
     [snapshot]
+  );
+
+  const loadAnimalPhotoDataUrlsBatch = useCallback(
+    async (photoIds: string[]): Promise<Record<string, string>> => {
+      const uniqueIds = Array.from(new Set(photoIds.filter((id) => Boolean(id)))).slice(0, 60);
+      if (uniqueIds.length === 0) return {};
+
+      const result: Record<string, string> = {};
+      const missing: string[] = [];
+      const cache = photoCacheRef.current;
+      const photoById = new Map((snapshotRef.current?.animalPhotos ?? []).map((p) => [p.id, p]));
+
+      for (const id of uniqueIds) {
+        const cached = cache?.get(id);
+        if (cached) {
+          result[id] = cached;
+          continue;
+        }
+        const inState = photoById.get(id);
+        if (inState?.dataUrl) {
+          cache?.set(id, inState.dataUrl);
+          result[id] = inState.dataUrl;
+          continue;
+        }
+        missing.push(id);
+      }
+
+      if (missing.length > 0 && adapterRef.current?.loadAnimalPhotoDataUrlsBatch) {
+        try {
+          const fetched = await adapterRef.current.loadAnimalPhotoDataUrlsBatch(missing);
+          for (const id of missing) {
+            const url = fetched[id];
+            if (url) {
+              cache?.set(id, url);
+              result[id] = url;
+            }
+          }
+        } catch {
+          // Fall back to thumbnails below without disrupting print preview
+        }
+      }
+
+      for (const id of uniqueIds) {
+        if (!result[id]) {
+          const thumb = photoById.get(id)?.thumbnailDataUrl;
+          if (thumb) result[id] = thumb;
+        }
+      }
+
+      return result;
+    },
+    []
   );
 
   const hydrateSnapshotForExport = useCallback(
@@ -4361,6 +4447,95 @@ export function useBarnStore() {
     ]
   );
 
+  const commitBarnBenchEntry = useCallback(
+    async (
+      draft: BarnBenchBatchEntryDraft
+    ): Promise<{ ok: boolean; animalId: string; summary: string[] }> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) {
+          return { ok: false, animalId: draft.animalId, summary: [] };
+        }
+        const animal = currentSnapshot.animals.find((a) => a.id === draft.animalId);
+        if (!animal || animal.offloadedArchiveKey) {
+          return { ok: false, animalId: draft.animalId, summary: [] };
+        }
+
+        const ts = getAdjustedNowIsoUtc();
+        const plan = buildBarnBenchCommitPlan(animal, draft, ts);
+        if (!plan.hasChanges) {
+          return { ok: false, animalId: animal.id, summary: [] };
+        }
+
+        try {
+          const ops: SyncOperation[] = [];
+          const adapter = adapterRef.current!;
+
+          if (plan.careLogs.length > 0) {
+            if (adapter.saveCareLogsBatch) {
+              await adapter.saveCareLogsBatch(plan.careLogs);
+            } else {
+              for (const log of plan.careLogs) {
+                await adapter.saveCareLog(log);
+              }
+            }
+            for (const log of plan.careLogs) {
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'careLog',
+                  previous: undefined,
+                  next: log,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: log._rev ?? 1,
+                })
+              );
+            }
+          }
+
+          if (plan.updatedAnimal) {
+            const animalRev = nextEntityRev(animal.id, animal._rev);
+            const nextAnimal: Animal = {
+              ...plan.updatedAnimal,
+              _rev: animalRev,
+            };
+            await adapter.saveAnimal(nextAnimal);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'animal',
+                previous: animal,
+                next: nextAnimal,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: animalRev,
+              })
+            );
+          }
+
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(`${animal.name}: ${plan.summaryParts.join(' · ')} saved.`);
+          return { ok: true, animalId: animal.id, summary: plan.summaryParts };
+        } catch (err) {
+          reportPersistenceFailure(`save Barn Bench entry for ${animal.name}`, err);
+          return { ok: false, animalId: animal.id, summary: [] };
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
   const deleteCareLog = useCallback(
     async (id: string) => {
       return enqueueStoreMutation(async () => {
@@ -6166,6 +6341,7 @@ export function useBarnStore() {
     migrateAnimalsSpecies,
     addOptimizedAnimalPhotos,
     loadAnimalPhotoDataUrl,
+    loadAnimalPhotoDataUrlsBatch,
     hydrateSnapshotForExport,
     loadPedigreeNeighborhood,
     checkPedigreeBranchesHaveAncestors,
@@ -6186,6 +6362,8 @@ export function useBarnStore() {
     copyTaskAppLink,
     highlightedTaskId,
     setHighlightedTaskId,
+    highlightedCageId,
+    setHighlightedCageId,
     googleUserEmail,
     googleAuthConnected,
     googleCalendars,
@@ -6200,6 +6378,7 @@ export function useBarnStore() {
     toggleTaskCompleted,
     deleteTask,
     addCareLog,
+    commitBarnBenchEntry,
     deleteCareLog,
     saveShow,
     deleteShow,
