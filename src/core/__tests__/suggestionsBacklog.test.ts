@@ -26,15 +26,15 @@ describe('suggestionsBacklog — markdown parser, idea sanitization & exports', 
 
     expect(SUGGESTIONS_BACKLOG_PATH).toBe('/docs/plans/suggestions-backlog.md');
     expect(parsed.isEmpty).toBe(false);
-    expect(parsed.totalItems).toBe(5);
+    expect(parsed.totalItems).toBe(6);
     expect(parsed.sections).toHaveLength(1);
     expect(parsed.sections[0].title).toContain('Priority 4');
-    expect(parsed.sections[0].items).toHaveLength(5);
+    expect(parsed.sections[0].items).toHaveLength(6);
 
     const firstItem = parsed.sections[0].items[0];
     expect(firstItem.number).toBe(1);
     expect(firstItem.title).toBe(
-      'Zero-Server Breeder Showcase / "For Sale" Catalog Exporter'
+      'Founder Loss / Heritability Analytics & Interactive Barn Scheduler Gantt'
     );
     expect(firstItem.codeTag).toBeNull();
     expect(firstItem.details.length).toBeGreaterThan(0);

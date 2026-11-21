@@ -13,7 +13,6 @@
 
 import { isSafeRecordKey, sanitizePlainText, sanitizeSingleLineText } from './inputSanitization';
 import {
-  computeDaysBetweenDateIso,
   generateUuid,
   IagarbScorecard,
   normalizeWoolHarvestMethod,
@@ -21,8 +20,6 @@ import {
   todayDateIso,
   WoolHarvest,
 } from './models';
-
-export { computeDaysBetweenDateIso };
 
 export const IAGARB_MAX_POINTS = 100;
 export const IAGARB_REGISTRATION_MIN_POINTS = 80;
@@ -208,6 +205,21 @@ export function evaluateIagarbEligibility(
     overallEligible,
     statusLabel,
   };
+}
+
+/**
+ * Computes exact signed calendar days between two `YYYY-MM-DD` dates using `Date.UTC`.
+ */
+export function computeDaysBetweenDateIso(earlierIso: string, laterIso: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(earlierIso) || !/^\d{4}-\d{2}-\d{2}$/.test(laterIso)) {
+    return null;
+  }
+  const [y1, m1, d1] = earlierIso.split('-').map(Number);
+  const [y2, m2, d2] = laterIso.split('-').map(Number);
+  const t1 = Date.UTC(y1, m1 - 1, d1);
+  const t2 = Date.UTC(y2, m2 - 1, d2);
+  if (!Number.isFinite(t1) || !Number.isFinite(t2)) return null;
+  return Math.round((t2 - t1) / 86_400_000);
 }
 
 /**

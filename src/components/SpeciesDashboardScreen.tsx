@@ -20,7 +20,6 @@ import {
   ArrowUpToLine,
   Award,
   BookOpen,
-  Calendar,
   CalendarPlus,
   Camera,
   Check,
@@ -42,7 +41,6 @@ import {
   Printer,
   QrCode,
   RefreshCw,
-  Scissors,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -93,10 +91,8 @@ import {
   formatReadableDate,
   HOUSING_UNIT_TYPES,
   HousingUnitType,
-  isWoolApplicableSpecies,
   normalizeFeedPurgeWindowDays,
   normalizeSpeciesHubBlockOrder,
-  nowIsoUtc,
   SHOW_AWARD_OPTIONS,
   SHOW_SANCTIONS,
   ShowAnimalResult,
@@ -143,17 +139,10 @@ import {
   resolveEffectiveSpeciesProfileForBreeding,
 } from '../core/taskMaster';
 import {
-  evaluateTaskPriorityEscalation,
-} from '../core/barnScheduler';
-import { P2pReconciliationSummary } from '../core/p2pSyncProtocol';
-import { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
-import { BackupSyncStatus } from '../storage/localSyncChannels';
-import {
   ActiveSpeciesData,
   BreedingTaskCheckoffAction,
   WorkspaceRoute,
 } from '../hooks/useBarnStore';
-import { BarnSchedulerGantt } from './BarnSchedulerGantt';
 import { FacilityPenBoard } from './FacilityPenBoard';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
@@ -219,22 +208,6 @@ interface SpeciesDashboardScreenProps {
     targetSnapshot?: BarnDatabaseSnapshot,
     filterSpecies?: string
   ) => Promise<BarnDatabaseSnapshot>;
-  deviceId?: string;
-  syncOperations?: SyncOperation[];
-  syncConflicts?: SyncConflictEntry[];
-  backupSyncStatus?: BackupSyncStatus | null;
-  onRescheduleTask?: (
-    task: BarnTask,
-    nextDates: { startDateIso?: string; dueDateIso: string }
-  ) => Promise<boolean>;
-  onApplySmartEscalations?: (tasksToEscalate?: BarnTask[]) => Promise<number>;
-  onReconcileOutboxOps?: (
-    incomingOps: SyncOperation[],
-    peerDeviceId?: string
-  ) => Promise<P2pReconciliationSummary>;
-  onResolveSyncConflict?: (conflictId: string, useSide: 'winning' | 'losing') => Promise<void>;
-  onDismissSyncConflict?: (conflictId: string) => Promise<void>;
-  onBuildLocalDeltaJson?: () => { filename: string; content: string };
 }
 
 export function SpeciesDashboardScreen({
@@ -277,16 +250,6 @@ export function SpeciesDashboardScreen({
   onOpenSettings,
   onOpenImportExportHub,
   onHydrateSnapshotForExport,
-  deviceId = 'local-device',
-  syncOperations = [],
-  syncConflicts = [],
-  backupSyncStatus,
-  onRescheduleTask,
-  onApplySmartEscalations,
-  onReconcileOutboxOps,
-  onResolveSyncConflict,
-  onDismissSyncConflict,
-  onBuildLocalDeltaJson,
 }: SpeciesDashboardScreenProps) {
   const {
     speciesProfile,
@@ -337,13 +300,7 @@ export function SpeciesDashboardScreen({
   );
 
   const [taskFilter, setTaskFilter] = useState<'open' | 'completed'>('open');
-  const [taskViewMode, setTaskViewMode] = useState<'list' | 'gantt'>('list');
   const [showNewTaskForm, setShowNewTaskForm] = useState(false);
-
-  const smartEscalatedCount = useMemo(
-    () => tasks.filter((t) => evaluateTaskPriorityEscalation(t, today).isEscalated).length,
-    [tasks, today]
-  );
 
   useEffect(() => {
     if (!highlightedTaskId) return;
@@ -1190,30 +1147,6 @@ export function SpeciesDashboardScreen({
           Edit {speciesProfile.name} Schedule, Weight Unit &amp; Milestones
         </button>
 
-        {isWoolApplicableSpecies(speciesProfile.name) && (
-          <button
-            type="button"
-            aria-pressed={Boolean(speciesProfile.woolTrackingEnabled)}
-            onClick={() =>
-              void onSaveSpecies({
-                ...speciesProfile,
-                woolTrackingEnabled: !speciesProfile.woolTrackingEnabled,
-                updatedAt: nowIsoUtc(),
-              })
-            }
-            className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
-              speciesProfile.woolTrackingEnabled
-                ? 'bg-[var(--barn-sage-tint)] border-[var(--barn-sage)] text-[var(--barn-ink)]'
-                : 'border-[var(--barn-border)] text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)]'
-            }`}
-          >
-            <Scissors className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-            {speciesProfile.woolTrackingEnabled
-              ? 'Wool / Fiber Module: Enabled'
-              : 'Enable Wool / Fiber Module'}
-          </button>
-        )}
-
         {testingRecordCount > 0 ? (
           <button
             type="button"
@@ -2037,8 +1970,6 @@ export function SpeciesDashboardScreen({
             };
 
             const cardClass = `bg-[var(--barn-surface)] border rounded-2xl p-5 space-y-4 transition-colors ${
-              blockId === 'tasks' && taskViewMode === 'gantt' ? 'lg:col-span-2 ' : ''
-            }${
               isDragTarget
                 ? 'border-[var(--barn-sage)] ring-2 ring-[var(--barn-sage)]/40'
                 : 'border-[var(--barn-border)]'
@@ -2066,9 +1997,7 @@ export function SpeciesDashboardScreen({
                           </span>
                         </div>
                         <p className="text-xs text-[var(--barn-muted)]">
-                          {taskViewMode === 'gantt'
-                            ? 'Drag timeline bars to reschedule · Smart escalation & LAN P2P outbox sync'
-                            : 'Tap any checkbox cage-side to mark completed'}
+                          Tap any checkbox cage-side to mark completed
                         </p>
                       </div>
                     </div>
@@ -2078,68 +2007,29 @@ export function SpeciesDashboardScreen({
                       <div className="flex items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
                         <button
                           type="button"
-                          aria-pressed={taskViewMode === 'list'}
-                          onClick={() => setTaskViewMode('list')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1 whitespace-nowrap ${
-                            taskViewMode === 'list'
+                          aria-pressed={taskFilter === 'open'}
+                          onClick={() => setTaskFilter('open')}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                            taskFilter === 'open'
                               ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
                               : 'text-[var(--barn-muted)]'
                           }`}
                         >
-                          <List className="w-3.5 h-3.5" aria-hidden="true" />
-                          Checklist
+                          Open ({openTasksCount})
                         </button>
                         <button
                           type="button"
-                          aria-pressed={taskViewMode === 'gantt'}
-                          onClick={() => setTaskViewMode('gantt')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1 whitespace-nowrap ${
-                            taskViewMode === 'gantt'
+                          aria-pressed={taskFilter === 'completed'}
+                          onClick={() => setTaskFilter('completed')}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                            taskFilter === 'completed'
                               ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
                               : 'text-[var(--barn-muted)]'
                           }`}
                         >
-                          <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
-                          Gantt
-                          {smartEscalatedCount > 0 && (
-                            <span
-                              title={`${smartEscalatedCount} chore${smartEscalatedCount === 1 ? '' : 's'} eligible for smart High priority escalation`}
-                              className="ml-0.5 px-1.5 py-0 rounded-full text-[10px] font-mono bg-[var(--barn-terracotta)] text-white"
-                            >
-                              {smartEscalatedCount}
-                            </span>
-                          )}
+                          Done ({tasks.length - openTasksCount})
                         </button>
                       </div>
-
-                      {taskViewMode === 'list' && (
-                        <div className="flex items-center p-0.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
-                          <button
-                            type="button"
-                            aria-pressed={taskFilter === 'open'}
-                            onClick={() => setTaskFilter('open')}
-                            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-                              taskFilter === 'open'
-                                ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
-                                : 'text-[var(--barn-muted)]'
-                            }`}
-                          >
-                            Open ({openTasksCount})
-                          </button>
-                          <button
-                            type="button"
-                            aria-pressed={taskFilter === 'completed'}
-                            onClick={() => setTaskFilter('completed')}
-                            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-                              taskFilter === 'completed'
-                                ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
-                                : 'text-[var(--barn-muted)]'
-                            }`}
-                          >
-                            Done ({tasks.length - openTasksCount})
-                          </button>
-                        </div>
-                      )}
 
                       <button
                         type="button"
@@ -2239,53 +2129,7 @@ export function SpeciesDashboardScreen({
                     </form>
                   )}
 
-                  {taskViewMode === 'gantt' ? (
-                    <BarnSchedulerGantt
-                      speciesProfile={speciesProfile}
-                      animals={animals}
-                      tasks={tasks}
-                      breedings={breedings}
-                      settings={settings}
-                      deviceId={deviceId}
-                      syncOperations={syncOperations}
-                      syncConflicts={syncConflicts}
-                      backupSyncStatus={backupSyncStatus}
-                      onToggleTask={onToggleTask}
-                      onRescheduleTask={
-                        onRescheduleTask ?? (async () => false)
-                      }
-                      onApplySmartEscalations={
-                        onApplySmartEscalations ?? (async () => 0)
-                      }
-                      onDeleteTask={onDeleteTask}
-                      onOpenAnimal={onOpenAnimal}
-                      onReconcileOutboxOps={
-                        onReconcileOutboxOps ??
-                        (async () => ({
-                          peerDeviceId: 'none',
-                          receivedOpsCount: 0,
-                          appliedOpCount: 0,
-                          taskOpsReceivedCount: 0,
-                          newConflictCount: 0,
-                          newTaskConflictCount: 0,
-                          reconciledAtIso: '',
-                        }))
-                      }
-                      onResolveSyncConflict={
-                        onResolveSyncConflict ?? (async () => undefined)
-                      }
-                      onDismissSyncConflict={
-                        onDismissSyncConflict ?? (async () => undefined)
-                      }
-                      onBuildLocalDeltaJson={
-                        onBuildLocalDeltaJson ??
-                        (() => ({
-                          filename: 'pedigree-delta.json',
-                          content: '{}',
-                        }))
-                      }
-                    />
-                  ) : visibleTasks.length === 0 ? (
+                  {visibleTasks.length === 0 ? (
                     <p className="text-sm text-[var(--barn-muted)] py-3">
                       {taskFilter === 'open'
                         ? `All ${speciesProfile.name.toLowerCase()} barn chores are caught up.`

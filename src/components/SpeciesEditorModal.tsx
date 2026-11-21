@@ -14,7 +14,6 @@ import {
   BreedScheduleOverride,
   generateUuid,
   isSameSpecies,
-  isWoolApplicableSpecies,
   MilestoneRelativeTo,
   normalizeBreedScheduleOverrides,
   nowIsoUtc,
@@ -130,9 +129,6 @@ export function SpeciesEditorModal({
   const [breedOverrides, setBreedOverrides] = useState<BreedScheduleOverride[]>(() =>
     normalizeBreedScheduleOverrides(initialProfile?.breedOverrides)
   );
-  const [woolTrackingEnabled, setWoolTrackingEnabled] = useState<boolean>(
-    Boolean(initialProfile?.woolTrackingEnabled) && isWoolApplicableSpecies(initialProfile?.name)
-  );
 
   // Draft milestone rule inputs
   const [ruleLabel, setRuleLabel] = useState('');
@@ -181,7 +177,6 @@ export function SpeciesEditorModal({
     setBreedsCsv('');
     setMilestones(DEFAULT_CUSTOM_MILESTONES.map((m) => ({ ...m })));
     setBreedOverrides([]);
-    setWoolTrackingEnabled(false);
     clearBreedOverrideDraft();
   };
 
@@ -205,7 +200,6 @@ export function SpeciesEditorModal({
     setBreedsCsv(preset.exampleBreeds.join(', '));
     setMilestones(preset.milestones.map((m) => ({ ...m })));
     setBreedOverrides(normalizeBreedScheduleOverrides(preset.breedOverrides));
-    setWoolTrackingEnabled(false);
     clearBreedOverrideDraft();
   };
 
@@ -341,9 +335,6 @@ export function SpeciesEditorModal({
         exampleBreeds: parsedBreeds,
         milestones,
         breedOverrides: normalizeBreedScheduleOverrides(breedOverrides),
-        ...(isWoolApplicableSpecies(cleanName) && woolTrackingEnabled
-          ? { woolTrackingEnabled: true }
-          : {}),
         createdAt: initialProfile?.createdAt || ts,
         updatedAt: ts,
       });
@@ -678,31 +669,6 @@ export function SpeciesEditorModal({
               </p>
             </div>
           </div>
-
-          {isWoolApplicableSpecies(name) && (
-            <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
-              <label
-                htmlFor={`${baseId}-wool-toggle`}
-                className="flex items-start gap-3 cursor-pointer select-none"
-              >
-                <input
-                  id={`${baseId}-wool-toggle`}
-                  type="checkbox"
-                  checked={woolTrackingEnabled}
-                  onChange={(e) => setWoolTrackingEnabled(e.target.checked)}
-                  className="mt-1 h-4 w-4 rounded border-[var(--barn-border)] accent-[var(--barn-sage)] shrink-0"
-                />
-                <div className="space-y-0.5">
-                  <div className="text-sm font-semibold">
-                    Display Wool / Fiber Harvests &amp; IAGARB Scoring Module
-                  </div>
-                  <p className="text-xs text-[var(--barn-muted)]">
-                    Disabled by default. Enable this for wool, Angora, fleece, or cashmere herds to show shearing yield logs and IAGARB pedigree templates. Any wool data found inside imported pedigrees is still saved in your database automatically.
-                  </p>
-                </div>
-              </label>
-            </div>
-          )}
 
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">

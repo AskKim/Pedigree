@@ -29,22 +29,14 @@ import {
   Plus,
   Printer,
   RotateCcw,
+  Scissors,
   Search,
   ShieldAlert,
   Trash2,
   TrendingUp,
   X,
 } from 'lucide-react';
-import React, {
-  Component,
-  ErrorInfo,
-  ReactNode,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
@@ -85,8 +77,8 @@ import {
   formatWeight,
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
+  IagarbScorecard,
   isAnimalArchived,
-  isWoolModuleEnabledForSpecies,
   normalizeOwnershipType,
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
@@ -94,12 +86,22 @@ import {
   todayDateIso,
   ULTRASOUND_RESULTS,
   UltrasoundResult,
+  WOOL_HARVEST_METHODS,
   WoolHarvest,
+  WoolHarvestMethod,
 } from '../core/models';
 import {
   buildPetBirthCertificateFileName,
   generatePetBirthCertificateHtml,
 } from '../core/alternativeCertificates';
+import {
+  compute90DayEquivalentGrams,
+  computeDaysBetweenDateIso,
+  computeIagarbScoreTotal,
+  evaluateIagarbEligibility,
+  IAGARB_JUDGING_POSITIONS,
+  summarizeAnimalWoolHarvests,
+} from '../core/woolFiber';
 import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
@@ -290,12 +292,7 @@ export function HerdScreen({
     setBatchPhotoHydrating(false);
     setCarrierFilterMode('all');
     setCarrierTraitQuery('');
-    setPedigreePrintOptions((prev) =>
-      prev.layoutPreset === 'iagarb_angora' && !isWoolModuleEnabledForSpecies(speciesProfile)
-        ? { ...prev, layoutPreset: 'evans_standard' }
-        : prev
-    );
-  }, [speciesProfile.name, speciesProfile.woolTrackingEnabled]);
+  }, [speciesProfile.name]);
 
   useEffect(() => {
     if (requestedConflictFocusNonce && requestedConflictFocusNonce > 0) {
@@ -702,14 +699,42 @@ export function HerdScreen({
     [activeAnimal, shows, careLogs]
   );
 
-  const woolModuleEnabled = isWoolModuleEnabledForSpecies(speciesProfile);
   const activeAnimalWoolHarvests = useMemo(
-    () =>
-      woolModuleEnabled && activeAnimal
-        ? woolHarvests.filter((wh) => wh.animalId === activeAnimal.id)
-        : [],
-    [woolModuleEnabled, activeAnimal, woolHarvests]
+    () => (activeAnimal ? woolHarvests.filter((wh) => wh.animalId === activeAnimal.id) : []),
+    [activeAnimal, woolHarvests]
   );
+
+  const activeAnimalWoolSummary = useMemo(
+    () =>
+      activeAnimal
+        ? summarizeAnimalWoolHarvests(activeAnimalWoolHarvests, activeAnimal.id)
+        : null,
+    [activeAnimal, activeAnimalWoolHarvests]
+  );
+
+  const [showWoolForm, setShowWoolForm] = useState(false);
+  const [woolDateIso, setWoolDateIso] = useState(() => todayDateIso());
+  const [woolIntervalDays, setWoolIntervalDays] = useState('90');
+  const [woolPrimeGrams, setWoolPrimeGrams] = useState('');
+  const [woolGradeGrams, setWoolGradeGrams] = useState('');
+  const [woolMethod, setWoolMethod] = useState<WoolHarvestMethod>('Shear');
+  const [woolStapleMm, setWoolStapleMm] = useState('');
+  const [woolWitnessedBy, setWoolWitnessedBy] = useState('');
+  const [woolNotes, setWoolNotes] = useState('');
+  const [showIagarbScorecard, setShowIagarbScorecard] = useState(false);
+  const [woolIagarbScore, setWoolIagarbScore] = useState<IagarbScorecard>(() => ({
+    weightPts: 0,
+    bodyTypePts: 0,
+    densityLengthPts: 0,
+    uniformityPts: 0,
+    texturePts: 0,
+    furnishingsPts: 0,
+    conditionPts: 0,
+    totalPts: 0,
+    evaluatorName: '',
+    evaluationDateIso: '',
+  }));
+  const woolSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
 
   const [eLegLightbox, setELegLightbox] = useState<{
     imageUrl: string;
@@ -843,10 +868,73 @@ export function HerdScreen({
     setLogUltrasoundFetalCount('');
   };
 
+  const resetWoolFields = () => {
+    setWoolDateIso(todayDateIso());
+    setWoolIntervalDays('90');
+    setWoolPrimeGrams('');
+    setWoolGradeGrams('');
+    setWoolMethod('Shear');
+    setWoolStapleMm('');
+    setWoolWitnessedBy('');
+    setWoolNotes('');
+    setShowIagarbScorecard(false);
+    setWoolIagarbScore({
+      weightPts: 0,
+      bodyTypePts: 0,
+      densityLengthPts: 0,
+      uniformityPts: 0,
+      texturePts: 0,
+      furnishingsPts: 0,
+      conditionPts: 0,
+      totalPts: 0,
+      evaluatorName: '',
+      evaluationDateIso: '',
+    });
+  };
+
   useEffect(() => {
     setShowLogForm(false);
     resetLogFields();
+    setShowWoolForm(false);
+    resetWoolFields();
   }, [speciesProfile.id, selectedAnimalId]);
+
+  const submitWoolHarvest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAnimal || !onSaveWoolHarvest) return;
+    await woolSubmitLock.runLocked(async () => {
+      const prime = safeNonNegNumber(woolPrimeGrams, true, 100_000);
+      const grade = safeNonNegNumber(woolGradeGrams, true, 100_000);
+      const interval = safeNonNegNumber(woolIntervalDays, true, 1825);
+      const staple = safeNonNegNumber(woolStapleMm, false, 1000);
+      const hasIagarbFields = Object.values(woolIagarbScore).some(
+        (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
+      );
+      await onSaveWoolHarvest({
+        species: speciesProfile.name,
+        animalId: activeAnimal.id,
+        harvestDateIso: woolDateIso || todayDateIso(),
+        shearingIntervalDays: interval > 0 ? interval : undefined,
+        primeWeightGrams: prime,
+        gradeWeightGrams: grade,
+        harvestMethod: woolMethod,
+        stapleLengthMm: staple > 0 ? staple : undefined,
+        iagarbScore:
+          showIagarbScorecard && hasIagarbFields
+            ? {
+                ...woolIagarbScore,
+                totalPts: computeIagarbScoreTotal(woolIagarbScore),
+                evaluatorName: woolWitnessedBy.trim(),
+                evaluationDateIso: woolDateIso || todayDateIso(),
+              }
+            : undefined,
+        witnessedBy: woolWitnessedBy.trim(),
+        notes: woolNotes.trim(),
+      });
+      resetWoolFields();
+      setShowWoolForm(false);
+    });
+  };
 
   const safeNonNegNumber = (raw: string, roundInt = false, max = Number.MAX_SAFE_INTEGER): number => {
     const num = Number(raw);
@@ -922,13 +1010,9 @@ export function HerdScreen({
         primaryPhoto,
         {
           ...pedigreePrintOptions,
-          layoutPreset:
-            !woolModuleEnabled && pedigreePrintOptions.layoutPreset === 'iagarb_angora'
-              ? 'evans_standard'
-              : pedigreePrintOptions.layoutPreset,
           shows,
           careLogs,
-          woolHarvests: woolModuleEnabled ? woolHarvests : [],
+          woolHarvests,
           ancestorPhotosByAnimalId:
             pedigreePrintOptions.layoutPreset === 'family_portrait'
               ? familyPortraitPhotosByAnimalId
@@ -2278,25 +2362,339 @@ export function HerdScreen({
               )}
             </div>
 
-            {woolModuleEnabled && (
-              <WoolModuleErrorBoundary key={`${speciesProfile.id}:${activeAnimal.id}`}>
-                <Suspense
-                  fallback={
-                    <div className="border-t border-[var(--barn-border)] pt-5 text-xs text-[var(--barn-muted)]">
-                      Loading Wool / Fiber module...
+            {/* Wool / Fiber Harvests & IAGARB Angora Evaluation */}
+            <div className="border-t border-[var(--barn-border)] pt-5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold inline-flex items-center gap-1.5">
+                    <Scissors className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                    <span>Wool / Fiber Harvests &amp; IAGARB Scoring</span>
+                  </h3>
+                  <p className="text-xs text-[var(--barn-muted)]">
+                    Track prime &amp; grade fleece weights (g), 90-day shearing yield vs. 325g benchmark, and IAGARB 7-position scores.
+                  </p>
+                </div>
+                {onSaveWoolHarvest && (
+                  <button
+                    type="button"
+                    aria-expanded={showWoolForm}
+                    onClick={() => setShowWoolForm((v) => !v)}
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap self-start sm:self-auto"
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    Log Wool Harvest
+                  </button>
+                )}
+              </div>
+
+              {activeAnimalWoolSummary && activeAnimalWoolSummary.harvestCount > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs">
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Lifetime Total</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.totalGrams} g ({activeAnimalWoolSummary.harvestCount} clip{activeAnimalWoolSummary.harvestCount === 1 ? '' : 's'})
                     </div>
-                  }
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Prime vs Grade</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.primeGrams}g Prime / {activeAnimalWoolSummary.gradeGrams}g Grade
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Latest 90-Day Rate</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.latest90DayRateGrams !== null
+                        ? `${activeAnimalWoolSummary.latest90DayRateGrams} g/90d`
+                        : '—'}
+                      {activeAnimalWoolSummary.eligibility.meets90DayYieldThreshold && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] text-[10px]">
+                          ≥325g Pass
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Best IAGARB Score</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.highestIagarbScore !== null
+                        ? `${activeAnimalWoolSummary.highestIagarbScore.totalPts}/100`
+                        : '—'}
+                      {activeAnimalWoolSummary.eligibility.meetsPointsThreshold && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] text-[10px]">
+                          Reg Eligible
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showWoolForm && onSaveWoolHarvest && (
+                <form
+                  onSubmit={submitWoolHarvest}
+                  className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3 text-xs"
                 >
-                  <LazyWoolHarvestPanel
-                    speciesProfile={speciesProfile}
-                    animalId={activeAnimal.id}
-                    animalWoolHarvests={activeAnimalWoolHarvests}
-                    onSaveWoolHarvest={onSaveWoolHarvest}
-                    onDeleteWoolHarvest={onDeleteWoolHarvest}
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Harvest Date</span>
+                      <input
+                        type="date"
+                        required
+                        value={woolDateIso}
+                        onChange={(e) => {
+                          const nextDate = e.target.value;
+                          setWoolDateIso(nextDate);
+                          const lastDate = activeAnimalWoolHarvests[0]?.harvestDateIso;
+                          if (lastDate && nextDate) {
+                            const diff = computeDaysBetweenDateIso(lastDate, nextDate);
+                            if (diff !== null && diff > 0) setWoolIntervalDays(String(diff));
+                          }
+                        }}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Interval (Days)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="1825"
+                        placeholder="90"
+                        value={woolIntervalDays}
+                        onChange={(e) => setWoolIntervalDays(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Prime Weight (g)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 285"
+                        value={woolPrimeGrams}
+                        onChange={(e) => setWoolPrimeGrams(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Grade / Seconds (g)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 60"
+                        value={woolGradeGrams}
+                        onChange={(e) => setWoolGradeGrams(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Method</span>
+                      <select
+                        value={woolMethod}
+                        onChange={(e) => setWoolMethod(e.target.value as WoolHarvestMethod)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                      >
+                        {WOOL_HARVEST_METHODS.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Staple Length (mm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        placeholder="e.g. 75"
+                        value={woolStapleMm}
+                        onChange={(e) => setWoolStapleMm(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Witnessed By / Judge</span>
+                      <input
+                        type="text"
+                        placeholder="Registrar / judge name (optional)"
+                        value={woolWitnessedBy}
+                        onChange={(e) => setWoolWitnessedBy(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                      />
+                    </label>
+                  </div>
+
+                  {(() => {
+                    const p = Number(woolPrimeGrams) || 0;
+                    const g = Number(woolGradeGrams) || 0;
+                    const d = Number(woolIntervalDays) || 0;
+                    const eq90 = compute90DayEquivalentGrams(p + g, d);
+                    const totalPts = computeIagarbScoreTotal(woolIagarbScore);
+                    const elig = evaluateIagarbEligibility(
+                      showIagarbScorecard ? totalPts : 0,
+                      eq90
+                    );
+                    return (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                        <span className="font-mono text-[11px]">
+                          Total Clip: <strong>{Math.round(p + g)} g</strong>
+                          {eq90 !== null ? ` · 90-Day Est: ${eq90} g` : ''}
+                        </span>
+                        <span className="text-[11px] font-medium text-[var(--barn-sage)]">
+                          {elig.statusLabel}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowIagarbScorecard((v) => !v)}
+                      className="text-xs font-medium text-[var(--barn-sage)] hover:underline"
+                    >
+                      {showIagarbScorecard
+                        ? '− Hide IAGARB 7-Position Judging Scorecard'
+                        : '+ Add IAGARB 7-Position Judging Scorecard (100-Pt Scale)'}
+                    </button>
+                  </div>
+
+                  {showIagarbScorecard && (
+                    <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold">IAGARB 7-Position Scorecard</span>
+                        <span className="font-mono font-semibold tabular-nums">
+                          Total: {computeIagarbScoreTotal(woolIagarbScore)} / 100 (Min 80 for Reg)
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        {IAGARB_JUDGING_POSITIONS.map((pos) => (
+                          <label key={pos.key} className="space-y-0.5">
+                            <span className="text-[11px] text-[var(--barn-muted)] block truncate" title={pos.guidance}>
+                              {pos.label} (/{pos.maxPoints})
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              max={pos.maxPoints}
+                              step="0.5"
+                              value={woolIagarbScore[pos.key] || ''}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const val =
+                                  raw === ''
+                                    ? 0
+                                    : Math.min(pos.maxPoints, Math.max(0, Number(raw) || 0));
+                                setWoolIagarbScore((prev) => ({
+                                  ...prev,
+                                  [pos.key]: val,
+                                }));
+                              }}
+                              className="w-full min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    aria-label="Wool harvest notes"
+                    placeholder="Optional fleece quality notes (crimps, web density, matting)..."
+                    value={woolNotes}
+                    onChange={(e) => setWoolNotes(e.target.value)}
+                    className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
                   />
-                </Suspense>
-              </WoolModuleErrorBoundary>
-            )}
+
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowWoolForm(false)}
+                      className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={woolSubmitLock.isSubmitting}
+                      aria-busy={woolSubmitLock.isSubmitting}
+                      className="min-h-[36px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold disabled:opacity-55 inline-flex items-center gap-1.5"
+                    >
+                      {woolSubmitLock.isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      Save Harvest
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {activeAnimalWoolHarvests.length > 0 && (
+                <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl bg-[var(--barn-surface)]">
+                  {activeAnimalWoolHarvests.map((wh) => {
+                    const total = wh.primeWeightGrams + wh.gradeWeightGrams;
+                    const eq90 = compute90DayEquivalentGrams(total, wh.shearingIntervalDays);
+                    const pts = wh.iagarbScore ? computeIagarbScoreTotal(wh.iagarbScore) : null;
+                    return (
+                      <div key={wh.id} className="px-3 py-2.5 flex items-start justify-between gap-2 text-xs">
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                            <span className="font-mono">{formatReadableDate(wh.harvestDateIso)}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[10.5px]">
+                              {wh.harvestMethod}
+                            </span>
+                            <span className="font-mono tabular-nums font-semibold">
+                              {total} g total ({wh.primeWeightGrams}g Prime / {wh.gradeWeightGrams}g Grade)
+                            </span>
+                            {eq90 !== null && (
+                              <span className="font-mono text-[10.5px] text-[var(--barn-muted)]">
+                                · {eq90} g/90d
+                              </span>
+                            )}
+                            {pts !== null && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded font-mono text-[10.5px] font-semibold ${
+                                  pts >= 80
+                                    ? 'bg-[var(--barn-sage-tint)] text-[var(--barn-sage)]'
+                                    : 'bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-muted)]'
+                                }`}
+                              >
+                                IAGARB {pts}/100
+                              </span>
+                            )}
+                          </div>
+                          {(wh.stapleLengthMm || wh.witnessedBy || wh.notes) && (
+                            <div className="text-[11px] text-[var(--barn-muted)]">
+                              {wh.stapleLengthMm ? `Staple ${wh.stapleLengthMm} mm` : ''}
+                              {wh.stapleLengthMm && wh.witnessedBy ? ' · ' : ''}
+                              {wh.witnessedBy ? `Witnessed by ${wh.witnessedBy}` : ''}
+                              {(wh.stapleLengthMm || wh.witnessedBy) && wh.notes ? ' · ' : ''}
+                              {wh.notes}
+                            </div>
+                          )}
+                        </div>
+                        {onDeleteWoolHarvest && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteWoolHarvest(wh.id)}
+                            aria-label="Delete wool harvest"
+                            className="min-h-[32px] min-w-[32px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             {activeAnimal.notes && (
               <div className="border-t border-[var(--barn-border)] pt-4 text-xs text-[var(--barn-muted)]">
@@ -2969,13 +3367,9 @@ export function HerdScreen({
           Boolean(resolvedPedigreeSubject) && pedigreeDocMode === 'shareable_card';
         const effectivePedigreeOptions: PedigreePrintOptions = {
           ...pedigreePrintOptions,
-          layoutPreset:
-            !woolModuleEnabled && pedigreePrintOptions.layoutPreset === 'iagarb_angora'
-              ? 'evans_standard'
-              : pedigreePrintOptions.layoutPreset,
           shows,
           careLogs,
-          woolHarvests: woolModuleEnabled ? woolHarvests : [],
+          woolHarvests,
           ancestorPhotosByAnimalId:
             pedigreePrintOptions.layoutPreset === 'family_portrait'
               ? familyPortraitPhotosByAnimalId
@@ -3067,7 +3461,6 @@ export function HerdScreen({
             onChangePedigreePrintOptions={
               previewDoc.isPedigree ? setPedigreePrintOptions : undefined
             }
-            woolModuleEnabled={woolModuleEnabled}
             pedigreeDocMode={previewDoc.isPedigree ? pedigreeDocMode : undefined}
             onChangePedigreeDocMode={
               previewDoc.isPedigree ? setPedigreeDocMode : undefined
@@ -3274,34 +3667,4 @@ function WeightTrendSvg({
       </svg>
     </div>
   );
-}
-
-const LazyWoolHarvestPanel = React.lazy(() =>
-  import('./WoolHarvestPanel').then((mod) => ({ default: mod.WoolHarvestPanel }))
-);
-
-class WoolModuleErrorBoundary extends Component<
-  { children: ReactNode },
-  { hasError: boolean }
-> {
-  state = { hasError: false };
-
-  static getDerivedStateFromError(): { hasError: boolean } {
-    return { hasError: true };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('[WoolModuleErrorBoundary]', error, info.componentStack);
-  }
-
-  render(): ReactNode {
-    if (this.state.hasError) {
-      return (
-        <div className="border-t border-[var(--barn-border)] pt-4 text-xs text-[var(--barn-muted)]">
-          Wool / Fiber module could not be displayed right now. Herd Registry features remain unaffected.
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }

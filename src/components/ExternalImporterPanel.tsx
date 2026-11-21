@@ -630,8 +630,7 @@ export function ExternalImporterPanel({
         preview.breedings.length > 0 ||
         preview.careLogs.length > 0 ||
         preview.cages.length > 0 ||
-        preview.tasks.length > 0 ||
-        (preview.woolHarvests?.length ?? 0) > 0)
+        preview.tasks.length > 0)
   );
 
   return (
@@ -1117,21 +1116,11 @@ export function ExternalImporterPanel({
           </div>
 
           {preview.speciesDetected.length > 0 && (
-            <div className="text-xs text-[var(--barn-muted)] flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span>
-                <strong>Isolated Species Detected:</strong>{' '}
-                <span className="text-[var(--barn-ink)]">
-                  {preview.speciesDetected.join(', ')}
-                </span>
+            <div className="text-xs text-[var(--barn-muted)]">
+              <strong>Isolated Species Detected:</strong>{' '}
+              <span className="text-[var(--barn-ink)]">
+                {preview.speciesDetected.join(', ')}
               </span>
-              {(preview.woolHarvests?.length ?? 0) > 0 && (
-                <span>
-                  <strong>Wool / Fiber Records Captured:</strong>{' '}
-                  <span className="text-[var(--barn-ink)] font-mono">
-                    {preview.woolHarvests?.length}
-                  </span>
-                </span>
-              )}
             </div>
           )}
 
@@ -2202,11 +2191,7 @@ export function ExternalImporterPanel({
                   importAndOptimizePhotos && preview.stagedPhotos.length > 0
                     ? `, ${preview.stagedPhotos.length} Optimized Photos`
                     : ''
-                } & ${
-                  preview.breedings.length +
-                  preview.careLogs.length +
-                  (preview.woolHarvests?.length ?? 0)
-                } Records Into Barn`}
+                } & ${preview.breedings.length + preview.careLogs.length} Records Into Barn`}
           </button>
         </div>
       )}

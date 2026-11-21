@@ -526,7 +526,6 @@ export const ALLOWED_SYNC_FIELDS_BY_ENTITY: Record<SyncEntityType, ReadonlySet<s
     'title',
     'category',
     'priority',
-    'startDateIso',
     'dueDateIso',
     'linkedAnimalId',
     'linkedAnimalName',

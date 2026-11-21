@@ -67,7 +67,6 @@ import {
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { CoatExplorerSandbox } from './CoatExplorerSandbox';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
-import { FounderAndHeritabilityPanel } from './FounderAndHeritabilityPanel';
 import { GrowthAndSurvivalLab } from './GrowthAndSurvivalLab';
 import { PairingComparisonMatrix } from './PairingComparisonMatrix';
 import { PrintPreviewModal } from './PrintPreviewModal';
@@ -131,7 +130,7 @@ export function BreedingScreen({
   onConsumePreselectedGrowthAnimalIds,
   onSaveTargetWeightCurve,
 }: BreedingScreenProps) {
-  const { speciesProfile, animals, herdById, breedings, tasks, careLogs } = activeData;
+  const { speciesProfile, animals, herdById, breedings, tasks } = activeData;
   const baseId = useId();
   const loggerSectionRef = useRef<HTMLElement | null>(null);
   const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
@@ -1399,19 +1398,6 @@ export function BreedingScreen({
         onConsumePreselectedAnimalIds={onConsumePreselectedGrowthAnimalIds}
         onSaveTargetWeightCurve={onSaveTargetWeightCurve}
         onOpenBreedingOutcome={openOutcomeModal}
-      />
-
-      {/* Heritability Trends, Pairing Founder Shift & Species Founder-Loss Analytics */}
-      <FounderAndHeritabilityPanel
-        mode="breeding"
-        speciesProfile={speciesProfile}
-        animals={animals}
-        herdById={herdById}
-        breedings={breedings}
-        careLogs={careLogs}
-        selectedSire={selectedSire}
-        selectedDam={selectedDam}
-        preferredUnit={effectiveWeightUnit}
       />
 
       {/* Species Breeding & Litter History Ledger */}

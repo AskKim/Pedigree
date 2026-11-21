@@ -159,7 +159,6 @@ interface PrintPreviewModalProps {
   onToggleIncludeCageCardQr?: (include: boolean) => void;
   pedigreePrintOptions?: PedigreePrintOptions;
   onChangePedigreePrintOptions?: (next: PedigreePrintOptions) => void;
-  woolModuleEnabled?: boolean;
   pedigreeDocMode?: 'formal_certificate' | 'shareable_card';
   onChangePedigreeDocMode?: (mode: 'formal_certificate' | 'shareable_card') => void;
   breederLogoDataUrl?: string;
@@ -190,7 +189,6 @@ export function PrintPreviewModal({
   onToggleIncludeCageCardQr,
   pedigreePrintOptions,
   onChangePedigreePrintOptions,
-  woolModuleEnabled = false,
   pedigreeDocMode = 'formal_certificate',
   onChangePedigreeDocMode,
   breederLogoDataUrl,
@@ -1205,9 +1203,7 @@ export function PrintPreviewModal({
                   }
                   className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium"
                 >
-                  {PEDIGREE_LAYOUT_PRESETS.filter(
-                    (layoutSpec) => woolModuleEnabled || layoutSpec.id !== 'iagarb_angora'
-                  ).map((layoutSpec) => (
+                  {PEDIGREE_LAYOUT_PRESETS.map((layoutSpec) => (
                     <option key={layoutSpec.id} value={layoutSpec.id}>
                       {layoutSpec.label}
                     </option>
@@ -1217,9 +1213,7 @@ export function PrintPreviewModal({
             )}
 
             <div className="inline-flex flex-wrap items-center gap-1">
-              {PEDIGREE_QUICK_STYLE_PRESETS.filter(
-                (qp) => woolModuleEnabled || qp.layoutPreset !== 'iagarb_angora'
-              ).map((qp) => {
+              {PEDIGREE_QUICK_STYLE_PRESETS.map((qp) => {
                 const isActive =
                   (pedigreePrintOptions.colorPreset ?? 'classic_sage') === qp.colorPreset &&
                   (pedigreePrintOptions.borderStyle ?? 'classic_rule') === qp.borderStyle &&

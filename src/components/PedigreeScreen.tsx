@@ -41,7 +41,6 @@ import {
   formatWeight,
   getSpeciesIdentifierLabels,
   isAnimalArchived,
-  isWoolModuleEnabledForSpecies,
   PedigreeGenerationDepth,
   resolveSpeciesWeightUnit,
   SpeciesProfile,
@@ -67,7 +66,6 @@ import { buildAndDownloadPedigreePdf } from '../utils/webPdfActions';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
-import { FounderAndHeritabilityPanel } from './FounderAndHeritabilityPanel';
 import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 
@@ -134,7 +132,6 @@ export function PedigreeScreen({
     coiByAnimalId,
     cages,
     shows,
-    breedings,
     careLogs,
     woolHarvests = [],
   } = activeData;
@@ -209,16 +206,6 @@ export function PedigreeScreen({
     () => (subject ? computeAnimalShowSummary(subject, shows, careLogs) : null),
     [subject, shows, careLogs]
   );
-
-  const woolModuleEnabled = isWoolModuleEnabledForSpecies(speciesProfile);
-
-  useEffect(() => {
-    setPedigreePrintOptions((prev) =>
-      prev.layoutPreset === 'iagarb_angora' && !woolModuleEnabled
-        ? { ...prev, layoutPreset: 'evans_standard' }
-        : prev
-    );
-  }, [woolModuleEnabled, speciesProfile.id]);
 
   useEffect(() => {
     if (
@@ -2041,19 +2028,6 @@ export function PedigreeScreen({
         </div>
       )}
 
-      {/* Founder Loss, Ancestor Contribution & Heritability Analytics */}
-      <FounderAndHeritabilityPanel
-        mode="pedigree"
-        speciesProfile={speciesProfile}
-        animals={animals}
-        herdById={activePedigreeMap}
-        breedings={breedings}
-        careLogs={careLogs}
-        subject={subject}
-        preferredUnit={resolveSpeciesWeightUnit(speciesProfile, settings)}
-        onSelectAnimal={handleDrillToAnimal}
-      />
-
       {/* Link Existing or Create New Parent Modal */}
       {linkingSlot && (
         <div
@@ -2222,13 +2196,9 @@ export function PedigreeScreen({
         const isShareableCard = pedigreeDocMode === 'shareable_card';
         const effectivePrintOptions: PedigreePrintOptions = {
           ...pedigreePrintOptions,
-          layoutPreset:
-            !woolModuleEnabled && pedigreePrintOptions.layoutPreset === 'iagarb_angora'
-              ? 'evans_standard'
-              : pedigreePrintOptions.layoutPreset,
           shows,
           careLogs,
-          woolHarvests: woolModuleEnabled ? woolHarvests : [],
+          woolHarvests,
           ancestorPhotosByAnimalId:
             pedigreePrintOptions.layoutPreset === 'family_portrait'
               ? familyPortraitPhotosByAnimalId
@@ -2275,7 +2245,6 @@ export function PedigreeScreen({
             onToggleIncludePrimaryPhoto={onToggleIncludePhotoOnPedigree}
             pedigreePrintOptions={pedigreePrintOptions}
             onChangePedigreePrintOptions={setPedigreePrintOptions}
-            woolModuleEnabled={woolModuleEnabled}
             pedigreeDocMode={pedigreeDocMode}
             onChangePedigreeDocMode={setPedigreeDocMode}
             breederLogoDataUrl={settings.breederLogoDataUrl}

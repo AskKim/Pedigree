@@ -544,8 +544,6 @@ export interface SpeciesProfile {
   milestones: SpeciesMilestoneTemplate[];
   breedOverrides?: BreedScheduleOverride[];
   targetWeightCurve?: TargetWeightPoint[];
-  /** Opt-in per-species UI display flag for wool/fiber harvests & IAGARB scoring (disabled by default; database capture still runs for applicable fiber species). */
-  woolTrackingEnabled?: boolean;
   _rev?: number;
   createdAt: string;
   updatedAt: string;
@@ -760,7 +758,6 @@ export interface BarnTask {
   title: string;
   category: TaskCategory;
   priority: TaskPriority;
-  startDateIso?: string; // Optional YYYY-MM-DD span start for Barn Scheduler Gantt
   dueDateIso: string; // YYYY-MM-DD or ""
   linkedAnimalId: string;
   linkedAnimalName: string;
@@ -1519,53 +1516,6 @@ export function normalizeWoolHarvestMethod(
   }
   if (clean === 'other') return 'Other';
   return fallback;
-}
-
-const WOOL_APPLICABLE_SPECIES_REGEX =
-  /\b(?:rabbit|rabbits|bunny|bunnies|lagomorph|angora|sheep|ovine|ewe|ram|lamb|merino|shetland|corriedale|romney|rambouillet|cormo|gotland|jacob|goat|goats|caprine|mohair|cashmere|pygora|nigora|alpaca|alpacas|llama|llamas|camelid|vicuna|guanaco|yak|camel|muskox|wool|fleece|fiber)\b/i;
-
-/**
- * Returns `true` only for livestock species that biologically produce harvestable wool/fleece/fiber
- * (e.g., Rabbits, Sheep, Fiber Goats, Alpacas, Llamas). Returns `false` for non-wool species such as
- * Ferrets, Dogs, Cats, Swine, Cattle, Guinea Pigs, and Chinchillas.
- */
-export function isWoolApplicableSpecies(
-  speciesNameOrProfile: string | Pick<SpeciesProfile, 'name'> | null | undefined
-): boolean {
-  if (!speciesNameOrProfile) return false;
-  const rawName =
-    typeof speciesNameOrProfile === 'string'
-      ? speciesNameOrProfile
-      : speciesNameOrProfile.name;
-  const clean = (rawName || '').trim().toLowerCase();
-  if (!clean) return false;
-  return WOOL_APPLICABLE_SPECIES_REGEX.test(clean);
-}
-
-/**
- * Returns `true` only when a species supports wool/fiber tracking AND the user has explicitly
- * enabled displaying the wool module in that species' settings.
- */
-export function isWoolModuleEnabledForSpecies(
-  speciesProfile: Pick<SpeciesProfile, 'name' | 'woolTrackingEnabled'> | null | undefined
-): boolean {
-  if (!speciesProfile) return false;
-  return Boolean(speciesProfile.woolTrackingEnabled) && isWoolApplicableSpecies(speciesProfile.name);
-}
-
-/**
- * Computes exact signed calendar days between two `YYYY-MM-DD` dates using `Date.UTC`.
- */
-export function computeDaysBetweenDateIso(earlierIso: string, laterIso: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(earlierIso) || !/^\d{4}-\d{2}-\d{2}$/.test(laterIso)) {
-    return null;
-  }
-  const [y1, m1, d1] = earlierIso.split('-').map(Number);
-  const [y2, m2, d2] = laterIso.split('-').map(Number);
-  const t1 = Date.UTC(y1, m1 - 1, d1);
-  const t2 = Date.UTC(y2, m2 - 1, d2);
-  if (!Number.isFinite(t1) || !Number.isFinite(t2)) return null;
-  return Math.round((t2 - t1) / 86_400_000);
 }
 
 /**

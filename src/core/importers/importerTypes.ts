@@ -19,7 +19,6 @@ import {
   CareLog,
   ShowEvent,
   SpeciesProfile,
-  WoolHarvest,
 } from '../models';
 import type { AnimalImportConflict } from './conflictResolver';
 
@@ -119,14 +118,6 @@ export type CsvTargetFieldKey =
   | 'cageLocation'
   | 'breederName'
   | 'ownerName'
-  | 'woolPrimeGrams'
-  | 'woolGradeGrams'
-  | 'woolTotalGrams'
-  | 'woolHarvestDateIso'
-  | 'woolShearingIntervalDays'
-  | 'woolHarvestMethod'
-  | 'woolStapleLengthMm'
-  | 'woolIagarbScore'
   | 'notes';
 
 export type CsvColumnMappingSelection = CsvTargetFieldKey | '__ignore__';
@@ -213,7 +204,6 @@ export interface PlatformImportPreview {
   tasks: BarnTask[];
   careLogs: CareLog[];
   shows: ShowEvent[];
-  woolHarvests?: WoolHarvest[];
   /**
    * Per-table CSV/TSV column mapping breakdown (headers, matched vs unmapped, sample values)
    * for interactive spreadsheet column mapping previews.

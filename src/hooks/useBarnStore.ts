@@ -28,11 +28,6 @@ import {
   BarnBenchBatchEntryDraft,
   buildBarnBenchCommitPlan,
 } from '../core/barnBench';
-import { buildPriorityEscalationUpdates } from '../core/barnScheduler';
-import {
-  P2pReconciliationSummary,
-  summarizeTaskReconciliation,
-} from '../core/p2pSyncProtocol';
 import {
   analyzePhotoStorageFootprintPure,
   PhotoStorageFootprintReport,
@@ -106,6 +101,7 @@ import {
   WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
+import { normalizeWoolHarvest } from '../core/woolFiber';
 import {
   buildSuggestedAgreementNumber,
   CrmFollowUpReminder,
@@ -4575,124 +4571,6 @@ export function useBarnStore() {
     ]
   );
 
-  const rescheduleTaskDates = useCallback(
-    async (
-      task: BarnTask,
-      nextDates: { startDateIso?: string; dueDateIso: string }
-    ): Promise<boolean> => {
-      return enqueueStoreMutation(async () => {
-        const ts = getAdjustedNowIsoUtc();
-        const rev = nextEntityRev(task.id, task._rev);
-        const cleanDue = (nextDates.dueDateIso || '').trim() || task.dueDateIso;
-        const cleanStart =
-          nextDates.startDateIso === undefined
-            ? task.startDateIso
-            : nextDates.startDateIso.trim();
-        const updated: BarnTask = {
-          ...task,
-          dueDateIso: cleanDue,
-          startDateIso:
-            cleanStart && cleanStart < cleanDue ? cleanStart : '',
-          _rev: rev,
-          updatedAt: ts,
-        };
-        try {
-          await adapterRef.current!.saveTask(updated);
-          await recordOutboxOps(
-            diffEntityFieldsToOperations({
-              entityType: 'task',
-              previous: task,
-              next: updated,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-              timestamp: ts,
-              recordRev: rev,
-            })
-          );
-          await reloadFromAdapter();
-          return true;
-        } catch (err) {
-          reportPersistenceFailure('reschedule barn task', err);
-          return false;
-        }
-      });
-    },
-    [
-      deviceId,
-      nextEntityRev,
-      enqueueStoreMutation,
-      recordOutboxOps,
-      reloadFromAdapter,
-      reportPersistenceFailure,
-    ]
-  );
-
-  const applySmartTaskEscalations = useCallback(
-    async (targetTasks?: BarnTask[]): Promise<number> => {
-      return enqueueStoreMutation(async () => {
-        const currentSnapshot = snapshotRef.current ?? snapshot;
-        if (!currentSnapshot) return 0;
-        const candidates = targetTasks ?? currentSnapshot.tasks;
-        const ts = getAdjustedNowIsoUtc();
-        const todayIso = todayDateIso();
-        const rawUpdates = buildPriorityEscalationUpdates(candidates, todayIso, ts);
-        if (rawUpdates.length === 0) {
-          notify('All time-critical tasks already match their escalated priority.');
-          return 0;
-        }
-        const prevById = new Map(candidates.map((t) => [t.id, t]));
-        const finalUpdates: BarnTask[] = [];
-        const ops: SyncOperation[] = [];
-        for (const upd of rawUpdates) {
-          const prev = prevById.get(upd.id);
-          if (!prev) continue;
-          const rev = nextEntityRev(upd.id, prev._rev);
-          const nextTask: BarnTask = {
-            ...upd,
-            _rev: rev,
-          };
-          finalUpdates.push(nextTask);
-          ops.push(
-            ...diffEntityFieldsToOperations({
-              entityType: 'task',
-              previous: prev,
-              next: nextTask,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-              timestamp: ts,
-              recordRev: rev,
-            })
-          );
-        }
-        if (finalUpdates.length === 0) return 0;
-        try {
-          await adapterRef.current!.saveTasksBatch(finalUpdates);
-          await recordOutboxOps(ops);
-          await reloadFromAdapter();
-          notify(
-            `Escalated ${finalUpdates.length} time-critical chore${
-              finalUpdates.length === 1 ? '' : 's'
-            } to High priority.`
-          );
-          return finalUpdates.length;
-        } catch (err) {
-          reportPersistenceFailure('apply smart task priority escalations', err);
-          return 0;
-        }
-      });
-    },
-    [
-      snapshot,
-      deviceId,
-      nextEntityRev,
-      enqueueStoreMutation,
-      recordOutboxOps,
-      reloadFromAdapter,
-      notify,
-      reportPersistenceFailure,
-    ]
-  );
-
   const deleteTask = useCallback(
     async (id: string) => {
       return enqueueStoreMutation(async () => {
@@ -6228,7 +6106,6 @@ export function useBarnStore() {
           : undefined;
         const id = draft.id || generateUuid();
         const rev = nextEntityRev(id, prev?._rev);
-        const { normalizeWoolHarvest } = await import('../core/woolFiber');
         const normalized = normalizeWoolHarvest(
           {
             ...draft,
@@ -7106,62 +6983,6 @@ export function useBarnStore() {
     [snapshot, deviceId, enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
-  const reconcileOutboxOperations = useCallback(
-    async (
-      incomingOps: SyncOperation[],
-      peerDeviceId = 'peer'
-    ): Promise<P2pReconciliationSummary> => {
-      return enqueueStoreMutation(async () => {
-        const currentSnapshot = snapshotRef.current ?? snapshot;
-        const ts = getAdjustedNowIsoUtc();
-        if (!currentSnapshot) {
-          return summarizeTaskReconciliation({
-            peerDeviceId,
-            receivedOps: incomingOps,
-            appliedOpCount: 0,
-            newConflicts: [],
-            reconciledAtIso: ts,
-          });
-        }
-        try {
-          const result = mergeDeltaOperations(
-            currentSnapshot,
-            syncOperationsRef.current,
-            incomingOps,
-            deviceId
-          );
-          if (result.appliedOpCount > 0) {
-            await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
-            await replaceSyncOperationsInIdb(result.mergedOperations);
-            syncOperationsRef.current = result.mergedOperations;
-            setSyncOperations(result.mergedOperations);
-            if (result.newConflicts.length > 0) {
-              await appendSyncConflictsToIdb(result.newConflicts);
-              setSyncConflicts((prev) => [...result.newConflicts, ...prev]);
-            }
-            await reloadFromAdapter();
-            notify(
-              result.newConflicts.length > 0
-                ? `Reconciled ${result.appliedOpCount} LAN operation(s); ${result.newConflicts.length} field conflict(s) queued for review.`
-                : `Reconciled ${result.appliedOpCount} LAN operation(s) cleanly.`
-            );
-          }
-          return summarizeTaskReconciliation({
-            peerDeviceId,
-            receivedOps: incomingOps,
-            appliedOpCount: result.appliedOpCount,
-            newConflicts: result.newConflicts,
-            reconciledAtIso: ts,
-          });
-        } catch (err) {
-          reportPersistenceFailure('reconcile LAN outbox operations', err);
-          throw err;
-        }
-      });
-    },
-    [snapshot, deviceId, enqueueStoreMutation, reloadFromAdapter, notify, reportPersistenceFailure]
-  );
-
   const resolveSyncConflict = useCallback(
     async (conflictId: string, useSide: 'winning' | 'losing') => {
       return enqueueStoreMutation(async () => {
@@ -7785,7 +7606,7 @@ export function useBarnStore() {
             clientContacts: [],
             waitlistEntries: [],
             animalReservations: [],
-            woolHarvests: preview.woolHarvests ?? [],
+            woolHarvests: [],
           };
           const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
           const importedIds = new Set(resolvedAnimals.map((a) => a.id));
@@ -8279,7 +8100,6 @@ export function useBarnStore() {
     syncConflicts,
     buildLocalDeltaJsonPayload,
     importDeltaOperations,
-    reconcileOutboxOperations,
     resolveSyncConflict,
     dismissSyncConflict,
     restoreRollingBackupByKey,
@@ -8330,8 +8150,6 @@ export function useBarnStore() {
     completeBreedingTaskWithOutcome,
     deleteBreeding,
     saveTask,
-    rescheduleTaskDates,
-    applySmartTaskEscalations,
     exportTasksToCalendar,
     copyTaskAppLink,
     highlightedTaskId,

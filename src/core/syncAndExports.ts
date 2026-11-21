@@ -62,7 +62,6 @@ import {
   normalizeServiceFeeDirection,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
-  isWoolApplicableSpecies,
   normalizeWaitlistIntent,
   normalizeWaitlistStatus,
   normalizeWeightUnit,
@@ -238,14 +237,12 @@ export function mergeBarnSnapshots(
   // while preserving whichever side has the newest memo pad edit.
   const speciesByName = new Map<string, SpeciesProfile>();
   for (const sp of local.speciesProfiles) {
-    const cleanLocalWool = isWoolApplicableSpecies(sp.name) && Boolean(sp.woolTrackingEnabled);
     speciesByName.set(sp.name.trim().toLowerCase(), {
       ...sp,
       memoText: sanitizeSpeciesMemo(sp.memoText),
       memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
       breedOverrides: normalizeBreedScheduleOverrides(sp.breedOverrides),
       targetWeightCurve: normalizeTargetWeightCurve(sp.targetWeightCurve),
-      woolTrackingEnabled: cleanLocalWool ? true : undefined,
     });
   }
   for (const incSp of incoming.speciesProfiles) {
@@ -255,7 +252,6 @@ export function mergeBarnSnapshots(
     const cleanIncMemoTs = typeof incSp.memoUpdatedAt === 'string' ? incSp.memoUpdatedAt : '';
     const cleanIncOverrides = normalizeBreedScheduleOverrides(incSp.breedOverrides);
     const cleanIncTargetCurve = normalizeTargetWeightCurve(incSp.targetWeightCurve);
-    const cleanIncWool = isWoolApplicableSpecies(incSp.name) && Boolean(incSp.woolTrackingEnabled);
 
     if (!prev) {
       speciesByName.set(key, {
@@ -264,7 +260,6 @@ export function mergeBarnSnapshots(
         memoUpdatedAt: cleanIncMemoTs,
         breedOverrides: cleanIncOverrides,
         targetWeightCurve: cleanIncTargetCurve,
-        woolTrackingEnabled: cleanIncWool ? true : undefined,
       });
       continue;
     }
@@ -279,11 +274,6 @@ export function mergeBarnSnapshots(
       ? { memoText: cleanIncText, memoUpdatedAt: cleanIncMemoTs }
       : { memoText: prevText, memoUpdatedAt: prevMemoTs };
 
-    const mergedWoolEnabled =
-      (incSp.updatedAt || '') > (prev.updatedAt || '')
-        ? cleanIncWool || (isWoolApplicableSpecies(prev.name) && Boolean(prev.woolTrackingEnabled) && incSp.woolTrackingEnabled === undefined)
-        : Boolean(prev.woolTrackingEnabled) && isWoolApplicableSpecies(prev.name);
-
     if ((incSp.updatedAt || '') > (prev.updatedAt || '')) {
       speciesByName.set(key, {
         ...incSp,
@@ -294,7 +284,6 @@ export function mergeBarnSnapshots(
           cleanIncTargetCurve.length > 0
             ? cleanIncTargetCurve
             : normalizeTargetWeightCurve(prev.targetWeightCurve),
-        woolTrackingEnabled: mergedWoolEnabled ? true : undefined,
       });
     } else {
       speciesByName.set(key, {
@@ -304,7 +293,6 @@ export function mergeBarnSnapshots(
           normalizeTargetWeightCurve(prev.targetWeightCurve).length > 0
             ? normalizeTargetWeightCurve(prev.targetWeightCurve)
             : cleanIncTargetCurve,
-        woolTrackingEnabled: mergedWoolEnabled ? true : undefined,
       });
     }
   }
@@ -847,10 +835,9 @@ export function parseBarnBackupJson(
       ? rawSpeciesList
           .map((item: any, idx: number) => {
             const maturity = finiteNonNeg(item.maturityDays, 0);
-            const cleanName = sanitizeSingleLineText(item.name, 100) || 'Rabbit';
             return {
               id: safeId(item.id),
-              name: cleanName,
+              name: sanitizeSingleLineText(item.name, 100) || 'Rabbit',
               sortOrder: finiteNum(item.sortOrder, idx),
               defaultAnimalPrefix: sanitizeSingleLineText(item.defaultAnimalPrefix || '', 40),
               preferredUnit:
@@ -900,9 +887,6 @@ export function parseBarnBackupJson(
                   : []
               ),
               targetWeightCurve: normalizeTargetWeightCurve(item.targetWeightCurve),
-              ...(item.woolTrackingEnabled === true && isWoolApplicableSpecies(cleanName)
-                ? { woolTrackingEnabled: true }
-                : {}),
               createdAt: typeof item.createdAt === 'string' && item.createdAt ? item.createdAt : ts,
               updatedAt: typeof item.updatedAt === 'string' && item.updatedAt ? item.updatedAt : ts,
             };

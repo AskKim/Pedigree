@@ -14,7 +14,6 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import {
   sanitizeSafeRasterImageDataUrl,
-  sanitizeSingleLineText,
   validateSqliteFileHeader,
 } from '../core/inputSanitization';
 import {
@@ -32,8 +31,6 @@ import {
   FeedAllocation,
   FeedAllocationTargetType,
   FeedBatch,
-  IagarbScorecard,
-  isWoolApplicableSpecies,
   LedgerEntry,
   normalizeAnimalStatus,
   normalizeBreedScheduleOverrides,
@@ -69,6 +66,7 @@ import {
   WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
+import { normalizeIagarbScorecard } from '../core/woolFiber';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { getTierStoragePolicy } from '../core/deviceCapability';
@@ -110,56 +108,7 @@ const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
 export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
 export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
-const SQLITE_SCHEMA_VERSION = 7;
-
-function clampIagarbDbPts(raw: unknown, max: number): number {
-  const num = Number(raw);
-  if (!Number.isFinite(num) || num <= 0) return 0;
-  return Math.round(Math.min(max, num) * 10) / 10;
-}
-
-function sanitizeIagarbScorecardFromDb(raw: unknown): IagarbScorecard | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const obj = raw as Record<string, unknown>;
-  const weightPts = clampIagarbDbPts(obj.weightPts, 20);
-  const bodyTypePts = clampIagarbDbPts(obj.bodyTypePts, 20);
-  const densityLengthPts = clampIagarbDbPts(obj.densityLengthPts, 15);
-  const uniformityPts = clampIagarbDbPts(obj.uniformityPts, 15);
-  const texturePts = clampIagarbDbPts(obj.texturePts, 15);
-  const furnishingsPts = clampIagarbDbPts(obj.furnishingsPts, 10);
-  const conditionPts = clampIagarbDbPts(obj.conditionPts, 5);
-  const totalPts = Math.min(
-    100,
-    Math.round(
-      (weightPts +
-        bodyTypePts +
-        densityLengthPts +
-        uniformityPts +
-        texturePts +
-        furnishingsPts +
-        conditionPts) *
-        10
-    ) / 10
-  );
-  const evaluatorName = sanitizeSingleLineText(obj.evaluatorName || '', 120);
-  const rawDate = typeof obj.evaluationDateIso === 'string' ? obj.evaluationDateIso.trim() : '';
-  const evaluationDateIso = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : '';
-  if (totalPts <= 0 && !evaluatorName && !evaluationDateIso) {
-    return undefined;
-  }
-  return {
-    weightPts,
-    bodyTypePts,
-    densityLengthPts,
-    uniformityPts,
-    texturePts,
-    furnishingsPts,
-    conditionPts,
-    totalPts,
-    evaluatorName,
-    evaluationDateIso,
-  };
-}
+const SQLITE_SCHEMA_VERSION = 6;
 
 type SqlJsInitConfig = NonNullable<Parameters<typeof initSqlJs>[0]> & {
   useOldExtensionFunctions: boolean;
@@ -218,7 +167,6 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     milestones_json TEXT NOT NULL,
     breed_overrides_json TEXT NOT NULL DEFAULT '[]',
     target_weight_curve_json TEXT NOT NULL DEFAULT '[]',
-    wool_tracking_enabled INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -344,7 +292,6 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     title TEXT NOT NULL,
     category TEXT NOT NULL,
     priority TEXT NOT NULL,
-    start_date_iso TEXT NOT NULL DEFAULT '',
     due_date_iso TEXT NOT NULL,
     linked_animal_id TEXT NOT NULL,
     linked_animal_name TEXT NOT NULL,
@@ -815,7 +762,6 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE species_profiles ADD COLUMN maturity_days INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE species_profiles ADD COLUMN breed_overrides_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE species_profiles ADD COLUMN target_weight_curve_json TEXT NOT NULL DEFAULT '[]';",
-    'ALTER TABLE species_profiles ADD COLUMN wool_tracking_enabled INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE animals ADD COLUMN ignored_conflicts_json TEXT NOT NULL DEFAULT '[]';",
@@ -861,7 +807,6 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE cages ADD COLUMN maintenance_interval_days INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE cages ADD COLUMN maintenance_task_label TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE cages ADD COLUMN last_maintenance_date_iso TEXT NOT NULL DEFAULT '';",
-    "ALTER TABLE barn_tasks ADD COLUMN start_date_iso TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE shows ADD COLUMN results_json TEXT NOT NULL DEFAULT '[]';",
   ];
   for (const stmt of alterStatements) {
@@ -1566,9 +1511,6 @@ export class WebSqliteAdapter implements StorageAdapter {
             )
           )
         ),
-        ...(Number(r.wool_tracking_enabled) === 1 && isWoolApplicableSpecies(String(r.name))
-          ? { woolTrackingEnabled: true }
-          : {}),
         createdAt: String(r.created_at),
         updatedAt: String(r.updated_at),
       };
@@ -1685,7 +1627,6 @@ export class WebSqliteAdapter implements StorageAdapter {
       title: String(r.title),
       category: (r.category as any) || 'Care',
       priority: (r.priority as any) || 'Normal',
-      ...(r.start_date_iso ? { startDateIso: String(r.start_date_iso) } : {}),
       dueDateIso: String(r.due_date_iso),
       linkedAnimalId: String(r.linked_animal_id),
       linkedAnimalName: String(r.linked_animal_name),
@@ -2117,7 +2058,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           : null;
         const iagarbScore =
           rawScoreJson && Object.keys(rawScoreJson).length > 0
-            ? sanitizeIagarbScorecardFromDb(rawScoreJson)
+            ? normalizeIagarbScorecard(rawScoreJson)
             : undefined;
         return {
           id: String(r.id),
@@ -2599,8 +2540,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, breed_overrides_json, target_weight_curve_json, wool_tracking_enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, breed_overrides_json, target_weight_curve_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
@@ -2621,7 +2562,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         JSON.stringify(sp.milestones),
         JSON.stringify(normalizeBreedScheduleOverrides(sp.breedOverrides)),
         JSON.stringify(normalizeTargetWeightCurve(sp.targetWeightCurve)),
-        isWoolApplicableSpecies(sp.name) && sp.woolTrackingEnabled ? 1 : 0,
         sp.createdAt,
         sp.updatedAt,
       ]
@@ -2798,15 +2738,14 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertTaskRow(t: BarnTask): void {
     this.db?.run(
       `INSERT OR REPLACE INTO barn_tasks
-       (id, species, title, category, priority, start_date_iso, due_date_iso, linked_animal_id, linked_animal_name, linked_breeding_id, completed, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, species, title, category, priority, due_date_iso, linked_animal_id, linked_animal_name, linked_breeding_id, completed, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.species,
         t.title,
         t.category,
         t.priority,
-        t.startDateIso || '',
         t.dueDateIso,
         t.linkedAnimalId,
         t.linkedAnimalName,
@@ -3175,7 +3114,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         ? wh.stapleLengthMm
         : 0;
     const scoreJson = wh.iagarbScore
-      ? JSON.stringify(sanitizeIagarbScorecardFromDb(wh.iagarbScore) ?? {})
+      ? JSON.stringify(normalizeIagarbScorecard(wh.iagarbScore))
       : '{}';
     this.db?.run(
       `INSERT OR REPLACE INTO wool_harvests
