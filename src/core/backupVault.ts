@@ -328,6 +328,9 @@ export function buildEmptyShellSnapshot(): BarnDatabaseSnapshot {
     shows: [],
     feedBatches: [],
     feedAllocations: [],
+    ledgerEntries: [],
+    processingLogs: [],
+    youthProjectBooks: [],
   };
 }
 
@@ -1091,6 +1094,9 @@ export function extractArchiveIndexMetadataOnly(
       animalPhotos: [],
       feedBatches: [],
       feedAllocations: [],
+      ledgerEntries: [],
+      processingLogs: [],
+      youthProjectBooks: [],
     }),
     fallback
   );
@@ -1197,6 +1203,9 @@ export function unpackArchivedAnimalBundle(
       animalPhotos: [],
       feedBatches: [],
       feedAllocations: [],
+      ledgerEntries: [],
+      processingLogs: [],
+      youthProjectBooks: [],
     }),
     fallbackSettings
   );

@@ -622,8 +622,8 @@ export function FeedLedgerScreen({
         setAllocFeedback('Choose an active breeding / litter record.');
         return;
       }
-      const female = activeData.herdById.get(br.femaleId)?.name || speciesProfile.femaleLabel;
-      const male = activeData.herdById.get(br.maleId)?.name || speciesProfile.maleLabel;
+      const female = activeData.herdById.get(br.damId)?.name || speciesProfile.femaleLabel;
+      const male = activeData.herdById.get(br.sireId)?.name || speciesProfile.maleLabel;
       resolvedTargetId = br.id;
       resolvedTargetLabel = `${female} × ${male} (${br.status} · ${br.actualBirthDateIso || br.bredDateIso})`;
     } else if (allocTargetType === 'animal') {
@@ -1368,10 +1368,10 @@ export function FeedLedgerScreen({
                       ) : (
                         breedings.map((br) => {
                           const dam =
-                            activeData.herdById.get(br.femaleId)?.name ||
+                            activeData.herdById.get(br.damId)?.name ||
                             speciesProfile.femaleLabel;
                           const sire =
-                            activeData.herdById.get(br.maleId)?.name ||
+                            activeData.herdById.get(br.sireId)?.name ||
                             speciesProfile.maleLabel;
                           return (
                             <option key={br.id} value={br.id}>
@@ -1785,8 +1785,8 @@ export function FeedLedgerScreen({
                         ) : (
                           <ul className="space-y-0.5 text-[var(--barn-muted)]">
                             {trace.linkedBreedings.map((br) => {
-                              const dam = activeData.herdById.get(br.femaleId)?.name || 'Dam';
-                              const sire = activeData.herdById.get(br.maleId)?.name || 'Sire';
+                              const dam = activeData.herdById.get(br.damId)?.name || 'Dam';
+                              const sire = activeData.herdById.get(br.sireId)?.name || 'Sire';
                               return (
                                 <li key={br.id}>
                                   {dam} × {sire} ({br.status})

@@ -21,8 +21,11 @@ import {
   CareLog,
   FeedAllocation,
   FeedBatch,
+  LedgerEntry,
+  ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  YouthProjectBook,
 } from '../core/models';
 import type { WipedStorageRecoveryContext } from './opfsStorage';
 
@@ -113,6 +116,21 @@ export interface StorageAdapter {
   deleteFeedBatch(id: string): Promise<void>;
   saveFeedAllocation(allocation: FeedAllocation): Promise<void>;
   deleteFeedAllocation(id: string): Promise<void>;
+
+  /** Upserts or deletes Economic LedgerEntry records (single or batch). */
+  saveLedgerEntry(entry: LedgerEntry): Promise<void>;
+  saveLedgerEntriesBatch(entries: LedgerEntry[]): Promise<void>;
+  deleteLedgerEntry(id: string): Promise<void>;
+
+  /** Upserts or deletes Meat & Pelt ProcessingLog records (single or batch). */
+  saveProcessingLog(log: ProcessingLog): Promise<void>;
+  saveProcessingLogsBatch(logs: ProcessingLog[]): Promise<void>;
+  deleteProcessingLog(id: string): Promise<void>;
+
+  /** Upserts or deletes 4-H / FFA YouthProjectBook records (single or batch). */
+  saveYouthProjectBook(project: YouthProjectBook): Promise<void>;
+  saveYouthProjectBooksBatch(projects: YouthProjectBook[]): Promise<void>;
+  deleteYouthProjectBook(id: string): Promise<void>;
 
   /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
   exportRawSqliteBytes(): Promise<Uint8Array | null>;

@@ -26,9 +26,13 @@ import {
   FeedAllocation,
   FeedBatch,
   isSameSpecies,
+  LedgerEntry,
+  normalizeYouthProjectFeedLogs,
   nowIsoUtc,
+  ProcessingLog,
   resolveSpeciesProfile,
   SpeciesProfile,
+  YouthProjectBook,
 } from './models';
 import { buildSpeciesHerdMap, wouldCreateCycle } from './pedigreeCalculator';
 
@@ -114,6 +118,15 @@ function collectUsedSpeciesNames(snapshot: BarnDatabaseSnapshot): string[] {
   }
   for (const fa of Array.isArray(snapshot.feedAllocations) ? snapshot.feedAllocations : []) {
     if (isPlainObject(fa)) add(fa.species);
+  }
+  for (const le of Array.isArray(snapshot.ledgerEntries) ? snapshot.ledgerEntries : []) {
+    if (isPlainObject(le)) add(le.species);
+  }
+  for (const pl of Array.isArray(snapshot.processingLogs) ? snapshot.processingLogs : []) {
+    if (isPlainObject(pl)) add(pl.species);
+  }
+  for (const yp of Array.isArray(snapshot.youthProjectBooks) ? snapshot.youthProjectBooks : []) {
+    if (isPlainObject(yp)) add(yp.species);
   }
 
   return Array.from(seen.values());
@@ -671,6 +684,45 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
       return { ...fa };
     });
 
+  const workingLedgerEntries: LedgerEntry[] = (Array.isArray(snapshot.ledgerEntries) ? snapshot.ledgerEntries : [])
+    .filter((le): le is LedgerEntry => isPlainObject(le) && typeof le.id === 'string' && le.id.trim().length > 0)
+    .map((le) => {
+      const amt = Number(le.amountCents);
+      if (!Number.isFinite(amt) || amt < 0) {
+        repairsApplied.push(`Reset negative/invalid amount on ledger entry "${le.title || le.id}" to 0.`);
+        return { ...le, amountCents: 0, updatedAt: ts };
+      }
+      return { ...le };
+    });
+
+  const workingProcessingLogs: ProcessingLog[] = (Array.isArray(snapshot.processingLogs) ? snapshot.processingLogs : [])
+    .filter((pl): pl is ProcessingLog => isPlainObject(pl) && typeof pl.id === 'string' && pl.id.trim().length > 0)
+    .map((pl) => {
+      const next = { ...pl };
+      let changed = false;
+      for (const key of ['animalCount', 'liveWeightGrams', 'dressedWeightGrams', 'peltCount'] as const) {
+        const val = Number(next[key]);
+        if (!Number.isFinite(val) || val < 0) {
+          next[key] = key === 'animalCount' ? 1 : 0;
+          changed = true;
+        }
+      }
+      if (changed) {
+        next.updatedAt = ts;
+        repairsApplied.push(`Normalized negative/invalid numeric weight or count on processing log "${next.title || next.id}".`);
+      }
+      return next;
+    });
+
+  const workingYouthBooks: YouthProjectBook[] = (Array.isArray(snapshot.youthProjectBooks) ? snapshot.youthProjectBooks : [])
+    .filter((yp): yp is YouthProjectBook => isPlainObject(yp) && typeof yp.id === 'string' && yp.id.trim().length > 0)
+    .map((yp) => ({
+      ...yp,
+      linkedAnimalIds: Array.isArray(yp.linkedAnimalIds) ? yp.linkedAnimalIds.filter((id) => typeof id === 'string') : [],
+      linkedBreedingIds: Array.isArray(yp.linkedBreedingIds) ? yp.linkedBreedingIds.filter((id) => typeof id === 'string') : [],
+      feedLogs: normalizeYouthProjectFeedLogs(yp.feedLogs),
+    }));
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     settings: nextSettings,
@@ -679,6 +731,9 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
     animalPhotos: workingPhotos,
     feedBatches: workingFeedBatches,
     feedAllocations: workingFeedAllocations,
+    ledgerEntries: workingLedgerEntries,
+    processingLogs: workingProcessingLogs,
+    youthProjectBooks: workingYouthBooks,
   };
 
   const reportAfter = analyzeBarnDataHealth(nextSnapshot);

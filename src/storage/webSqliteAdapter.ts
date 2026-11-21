@@ -29,6 +29,7 @@ import {
   FeedAllocation,
   FeedAllocationTargetType,
   FeedBatch,
+  LedgerEntry,
   normalizeAnimalStatus,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
@@ -36,16 +37,24 @@ import {
   normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
   normalizeIgnoredConflicts,
+  normalizeLedgerCategory,
+  normalizeLedgerEntryType,
   normalizeLitterWeightMilestones,
   normalizeOwnershipType,
+  normalizePeltGrade,
+  normalizeProcessingStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
+  normalizeYouthOrgType,
+  normalizeYouthProjectFeedLogs,
   nowIsoUtc,
+  ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  YouthProjectBook,
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
@@ -88,7 +97,7 @@ const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
 export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
 export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
-const SQLITE_SCHEMA_VERSION = 3;
+const SQLITE_SCHEMA_VERSION = 4;
 
 type SqlJsInitConfig = NonNullable<Parameters<typeof initSqlJs>[0]> & {
   useOldExtensionFunctions: boolean;
@@ -374,6 +383,83 @@ export const PEDIGREE_SQLITE_SCHEMA = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_feed_allocations_batch ON feed_allocations(feed_batch_id);
+
+  CREATE TABLE IF NOT EXISTS ledger_entries (
+    id TEXT PRIMARY KEY NOT NULL,
+    species TEXT NOT NULL,
+    date_iso TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL,
+    vendor_or_party TEXT NOT NULL DEFAULT '',
+    linked_animal_id TEXT NOT NULL DEFAULT '',
+    linked_breeding_id TEXT NOT NULL DEFAULT '',
+    linked_feed_batch_id TEXT NOT NULL DEFAULT '',
+    linked_project_id TEXT NOT NULL DEFAULT '',
+    receipt_photo_data_url TEXT NOT NULL DEFAULT '',
+    receipt_photo_thumbnail_data_url TEXT NOT NULL DEFAULT '',
+    receipt_photo_mime_type TEXT NOT NULL DEFAULT '',
+    receipt_photo_bytes INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_ledger_entries_species ON ledger_entries(species);
+  CREATE INDEX IF NOT EXISTS idx_ledger_entries_date ON ledger_entries(date_iso);
+
+  CREATE TABLE IF NOT EXISTS processing_logs (
+    id TEXT PRIMARY KEY NOT NULL,
+    species TEXT NOT NULL,
+    title TEXT NOT NULL,
+    linked_animal_id TEXT NOT NULL DEFAULT '',
+    linked_breeding_id TEXT NOT NULL DEFAULT '',
+    scheduled_date_iso TEXT NOT NULL DEFAULT '',
+    harvest_date_iso TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'Processed',
+    animal_count INTEGER NOT NULL DEFAULT 1,
+    live_weight_grams INTEGER NOT NULL DEFAULT 0,
+    dressed_weight_grams INTEGER NOT NULL DEFAULT 0,
+    dress_out_percent REAL NOT NULL DEFAULT 0,
+    pelt_count INTEGER NOT NULL DEFAULT 0,
+    pelt_grade TEXT NOT NULL DEFAULT '',
+    pelt_color_notes TEXT NOT NULL DEFAULT '',
+    processing_cost_cents INTEGER NOT NULL DEFAULT 0,
+    meat_value_cents INTEGER NOT NULL DEFAULT 0,
+    pelt_value_cents INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_processing_logs_species ON processing_logs(species);
+
+  CREATE TABLE IF NOT EXISTS youth_project_books (
+    id TEXT PRIMARY KEY NOT NULL,
+    species TEXT NOT NULL,
+    organization TEXT NOT NULL DEFAULT '4-H',
+    project_title TEXT NOT NULL,
+    member_name TEXT NOT NULL DEFAULT '',
+    club_or_chapter TEXT NOT NULL DEFAULT '',
+    leader_or_advisor TEXT NOT NULL DEFAULT '',
+    project_year TEXT NOT NULL DEFAULT '',
+    start_date_iso TEXT NOT NULL DEFAULT '',
+    end_date_iso TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'Active',
+    linked_animal_ids_json TEXT NOT NULL DEFAULT '[]',
+    linked_breeding_ids_json TEXT NOT NULL DEFAULT '[]',
+    starting_inventory_value_cents INTEGER NOT NULL DEFAULT 0,
+    ending_inventory_value_cents INTEGER NOT NULL DEFAULT 0,
+    feed_logs_json TEXT NOT NULL DEFAULT '[]',
+    goals_and_reflection TEXT NOT NULL DEFAULT '',
+    show_and_community_notes TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_youth_project_books_species ON youth_project_books(species);
 `;
 
 const IDB_OPEN_TIMEOUT_MS = 8000;
@@ -1599,6 +1685,130 @@ export class WebSqliteAdapter implements StorageAdapter {
       };
     });
 
+    const ledgerEntries: LedgerEntry[] = safeTableQuery(
+      'ledger_entries',
+      'SELECT * FROM ledger_entries ORDER BY date_iso DESC, created_at DESC'
+    ).map((r) => {
+      const receiptPhotoDataUrl = r.receipt_photo_data_url
+        ? sanitizeSafeRasterImageDataUrl(String(r.receipt_photo_data_url)) || undefined
+        : undefined;
+      const receiptPhotoThumbnailDataUrl = r.receipt_photo_thumbnail_data_url
+        ? sanitizeSafeRasterImageDataUrl(String(r.receipt_photo_thumbnail_data_url)) ||
+          receiptPhotoDataUrl
+        : receiptPhotoDataUrl;
+      const receiptPhotoBytes = finiteNonNeg(r.receipt_photo_bytes, 0);
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        dateIso: String(r.date_iso || ''),
+        entryType: normalizeLedgerEntryType(r.entry_type, 'expense'),
+        category: normalizeLedgerCategory(r.category, 'other'),
+        amountCents: Math.round(finiteNonNeg(r.amount_cents, 0)),
+        title: String(r.title || ''),
+        vendorOrParty: String(r.vendor_or_party || ''),
+        ...(r.linked_animal_id ? { linkedAnimalId: String(r.linked_animal_id) } : {}),
+        ...(r.linked_breeding_id ? { linkedBreedingId: String(r.linked_breeding_id) } : {}),
+        ...(r.linked_feed_batch_id ? { linkedFeedBatchId: String(r.linked_feed_batch_id) } : {}),
+        ...(r.linked_project_id ? { linkedProjectId: String(r.linked_project_id) } : {}),
+        ...(receiptPhotoDataUrl ? { receiptPhotoDataUrl } : {}),
+        ...(receiptPhotoThumbnailDataUrl ? { receiptPhotoThumbnailDataUrl } : {}),
+        ...(r.receipt_photo_mime_type
+          ? { receiptPhotoMimeType: String(r.receipt_photo_mime_type) }
+          : {}),
+        ...(receiptPhotoBytes > 0 ? { receiptPhotoBytes } : {}),
+        notes: String(r.notes || ''),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
+
+    const processingLogs: ProcessingLog[] = safeTableQuery(
+      'processing_logs',
+      'SELECT * FROM processing_logs ORDER BY harvest_date_iso DESC, scheduled_date_iso DESC, created_at DESC'
+    ).map((r) => {
+      const dressPctRaw = finiteNonNeg(r.dress_out_percent, 0);
+      const procCostRaw = Math.round(finiteNonNeg(r.processing_cost_cents, 0));
+      const meatValRaw = Math.round(finiteNonNeg(r.meat_value_cents, 0));
+      const peltValRaw = Math.round(finiteNonNeg(r.pelt_value_cents, 0));
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        title: String(r.title || ''),
+        ...(r.linked_animal_id ? { linkedAnimalId: String(r.linked_animal_id) } : {}),
+        ...(r.linked_breeding_id ? { linkedBreedingId: String(r.linked_breeding_id) } : {}),
+        scheduledDateIso: String(r.scheduled_date_iso || ''),
+        harvestDateIso: String(r.harvest_date_iso || ''),
+        status: normalizeProcessingStatus(r.status, 'Processed'),
+        animalCount: Math.max(1, Math.round(finiteNonNeg(r.animal_count, 1))),
+        liveWeightGrams: Math.round(finiteNonNeg(r.live_weight_grams, 0)),
+        dressedWeightGrams: Math.round(finiteNonNeg(r.dressed_weight_grams, 0)),
+        ...(dressPctRaw > 0 ? { dressOutPercent: dressPctRaw } : {}),
+        peltCount: Math.round(finiteNonNeg(r.pelt_count, 0)),
+        peltGrade: normalizePeltGrade(r.pelt_grade),
+        peltColorNotes: String(r.pelt_color_notes || ''),
+        ...(procCostRaw > 0 ? { processingCostCents: procCostRaw } : {}),
+        ...(meatValRaw > 0 ? { meatValueCents: meatValRaw } : {}),
+        ...(peltValRaw > 0 ? { peltValueCents: peltValRaw } : {}),
+        notes: String(r.notes || ''),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
+
+    const youthProjectBooks: YouthProjectBook[] = safeTableQuery(
+      'youth_project_books',
+      'SELECT * FROM youth_project_books ORDER BY project_year DESC, start_date_iso DESC, created_at DESC'
+    ).map((r) => {
+      const linkedAnimalIds = safeArray<string>(
+        this.safeParseJson<string[]>(
+          r.linked_animal_ids_json || '[]',
+          [],
+          `youth_project_books(${String(r.id)}).linked_animal_ids_json`
+        )
+      );
+      const linkedBreedingIds = safeArray<string>(
+        this.safeParseJson<string[]>(
+          r.linked_breeding_ids_json || '[]',
+          [],
+          `youth_project_books(${String(r.id)}).linked_breeding_ids_json`
+        )
+      );
+      const feedLogs = normalizeYouthProjectFeedLogs(
+        this.safeParseJson<unknown[]>(
+          r.feed_logs_json || '[]',
+          [],
+          `youth_project_books(${String(r.id)}).feed_logs_json`
+        )
+      );
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        organization: normalizeYouthOrgType(r.organization, '4-H'),
+        projectTitle: String(r.project_title || ''),
+        memberName: String(r.member_name || ''),
+        clubOrChapter: String(r.club_or_chapter || ''),
+        leaderOrAdvisor: String(r.leader_or_advisor || ''),
+        projectYear: String(r.project_year || ''),
+        startDateIso: String(r.start_date_iso || ''),
+        endDateIso: String(r.end_date_iso || ''),
+        status: String(r.status) === 'Completed' ? 'Completed' : 'Active',
+        linkedAnimalIds,
+        linkedBreedingIds,
+        startingInventoryValueCents: Math.round(
+          finiteNonNeg(r.starting_inventory_value_cents, 0)
+        ),
+        endingInventoryValueCents: Math.round(
+          finiteNonNeg(r.ending_inventory_value_cents, 0)
+        ),
+        feedLogs,
+        goalsAndReflection: String(r.goals_and_reflection || ''),
+        showAndCommunityNotes: String(r.show_and_community_notes || ''),
+        notes: String(r.notes || ''),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
+
     if (sanitizedNumericCount > 0) {
       logDiagnosticEvent({
         level: 'warn',
@@ -1619,6 +1829,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       shows,
       feedBatches,
       feedAllocations,
+      ledgerEntries,
+      processingLogs,
+      youthProjectBooks,
     };
   }
 
@@ -1994,6 +2207,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.db.run('DELETE FROM shows;');
       this.db.run('DELETE FROM feed_batches;');
       this.db.run('DELETE FROM feed_allocations;');
+      this.db.run('DELETE FROM ledger_entries;');
+      this.db.run('DELETE FROM processing_logs;');
+      this.db.run('DELETE FROM youth_project_books;');
 
       this.upsertSettingsRow(snapshot.settings);
       for (const sp of snapshot.speciesProfiles) this.upsertSpeciesRow(sp);
@@ -2011,6 +2227,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       for (const s of snapshot.shows) this.upsertShowRow(s);
       for (const fb of snapshot.feedBatches ?? []) this.upsertFeedBatchRow(fb);
       for (const fa of snapshot.feedAllocations ?? []) this.upsertFeedAllocationRow(fa);
+      for (const le of snapshot.ledgerEntries ?? []) this.upsertLedgerEntryRow(le);
+      for (const pl of snapshot.processingLogs ?? []) this.upsertProcessingLogRow(pl);
+      for (const yp of snapshot.youthProjectBooks ?? []) this.upsertYouthProjectBookRow(yp);
 
       this.db.run('COMMIT;');
     } catch (e) {
@@ -2408,6 +2627,121 @@ export class WebSqliteAdapter implements StorageAdapter {
         fa.notes || '',
         fa.createdAt,
         fa.updatedAt,
+      ]
+    );
+  }
+
+  private upsertLedgerEntryRow(le: LedgerEntry): void {
+    const safePhoto = le.receiptPhotoDataUrl
+      ? sanitizeSafeRasterImageDataUrl(le.receiptPhotoDataUrl) || ''
+      : '';
+    const safeThumb = le.receiptPhotoThumbnailDataUrl
+      ? sanitizeSafeRasterImageDataUrl(le.receiptPhotoThumbnailDataUrl) || safePhoto
+      : safePhoto;
+    this.db?.run(
+      `INSERT OR REPLACE INTO ledger_entries
+       (id, species, date_iso, entry_type, category, amount_cents, title, vendor_or_party, linked_animal_id, linked_breeding_id, linked_feed_batch_id, linked_project_id, receipt_photo_data_url, receipt_photo_thumbnail_data_url, receipt_photo_mime_type, receipt_photo_bytes, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        le.id,
+        le.species,
+        le.dateIso || '',
+        normalizeLedgerEntryType(le.entryType, 'expense'),
+        normalizeLedgerCategory(le.category, 'other'),
+        Number.isFinite(Number(le.amountCents)) && Number(le.amountCents) >= 0
+          ? Math.round(Number(le.amountCents))
+          : 0,
+        le.title || '',
+        le.vendorOrParty || '',
+        le.linkedAnimalId || '',
+        le.linkedBreedingId || '',
+        le.linkedFeedBatchId || '',
+        le.linkedProjectId || '',
+        safePhoto,
+        safeThumb,
+        le.receiptPhotoMimeType || '',
+        le.receiptPhotoBytes && le.receiptPhotoBytes > 0 ? Math.round(le.receiptPhotoBytes) : 0,
+        le.notes || '',
+        le.createdAt,
+        le.updatedAt,
+      ]
+    );
+  }
+
+  private upsertProcessingLogRow(pl: ProcessingLog): void {
+    this.db?.run(
+      `INSERT OR REPLACE INTO processing_logs
+       (id, species, title, linked_animal_id, linked_breeding_id, scheduled_date_iso, harvest_date_iso, status, animal_count, live_weight_grams, dressed_weight_grams, dress_out_percent, pelt_count, pelt_grade, pelt_color_notes, processing_cost_cents, meat_value_cents, pelt_value_cents, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        pl.id,
+        pl.species,
+        pl.title || '',
+        pl.linkedAnimalId || '',
+        pl.linkedBreedingId || '',
+        pl.scheduledDateIso || '',
+        pl.harvestDateIso || '',
+        normalizeProcessingStatus(pl.status, 'Processed'),
+        Number.isFinite(Number(pl.animalCount)) && Number(pl.animalCount) >= 1
+          ? Math.round(Number(pl.animalCount))
+          : 1,
+        Number.isFinite(Number(pl.liveWeightGrams)) && Number(pl.liveWeightGrams) >= 0
+          ? Math.round(Number(pl.liveWeightGrams))
+          : 0,
+        Number.isFinite(Number(pl.dressedWeightGrams)) && Number(pl.dressedWeightGrams) >= 0
+          ? Math.round(Number(pl.dressedWeightGrams))
+          : 0,
+        typeof pl.dressOutPercent === 'number' && Number.isFinite(pl.dressOutPercent) && pl.dressOutPercent > 0
+          ? pl.dressOutPercent
+          : 0,
+        Number.isFinite(Number(pl.peltCount)) && Number(pl.peltCount) >= 0
+          ? Math.round(Number(pl.peltCount))
+          : 0,
+        normalizePeltGrade(pl.peltGrade),
+        pl.peltColorNotes || '',
+        pl.processingCostCents && pl.processingCostCents > 0 ? Math.round(pl.processingCostCents) : 0,
+        pl.meatValueCents && pl.meatValueCents > 0 ? Math.round(pl.meatValueCents) : 0,
+        pl.peltValueCents && pl.peltValueCents > 0 ? Math.round(pl.peltValueCents) : 0,
+        pl.notes || '',
+        pl.createdAt,
+        pl.updatedAt,
+      ]
+    );
+  }
+
+  private upsertYouthProjectBookRow(yp: YouthProjectBook): void {
+    this.db?.run(
+      `INSERT OR REPLACE INTO youth_project_books
+       (id, species, organization, project_title, member_name, club_or_chapter, leader_or_advisor, project_year, start_date_iso, end_date_iso, status, linked_animal_ids_json, linked_breeding_ids_json, starting_inventory_value_cents, ending_inventory_value_cents, feed_logs_json, goals_and_reflection, show_and_community_notes, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        yp.id,
+        yp.species,
+        normalizeYouthOrgType(yp.organization, '4-H'),
+        yp.projectTitle || '',
+        yp.memberName || '',
+        yp.clubOrChapter || '',
+        yp.leaderOrAdvisor || '',
+        yp.projectYear || '',
+        yp.startDateIso || '',
+        yp.endDateIso || '',
+        yp.status === 'Completed' ? 'Completed' : 'Active',
+        JSON.stringify(Array.isArray(yp.linkedAnimalIds) ? yp.linkedAnimalIds : []),
+        JSON.stringify(Array.isArray(yp.linkedBreedingIds) ? yp.linkedBreedingIds : []),
+        Number.isFinite(Number(yp.startingInventoryValueCents)) &&
+        Number(yp.startingInventoryValueCents) >= 0
+          ? Math.round(Number(yp.startingInventoryValueCents))
+          : 0,
+        Number.isFinite(Number(yp.endingInventoryValueCents)) &&
+        Number(yp.endingInventoryValueCents) >= 0
+          ? Math.round(Number(yp.endingInventoryValueCents))
+          : 0,
+        JSON.stringify(normalizeYouthProjectFeedLogs(yp.feedLogs)),
+        yp.goalsAndReflection || '',
+        yp.showAndCommunityNotes || '',
+        yp.notes || '',
+        yp.createdAt,
+        yp.updatedAt,
       ]
     );
   }
@@ -2904,6 +3238,168 @@ export class WebSqliteAdapter implements StorageAdapter {
         this.fallbackSnapshot.feedAllocations = (this.fallbackSnapshot.feedAllocations ?? []).filter(
           (fa) => fa.id !== id
         );
+      }
+    });
+  }
+
+  async saveLedgerEntry(entry: LedgerEntry): Promise<void> {
+    await this.withLockedWrite('saveLedgerEntry', () => {
+      if (this.db) {
+        this.upsertLedgerEntryRow(entry);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.ledgerEntries ?? [];
+        const idx = list.findIndex((x) => x.id === entry.id);
+        if (idx >= 0) list[idx] = entry;
+        else list.push(entry);
+        this.fallbackSnapshot.ledgerEntries = list;
+      }
+    });
+  }
+
+  async saveLedgerEntriesBatch(entries: LedgerEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    await this.withLockedWrite('saveLedgerEntriesBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
+        try {
+          for (const e of entries) this.upsertLedgerEntryRow(e);
+          this.db.run('COMMIT;');
+        } catch (err) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error
+          }
+          throw err;
+        }
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.ledgerEntries ?? [];
+        for (const e of entries) {
+          const idx = list.findIndex((x) => x.id === e.id);
+          if (idx >= 0) list[idx] = e;
+          else list.push(e);
+        }
+        this.fallbackSnapshot.ledgerEntries = list;
+      }
+    });
+  }
+
+  async deleteLedgerEntry(id: string): Promise<void> {
+    await this.withLockedWrite('deleteLedgerEntry', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM ledger_entries WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.ledgerEntries = (this.fallbackSnapshot.ledgerEntries ?? []).filter(
+          (x) => x.id !== id
+        );
+      }
+    });
+  }
+
+  async saveProcessingLog(log: ProcessingLog): Promise<void> {
+    await this.withLockedWrite('saveProcessingLog', () => {
+      if (this.db) {
+        this.upsertProcessingLogRow(log);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.processingLogs ?? [];
+        const idx = list.findIndex((x) => x.id === log.id);
+        if (idx >= 0) list[idx] = log;
+        else list.push(log);
+        this.fallbackSnapshot.processingLogs = list;
+      }
+    });
+  }
+
+  async saveProcessingLogsBatch(logs: ProcessingLog[]): Promise<void> {
+    if (logs.length === 0) return;
+    await this.withLockedWrite('saveProcessingLogsBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
+        try {
+          for (const l of logs) this.upsertProcessingLogRow(l);
+          this.db.run('COMMIT;');
+        } catch (err) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error
+          }
+          throw err;
+        }
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.processingLogs ?? [];
+        for (const l of logs) {
+          const idx = list.findIndex((x) => x.id === l.id);
+          if (idx >= 0) list[idx] = l;
+          else list.push(l);
+        }
+        this.fallbackSnapshot.processingLogs = list;
+      }
+    });
+  }
+
+  async deleteProcessingLog(id: string): Promise<void> {
+    await this.withLockedWrite('deleteProcessingLog', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM processing_logs WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.processingLogs = (this.fallbackSnapshot.processingLogs ?? []).filter(
+          (x) => x.id !== id
+        );
+      }
+    });
+  }
+
+  async saveYouthProjectBook(project: YouthProjectBook): Promise<void> {
+    await this.withLockedWrite('saveYouthProjectBook', () => {
+      if (this.db) {
+        this.upsertYouthProjectBookRow(project);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.youthProjectBooks ?? [];
+        const idx = list.findIndex((x) => x.id === project.id);
+        if (idx >= 0) list[idx] = project;
+        else list.push(project);
+        this.fallbackSnapshot.youthProjectBooks = list;
+      }
+    });
+  }
+
+  async saveYouthProjectBooksBatch(projects: YouthProjectBook[]): Promise<void> {
+    if (projects.length === 0) return;
+    await this.withLockedWrite('saveYouthProjectBooksBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
+        try {
+          for (const yp of projects) this.upsertYouthProjectBookRow(yp);
+          this.db.run('COMMIT;');
+        } catch (err) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error
+          }
+          throw err;
+        }
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.youthProjectBooks ?? [];
+        for (const yp of projects) {
+          const idx = list.findIndex((x) => x.id === yp.id);
+          if (idx >= 0) list[idx] = yp;
+          else list.push(yp);
+        }
+        this.fallbackSnapshot.youthProjectBooks = list;
+      }
+    });
+  }
+
+  async deleteYouthProjectBook(id: string): Promise<void> {
+    await this.withLockedWrite('deleteYouthProjectBook', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM youth_project_books WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.youthProjectBooks = (
+          this.fallbackSnapshot.youthProjectBooks ?? []
+        ).filter((x) => x.id !== id);
       }
     });
   }

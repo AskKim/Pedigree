@@ -965,6 +965,278 @@ export interface FeedAllocation {
   updatedAt: string;
 }
 
+export type LedgerEntryType = 'expense' | 'income';
+
+export type LedgerCategory =
+  | 'feed'
+  | 'bedding'
+  | 'vet'
+  | 'equipment'
+  | 'processing'
+  | 'show_entry'
+  | 'supplies'
+  | 'animal_sale'
+  | 'stud_fee'
+  | 'meat_pelt_sale'
+  | 'grant_sponsor'
+  | 'other';
+
+export const LEDGER_CATEGORY_OPTIONS: ReadonlyArray<{
+  value: LedgerCategory;
+  label: string;
+  defaultType: LedgerEntryType;
+}> = [
+  { value: 'feed', label: 'Feed & Supplements', defaultType: 'expense' },
+  { value: 'bedding', label: 'Bedding & Litter', defaultType: 'expense' },
+  { value: 'vet', label: 'Veterinary & Medication', defaultType: 'expense' },
+  { value: 'equipment', label: 'Cages, Hutches & Equipment', defaultType: 'expense' },
+  { value: 'processing', label: 'Butcher & Pelt Processing', defaultType: 'expense' },
+  { value: 'show_entry', label: 'Show Entries & Travel', defaultType: 'expense' },
+  { value: 'supplies', label: 'Barn Supplies & Tattoos', defaultType: 'expense' },
+  { value: 'animal_sale', label: 'Animal / Offspring Sale', defaultType: 'income' },
+  { value: 'stud_fee', label: 'Stud / Service Fee', defaultType: 'income' },
+  { value: 'meat_pelt_sale', label: 'Meat & Pelt Sale', defaultType: 'income' },
+  { value: 'grant_sponsor', label: 'Fair Premium / Grant / Sponsor', defaultType: 'income' },
+  { value: 'other', label: 'Other Income / Expense', defaultType: 'expense' },
+];
+
+export function normalizeLedgerEntryType(
+  raw: unknown,
+  fallback: LedgerEntryType = 'expense'
+): LedgerEntryType {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'income' || clean === 'revenue' || clean === 'sale') return 'income';
+  if (clean === 'expense' || clean === 'cost') return 'expense';
+  return fallback;
+}
+
+export function normalizeLedgerCategory(
+  raw: unknown,
+  fallback: LedgerCategory = 'other'
+): LedgerCategory {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  const valid = new Set<LedgerCategory>(LEDGER_CATEGORY_OPTIONS.map((o) => o.value));
+  if (valid.has(clean as LedgerCategory)) {
+    return clean as LedgerCategory;
+  }
+  if (clean.includes('feed')) return 'feed';
+  if (clean.includes('bed')) return 'bedding';
+  if (clean.includes('vet') || clean.includes('med')) return 'vet';
+  if (clean.includes('equip') || clean.includes('cage') || clean.includes('hutch')) return 'equipment';
+  if (clean.includes('process') || clean.includes('butcher')) return 'processing';
+  if (clean.includes('show')) return 'show_entry';
+  if (clean.includes('suppl')) return 'supplies';
+  if (clean.includes('meat') || clean.includes('pelt')) return 'meat_pelt_sale';
+  if (clean.includes('stud')) return 'stud_fee';
+  if (clean.includes('grant') || clean.includes('premium')) return 'grant_sponsor';
+  if (clean.includes('sale')) return 'animal_sale';
+  return fallback;
+}
+
+/**
+ * General barn income or expense entry with optional animal, litter, feed lot, or 4-H/FFA project
+ * linkage and optional compressed receipt photo attachment.
+ */
+export interface LedgerEntry {
+  id: string;
+  species: string;
+  dateIso: string; // YYYY-MM-DD
+  entryType: LedgerEntryType;
+  category: LedgerCategory;
+  amountCents: number;
+  title: string;
+  vendorOrParty: string;
+  linkedAnimalId?: string;
+  linkedBreedingId?: string;
+  linkedFeedBatchId?: string;
+  linkedProjectId?: string;
+  receiptPhotoDataUrl?: string;
+  receiptPhotoThumbnailDataUrl?: string;
+  receiptPhotoMimeType?: string;
+  receiptPhotoBytes?: number;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProcessingStatus = 'Scheduled' | 'Processed' | 'Cancelled';
+
+export type PeltGrade = '' | 'Prime' | 'No. 1' | 'No. 2' | 'No. 3' | 'Cull' | 'Not Saved';
+
+export const PELT_GRADE_OPTIONS: ReadonlyArray<{ value: PeltGrade; label: string }> = [
+  { value: '', label: 'Unspecified' },
+  { value: 'Prime', label: 'Prime (Dense, Even Fur)' },
+  { value: 'No. 1', label: 'No. 1 (Clean, Minor Flaws)' },
+  { value: 'No. 2', label: 'No. 2 (Moderate Molt / Guard Hair)' },
+  { value: 'No. 3', label: 'No. 3 (Heavy Molt / Craft Grade)' },
+  { value: 'Cull', label: 'Cull / Damaged' },
+  { value: 'Not Saved', label: 'Not Saved' },
+];
+
+export function normalizeProcessingStatus(
+  raw: unknown,
+  fallback: ProcessingStatus = 'Processed'
+): ProcessingStatus {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'scheduled' || clean === 'planned') return 'Scheduled';
+  if (clean === 'cancelled' || clean === 'canceled') return 'Cancelled';
+  if (clean === 'processed' || clean === 'harvested' || clean === 'completed') return 'Processed';
+  return fallback;
+}
+
+export function normalizePeltGrade(raw: unknown): PeltGrade {
+  if (typeof raw !== 'string') return '';
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'prime') return 'Prime';
+  if (clean === 'no. 1' || clean === 'no 1' || clean === '1' || clean === 'grade 1') return 'No. 1';
+  if (clean === 'no. 2' || clean === 'no 2' || clean === '2' || clean === 'grade 2') return 'No. 2';
+  if (clean === 'no. 3' || clean === 'no 3' || clean === '3' || clean === 'grade 3') return 'No. 3';
+  if (clean === 'cull') return 'Cull';
+  if (clean === 'not saved' || clean === 'none' || clean === 'discarded') return 'Not Saved';
+  return '';
+}
+
+/**
+ * Meat & Pelt processing log supporting scheduled butcher dates, harvest dates,
+ * live-to-dressed carcass yield percentages, and pelt grading.
+ */
+export interface ProcessingLog {
+  id: string;
+  species: string;
+  title: string;
+  linkedAnimalId?: string;
+  linkedBreedingId?: string;
+  scheduledDateIso: string; // YYYY-MM-DD or ""
+  harvestDateIso: string; // YYYY-MM-DD or ""
+  status: ProcessingStatus;
+  animalCount: number;
+  liveWeightGrams: number;
+  dressedWeightGrams: number;
+  dressOutPercent?: number;
+  peltCount: number;
+  peltGrade: PeltGrade;
+  peltColorNotes: string;
+  processingCostCents?: number;
+  meatValueCents?: number;
+  peltValueCents?: number;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type YouthOrgType = '4-H' | 'FFA' | 'Other Youth';
+
+export const YOUTH_ORG_OPTIONS: ReadonlyArray<{ value: YouthOrgType; label: string }> = [
+  { value: '4-H', label: '4-H Youth Project' },
+  { value: 'FFA', label: 'FFA SAE / Project' },
+  { value: 'Other Youth', label: 'Other Youth Livestock Club' },
+];
+
+export function normalizeYouthOrgType(
+  raw: unknown,
+  fallback: YouthOrgType = '4-H'
+): YouthOrgType {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'ffa') return 'FFA';
+  if (clean === '4-h' || clean === '4h') return '4-H';
+  if (clean === 'other youth' || clean === 'other') return 'Other Youth';
+  return fallback;
+}
+
+export interface YouthProjectFeedLogEntry {
+  id: string;
+  dateIso: string; // YYYY-MM-DD
+  feedType: string;
+  quantity: number;
+  unit: string;
+  costCents: number;
+  linkedFeedBatchId?: string;
+  notes?: string;
+}
+
+export function normalizeYouthProjectFeedLogs(raw: unknown): YouthProjectFeedLogEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const seenIds = new Set<string>();
+  const out: YouthProjectFeedLogEntry[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const feedType = typeof obj.feedType === 'string' ? obj.feedType.trim().slice(0, 120) : '';
+    const dateIso =
+      typeof obj.dateIso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.dateIso.trim())
+        ? obj.dateIso.trim()
+        : '';
+    const qtyNum = Number(obj.quantity);
+    const quantity = Number.isFinite(qtyNum) && qtyNum >= 0 ? Number(qtyNum.toFixed(2)) : 0;
+    const costNum = Number(obj.costCents);
+    const costCents = Number.isFinite(costNum) && costNum >= 0 ? Math.round(costNum) : 0;
+    if (!feedType && quantity <= 0 && costCents <= 0) continue;
+    const rawId =
+      typeof obj.id === 'string' && obj.id.trim()
+        ? obj.id.trim().slice(0, 80)
+        : `yfl-${i + 1}`;
+    const id = seenIds.has(rawId) ? `${rawId}-${i + 1}` : rawId;
+    seenIds.add(id);
+    const unit =
+      typeof obj.unit === 'string' && obj.unit.trim() ? obj.unit.trim().slice(0, 24) : 'lbs';
+    const linkedFeedBatchId =
+      typeof obj.linkedFeedBatchId === 'string' && obj.linkedFeedBatchId.trim()
+        ? obj.linkedFeedBatchId.trim()
+        : undefined;
+    const notes =
+      typeof obj.notes === 'string' && obj.notes.trim()
+        ? obj.notes.trim().slice(0, 300)
+        : undefined;
+    out.push({
+      id,
+      dateIso,
+      feedType: feedType || 'Project Feed',
+      quantity,
+      unit,
+      costCents,
+      ...(linkedFeedBatchId ? { linkedFeedBatchId } : {}),
+      ...(notes ? { notes } : {}),
+    });
+  }
+  return out.sort((a, b) => (b.dateIso || '').localeCompare(a.dateIso || ''));
+}
+
+/**
+ * 4-H / FFA Youth Project Record Book tracking member details, enrolled animals/litters,
+ * project-specific feed logs, inventory valuation, learning goals, and printable completion reports.
+ */
+export interface YouthProjectBook {
+  id: string;
+  species: string;
+  organization: YouthOrgType;
+  projectTitle: string;
+  memberName: string;
+  clubOrChapter: string;
+  leaderOrAdvisor: string;
+  projectYear: string;
+  startDateIso: string; // YYYY-MM-DD
+  endDateIso: string; // YYYY-MM-DD or ""
+  status: 'Active' | 'Completed';
+  linkedAnimalIds: string[];
+  linkedBreedingIds: string[];
+  startingInventoryValueCents: number;
+  endingInventoryValueCents: number;
+  feedLogs: YouthProjectFeedLogEntry[];
+  goalsAndReflection: string;
+  showAndCommunityNotes: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Complete in-memory snapshot of the unencrypted local database.
  */
@@ -980,6 +1252,9 @@ export interface BarnDatabaseSnapshot {
   shows: ShowEvent[];
   feedBatches: FeedBatch[];
   feedAllocations: FeedAllocation[];
+  ledgerEntries?: LedgerEntry[];
+  processingLogs?: ProcessingLog[];
+  youthProjectBooks?: YouthProjectBook[];
 }
 
 export const ANIMAL_STATUSES: AnimalStatus[] = [

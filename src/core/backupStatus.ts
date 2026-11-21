@@ -100,6 +100,9 @@ export function getLatestSnapshotTimestamp(snapshot: BarnDatabaseSnapshot): stri
   checkItems(snapshot.shows);
   checkItems(snapshot.feedBatches);
   checkItems(snapshot.feedAllocations);
+  checkItems(snapshot.ledgerEntries);
+  checkItems(snapshot.processingLogs);
+  checkItems(snapshot.youthProjectBooks);
   return latest;
 }
 
@@ -117,6 +120,9 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
   const hasRealShows = snapshot.shows.some((s) => !isSampleTestingId(s.id));
   const hasRealFeedBatches = (snapshot.feedBatches ?? []).some((f) => !isSampleTestingId(f.id));
   const hasRealFeedAllocs = (snapshot.feedAllocations ?? []).some((a) => !isSampleTestingId(a.id));
+  const hasRealLedgerEntries = (snapshot.ledgerEntries ?? []).some((e) => !isSampleTestingId(e.id));
+  const hasRealProcessingLogs = (snapshot.processingLogs ?? []).some((p) => !isSampleTestingId(p.id));
+  const hasRealYouthBooks = (snapshot.youthProjectBooks ?? []).some((y) => !isSampleTestingId(y.id));
   const hasCustomSpecies = snapshot.speciesProfiles.some(
     (sp) => !PREDEFINED_SPECIES_LOWER.has(sp.name.trim().toLowerCase())
   );
@@ -134,6 +140,9 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
     hasRealShows ||
     hasRealFeedBatches ||
     hasRealFeedAllocs ||
+    hasRealLedgerEntries ||
+    hasRealProcessingLogs ||
+    hasRealYouthBooks ||
     hasCustomSpecies ||
     hasSpeciesMemo
   );

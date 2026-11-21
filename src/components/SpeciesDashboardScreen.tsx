@@ -25,6 +25,7 @@ import {
   Check,
   CheckSquare,
   ClipboardCheck,
+  DollarSign,
   Download,
   Edit3,
   GripVertical,
@@ -1263,6 +1264,14 @@ export function SpeciesDashboardScreen({
               <span>Open {speciesProfile.name} Note / Memo Pad</span>
               <ArrowRight className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
             </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('economics')}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-2"
+            >
+              <DollarSign className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+              <span>Economics, Yields &amp; 4-H Books</span>
+            </button>
           </div>
         </div>
 
@@ -1399,6 +1408,27 @@ export function SpeciesDashboardScreen({
 
             <button
               type="button"
+              onClick={() => onNavigate('economics')}
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
+            >
+              <span className="inline-flex items-center gap-2.5 min-w-0">
+                <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
+                  <DollarSign className="w-4 h-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                    Economics &amp; 4-H Ledger
+                  </span>
+                  <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
+                    {activeData.ledgerEntries.length} ledger · {activeData.processingLogs.length} yield · {activeData.youthProjectBooks.length} 4-H
+                  </span>
+                </span>
+              </span>
+              <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
               onClick={openBinderPreview}
               className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
             >
@@ -1457,6 +1487,27 @@ export function SpeciesDashboardScreen({
                 </span>
                 <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
                   {feedSummary.activeBatches} active lot{feedSummary.activeBatches === 1 ? '' : 's'}
+                </span>
+              </span>
+            </span>
+            <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('economics')}
+            className="w-full sm:w-auto max-w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-colors"
+          >
+            <span className="inline-flex items-center gap-2.5 min-w-0">
+              <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
+                <DollarSign className="w-4 h-4" aria-hidden="true" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                  Economics &amp; 4-H Ledger
+                </span>
+                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
+                  {activeData.ledgerEntries.length} ledger · {activeData.youthProjectBooks.length} 4-H
                 </span>
               </span>
             </span>
@@ -2940,8 +2991,9 @@ export function SpeciesDashboardScreen({
               );
             }
 
-            return (
-              <section key={blockId} {...dragProps} className={cardClass}>
+            if (blockId === 'shows') {
+              return (
+                <section key={blockId} {...dragProps} className={cardClass}>
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="flex items-start gap-1.5 min-w-0">
                     <span

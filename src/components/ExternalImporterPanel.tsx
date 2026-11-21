@@ -94,6 +94,11 @@ interface ExternalImporterPanelProps {
   snapshot: BarnDatabaseSnapshot;
   activeSpeciesName: string;
   deviceCapabilityAssessment?: DeviceCapabilityAssessment;
+  externalOcrPreview?: {
+    key: string;
+    preview: PlatformImportPreview;
+  } | null;
+  onClearExternalOcrPreview?: () => void;
   onCommitImport: (
     preview: PlatformImportPreview,
     optimizedPhotos: AnimalPhoto[],
@@ -105,6 +110,8 @@ export function ExternalImporterPanel({
   snapshot,
   activeSpeciesName,
   deviceCapabilityAssessment,
+  externalOcrPreview = null,
+  onClearExternalOcrPreview,
   onCommitImport,
 }: ExternalImporterPanelProps) {
   const baseId = useId();
@@ -302,6 +309,7 @@ export function ExternalImporterPanel({
           bytes: new Uint8Array(buf),
         });
       }
+      onClearExternalOcrPreview?.();
       setStagedArchives((prev) => {
         const next = [...prev];
         for (const add of additions) {
@@ -316,15 +324,25 @@ export function ExternalImporterPanel({
     }
   };
 
-  const [preview, setPreview] = useState<PlatformImportPreview | null>(null);
+  const [archivePreview, setArchivePreview] = useState<PlatformImportPreview | null>(null);
   const [previewParseError, setPreviewParseError] = useState<string | null>(null);
   const [isParsingArchive, setIsParsingArchive] = useState(false);
   const parseRequestSeqRef = useRef(0);
 
   useEffect(() => {
+    if (externalOcrPreview?.key) {
+      setStagedArchives([]);
+      setCsvColumnMapping({});
+      setConflictSelections({});
+      setArchiveOverrides({});
+      setParseError(null);
+    }
+  }, [externalOcrPreview?.key]);
+
+  useEffect(() => {
     const reqId = ++parseRequestSeqRef.current;
     if (stagedArchives.length === 0) {
-      setPreview(null);
+      setArchivePreview(null);
       setPreviewParseError(null);
       setIsParsingArchive(false);
       return;
@@ -344,12 +362,12 @@ export function ExternalImporterPanel({
     })
       .then((parsed) => {
         if (cancelled || parseRequestSeqRef.current !== reqId) return;
-        setPreview(parsed);
+        setArchivePreview(parsed);
         setPreviewParseError(null);
       })
       .catch((err: any) => {
         if (cancelled || parseRequestSeqRef.current !== reqId) return;
-        setPreview(null);
+        setArchivePreview(null);
         setPreviewParseError(err?.message || 'Failed to unpack or parse archive.');
       })
       .finally(() => {
@@ -372,6 +390,7 @@ export function ExternalImporterPanel({
     createPlaceholdersForUnlinked,
   ]);
 
+  const preview = stagedArchives.length > 0 ? archivePreview : externalOcrPreview?.preview ?? null;
   const effectiveParseError = parseError || previewParseError;
 
   // Seed default choices for any newly detected preexisting animal contradictions without clobbering user picks
@@ -595,6 +614,7 @@ export function ExternalImporterPanel({
       setArchiveOverrides({});
       setShowImportLifecycleList(false);
       setShowDiagnostics(false);
+      onClearExternalOcrPreview?.();
     } catch (err: any) {
       setParseError(err?.message || 'Failed while optimizing or importing archive data.');
     } finally {
@@ -930,7 +950,7 @@ export function ExternalImporterPanel({
             <span>Download Starter CSV Template</span>
           </button>
 
-          {stagedArchives.length > 0 && (
+          {(stagedArchives.length > 0 || externalOcrPreview) && (
             <button
               type="button"
               onClick={() => {
@@ -938,13 +958,26 @@ export function ExternalImporterPanel({
                 setCsvColumnMapping({});
                 setConflictSelections({});
                 setParseError(null);
+                onClearExternalOcrPreview?.();
               }}
               className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-medium text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)]"
             >
-              Clear Staged Files
+              {stagedArchives.length > 0 ? 'Clear Staged Files' : 'Clear Staged OCR Scan'}
             </button>
           )}
         </div>
+
+        {stagedArchives.length === 0 && externalOcrPreview && (
+          <div className="p-3 rounded-xl bg-[var(--barn-sage-tint)] border border-[var(--barn-sage)] text-xs flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <strong className="text-[var(--barn-ink)]">Staged from Paper / PDF OCR Scanner:</strong>{' '}
+              <span className="font-mono">{externalOcrPreview.preview.archiveNames.join(', ')}</span>
+            </div>
+            <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+              {externalOcrPreview.preview.animals.length} animal(s) ready in review queue below
+            </span>
+          </div>
+        )}
 
         {templateNotice && (
           <div

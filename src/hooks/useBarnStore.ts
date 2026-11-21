@@ -60,20 +60,28 @@ import {
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  LedgerEntry,
   LitterWeightMilestone,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeDefaultPedigreeGenerations,
   normalizeFeedPurgeWindowDays,
   normalizeIgnoredConflicts,
+  normalizeLedgerCategory,
+  normalizeLedgerEntryType,
   normalizeLitterWeightMilestones,
+  normalizePeltGrade,
+  normalizeProcessingStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
+  normalizeYouthOrgType,
+  normalizeYouthProjectFeedLogs,
   PedigreeGenerationDepth,
   PREDEFINED_SPECIES_PRESETS,
+  ProcessingLog,
   resolveSpeciesProfile,
   ServiceFeeDirection,
   ShowEvent,
@@ -82,7 +90,9 @@ import {
   TargetWeightPoint,
   todayDateIso,
   UltrasoundResult,
+  YouthProjectBook,
 } from '../core/models';
+import { calculateDressOutPercent } from '../core/economicsLedger';
 import {
   applyFeedAllocationToBatch,
   findPurgeEligibleFeedTagPhotos,
@@ -294,6 +304,7 @@ export type WorkspaceRoute =
   | 'breeding'
   | 'pedigree'
   | 'feed'
+  | 'economics'
   | 'reports'
   | 'memo'
   | 'importExport'
@@ -335,6 +346,9 @@ export interface ActiveSpeciesData {
   shows: ShowEvent[];
   feedBatches: FeedBatch[];
   feedAllocations: FeedAllocation[];
+  ledgerEntries: LedgerEntry[];
+  processingLogs: ProcessingLog[];
+  youthProjectBooks: YouthProjectBook[];
   testingRecordCount: number;
   nonTestingRecordCount: number;
   totalRecordCount: number;
@@ -1109,6 +1123,29 @@ export function useBarnStore() {
         b.createdAt.localeCompare(a.createdAt)
       );
 
+    const ledgerEntries = (snapshot.ledgerEntries ?? [])
+      .filter((le) => isSameSpecies(le.species, speciesProfile.name))
+      .sort((a, b) =>
+        (b.dateIso || '').localeCompare(a.dateIso || '') ||
+        b.createdAt.localeCompare(a.createdAt)
+      );
+
+    const processingLogs = (snapshot.processingLogs ?? [])
+      .filter((pl) => isSameSpecies(pl.species, speciesProfile.name))
+      .sort((a, b) =>
+        (b.harvestDateIso || b.scheduledDateIso || '').localeCompare(
+          a.harvestDateIso || a.scheduledDateIso || ''
+        ) || b.createdAt.localeCompare(a.createdAt)
+      );
+
+    const youthProjectBooks = (snapshot.youthProjectBooks ?? [])
+      .filter((yp) => isSameSpecies(yp.species, speciesProfile.name))
+      .sort((a, b) =>
+        (b.projectYear || '').localeCompare(a.projectYear || '') ||
+        (b.startDateIso || '').localeCompare(a.startDateIso || '') ||
+        b.createdAt.localeCompare(a.createdAt)
+      );
+
     const testingRecordCount = countSpeciesTestingRecords(snapshot, speciesProfile.name);
     const nonTestingRecordCount = countSpeciesNonTestingRecords(snapshot, speciesProfile.name);
     const totalRecordCount = countAllSpeciesRecords(snapshot, speciesProfile.name);
@@ -1129,6 +1166,9 @@ export function useBarnStore() {
       shows,
       feedBatches,
       feedAllocations,
+      ledgerEntries,
+      processingLogs,
+      youthProjectBooks,
       testingRecordCount,
       nonTestingRecordCount,
       totalRecordCount,
@@ -5259,6 +5299,331 @@ export function useBarnStore() {
     return () => clearTimeout(timer);
   }, [isLoading, hasSnapshotReady, wipedRecoveryDetected, runFeedTagBiosecurityAutoPurge]);
 
+  const saveLedgerEntry = useCallback(
+    async (
+      draft: Omit<LedgerEntry, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.ledgerEntries ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const entry: LedgerEntry = {
+          ...draft,
+          id,
+          dateIso: (draft.dateIso || '').trim() || todayDateIso(),
+          entryType: normalizeLedgerEntryType(draft.entryType, 'expense'),
+          category: normalizeLedgerCategory(draft.category, 'other'),
+          amountCents: Math.max(0, Math.round(Number(draft.amountCents) || 0)),
+          title: (draft.title || '').trim() || 'Ledger Entry',
+          vendorOrParty: (draft.vendorOrParty || '').trim(),
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveLedgerEntry(entry);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'ledgerEntry',
+              previous: prev,
+              next: prev
+                ? entry
+                : { ...entry, receiptPhotoDataUrl: '', receiptPhotoThumbnailDataUrl: '' },
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              ignoreFields: ['receiptPhotoDataUrl', 'receiptPhotoThumbnailDataUrl'],
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Saved ${entry.entryType === 'income' ? 'income' : 'expense'}: ${entry.title}.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save ledger entry ${entry.title}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteLedgerEntry = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.ledgerEntries ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteLedgerEntry(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'ledgerEntry',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Ledger entry deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete ledger entry', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const saveProcessingLog = useCallback(
+    async (
+      draft: Omit<ProcessingLog, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.processingLogs ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const liveGrams = Math.max(0, Math.round(Number(draft.liveWeightGrams) || 0));
+        const dressedGrams = Math.max(0, Math.round(Number(draft.dressedWeightGrams) || 0));
+        const computedDressPct = calculateDressOutPercent(liveGrams, dressedGrams);
+        const log: ProcessingLog = {
+          ...draft,
+          id,
+          title: (draft.title || '').trim() || 'Processing Batch',
+          scheduledDateIso: (draft.scheduledDateIso || '').trim(),
+          harvestDateIso: (draft.harvestDateIso || '').trim(),
+          status: normalizeProcessingStatus(draft.status, 'Processed'),
+          animalCount: Math.max(1, Math.round(Number(draft.animalCount) || 1)),
+          liveWeightGrams: liveGrams,
+          dressedWeightGrams: dressedGrams,
+          ...(computedDressPct !== undefined
+            ? { dressOutPercent: computedDressPct }
+            : typeof draft.dressOutPercent === 'number' && draft.dressOutPercent > 0
+            ? { dressOutPercent: draft.dressOutPercent }
+            : {}),
+          peltCount: Math.max(0, Math.round(Number(draft.peltCount) || 0)),
+          peltGrade: normalizePeltGrade(draft.peltGrade),
+          peltColorNotes: (draft.peltColorNotes || '').trim(),
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveProcessingLog(log);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'processingLog',
+              previous: prev,
+              next: log,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Saved processing log: ${log.title} (${log.status}).`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save processing log ${log.title}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteProcessingLog = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.processingLogs ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteProcessingLog(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'processingLog',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Processing log deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete processing log', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const saveYouthProjectBook = useCallback(
+    async (
+      draft: Omit<YouthProjectBook, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.youthProjectBooks ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const project: YouthProjectBook = {
+          ...draft,
+          id,
+          organization: normalizeYouthOrgType(draft.organization, '4-H'),
+          projectTitle: (draft.projectTitle || '').trim() || 'Youth Livestock Project',
+          memberName: (draft.memberName || '').trim(),
+          clubOrChapter: (draft.clubOrChapter || '').trim(),
+          leaderOrAdvisor: (draft.leaderOrAdvisor || '').trim(),
+          projectYear: (draft.projectYear || '').trim() || todayDateIso().slice(0, 4),
+          startDateIso: (draft.startDateIso || '').trim() || todayDateIso(),
+          endDateIso: (draft.endDateIso || '').trim(),
+          status: draft.status === 'Completed' ? 'Completed' : 'Active',
+          linkedAnimalIds: Array.isArray(draft.linkedAnimalIds) ? draft.linkedAnimalIds : [],
+          linkedBreedingIds: Array.isArray(draft.linkedBreedingIds) ? draft.linkedBreedingIds : [],
+          startingInventoryValueCents: Math.max(
+            0,
+            Math.round(Number(draft.startingInventoryValueCents) || 0)
+          ),
+          endingInventoryValueCents: Math.max(
+            0,
+            Math.round(Number(draft.endingInventoryValueCents) || 0)
+          ),
+          feedLogs: normalizeYouthProjectFeedLogs(draft.feedLogs),
+          goalsAndReflection: (draft.goalsAndReflection || '').trim(),
+          showAndCommunityNotes: (draft.showAndCommunityNotes || '').trim(),
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveYouthProjectBook(project);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'youthProjectBook',
+              previous: prev,
+              next: project,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Saved ${project.organization} project book: ${project.projectTitle}.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save youth project book ${project.projectTitle}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteYouthProjectBook = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.youthProjectBooks ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteYouthProjectBook(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'youthProjectBook',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Youth project record book deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete youth project book', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
   const seedSpeciesSampleData = useCallback(
     async (speciesName: string) => {
       return enqueueStoreMutation(async () => {
@@ -5298,6 +5663,11 @@ export function useBarnStore() {
               tasks: bundle.tasks,
               careLogs: bundle.careLogs,
               shows: bundle.shows,
+              feedBatches: [],
+              feedAllocations: [],
+              ledgerEntries: [],
+              processingLogs: [],
+              youthProjectBooks: [],
             }
           );
           await adapterRef.current!.replaceSnapshot(report.snapshot);
@@ -5488,6 +5858,9 @@ export function useBarnStore() {
           shows: [],
           feedBatches: [],
           feedAllocations: [],
+          ledgerEntries: [],
+          processingLogs: [],
+          youthProjectBooks: [],
         };
         await adapterRef.current!.replaceSnapshot(empty);
         photoCacheRef.current.clear();
@@ -6439,6 +6812,9 @@ export function useBarnStore() {
             shows: preview.shows,
             feedBatches: [],
             feedAllocations: [],
+            ledgerEntries: [],
+            processingLogs: [],
+            youthProjectBooks: [],
           };
           const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
           const importedIds = new Set(resolvedAnimals.map((a) => a.id));
@@ -7011,6 +7387,12 @@ export function useBarnStore() {
     logFeedAllocation,
     deleteFeedAllocation,
     runFeedTagBiosecurityAutoPurge,
+    saveLedgerEntry,
+    deleteLedgerEntry,
+    saveProcessingLog,
+    deleteProcessingLog,
+    saveYouthProjectBook,
+    deleteYouthProjectBook,
     seedSpeciesSampleData,
     seedAllPredefinedSpecies,
     deleteSpeciesTestingData,

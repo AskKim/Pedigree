@@ -27,10 +27,13 @@ import {
   FeedAllocation,
   FeedBatch,
   generateUuid,
+  LedgerEntry,
   normalizeBreedScheduleOverrides,
   nowIsoUtc,
+  ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  YouthProjectBook,
 } from './models';
 import { normalizeShowResults, mergeEnteredAnimalIdsWithResults } from './showResults';
 import { sanitizeSpeciesMemo } from './speciesMemo';
@@ -52,7 +55,10 @@ export type SyncEntityType =
   | 'settings'
   | 'photo'
   | 'feedBatch'
-  | 'feedAllocation';
+  | 'feedAllocation'
+  | 'ledgerEntry'
+  | 'processingLog'
+  | 'youthProjectBook';
 
 export interface SyncOperation {
   op_id: string;
@@ -262,13 +268,23 @@ export function diffSnapshotsToSyncOperations(params: {
     const prevById = new Map<string, T>(prevList.map((item) => [item.id, item]));
     const nextById = new Map<string, T>(nextList.map((item) => [item.id, item]));
     const ignoreFields =
-      entityType === 'photo' ? ['dataUrl', 'thumbnailDataUrl'] : undefined;
+      entityType === 'photo'
+        ? ['dataUrl', 'thumbnailDataUrl']
+        : entityType === 'ledgerEntry'
+        ? ['receiptPhotoDataUrl', 'receiptPhotoThumbnailDataUrl']
+        : undefined;
 
     for (const nextItem of nextList) {
       const prevItem = prevById.get(nextItem.id);
       const safeNext =
         !prevItem && entityType === 'photo'
           ? (stripPhotoBlobsForSync(nextItem as unknown as AnimalPhoto) as unknown as T)
+          : !prevItem && entityType === 'ledgerEntry'
+          ? ({
+              ...(nextItem as unknown as LedgerEntry),
+              receiptPhotoDataUrl: '',
+              receiptPhotoThumbnailDataUrl: '',
+            } as unknown as T)
           : nextItem;
       const rev =
         typeof nextItem._rev === 'number' && Number.isFinite(nextItem._rev)
@@ -317,6 +333,9 @@ export function diffSnapshotsToSyncOperations(params: {
   diffCollection('show', params.previous.shows, params.next.shows);
   diffCollection('feedBatch', params.previous.feedBatches ?? [], params.next.feedBatches ?? []);
   diffCollection('feedAllocation', params.previous.feedAllocations ?? [], params.next.feedAllocations ?? []);
+  diffCollection('ledgerEntry', params.previous.ledgerEntries ?? [], params.next.ledgerEntries ?? []);
+  diffCollection('processingLog', params.previous.processingLogs ?? [], params.next.processingLogs ?? []);
+  diffCollection('youthProjectBook', params.previous.youthProjectBooks ?? [], params.next.youthProjectBooks ?? []);
 
   if (params.includeSettings) {
     ops.push(
@@ -375,6 +394,18 @@ function labelForEntity(
   if (type === 'feedAllocation') {
     const fa = (snapshot.feedAllocations ?? []).find((x) => x.id === uuid);
     return fa ? `${fa.targetLabel || fa.targetType} (${fa.quantity} ${fa.unit})` : uuid;
+  }
+  if (type === 'ledgerEntry') {
+    const le = (snapshot.ledgerEntries ?? []).find((x) => x.id === uuid);
+    return le ? le.title : uuid;
+  }
+  if (type === 'processingLog') {
+    const pl = (snapshot.processingLogs ?? []).find((x) => x.id === uuid);
+    return pl ? pl.title : uuid;
+  }
+  if (type === 'youthProjectBook') {
+    const yp = (snapshot.youthProjectBooks ?? []).find((x) => x.id === uuid);
+    return yp ? yp.projectTitle : uuid;
   }
   if (type === 'settings') return 'Barn Settings';
   return uuid;
@@ -436,6 +467,9 @@ export function mergeDeltaOperations(
   const shows = getCollectionMap<ShowEvent>(localSnapshot.shows);
   const feedBatches = getCollectionMap<FeedBatch>(localSnapshot.feedBatches ?? []);
   const feedAllocations = getCollectionMap<FeedAllocation>(localSnapshot.feedAllocations ?? []);
+  const ledgerEntries = getCollectionMap<LedgerEntry>(localSnapshot.ledgerEntries ?? []);
+  const processingLogs = getCollectionMap<ProcessingLog>(localSnapshot.processingLogs ?? []);
+  const youthProjectBooks = getCollectionMap<YouthProjectBook>(localSnapshot.youthProjectBooks ?? []);
   const speciesProfiles = getCollectionMap<SpeciesProfile>(localSnapshot.speciesProfiles);
   let settings: BarnSettings = { ...localSnapshot.settings };
 
@@ -598,6 +632,15 @@ export function mergeDeltaOperations(
       case 'feedAllocation':
         applyToMap(feedAllocations);
         break;
+      case 'ledgerEntry':
+        applyToMap(ledgerEntries);
+        break;
+      case 'processingLog':
+        applyToMap(processingLogs);
+        break;
+      case 'youthProjectBook':
+        applyToMap(youthProjectBooks);
+        break;
       case 'species':
         applyToMap(speciesProfiles);
         break;
@@ -639,6 +682,9 @@ export function mergeDeltaOperations(
       shows: Array.from(shows.values()),
       feedBatches: Array.from(feedBatches.values()),
       feedAllocations: Array.from(feedAllocations.values()),
+      ledgerEntries: Array.from(ledgerEntries.values()),
+      processingLogs: Array.from(processingLogs.values()),
+      youthProjectBooks: Array.from(youthProjectBooks.values()),
     },
     mergedOperations: allOpsSorted,
     newConflicts,

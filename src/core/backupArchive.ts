@@ -420,6 +420,15 @@ export function buildCompleteBackupZipFiles(
         feedAllocations: (snapshot.feedAllocations ?? []).filter((a) =>
           isSameSpecies(a.species, filterSpecies)
         ),
+        ledgerEntries: (snapshot.ledgerEntries ?? []).filter((e) =>
+          isSameSpecies(e.species, filterSpecies)
+        ),
+        processingLogs: (snapshot.processingLogs ?? []).filter((p) =>
+          isSameSpecies(p.species, filterSpecies)
+        ),
+        youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
+          isSameSpecies(y.species, filterSpecies)
+        ),
       }
     : {
         ...snapshot,
@@ -896,6 +905,15 @@ export async function streamCompleteBackupZipArchive(
           ),
           feedAllocations: (snapshot.feedAllocations ?? []).filter((a) =>
             isSameSpecies(a.species, filterSpecies)
+          ),
+          ledgerEntries: (snapshot.ledgerEntries ?? []).filter((e) =>
+            isSameSpecies(e.species, filterSpecies)
+          ),
+          processingLogs: (snapshot.processingLogs ?? []).filter((p) =>
+            isSameSpecies(p.species, filterSpecies)
+          ),
+          youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
+            isSameSpecies(y.species, filterSpecies)
           ),
         }
       : {

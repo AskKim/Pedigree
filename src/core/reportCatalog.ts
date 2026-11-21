@@ -238,5 +238,29 @@ export function buildReportCatalogForSpecies(
       scopeLabel,
       iconKey: 'ownership',
     },
+    {
+      id: 'barn-economics-report',
+      title: `${spName} Economics & P&L Margin Report`,
+      category: 'Financial',
+      description: `Revenue, categorized barn expenses, feed allocation costs, and net P&L margins for ${spLower}`,
+      scopeLabel,
+      iconKey: 'income',
+    },
+    {
+      id: 'meat-pelt-yield-report',
+      title: `${spName} Meat & Pelt Yield Report`,
+      category: 'Production',
+      description: `Scheduled butcher dates, harvest live/dressed weights, carcass dress-out %, and pelt grades for ${spLower}`,
+      scopeLabel,
+      iconKey: 'weight',
+    },
+    {
+      id: 'youth-project-report',
+      title: `4-H / FFA Youth Project Books (${spName})`,
+      category: 'Youth / 4-H / FFA',
+      description: `Youth project feed logs, project expenses/income, inventory change, and net returns for ${spLower}`,
+      scopeLabel,
+      iconKey: 'roster',
+    },
   ];
 }

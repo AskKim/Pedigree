@@ -46,6 +46,14 @@ import {
   buildSpeciesHerdMap,
   createSpeciesCoiEvaluator,
 } from './pedigreeCalculator';
+import {
+  calculateDressOutPercent,
+  computeAnimalProfitMargins,
+  evaluateProcessingSummary,
+  evaluateSpeciesEconomicsSummary,
+  evaluateYouthProjectSummary,
+  getLedgerCategoryLabel,
+} from './economicsLedger';
 import { buildReportCatalogForSpecies, ReportCatalogEntrySpec } from './reportCatalog';
 import { computeAnimalShowSummary } from './showResults';
 
@@ -2389,6 +2397,300 @@ function buildReportBody(ctx: ReportContext): ReportBody {
         summaryMetrics: [
           { label: 'Outside / Reference Total', value: String(rows.length) },
           { label: 'Outside Stock / Reference', value: `${outsideCount} / ${refCount}` },
+        ],
+      };
+    }
+
+    // 23. Barn Economics & P&L Margin Report
+    case 'barn-economics-report': {
+      const speciesLedger = (ctx.snapshot.ledgerEntries ?? []).filter((e) =>
+        isSameSpecies(e.species, speciesProfile.name)
+      );
+      const speciesFeedBatches = (ctx.snapshot.feedBatches ?? []).filter((fb) =>
+        isSameSpecies(fb.species, speciesProfile.name)
+      );
+      const speciesFeedAllocations = (ctx.snapshot.feedAllocations ?? []).filter((fa) =>
+        isSameSpecies(fa.species, speciesProfile.name)
+      );
+      const speciesProcessing = (ctx.snapshot.processingLogs ?? []).filter((pl) =>
+        isSameSpecies(pl.species, speciesProfile.name)
+      );
+
+      const econSummary = evaluateSpeciesEconomicsSummary({
+        animals: speciesAnimals,
+        breedings: speciesBreedings,
+        ledgerEntries: speciesLedger,
+        feedBatches: speciesFeedBatches,
+        processingLogs: speciesProcessing,
+        currencyCode,
+        dateFromIso,
+        dateToIso,
+      });
+
+      const filteredLedger = speciesLedger
+        .filter((e) => {
+          if (!isIsoWithinRange(e.dateIso, dateFromIso, dateToIso)) return false;
+          if (e.linkedAnimalId) {
+            return matchesFilter(animalById.get(e.linkedAnimalId));
+          }
+          return filter === 'All';
+        })
+        .sort((a, b) => (b.dateIso || '').localeCompare(a.dateIso || ''));
+
+      const rows: ReportRow[] = filteredLedger.map((e) => {
+        const linkedAnimal = e.linkedAnimalId ? animalById.get(e.linkedAnimalId) : undefined;
+        return {
+          id: e.id,
+          animalId: linkedAnimal?.id,
+          highlightTone: e.entryType === 'income' ? 'success' : 'normal',
+          cells: {
+            date: formatReadableDate(e.dateIso),
+            type: e.entryType === 'income' ? 'Income' : 'Expense',
+            category: getLedgerCategoryLabel(e.category),
+            title: e.title,
+            party: e.vendorOrParty || '—',
+            linkedAnimal: linkedAnimal ? formatAnimalRef(linkedAnimal) : '—',
+            receipt: e.receiptPhotoDataUrl || e.receiptPhotoThumbnailDataUrl ? 'Yes' : 'No',
+            amount: formatCurrencyCents(e.amountCents, currencyCode),
+          },
+        };
+      });
+
+      // Also append computed animal P&L highlights when no manual ledger entries matched
+      const animalMargins = computeAnimalProfitMargins({
+        animals: speciesAnimals.filter((a) => matchesFilter(a)),
+        breedings: speciesBreedings,
+        ledgerEntries: speciesLedger,
+        feedBatches: speciesFeedBatches,
+        feedAllocations: speciesFeedAllocations,
+        processingLogs: speciesProcessing,
+        dateFromIso,
+        dateToIso,
+      });
+
+      return {
+        columns: [
+          { key: 'date', label: 'Date' },
+          { key: 'type', label: 'Type' },
+          { key: 'category', label: 'Category' },
+          { key: 'title', label: 'Description' },
+          { key: 'party', label: 'Vendor / Party' },
+          { key: 'linkedAnimal', label: 'Linked Animal' },
+          { key: 'receipt', label: 'Receipt' },
+          { key: 'amount', label: 'Amount', align: 'right' },
+        ],
+        rows,
+        summaryMetrics: [
+          {
+            label: 'Gross Revenue',
+            value: formatCurrencyCents(econSummary.totalRevenueCents, currencyCode),
+            tone: econSummary.totalRevenueCents > 0 ? 'positive' : 'neutral',
+          },
+          {
+            label: 'Total Expenses',
+            value: formatCurrencyCents(econSummary.totalExpenseCents, currencyCode),
+          },
+          {
+            label: 'Net Profit / Loss',
+            value: formatCurrencyCents(econSummary.netProfitCents, currencyCode),
+            tone: econSummary.netProfitCents >= 0 ? 'positive' : 'danger',
+          },
+          {
+            label: 'Profit Margin',
+            value:
+              econSummary.marginPercent !== null
+                ? `${econSummary.marginPercent.toFixed(1)}%`
+                : 'N/A',
+          },
+          {
+            label: 'Animals with P&L',
+            value: String(animalMargins.length),
+          },
+        ],
+      };
+    }
+
+    // 24. Meat & Pelt Processing Yield Report
+    case 'meat-pelt-yield-report': {
+      const speciesProcessing = (ctx.snapshot.processingLogs ?? [])
+        .filter((pl) => {
+          if (!isSameSpecies(pl.species, speciesProfile.name)) return false;
+          const dateVal = pl.harvestDateIso || pl.scheduledDateIso;
+          if (!isIsoWithinRange(dateVal, dateFromIso, dateToIso)) return false;
+          if (pl.linkedAnimalId) {
+            return matchesFilter(animalById.get(pl.linkedAnimalId));
+          }
+          return filter === 'All';
+        })
+        .sort((a, b) =>
+          (b.harvestDateIso || b.scheduledDateIso || '').localeCompare(
+            a.harvestDateIso || a.scheduledDateIso || ''
+          )
+        );
+
+      const procSummary = evaluateProcessingSummary(speciesProcessing, referenceDateIso);
+
+      const rows: ReportRow[] = speciesProcessing.map((pl) => {
+        const linkedAnimal = pl.linkedAnimalId ? animalById.get(pl.linkedAnimalId) : undefined;
+        const pct =
+          pl.dressOutPercent ?? calculateDressOutPercent(pl.liveWeightGrams, pl.dressedWeightGrams);
+        const totalValueCents = (pl.meatValueCents || 0) + (pl.peltValueCents || 0);
+        return {
+          id: pl.id,
+          animalId: linkedAnimal?.id,
+          highlightTone:
+            pl.status === 'Scheduled' && pl.scheduledDateIso && pl.scheduledDateIso < referenceDateIso
+              ? 'warning'
+              : pl.status === 'Processed'
+              ? 'success'
+              : 'normal',
+          cells: {
+            title: pl.title,
+            status: pl.status,
+            date: formatReadableDate(pl.harvestDateIso || pl.scheduledDateIso),
+            headCount: pl.animalCount,
+            liveWeight: pl.liveWeightGrams > 0 ? formatWeight(pl.liveWeightGrams, weightUnit) : '—',
+            dressedWeight:
+              pl.dressedWeightGrams > 0 ? formatWeight(pl.dressedWeightGrams, weightUnit) : '—',
+            dressOut: pct !== undefined ? `${pct.toFixed(1)}%` : '—',
+            pelts:
+              pl.peltCount > 0 || pl.peltGrade
+                ? `${pl.peltCount} (${pl.peltGrade || 'Unspecified'})`
+                : '—',
+            value: totalValueCents > 0 ? formatCurrencyCents(totalValueCents, currencyCode) : '—',
+            cost: pl.processingCostCents
+              ? formatCurrencyCents(pl.processingCostCents, currencyCode)
+              : '—',
+          },
+        };
+      });
+
+      return {
+        columns: [
+          { key: 'title', label: 'Batch / Animal' },
+          { key: 'status', label: 'Status' },
+          { key: 'date', label: 'Harvest / Scheduled' },
+          { key: 'headCount', label: 'Count', align: 'right' },
+          { key: 'liveWeight', label: 'Live Weight', align: 'right' },
+          { key: 'dressedWeight', label: 'Dressed Weight', align: 'right' },
+          { key: 'dressOut', label: 'Dress-Out %', align: 'right' },
+          { key: 'pelts', label: 'Pelts & Grade' },
+          { key: 'value', label: 'Meat + Pelt Value', align: 'right' },
+          { key: 'cost', label: 'Processing Cost', align: 'right' },
+        ],
+        rows,
+        summaryMetrics: [
+          { label: 'Animals Processed', value: String(procSummary.totalAnimalsProcessed) },
+          {
+            label: 'Scheduled Harvests',
+            value: String(procSummary.scheduledCount),
+            tone: procSummary.overdueScheduledLogs.length > 0 ? 'warning' : 'neutral',
+          },
+          {
+            label: 'Avg Dress-Out %',
+            value:
+              procSummary.averageDressOutPercent !== null
+                ? `${procSummary.averageDressOutPercent.toFixed(1)}%`
+                : 'N/A',
+            tone: procSummary.averageDressOutPercent !== null ? 'positive' : 'neutral',
+          },
+          { label: 'Pelts Logged', value: String(procSummary.totalPelts) },
+          {
+            label: 'Meat & Pelt Value',
+            value: formatCurrencyCents(
+              procSummary.totalMeatValueCents + procSummary.totalPeltValueCents,
+              currencyCode
+            ),
+          },
+        ],
+      };
+    }
+
+    // 25. 4-H / FFA Youth Project Books Report
+    case 'youth-project-report': {
+      const speciesLedger = (ctx.snapshot.ledgerEntries ?? []).filter((e) =>
+        isSameSpecies(e.species, speciesProfile.name)
+      );
+      const speciesProjects = (ctx.snapshot.youthProjectBooks ?? [])
+        .filter((yp) => {
+          if (!isSameSpecies(yp.species, speciesProfile.name)) return false;
+          if (!isIsoWithinRange(yp.startDateIso, dateFromIso, dateToIso)) return false;
+          if (filter !== 'All' && (yp.linkedAnimalIds ?? []).length > 0) {
+            return yp.linkedAnimalIds.some((id) => matchesFilter(animalById.get(id)));
+          }
+          return true;
+        })
+        .sort((a, b) => (b.projectYear || '').localeCompare(a.projectYear || ''));
+
+      let totalIncomeCents = 0;
+      let totalExpenseCents = 0;
+      let totalNetCents = 0;
+
+      const rows: ReportRow[] = speciesProjects.map((yp) => {
+        const sum = evaluateYouthProjectSummary(yp, {
+          animals: speciesAnimals,
+          breedings: speciesBreedings,
+          ledgerEntries: speciesLedger,
+        });
+        totalIncomeCents += sum.totalIncomeCents;
+        totalExpenseCents += sum.totalExpenseCents;
+        totalNetCents += sum.netProjectProfitCents;
+        return {
+          id: yp.id,
+          animalId: sum.enrolledAnimals[0]?.id,
+          highlightTone:
+            yp.status === 'Completed'
+              ? sum.netProjectProfitCents >= 0
+                ? 'success'
+                : 'warning'
+              : 'normal',
+          cells: {
+            org: yp.organization,
+            year: yp.projectYear,
+            title: yp.projectTitle,
+            member: yp.memberName || '—',
+            club: yp.clubOrChapter || '—',
+            animals: sum.enrolledAnimals.length,
+            feedCost: formatCurrencyCents(sum.totalFeedLogCostCents, currencyCode),
+            income: formatCurrencyCents(sum.totalIncomeCents, currencyCode),
+            expense: formatCurrencyCents(sum.totalExpenseCents, currencyCode),
+            netReturn: formatCurrencyCents(sum.netProjectProfitCents, currencyCode),
+            status: yp.status,
+          },
+        };
+      });
+
+      return {
+        columns: [
+          { key: 'org', label: 'Org' },
+          { key: 'year', label: 'Year' },
+          { key: 'title', label: 'Project Title' },
+          { key: 'member', label: 'Youth Member' },
+          { key: 'club', label: 'Club / Chapter' },
+          { key: 'animals', label: 'Animals', align: 'right' },
+          { key: 'feedCost', label: 'Feed Log Cost', align: 'right' },
+          { key: 'income', label: 'Total Income', align: 'right' },
+          { key: 'expense', label: 'Total Expense', align: 'right' },
+          { key: 'netReturn', label: 'Net Return', align: 'right' },
+          { key: 'status', label: 'Status' },
+        ],
+        rows,
+        summaryMetrics: [
+          { label: 'Project Books', value: String(rows.length) },
+          {
+            label: 'Total Project Income',
+            value: formatCurrencyCents(totalIncomeCents, currencyCode),
+            tone: totalIncomeCents > 0 ? 'positive' : 'neutral',
+          },
+          {
+            label: 'Total Project Expenses',
+            value: formatCurrencyCents(totalExpenseCents, currencyCode),
+          },
+          {
+            label: 'Combined Net Return',
+            value: formatCurrencyCents(totalNetCents, currencyCode),
+            tone: totalNetCents >= 0 ? 'positive' : 'danger',
+          },
         ],
       };
     }

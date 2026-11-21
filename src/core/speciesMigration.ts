@@ -550,6 +550,34 @@ export function migrateAnimalsToSpecies(
     ? [...snapshot.speciesProfiles, targetProfile]
     : snapshot.speciesProfiles;
 
+  const nextLedgerEntries = (snapshot.ledgerEntries ?? []).map((le) => {
+    const linkedAnimalMoved = Boolean(le.linkedAnimalId && actuallyMovingIds.has(le.linkedAnimalId));
+    const linkedBreedingMoved = Boolean(le.linkedBreedingId && migratedBreedingIds.has(le.linkedBreedingId));
+    const fullSpecies = isFullSpeciesFromSource(le.species);
+    if ((linkedAnimalMoved || linkedBreedingMoved || fullSpecies) && !isSameSpecies(le.species, targetName)) {
+      return { ...le, species: targetName, _rev: bumpRecordRevision(le), updatedAt: ts };
+    }
+    return le;
+  });
+
+  const nextProcessingLogs = (snapshot.processingLogs ?? []).map((pl) => {
+    const linkedAnimalMoved = Boolean(pl.linkedAnimalId && actuallyMovingIds.has(pl.linkedAnimalId));
+    const linkedBreedingMoved = Boolean(pl.linkedBreedingId && migratedBreedingIds.has(pl.linkedBreedingId));
+    const fullSpecies = isFullSpeciesFromSource(pl.species);
+    if ((linkedAnimalMoved || linkedBreedingMoved || fullSpecies) && !isSameSpecies(pl.species, targetName)) {
+      return { ...pl, species: targetName, _rev: bumpRecordRevision(pl), updatedAt: ts };
+    }
+    return pl;
+  });
+
+  const nextYouthBooks = (snapshot.youthProjectBooks ?? []).map((yp) => {
+    const fullSpecies = isFullSpeciesFromSource(yp.species);
+    if (fullSpecies && !isSameSpecies(yp.species, targetName)) {
+      return { ...yp, species: targetName, _rev: bumpRecordRevision(yp), updatedAt: ts };
+    }
+    return yp;
+  });
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     speciesProfiles: nextSpeciesProfiles,
@@ -560,6 +588,9 @@ export function migrateAnimalsToSpecies(
     tasks: nextTasks,
     careLogs: nextCareLogs,
     shows: [...nextShows, ...showsToAppend],
+    ledgerEntries: nextLedgerEntries,
+    processingLogs: nextProcessingLogs,
+    youthProjectBooks: nextYouthBooks,
   };
 
   let remainingSourceRecordsCount = 0;

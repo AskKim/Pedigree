@@ -391,12 +391,12 @@ function buildMultiSpeciesTestSnapshot(): BarnDatabaseSnapshot {
 }
 
 describe('reportGenerators (Phase 3)', () => {
-  it('generates every single one of the 22 catalog reports for an added species without errors', () => {
+  it('generates every single one of the 26 catalog reports for an added species without errors', () => {
     const snapshot = buildMultiSpeciesTestSnapshot();
     const rabbitProfile = snapshot.speciesProfiles[0];
     const catalog = buildReportCatalogForSpecies(rabbitProfile);
 
-    expect(catalog).toHaveLength(23);
+    expect(catalog).toHaveLength(26);
 
     for (const entry of catalog) {
       const rep = generateSpeciesReport(snapshot, 'Rabbit', entry.id, {
@@ -795,5 +795,91 @@ describe('reportGenerators (Phase 3)', () => {
     const brambleRow = maleReport.rows.find((r) => r.cells.parent === 'Bramble');
     expect(brambleRow).toBeDefined();
     expect(brambleRow?.cells.weaned).toBe('7');
+  });
+
+  it('generates Barn Economics, Meat & Pelt Yield, and 4-H/FFA Youth Project reports cleanly', () => {
+    const base = buildMultiSpeciesTestSnapshot();
+    const snap = {
+      ...base,
+      ledgerEntries: [
+        {
+          id: 'rep-le-1',
+          species: 'Rabbit',
+          dateIso: '2026-10-05',
+          entryType: 'expense' as const,
+          category: 'bedding' as const,
+          amountCents: 1850,
+          title: 'Shavings Bale',
+          vendorOrParty: 'Feed Store',
+          notes: '',
+          createdAt: TS,
+          updatedAt: TS,
+        },
+      ],
+      processingLogs: [
+        {
+          id: 'rep-pl-1',
+          species: 'Rabbit',
+          title: 'Fall Fryer Batch',
+          scheduledDateIso: '2026-10-10',
+          harvestDateIso: '2026-10-10',
+          status: 'Processed' as const,
+          animalCount: 3,
+          liveWeightGrams: 7500,
+          dressedWeightGrams: 4350,
+          dressOutPercent: 58,
+          peltCount: 3,
+          peltGrade: 'Prime' as const,
+          peltColorNotes: 'White',
+          meatValueCents: 4500,
+          peltValueCents: 1200,
+          notes: '',
+          createdAt: TS,
+          updatedAt: TS,
+        },
+      ],
+      youthProjectBooks: [
+        {
+          id: 'rep-yp-1',
+          species: 'Rabbit',
+          organization: '4-H' as const,
+          projectTitle: 'County Fair Market Pen',
+          memberName: 'Jordan Lee',
+          clubOrChapter: 'Pine Creek 4-H',
+          leaderOrAdvisor: 'Kim',
+          projectYear: '2026',
+          startDateIso: '2026-02-01',
+          endDateIso: '2026-10-15',
+          status: 'Completed' as const,
+          linkedAnimalIds: [],
+          linkedBreedingIds: [],
+          startingInventoryValueCents: 3000,
+          endingInventoryValueCents: 4500,
+          feedLogs: [],
+          goalsAndReflection: 'Completed record book.',
+          showAndCommunityNotes: '',
+          notes: '',
+          createdAt: TS,
+          updatedAt: TS,
+        },
+      ],
+    };
+
+    const econRep = generateSpeciesReport(snap, 'Rabbit', 'barn-economics-report', {
+      referenceDateIso: '2026-10-31',
+    });
+    expect(econRep.rows.some((r) => String(r.cells.title) === 'Shavings Bale')).toBe(true);
+
+    const yieldRep = generateSpeciesReport(snap, 'Rabbit', 'meat-pelt-yield-report', {
+      referenceDateIso: '2026-10-31',
+    });
+    expect(yieldRep.rows.some((r) => String(r.cells.title) === 'Fall Fryer Batch')).toBe(true);
+    expect(yieldRep.rows[0]?.cells.dressOut).toBe('58.0%');
+
+    const youthRep = generateSpeciesReport(snap, 'Rabbit', 'youth-project-report', {
+      referenceDateIso: '2026-10-31',
+    });
+    expect(youthRep.rows).toHaveLength(1);
+    expect(youthRep.rows[0]?.cells.title).toBe('County Fair Market Pen');
   });
 });

@@ -146,6 +146,7 @@ import {
 } from '../utils/webFileActions';
 import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
+import { PedigreeOcrScannerPanel } from './PedigreeOcrScannerPanel';
 import { UnifiedBackupVaultPanel } from './UnifiedBackupVaultPanel';
 
 export type ImportExportHubSection = 'all' | 'sync' | 'backup' | 'imports' | 'exporters';
@@ -340,6 +341,10 @@ export function ImportExportHubScreen({
     jsonText?: string;
     archiveBytes?: Uint8Array;
     sqliteBytes?: Uint8Array;
+  } | null>(null);
+  const [stagedOcrPreview, setStagedOcrPreview] = useState<{
+    key: string;
+    preview: PlatformImportPreview;
   } | null>(null);
 
   // Exporters state (Section 3)
@@ -2520,17 +2525,34 @@ export function ImportExportHubScreen({
             </div>
           </div>
 
-          {/* Part 2B: External Format Importers (HerdBoss, Universal Pedigree, Evans .HTM, CSV/JSON) */}
-          <div className="space-y-2">
+          {/* Part 2B: External Format Importers & Paper OCR Scanner */}
+          <div className="space-y-4">
             <div className="px-1">
               <div className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[var(--barn-terracotta)]">
-                2B · External Format Importers
+                2B · Paper / PDF Pedigree Scanner &amp; External Format Importers
               </div>
             </div>
+            <PedigreeOcrScannerPanel
+              snapshot={snapshot}
+              activeSpeciesName={activeSpeciesName}
+              constrainedDevice={activeDeviceTier <= 2}
+              onStagePreviewToImportQueue={(staged) => {
+                setStagedOcrPreview(staged);
+                if (typeof document !== 'undefined') {
+                  setTimeout(() => {
+                    document
+                      .getElementById('external-platform-importer')
+                      ?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+                  }, 60);
+                }
+              }}
+            />
             <ExternalImporterPanel
               snapshot={snapshot}
               activeSpeciesName={activeSpeciesName}
               deviceCapabilityAssessment={deviceCapability?.assessment}
+              externalOcrPreview={stagedOcrPreview}
+              onClearExternalOcrPreview={() => setStagedOcrPreview(null)}
               onCommitImport={onApplyPlatformImport}
             />
           </div>

@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (44)
+## Logged Improvements (46)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -930,4 +930,46 @@ npm run lint && npm run build
 1. Keep `FeedBatch`, `FeedAllocation`, `FEED_PURGE_WINDOW_OPTIONS`, and `normalizeFeedPurgeWindowDays` in `src/core/models.ts` plus SQLite tables in `src/storage/webSqliteAdapter.ts`.
 2. Restore `src/core/feedInventory.ts`, `src/core/feedManufacturerDirectory.ts`, `src/core/__tests__/feedInventory.test.ts`, and `src/storage/feedTagOcr.ts`.
 3. Keep `saveFeedBatch`, `logFeedAllocation`, `runFeedTagBiosecurityAutoPurge` in `useBarnStore.ts` and mount `FeedLedgerScreen.tsx` in `SpeciesDashboardScreen.tsx`, `FacilityPenBoard.tsx`, and `App.tsx`.
+
+### IMP-045: Offline Photo Pedigree Scanning & Local OCR Importer
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Allow breeders to snap a photo or upload JPG/PNG/WebP/PDF scans of paper pedigrees completely offline, review/correct extracted ancestor names, ear tattoos, weights, and ARBA registration numbers across 3 generations, and stage them straight into the Import Review Queue with duplicate/conflict resolution.
+- **Summary:** Adds 100% offline client-side paper pedigree scanning and PDF extraction via `pdfScanExtractor.ts` (searchable `/FlateDecode` `BT...ET` text vectors with coordinates and embedded `/DCTDecode` scanned JPEG pages) plus `pedigreeOcrParser.ts` (2D bounding-box 3-col/4-col pedigree tree reconstruction and text heuristics into an editable 15-slot 3-generation draft queue backed by `PlatformImportPreview`), wired with `pedigreeOcrScanner.ts` (native Chromium `TextDetector` + lazy bounded `tesseract.js` worker with `offline_manual` fallback) into `PedigreeOcrScannerPanel.tsx` and `ExternalImporterPanel.tsx`.
+- **Tracked Files:** `src/core/importers/pdfScanExtractor.ts`, `src/core/importers/pedigreeOcrParser.ts`, `src/core/__tests__/pedigreeOcrParser.test.ts`, `src/storage/pedigreeOcrScanner.ts`, `src/components/PedigreeOcrScannerPanel.tsx`, `src/components/ExternalImporterPanel.tsx`, `src/components/ImportExportHubScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/importers/pdfScanExtractor.ts` must contain `extractPedigreePdfPages`, `MAX_PDF_SCAN_BYTES`, `MAX_PDF_SCAN_PAGES` — *Pure TS offline PDF vector text (`BT...ET`) and embedded `/DCTDecode` JPEG extractor must remain zero-DOM.*
+- `src/core/importers/pedigreeOcrParser.ts` must contain `PEDIGREE_OCR_SLOT_DESCRIPTORS`, `parsePedigreeSlotLines`, `parsePedigreeOcrResult`, `buildPlatformImportPreviewFromOcrDrafts` — *Pure TS 2D tree/line pedigree parser and Import Review Queue preview bridge must stay zero-DOM and deterministic.*
+- `src/storage/pedigreeOcrScanner.ts` must contain `scanPedigreeDocumentFile`, `tesseract.js` — *Browser OCR runner must lazy-load Tesseract worker with bounded timeout, native TextDetector precheck, and soft offline manual fallback.*
+- `src/components/PedigreeOcrScannerPanel.tsx` must contain `PedigreeOcrScannerPanel`, `scanPedigreeDocumentFile`, `buildPlatformImportPreviewFromOcrDrafts` — *Scanner UI must offer camera/photo/PDF capture, editable 15-slot 3-generation review, and staging into Import Review Queue.*
+- `src/components/ExternalImporterPanel.tsx` must contain `externalOcrPreview`, `onClearExternalOcrPreview` — *ExternalImporterPanel must accept staged OCR PlatformImportPreview drafts for full conflict resolution and WebP photo optimization.*
+- `src/components/ImportExportHubScreen.tsx` must contain `<PedigreeOcrScannerPanel`, `stagedOcrPreview` — *ImportExportHubScreen Section 02 must mount PedigreeOcrScannerPanel connected to ExternalImporterPanel.*
+
+**Restoration Playbook if Overwritten:**
+1. Restore pure parsers `src/core/importers/pdfScanExtractor.ts`, `src/core/importers/pedigreeOcrParser.ts`, and `src/core/__tests__/pedigreeOcrParser.test.ts`.
+2. Restore `src/storage/pedigreeOcrScanner.ts` and `src/components/PedigreeOcrScannerPanel.tsx`.
+3. Keep `externalOcrPreview`/`onClearExternalOcrPreview` props in `ExternalImporterPanel.tsx` and `<PedigreeOcrScannerPanel>` wired inside `ImportExportHubScreen.tsx`.
+
+### IMP-046: Local Economic Ledger, Meat/Pelt Processing Yields & 4-H/FFA Project Books
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Provide offline barn bookkeeping with receipt photos, automated animal/litter P&L margins, meat/pelt carcass yield and pelt grading logs, and printable 4-H/FFA youth livestock project completion books.
+- **Summary:** Adds species-isolated general barn income/expense tracking (`LedgerEntry`) with compressed receipt photo attachments (`optimizeImageFile`) and feed-lot deduplication; automated per-animal and per-litter net profit/loss margins (`computeAnimalProfitMargins`, `computeLitterProfitMargins`); meat & pelt processing logs (`ProcessingLog`) tracking butcher schedules, harvest dates, live-to-dressed carcass dress-out %, and pelt grades; 4-H/FFA Youth Project Record Books (`YouthProjectBook`) with ration feed logs, inventory changes, and printable `.HTM`/PDF completion reports (`generateYouthProjectReportHtml`); SQLite v4 persistence, sync outbox deltas, 3 new report presets, and `EconomicsLedgerScreen.tsx` accessible from Species Dashboard & `E` shortcut.
+- **Tracked Files:** `src/core/models.ts`, `src/core/economicsLedger.ts`, `src/core/__tests__/economicsLedger.test.ts`, `src/core/reportCatalog.ts`, `src/core/reportGenerators.ts`, `src/core/syncOutbox.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/EconomicsLedgerScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `LedgerEntry`, `LEDGER_CATEGORY_OPTIONS`, `ProcessingLog`, `PELT_GRADE_OPTIONS`, `YouthProjectBook` — *LedgerEntry, ProcessingLog, and YouthProjectBook domain models and normalizers must remain intact.*
+- `src/core/economicsLedger.ts` must contain `calculateDressOutPercent`, `computeAnimalProfitMargins`, `computeLitterProfitMargins`, `evaluateSpeciesEconomicsSummary`, `evaluateProcessingSummary`, `evaluateYouthProjectSummary`, `generateYouthProjectReportHtml` — *Pure TS economics margins, yield analytics, CSV exporters, and printable youth completion report builder must remain zero-DOM.*
+- `src/storage/webSqliteAdapter.ts` must contain `ledger_entries`, `processing_logs`, `youth_project_books`, `saveLedgerEntry`, `saveProcessingLog`, `saveYouthProjectBook` — *SQLite persistence schema v4 and adapter CRUD methods must store and hydrate ledger entries, processing logs, and youth project books.*
+- `src/hooks/useBarnStore.ts` must contain `saveLedgerEntry`, `saveProcessingLog`, `saveYouthProjectBook` — *Store must expose species-isolated economics, processing, and 4-H/FFA project mutations with delta outbox sync.*
+- `src/components/EconomicsLedgerScreen.tsx` must contain `EconomicsLedgerScreen`, `generateYouthProjectReportHtml`, `evaluateSpeciesEconomicsSummary` — *EconomicsLedgerScreen must provide general ledger + receipt photos, meat/pelt yields, and 4-H/FFA project record books.*
+- `src/App.tsx` must contain `EconomicsLedgerScreen`, `route === 'economics'` — *Root router must lazy-load and mount EconomicsLedgerScreen on route economics.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `LedgerEntry`, `ProcessingLog`, and `YouthProjectBook` interfaces and normalizers in `src/core/models.ts` plus SQLite v4 tables in `src/storage/webSqliteAdapter.ts`.
+2. Restore `src/core/economicsLedger.ts` and `src/core/__tests__/economicsLedger.test.ts` along with the 3 financial/production/youth presets in `reportCatalog.ts` and `reportGenerators.ts`.
+3. Keep store CRUD mutations in `src/hooks/useBarnStore.ts` and wire `EconomicsLedgerScreen.tsx` into `SpeciesDashboardScreen.tsx` and `App.tsx`.
 

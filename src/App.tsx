@@ -83,6 +83,10 @@ const FeedLedgerScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/FeedLedgerScreen')['FeedLedgerScreen']>
 >(() => import('./components/FeedLedgerScreen'), 'FeedLedgerScreen', 'Feed Ledger');
 
+const EconomicsLedgerScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/EconomicsLedgerScreen')['EconomicsLedgerScreen']>
+>(() => import('./components/EconomicsLedgerScreen'), 'EconomicsLedgerScreen', 'Economics & 4-H Ledger');
+
 const ReportsScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/ReportsScreen')['ReportsScreen']>
 >(() => import('./components/ReportsScreen'), 'ReportsScreen', 'Reports');
@@ -131,6 +135,7 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   breeding: 'Breeding Lab',
   pedigree: 'Pedigree Explorer',
   feed: 'Feed Ledger',
+  economics: 'Economics & 4-H Ledger',
   reports: 'Reports',
   memo: 'Species Memo',
   importExport: 'Import / Export Hub',
@@ -404,6 +409,7 @@ export default function App() {
         b: { route: 'breeding', label: 'Breeding' },
         p: { route: 'pedigree', label: 'Pedigree' },
         f: { route: 'feed', label: 'Feed Ledger' },
+        e: { route: 'economics', label: 'Economics & 4-H Ledger' },
         o: { route: 'reports', label: 'Reports' },
         i: { route: 'importExport', label: 'Import / Export Hub' },
         s: { route: 'settings', label: 'Settings' },
@@ -1487,6 +1493,24 @@ export default function App() {
           />
         )}
 
+        {route === 'economics' && (
+          <EconomicsLedgerScreen
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onBackToHub={() => setRoute('dashboard')}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
+            onSaveLedgerEntry={store.saveLedgerEntry}
+            onDeleteLedgerEntry={store.deleteLedgerEntry}
+            onSaveProcessingLog={store.saveProcessingLog}
+            onDeleteProcessingLog={store.deleteProcessingLog}
+            onSaveYouthProjectBook={store.saveYouthProjectBook}
+            onDeleteYouthProjectBook={store.deleteYouthProjectBook}
+          />
+        )}
+
         {route === 'reports' && (
           <ReportsScreen
             snapshot={snapshot}
@@ -1834,6 +1858,7 @@ export default function App() {
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
                 { key: 'F', label: 'Feed & Lot Ledger', desc: 'Feed purchases, tag OCR lot indexing & biosecurity purge' },
+                { key: 'E', label: 'Economics & 4-H Ledger', desc: 'Expenses, receipts, P&L margins, meat/pelt yields & 4-H/FFA books' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
                 { key: 'I', label: 'Import / Export Hub', desc: 'System backups, native restores, sync & external exporters' },
                 { key: 'S', label: 'Settings', desc: 'Barn preferences, calendar sync, appearance & diagnostics' },

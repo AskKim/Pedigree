@@ -421,6 +421,15 @@ export function countSpeciesTestingRecords(
       isSameSpecies(fa.species, speciesName) &&
       (isSampleTestingId(fa.id) || seedFeedBatchIds.has(fa.feedBatchId))
   ).length;
+  const ledgerEntries = (snapshot.ledgerEntries ?? []).filter(
+    (le) => isSameSpecies(le.species, speciesName) && isSampleTestingId(le.id)
+  ).length;
+  const processingLogs = (snapshot.processingLogs ?? []).filter(
+    (pl) => isSameSpecies(pl.species, speciesName) && isSampleTestingId(pl.id)
+  ).length;
+  const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter(
+    (yp) => isSameSpecies(yp.species, speciesName) && isSampleTestingId(yp.id)
+  ).length;
 
   return (
     seedAnimalIds.size +
@@ -431,12 +440,15 @@ export function countSpeciesTestingRecords(
     careLogs +
     shows +
     seedFeedBatchIds.size +
-    feedAllocations
+    feedAllocations +
+    ledgerEntries +
+    processingLogs +
+    youthProjectBooks
   );
 }
 
 /**
- * Counts all records (animals, photos, cages, breedings, tasks, careLogs, shows, feedBatches, feedAllocations) scoped to `speciesName`.
+ * Counts all records (animals, photos, cages, breedings, tasks, careLogs, shows, feedBatches, feedAllocations, ledgerEntries, processingLogs, youthProjectBooks) scoped to `speciesName`.
  */
 export function countAllSpeciesRecords(
   snapshot: BarnDatabaseSnapshot,
@@ -457,6 +469,15 @@ export function countAllSpeciesRecords(
   const feedAllocations = (snapshot.feedAllocations ?? []).filter((fa) =>
     isSameSpecies(fa.species, speciesName)
   ).length;
+  const ledgerEntries = (snapshot.ledgerEntries ?? []).filter((le) =>
+    isSameSpecies(le.species, speciesName)
+  ).length;
+  const processingLogs = (snapshot.processingLogs ?? []).filter((pl) =>
+    isSameSpecies(pl.species, speciesName)
+  ).length;
+  const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) =>
+    isSameSpecies(yp.species, speciesName)
+  ).length;
 
   return (
     animals +
@@ -467,7 +488,10 @@ export function countAllSpeciesRecords(
     careLogs +
     shows +
     feedBatches +
-    feedAllocations
+    feedAllocations +
+    ledgerEntries +
+    processingLogs +
+    youthProjectBooks
   );
 }
 
@@ -607,6 +631,24 @@ export function purgeSpeciesTestingDataPure(
     return !remove;
   });
 
+  const nextLedgerEntries = (snapshot.ledgerEntries ?? []).filter((le) => {
+    const remove = isSameSpecies(le.species, speciesName) && isSampleTestingId(le.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextProcessingLogs = (snapshot.processingLogs ?? []).filter((pl) => {
+    const remove = isSameSpecies(pl.species, speciesName) && isSampleTestingId(pl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextYouthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) => {
+    const remove = isSameSpecies(yp.species, speciesName) && isSampleTestingId(yp.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -619,6 +661,9 @@ export function purgeSpeciesTestingDataPure(
       shows: nextShows,
       feedBatches: nextFeedBatches,
       feedAllocations: nextFeedAllocations,
+      ledgerEntries: nextLedgerEntries,
+      processingLogs: nextProcessingLogs,
+      youthProjectBooks: nextYouthProjectBooks,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -747,6 +792,24 @@ export function purgeSpeciesNonTestingDataPure(
     return !remove;
   });
 
+  const nextLedgerEntries = (snapshot.ledgerEntries ?? []).filter((le) => {
+    const remove = isSameSpecies(le.species, speciesName) && !isSampleTestingId(le.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextProcessingLogs = (snapshot.processingLogs ?? []).filter((pl) => {
+    const remove = isSameSpecies(pl.species, speciesName) && !isSampleTestingId(pl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextYouthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) => {
+    const remove = isSameSpecies(yp.species, speciesName) && !isSampleTestingId(yp.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -759,6 +822,9 @@ export function purgeSpeciesNonTestingDataPure(
       shows: nextShows,
       feedBatches: nextFeedBatches,
       feedAllocations: nextFeedAllocations,
+      ledgerEntries: nextLedgerEntries,
+      processingLogs: nextProcessingLogs,
+      youthProjectBooks: nextYouthProjectBooks,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -855,6 +921,30 @@ export function purgeAllSpeciesRecordsPure(
     return true;
   });
 
+  const nextLedgerEntries = (snapshot.ledgerEntries ?? []).filter((le) => {
+    if (isSameSpecies(le.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextProcessingLogs = (snapshot.processingLogs ?? []).filter((pl) => {
+    if (isSameSpecies(pl.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextYouthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) => {
+    if (isSameSpecies(yp.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -867,6 +957,9 @@ export function purgeAllSpeciesRecordsPure(
       shows: nextShows,
       feedBatches: nextFeedBatches,
       feedAllocations: nextFeedAllocations,
+      ledgerEntries: nextLedgerEntries,
+      processingLogs: nextProcessingLogs,
+      youthProjectBooks: nextYouthProjectBooks,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -1527,5 +1620,8 @@ export function buildFullPredefinedSampleSnapshot(
     shows,
     feedBatches,
     feedAllocations,
+    ledgerEntries: [],
+    processingLogs: [],
+    youthProjectBooks: [],
   };
 }

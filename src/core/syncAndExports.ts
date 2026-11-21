@@ -36,6 +36,7 @@ import {
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  LedgerEntry,
   millisToDateIso,
   normalizeAnimalStatus,
   normalizeBiologicalSex,
@@ -45,19 +46,27 @@ import {
   normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
   normalizeIgnoredConflicts,
+  normalizeLedgerCategory,
+  normalizeLedgerEntryType,
   normalizeLitterWeightMilestones,
   normalizeOwnershipType,
   normalizePedigreeGenerationDepth,
+  normalizePeltGrade,
+  normalizeProcessingStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
+  normalizeYouthOrgType,
+  normalizeYouthProjectFeedLogs,
   nowEpochMs,
   nowIsoUtc,
   PedigreeGenerationDepth,
   PREDEFINED_SPECIES_PRESETS,
+  ProcessingLog,
   resolveSpeciesProfile,
+  YouthProjectBook,
   resolveSpeciesWeightUnit,
   ShowEvent,
   SpeciesProfile,
@@ -287,6 +296,18 @@ export function mergeBarnSnapshots(
     local.feedAllocations ?? [],
     incoming.feedAllocations ?? []
   );
+  const ledgerEntriesRes = mergeByIdAndTimestamp(
+    local.ledgerEntries ?? [],
+    incoming.ledgerEntries ?? []
+  );
+  const processingLogsRes = mergeByIdAndTimestamp(
+    local.processingLogs ?? [],
+    incoming.processingLogs ?? []
+  );
+  const youthBooksRes = mergeByIdAndTimestamp(
+    local.youthProjectBooks ?? [],
+    incoming.youthProjectBooks ?? []
+  );
 
   const sortedSpecies = Array.from(speciesByName.values())
     .sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name))
@@ -305,6 +326,9 @@ export function mergeBarnSnapshots(
       shows: showsRes.merged,
       feedBatches: feedBatchesRes.merged,
       feedAllocations: feedAllocationsRes.merged,
+      ledgerEntries: ledgerEntriesRes.merged,
+      processingLogs: processingLogsRes.merged,
+      youthProjectBooks: youthBooksRes.merged,
     },
     animalsAdded: animalsRes.added,
     animalsUpdated: animalsRes.updated,
@@ -469,6 +493,9 @@ function buildBarnBackupEnvelopeContext(
         tasks: snapshot.tasks.length,
         feedBatches: (snapshot.feedBatches ?? []).length,
         feedAllocations: (snapshot.feedAllocations ?? []).length,
+        ledgerEntries: (snapshot.ledgerEntries ?? []).length,
+        processingLogs: (snapshot.processingLogs ?? []).length,
+        youthProjectBooks: (snapshot.youthProjectBooks ?? []).length,
       },
       bySpecies: Array.from(bySpeciesMap.values()),
     },
@@ -509,6 +536,9 @@ export function exportBarnBackupJson(
     shows: snapshot.shows,
     feedBatches: snapshot.feedBatches ?? [],
     feedAllocations: snapshot.feedAllocations ?? [],
+    ledgerEntries: snapshot.ledgerEntries ?? [],
+    processingLogs: snapshot.processingLogs ?? [],
+    youthProjectBooks: snapshot.youthProjectBooks ?? [],
   };
   return JSON.stringify(payload, null, 2);
 }
@@ -544,6 +574,9 @@ export function* generateBarnBackupJsonChunks(
     { key: 'shows', items: snapshot.shows },
     { key: 'feedBatches', items: snapshot.feedBatches ?? [] },
     { key: 'feedAllocations', items: snapshot.feedAllocations ?? [] },
+    { key: 'ledgerEntries', items: snapshot.ledgerEntries ?? [] },
+    { key: 'processingLogs', items: snapshot.processingLogs ?? [] },
+    { key: 'youthProjectBooks', items: snapshot.youthProjectBooks ?? [] },
   ];
 
   for (let sIdx = 0; sIdx < sections.length; sIdx++) {
@@ -1208,6 +1241,138 @@ export function parseBarnBackupJson(
       } satisfies FeedAllocation;
     });
 
+  const ledgerEntries: LedgerEntry[] = (
+    Array.isArray(raw.ledgerEntries) ? raw.ledgerEntries : []
+  )
+    .filter(isObj)
+    .map((le: any) => {
+      const rawDate = typeof le.dateIso === 'string' ? le.dateIso.trim() : '';
+      const receiptData = sanitizeSafeRasterImageDataUrl(le.receiptPhotoDataUrl);
+      const receiptThumb = sanitizeSafeRasterImageDataUrl(le.receiptPhotoThumbnailDataUrl);
+      return {
+        id: safeId(le.id),
+        species: sanitizeSingleLineText(le.species, 100) || 'Rabbit',
+        dateIso: /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayDateIso(),
+        entryType: normalizeLedgerEntryType(le.entryType, 'expense'),
+        category: normalizeLedgerCategory(le.category, 'other'),
+        amountCents: Math.round(finiteNonNeg(le.amountCents, 0)),
+        title: sanitizeSingleLineText(le.title || 'Barn Transaction', 180) || 'Barn Transaction',
+        vendorOrParty: sanitizeSingleLineText(le.vendorOrParty || '', 160),
+        ...(typeof le.linkedAnimalId === 'string' && isSafeRecordKey(le.linkedAnimalId)
+          ? { linkedAnimalId: le.linkedAnimalId }
+          : {}),
+        ...(typeof le.linkedBreedingId === 'string' && isSafeRecordKey(le.linkedBreedingId)
+          ? { linkedBreedingId: le.linkedBreedingId }
+          : {}),
+        ...(typeof le.linkedFeedBatchId === 'string' && isSafeRecordKey(le.linkedFeedBatchId)
+          ? { linkedFeedBatchId: le.linkedFeedBatchId }
+          : {}),
+        ...(typeof le.linkedProjectId === 'string' && isSafeRecordKey(le.linkedProjectId)
+          ? { linkedProjectId: le.linkedProjectId }
+          : {}),
+        ...(receiptData ? { receiptPhotoDataUrl: receiptData } : {}),
+        ...(receiptThumb ? { receiptPhotoThumbnailDataUrl: receiptThumb } : {}),
+        ...(typeof le.receiptPhotoMimeType === 'string' && le.receiptPhotoMimeType
+          ? { receiptPhotoMimeType: sanitizeSingleLineText(le.receiptPhotoMimeType, 60) }
+          : {}),
+        ...(le.receiptPhotoBytes !== undefined
+          ? { receiptPhotoBytes: Math.round(finiteNonNeg(le.receiptPhotoBytes, 0)) }
+          : {}),
+        notes: sanitizePlainText(le.notes || '', 5000),
+        ...(typeof le._rev === 'number' && Number.isFinite(le._rev) ? { _rev: Math.floor(le._rev) } : {}),
+        createdAt: typeof le.createdAt === 'string' && le.createdAt ? le.createdAt : ts,
+        updatedAt: typeof le.updatedAt === 'string' && le.updatedAt ? le.updatedAt : ts,
+      } satisfies LedgerEntry;
+    });
+
+  const processingLogs: ProcessingLog[] = (
+    Array.isArray(raw.processingLogs) ? raw.processingLogs : []
+  )
+    .filter(isObj)
+    .map((pl: any) => {
+      const schedDate = typeof pl.scheduledDateIso === 'string' ? pl.scheduledDateIso.trim() : '';
+      const harvDate = typeof pl.harvestDateIso === 'string' ? pl.harvestDateIso.trim() : '';
+      const liveW = Math.round(finiteNonNeg(pl.liveWeightGrams, 0));
+      const dressedW = Math.round(finiteNonNeg(pl.dressedWeightGrams, 0));
+      const dressPct =
+        liveW > 0 && dressedW > 0
+          ? Math.round((dressedW / liveW) * 1000) / 10
+          : typeof pl.dressOutPercent === 'number' && Number.isFinite(pl.dressOutPercent)
+          ? Math.round(pl.dressOutPercent * 10) / 10
+          : undefined;
+      return {
+        id: safeId(pl.id),
+        species: sanitizeSingleLineText(pl.species, 100) || 'Rabbit',
+        title: sanitizeSingleLineText(pl.title || 'Processing Batch', 180) || 'Processing Batch',
+        ...(typeof pl.linkedAnimalId === 'string' && isSafeRecordKey(pl.linkedAnimalId)
+          ? { linkedAnimalId: pl.linkedAnimalId }
+          : {}),
+        ...(typeof pl.linkedBreedingId === 'string' && isSafeRecordKey(pl.linkedBreedingId)
+          ? { linkedBreedingId: pl.linkedBreedingId }
+          : {}),
+        scheduledDateIso: /^\d{4}-\d{2}-\d{2}$/.test(schedDate) ? schedDate : '',
+        harvestDateIso: /^\d{4}-\d{2}-\d{2}$/.test(harvDate) ? harvDate : '',
+        status: normalizeProcessingStatus(pl.status, 'Processed'),
+        animalCount: Math.max(1, Math.round(finiteNonNeg(pl.animalCount, 1))),
+        liveWeightGrams: liveW,
+        dressedWeightGrams: dressedW,
+        ...(dressPct !== undefined ? { dressOutPercent: dressPct } : {}),
+        peltCount: Math.round(finiteNonNeg(pl.peltCount, 0)),
+        peltGrade: normalizePeltGrade(pl.peltGrade),
+        peltColorNotes: sanitizeSingleLineText(pl.peltColorNotes || '', 240),
+        ...(pl.processingCostCents !== undefined
+          ? { processingCostCents: Math.round(finiteNonNeg(pl.processingCostCents, 0)) }
+          : {}),
+        ...(pl.meatValueCents !== undefined
+          ? { meatValueCents: Math.round(finiteNonNeg(pl.meatValueCents, 0)) }
+          : {}),
+        ...(pl.peltValueCents !== undefined
+          ? { peltValueCents: Math.round(finiteNonNeg(pl.peltValueCents, 0)) }
+          : {}),
+        notes: sanitizePlainText(pl.notes || '', 5000),
+        ...(typeof pl._rev === 'number' && Number.isFinite(pl._rev) ? { _rev: Math.floor(pl._rev) } : {}),
+        createdAt: typeof pl.createdAt === 'string' && pl.createdAt ? pl.createdAt : ts,
+        updatedAt: typeof pl.updatedAt === 'string' && pl.updatedAt ? pl.updatedAt : ts,
+      } satisfies ProcessingLog;
+    });
+
+  const youthProjectBooks: YouthProjectBook[] = (
+    Array.isArray(raw.youthProjectBooks) ? raw.youthProjectBooks : []
+  )
+    .filter(isObj)
+    .map((yp: any) => {
+      const startDate = typeof yp.startDateIso === 'string' ? yp.startDateIso.trim() : '';
+      const endDate = typeof yp.endDateIso === 'string' ? yp.endDateIso.trim() : '';
+      return {
+        id: safeId(yp.id),
+        species: sanitizeSingleLineText(yp.species, 100) || 'Rabbit',
+        organization: normalizeYouthOrgType(yp.organization, '4-H'),
+        projectTitle: sanitizeSingleLineText(yp.projectTitle || 'Youth Livestock Project', 180) || 'Youth Livestock Project',
+        memberName: sanitizeSingleLineText(yp.memberName || '', 140),
+        clubOrChapter: sanitizeSingleLineText(yp.clubOrChapter || '', 160),
+        leaderOrAdvisor: sanitizeSingleLineText(yp.leaderOrAdvisor || '', 140),
+        projectYear: sanitizeSingleLineText(yp.projectYear || todayDateIso().slice(0, 4), 16) || todayDateIso().slice(0, 4),
+        startDateIso: /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : todayDateIso(),
+        endDateIso: /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : '',
+        status: yp.status === 'Completed' ? 'Completed' : 'Active',
+        linkedAnimalIds: Array.isArray(yp.linkedAnimalIds)
+          ? yp.linkedAnimalIds.filter((id: unknown): id is string => typeof id === 'string' && isSafeRecordKey(id))
+          : [],
+        linkedBreedingIds: Array.isArray(yp.linkedBreedingIds)
+          ? yp.linkedBreedingIds.filter((id: unknown): id is string => typeof id === 'string' && isSafeRecordKey(id))
+          : [],
+        startingInventoryValueCents: Math.round(finiteNonNeg(yp.startingInventoryValueCents, 0)),
+        endingInventoryValueCents: Math.round(finiteNonNeg(yp.endingInventoryValueCents, 0)),
+        feedLogs: normalizeYouthProjectFeedLogs(yp.feedLogs),
+        goalsAndReflection: sanitizePlainText(yp.goalsAndReflection || '', 10_000),
+        showAndCommunityNotes: sanitizePlainText(yp.showAndCommunityNotes || '', 10_000),
+        notes: sanitizePlainText(yp.notes || '', 5000),
+        ...(typeof yp._rev === 'number' && Number.isFinite(yp._rev) ? { _rev: Math.floor(yp._rev) } : {}),
+        createdAt: typeof yp.createdAt === 'string' && yp.createdAt ? yp.createdAt : ts,
+        updatedAt: typeof yp.updatedAt === 'string' && yp.updatedAt ? yp.updatedAt : ts,
+      } satisfies YouthProjectBook;
+    });
+
   return {
     settings,
     speciesProfiles,
@@ -1220,6 +1385,9 @@ export function parseBarnBackupJson(
     shows,
     feedBatches,
     feedAllocations,
+    ledgerEntries,
+    processingLogs,
+    youthProjectBooks,
   };
 }
 
@@ -1618,6 +1786,15 @@ export function exportSpeciesBackupJson(
   const feedAllocations = (snapshot.feedAllocations ?? []).filter((fa) =>
     isSameSpecies(fa.species, speciesName)
   );
+  const ledgerEntries = (snapshot.ledgerEntries ?? []).filter((le) =>
+    isSameSpecies(le.species, speciesName)
+  );
+  const processingLogs = (snapshot.processingLogs ?? []).filter((pl) =>
+    isSameSpecies(pl.species, speciesName)
+  );
+  const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) =>
+    isSameSpecies(yp.species, speciesName)
+  );
 
   return exportBarnBackupJson(
     {
@@ -1632,6 +1809,9 @@ export function exportSpeciesBackupJson(
       shows,
       feedBatches,
       feedAllocations,
+      ledgerEntries,
+      processingLogs,
+      youthProjectBooks,
     },
     {
       backupScope: 'species',
