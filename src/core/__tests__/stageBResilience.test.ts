@@ -213,15 +213,60 @@ describe('Stage B pure domain features (IMP-023)', () => {
       });
     });
 
-    it('summarizes snapshots directly for SQLite pre-restore dry-run inspection', () => {
+    it('summarizes snapshots directly for SQLite pre-restore dry-run inspection including v3/v4 records', () => {
       const a1 = makeAnimal('a1', { tattoo: 'T1', sex: 'Male' });
-      const snap = makeEmptySnapshot({ animals: [a1] });
+      const snap = makeEmptySnapshot({
+        animals: [a1],
+        feedBatches: [
+          {
+            id: 'fb-1',
+            species: 'Rabbit',
+            brand: 'Brand',
+            productName: 'Pellet',
+            lotNumber: 'L1',
+            millCode: '',
+            manufactureDateIso: '',
+            purchaseDateIso: '2026-03-01',
+            bagCount: 1,
+            bagWeightValue: 50,
+            bagWeightUnit: 'lbs',
+            totalQuantity: 50,
+            remainingQuantity: 50,
+            lowStockThreshold: 10,
+            totalCostCents: 2000,
+            supplierName: 'Supply Co',
+            notes: '',
+            createdAt: '2026-03-01T00:00:00.000Z',
+            updatedAt: '2026-03-01T00:00:00.000Z',
+          },
+        ],
+        ledgerEntries: [
+          {
+            id: 'le-1',
+            species: 'Rabbit',
+            dateIso: '2026-03-01',
+            entryType: 'expense',
+            category: 'supplies',
+            amountCents: 1500,
+            title: 'Water crocks',
+            vendorOrParty: 'Supply Co',
+            notes: '',
+            createdAt: '2026-03-01T00:00:00.000Z',
+            updatedAt: '2026-03-01T00:00:00.000Z',
+          },
+        ],
+      });
       const insp = inspectSnapshotBeforeRestorePure(snap, null, {
         fileName: 'barn.sqlite',
         sourceFormat: 'sqlite',
       });
       expect(insp.sourceFormat).toBe('sqlite');
       expect(insp.animalCount).toBe(1);
+      expect(insp.feedBatchCount).toBe(1);
+      expect(insp.feedAllocationCount).toBe(0);
+      expect(insp.ledgerEntryCount).toBe(1);
+      expect(insp.processingLogCount).toBe(0);
+      expect(insp.youthProjectBookCount).toBe(0);
       expect(insp.replaceImpact).toBeNull();
       expect(insp.mergeImpact).toBeNull();
     });

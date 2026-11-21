@@ -255,7 +255,7 @@ describe('storageProtection — manual offline toggle & captive-portal connectiv
 
     // Valid live version.json clears captive failure and captures Date clock skew
     const liveJsonFetch = vi.fn(async () => {
-      return new Response(JSON.stringify({ appVersion: '0.1.0-prealpha.1' }), {
+      return new Response(JSON.stringify({ appVersion: '0.1.0-alpha.2' }), {
         status: 200,
         headers: {
           'content-type': 'application/json',

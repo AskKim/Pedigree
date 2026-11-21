@@ -176,8 +176,8 @@ export function SpeciesMigrationModal({
     try {
       await onConfirmMigrate(effectiveAnimalIds, effectiveTarget, migrationOptions);
       onClose();
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Could not migrate selected records.');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not migrate selected records.');
     } finally {
       setIsMigrating(false);
     }
@@ -389,6 +389,12 @@ export function SpeciesMigrationModal({
                     {previewResult.showsUpdated > 0
                       ? `, ${previewResult.showsUpdated} shows`
                       : ''}
+                    {previewResult.feedBatchesMigrated > 0
+                      ? `, ${previewResult.feedBatchesMigrated} feed batches`
+                      : ''}
+                    {previewResult.feedAllocationsMigrated > 0
+                      ? `, ${previewResult.feedAllocationsMigrated} feed logs`
+                      : ''}
                     .
                   </p>
                   <p className="text-[11px]">
@@ -454,8 +460,13 @@ export function SpeciesMigrationModal({
                       <strong className="text-[var(--barn-ink)]">Linked records moving:</strong>{' '}
                       {previewResult.photosMigrated} photos, {previewResult.careLogsMigrated} care/weight logs,{' '}
                       {previewResult.tasksMigrated} barn chores, {previewResult.breedingsMigrated} breeding
-                      records, {previewResult.cagesMigratedOrAdded} cage/pen locations, and{' '}
-                      {previewResult.showsUpdated} show entries.
+                      records, {previewResult.cagesMigratedOrAdded} cage/pen locations,{' '}
+                      {previewResult.showsUpdated} show entries
+                      {previewResult.feedBatchesMigrated > 0 ||
+                      previewResult.feedAllocationsMigrated > 0
+                        ? `, ${previewResult.feedBatchesMigrated} feed batches, and ${previewResult.feedAllocationsMigrated} feed allocations`
+                        : ''}
+                      .
                     </li>
 
                     {previewResult.createdTargetProfile ? (

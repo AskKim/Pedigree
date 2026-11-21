@@ -507,7 +507,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             "REQUEST_PRINT" -> {
-                printBridge.printCurrentPage()
+                printBridge.printFromBridge(payload)
             }
 
             "OPEN_EXTERNAL_URL" -> {

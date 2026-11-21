@@ -3181,6 +3181,82 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep store CRUD mutations in `src/hooks/useBarnStore.ts` and wire `EconomicsLedgerScreen.tsx` into `SpeciesDashboardScreen.tsx` and `App.tsx`.',
     ],
   },
+  {
+    id: 'IMP-047',
+    title: 'Post-Crash Alignment, Ready External Exporters, Feed/Archive Parity & Android WebView Print/Share',
+    category: 'stability-pwa',
+    source: 'session',
+    summary:
+      'Enforces the React PWA preservation rule in `AGENTS.md` and `prompts/master_system_prompt.md`; aligns PWA/Android versions to `0.1.0-alpha.2`; migrates `feedBatches` and `feedAllocations` during cross-species moves; surfaces v3/v4 feed, ledger, processing, and 4-H/FFA counts in `archiveInspector.ts`; implements `herdboss-transfer-bundle` (.ZIP) and `registry-worksheet-csv` (.CSV) as ready exporters; and fixes `@media print` extraction, accent-ink preservation, native wrapper Share .HTM enablement, and Android `PrintBridge.kt` offscreen HTML + landscape/portrait printing while removing the stale `PedigreePrintNotice` banner.',
+    userIntent:
+      'Realign the entire codebase after build-crash drift, keep the PWA locked to React + Vite + TypeScript, complete half-done exporters and migration/inspector coverage, and make pedigree/binder print & share work seamlessly on desktop, mobile web, and the Android WebView APK.',
+    files: [
+      'AGENTS.md',
+      '.env.example',
+      'package.json',
+      'public/version.json',
+      'src/core/upgradeGate.ts',
+      'src/core/speciesMigration.ts',
+      'src/core/archiveInspector.ts',
+      'src/core/exporters/exporterTypes.ts',
+      'src/core/exporters/registry.ts',
+      'src/native/pedigreeBridge.ts',
+      'src/components/PrintPreviewModal.tsx',
+      'src/components/ImportExportHubScreen.tsx',
+      'src/index.css',
+      'android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/MainActivity.kt',
+      'android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/PrintBridge.kt',
+      '.github/structure.txt',
+    ],
+    invariants: [
+      {
+        filePath: 'AGENTS.md',
+        requiredSubstrings: ['Never Convert PWA Away From React'],
+        rationale: 'Workspace agent rules must lock the PWA against non-React rewrites.',
+      },
+      {
+        filePath: 'src/core/speciesMigration.ts',
+        requiredSubstrings: ['feedBatchesMigrated', 'feedAllocationsMigrated'],
+        rationale: 'Cross-species migrations must move linked feedBatches and feedAllocations.',
+      },
+      {
+        filePath: 'src/core/archiveInspector.ts',
+        requiredSubstrings: [
+          'feedBatchCount',
+          'feedAllocationCount',
+          'ledgerEntryCount',
+          'processingLogCount',
+          'youthProjectBookCount',
+        ],
+        rationale: 'Pre-restore dry-run inspection must count v3/v4 feed, ledger, processing, and youth records.',
+      },
+      {
+        filePath: 'src/core/exporters/registry.ts',
+        requiredSubstrings: ['herdboss-transfer-bundle', 'registry-worksheet-csv', 'binaryContent'],
+        rationale: 'HerdBoss Transfer Tables (.ZIP) and Breed Registry & Show Worksheets (.CSV) must stay active ready exporters.',
+      },
+      {
+        filePath: 'src/components/PrintPreviewModal.tsx',
+        requiredSubstrings: [
+          'canShareHtmlDocument',
+          'extractScopedPrintCssFromRules',
+          'detectDocumentPrintOrientation',
+        ],
+        rationale: 'PrintPreviewModal must enable Share .HTM on native wrappers, extract @media print rules, and forward orientation/HTML to native print.',
+      },
+      {
+        filePath: 'android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/PrintBridge.kt',
+        requiredSubstrings: ['printFromBridge', 'printHtmlDocument', 'buildPrintAttributes'],
+        rationale: 'Android PrintBridge must render self-contained HTML in a hardened offscreen WebView with landscape/portrait PrintAttributes.',
+      },
+    ],
+    restorePlaybook: [
+      'Verify `AGENTS.md` and `prompts/master_system_prompt.md` keep the React PWA lock rule intact.',
+      'Ensure `package.json`, `public/version.json`, and `src/core/upgradeGate.ts` match `android-wrapper/app/build.gradle.kts` (`0.1.0-alpha.2`).',
+      'Keep `herdboss-transfer-bundle` and `registry-worksheet-csv` in `src/core/exporters/registry.ts` with `binaryContent` download dispatch in `ImportExportHubScreen.tsx`.',
+      'Keep `@media print` extraction, native Share .HTM support, and Android `PrintBridge.kt` offscreen HTML rendering intact and do not reintroduce `PedigreePrintNotice`.',
+    ],
+  },
 ];
 
 /**

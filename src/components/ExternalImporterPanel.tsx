@@ -319,8 +319,8 @@ export function ExternalImporterPanel({
         }
         return next;
       });
-    } catch (err: any) {
-      setParseError(err?.message || 'Could not read selected archive file(s).');
+    } catch (err: unknown) {
+      setParseError(err instanceof Error ? err.message : 'Could not read selected archive file(s).');
     }
   };
 
@@ -365,10 +365,12 @@ export function ExternalImporterPanel({
         setArchivePreview(parsed);
         setPreviewParseError(null);
       })
-      .catch((err: any) => {
+      .catch((err: unknown) => {
         if (cancelled || parseRequestSeqRef.current !== reqId) return;
         setArchivePreview(null);
-        setPreviewParseError(err?.message || 'Failed to unpack or parse archive.');
+        setPreviewParseError(
+          err instanceof Error ? err.message : 'Failed to unpack or parse archive.'
+        );
       })
       .finally(() => {
         if (!cancelled && parseRequestSeqRef.current === reqId) {
@@ -615,8 +617,10 @@ export function ExternalImporterPanel({
       setShowImportLifecycleList(false);
       setShowDiagnostics(false);
       onClearExternalOcrPreview?.();
-    } catch (err: any) {
-      setParseError(err?.message || 'Failed while optimizing or importing archive data.');
+    } catch (err: unknown) {
+      setParseError(
+        err instanceof Error ? err.message : 'Failed while optimizing or importing archive data.'
+      );
     } finally {
       setPhotoProgress(null);
       setIsImporting(false);

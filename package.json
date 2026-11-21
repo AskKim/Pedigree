@@ -2,7 +2,7 @@
   "name": "pedigree",
   "description": "Community Pedigree Project — App Name: Community Pedigree | Repo: AskKim/Pedigree | Package Name: pedigree",
   "license": "AGPL-3.0-or-later",
-  "version": "0.1.0-prealpha.1",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",

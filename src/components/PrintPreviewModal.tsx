@@ -60,6 +60,147 @@ function clampPreviewZoom(value: number): number {
   return Math.min(MAX_PREVIEW_ZOOM, Math.max(MIN_PREVIEW_ZOOM, value));
 }
 
+export function canShareHtmlDocument(filename: string, isNativeWrapper: boolean): boolean {
+  if (isNativeWrapper) {
+    return true;
+  }
+  if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') return false;
+  if (typeof navigator.canShare !== 'function') return false;
+  try {
+    const probe = new File(['<html></html>'], filename, { type: 'text/html' });
+    return navigator.canShare({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
+
+export function scopePrintSelectorList(selectorText: string): string {
+  return selectorText
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((sel) => {
+      if (/^(html|body)$/i.test(sel)) return '#barn-print-stage';
+      if (/^(html|body)\s+/i.test(sel)) {
+        return `#barn-print-stage ${sel.replace(/^(html|body)\s+/i, '')}`;
+      }
+      return `#barn-print-stage ${sel}`;
+    })
+    .join(', ');
+}
+
+export function extractScopedPrintCssFromRules(
+  rules: ArrayLike<CSSRule>,
+  pageRules: string[],
+  scopedRules: string[]
+): void {
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    if (!rule) continue;
+    const trimmed = typeof rule.cssText === 'string' ? rule.cssText.trimStart() : '';
+    if (rule.type === 6 || trimmed.startsWith('@page')) {
+      pageRules.push(rule.cssText);
+    } else if (rule.type === 1) {
+      const styleRule = rule as CSSStyleRule;
+      const scoped = scopePrintSelectorList(styleRule.selectorText);
+      if (scoped) {
+        scopedRules.push(`${scoped} { ${styleRule.style.cssText} }`);
+      }
+    } else if (rule.type === 4) {
+      const mediaRule = rule as CSSMediaRule;
+      const mediaText = (mediaRule.media?.mediaText || '').trim().toLowerCase();
+      if (mediaText === 'screen' || /\bonly\s+screen\b/.test(mediaText)) {
+        continue;
+      }
+      const childScoped: string[] = [];
+      if (mediaRule.cssRules) {
+        extractScopedPrintCssFromRules(mediaRule.cssRules, pageRules, childScoped);
+      }
+      if (childScoped.length > 0) {
+        if (!mediaText || mediaText === 'print' || mediaText === 'all') {
+          scopedRules.push(...childScoped);
+        } else {
+          const cleanMedia = mediaRule.media.mediaText.replace(/\bscreen\b/gi, 'print');
+          scopedRules.push(`@media ${cleanMedia} {\n${childScoped.join('\n')}\n}`);
+        }
+      }
+    }
+  }
+}
+
+function findMatchingBrace(text: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+export function extractScopedPrintCssFromRawCss(rawCss: string): {
+  pageRules: string[];
+  scopedRules: string[];
+} {
+  const pageRules: string[] = [];
+  const remainingParts: string[] = [];
+  let cursor = 0;
+  const atRuleRe = /@(page|media)\b([^\{]*)\{/gi;
+
+  while (cursor < rawCss.length) {
+    atRuleRe.lastIndex = cursor;
+    const match = atRuleRe.exec(rawCss);
+    if (!match) {
+      remainingParts.push(rawCss.slice(cursor));
+      break;
+    }
+    if (match.index > cursor) {
+      remainingParts.push(rawCss.slice(cursor, match.index));
+    }
+    const openBrace = match.index + match[0].length - 1;
+    const closeBrace = findMatchingBrace(rawCss, openBrace);
+    if (closeBrace < 0) {
+      remainingParts.push(rawCss.slice(match.index));
+      break;
+    }
+    const kind = match[1].toLowerCase();
+    const prelude = match[2].trim();
+    const inner = rawCss.slice(openBrace + 1, closeBrace);
+    if (kind === 'page') {
+      pageRules.push(rawCss.slice(match.index, closeBrace + 1));
+    } else if (kind === 'media') {
+      const lowerPrelude = prelude.toLowerCase();
+      if (lowerPrelude !== 'screen' && !/\bonly\s+screen\b/.test(lowerPrelude)) {
+        const nested = extractScopedPrintCssFromRawCss(inner);
+        pageRules.push(...nested.pageRules);
+        remainingParts.push(nested.scopedRules.join('\n'));
+      }
+    }
+    cursor = closeBrace + 1;
+  }
+
+  const rewritten = remainingParts
+    .join('\n')
+    .replace(/(^|[\s,}])(html|body)(?=[\s,{])/gi, '$1#barn-print-stage')
+    .trim();
+
+  return {
+    pageRules,
+    scopedRules: rewritten ? [rewritten] : [],
+  };
+}
+
+export function detectDocumentPrintOrientation(
+  pageRules: readonly string[],
+  htmlContent: string
+): 'landscape' | 'portrait' {
+  const combined = `${pageRules.join('\n')}\n${htmlContent}`;
+  return /@page[^}]*\blandscape\b/i.test(combined) ? 'landscape' : 'portrait';
+}
+
 export type PrintPreviewFileActionKind = 'download' | 'share' | 'pdf';
 
 export interface PrintPreviewFileError {
@@ -622,16 +763,10 @@ export function PrintPreviewModal({
     }
   };
 
-  const canShareHtml = useMemo(() => {
-    if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') return false;
-    if (typeof navigator.canShare !== 'function') return false;
-    try {
-      const probe = new File(['<html></html>'], filename, { type: 'text/html' });
-      return navigator.canShare({ files: [probe] });
-    } catch {
-      return false;
-    }
-  }, [filename]);
+  const canShareHtml = useMemo(
+    () => canShareHtmlDocument(filename, pedigreeBridge.isNativeWrapper()),
+    [filename]
+  );
 
   const handleShareHtm = () =>
     executeFileAction('share', () =>
@@ -681,17 +816,9 @@ export function PrintPreviewModal({
     try {
       const sheets = Array.from(sourceDoc.styleSheets || []);
       for (const sheet of sheets) {
-        const rules = Array.from(sheet.cssRules || []);
-        for (const rule of rules) {
-          if (rule.type === 6 || rule.cssText.trimStart().startsWith('@page')) {
-            pageRules.push(rule.cssText);
-          } else if (rule.type === 1) {
-            const styleRule = rule as CSSStyleRule;
-            const scoped = scopeSelectorList(styleRule.selectorText);
-            if (scoped) {
-              scopedRules.push(`${scoped} { ${styleRule.style.cssText} }`);
-            }
-          }
+        const rules = sheet.cssRules;
+        if (rules) {
+          extractScopedPrintCssFromRules(rules, pageRules, scopedRules);
         }
       }
     } catch {
@@ -702,11 +829,25 @@ export function PrintPreviewModal({
       const rawCss = Array.from(parsedFallback.querySelectorAll('style'))
         .map((el) => el.textContent || '')
         .join('\n');
-      const extractedPages = rawCss.match(/@page\s*\{[^}]*\}/gi) || [];
-      pageRules.push(...extractedPages);
-      const withoutPage = rawCss.replace(/@page\s*\{[^}]*\}/gi, '');
-      const rewritten = withoutPage.replace(/(^|[\s,}])(html|body)(?=[\s,{])/gi, '$1#barn-print-stage');
-      scopedRules.push(rewritten);
+      const extracted = extractScopedPrintCssFromRawCss(rawCss);
+      pageRules.push(...extracted.pageRules);
+      scopedRules.push(...extracted.scopedRules);
+    }
+
+    const orientation = detectDocumentPrintOrientation(pageRules, htmlContent);
+
+    if (pedigreeBridge.getPlatform() === 'android') {
+      const dispatched = pedigreeBridge.requestPrint({
+        title: docTitle,
+        orientation,
+        htmlContent,
+      });
+      if (!dispatched) {
+        setPrintBlockedMessage(
+          'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
+        );
+      }
+      return;
     }
 
     const stageEl = document.createElement('div');
@@ -718,6 +859,9 @@ export function PrintPreviewModal({
       sourceDoc.querySelector('meta[name="barn-preserve-accent-ink"][content="true"]') ??
         parsedFallback.querySelector('meta[name="barn-preserve-accent-ink"][content="true"]')
     );
+    if (preserveAccentInk) {
+      stageEl.setAttribute('data-preserve-accent-ink', 'true');
+    }
 
     const styleEl = document.createElement('style');
     styleEl.id = 'barn-print-stage-style';
@@ -746,7 +890,10 @@ export function PrintPreviewModal({
           box-sizing: border-box !important;
         }
         ${scopedRules.join('\n')}
-        #barn-print-stage,
+        ${
+          preserveAccentInk
+            ? `#barn-print-stage * { box-shadow: none !important; }`
+            : `#barn-print-stage,
         #barn-print-stage div,
         #barn-print-stage section,
         #barn-print-stage article,
@@ -759,8 +906,9 @@ export function PrintPreviewModal({
         #barn-print-stage td {
           background: #ffffff !important;
           background-color: #ffffff !important;
-          ${preserveAccentInk ? '' : 'color: #000000 !important;'}
+          color: #000000 !important;
           box-shadow: none !important;
+        }`
         }
       }
     `;
@@ -806,7 +954,11 @@ export function PrintPreviewModal({
     }
 
     if (pedigreeBridge.isNativeWrapper()) {
-      const dispatched = pedigreeBridge.requestPrint();
+      const dispatched = pedigreeBridge.requestPrint({
+        title: docTitle,
+        orientation,
+        htmlContent,
+      });
       if (!dispatched) {
         cleanup();
         setPrintBlockedMessage(
@@ -814,7 +966,7 @@ export function PrintPreviewModal({
         );
         return;
       }
-      // Keep #barn-print-stage mounted while Android PrintManager snapshots the WebView DOM.
+      // Keep #barn-print-stage mounted while non-Android native PrintManager snapshots the WebView DOM.
       printSafetyTimerRef.current = window.setTimeout(cleanup, 120000);
       return;
     }

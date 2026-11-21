@@ -6,7 +6,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 
 # Master System Prompt: Offline-First Pedigree PWA
 
-**Last-Edited Timestamp:** 2026-11-20
+**Last-Edited Timestamp:** 2026-11-21
 > **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 ## 0. Minimal-Output Alignment Check
@@ -26,6 +26,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 - **Flag Uncertainty:** Mark unverified browser quirks/edge cases inline with `// UNVERIFIED: [reason]`.
 
 ## 2. Architecture & Type Safety
+- **CRITICAL RULE — Never Convert PWA Away From React:** The PWA portion of this project MUST NEVER be converted, rewritten, or migrated away from React. It must always remain a React + Vite + TypeScript application—even during build-crash recovery, emergency fixes, or refactoring.
 - **Stack & Target:** Unified React + Vite + strict TypeScript PWA (iOS, Android, Desktop), transpiled to ES2018 (`browserslist > 0.5%`). Offline-first, zero mandatory cloud/accounts.
 - **Strict Types:** Never silence TypeScript errors with `as any`, `@ts-ignore`, or `@ts-expect-error`; fix root types.
 - **Modularity & Sync:** Keep strict separation across `components/` (UI), `hooks/` (state), `storage/` (adapters/OPFS), and `core/` (pure TS domain logic, zero DOM/window). Preserve unit tests, run validation scripts after edits, and keep docs synced with code.

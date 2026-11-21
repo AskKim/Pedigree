@@ -45,6 +45,8 @@ export interface SpeciesMigrationResult {
   breedingsMigrated: number;
   cagesMigratedOrAdded: number;
   showsUpdated: number;
+  feedBatchesMigrated: number;
+  feedAllocationsMigrated: number;
   createdTargetProfile: boolean;
   /** Migrated animals that still reference a sire/dam staying in another species (will reconnect if those parents are migrated too). */
   splitParentLinksCount: number;
@@ -578,6 +580,38 @@ export function migrateAnimalsToSpecies(
     return yp;
   });
 
+  let feedBatchesMigrated = 0;
+  const migratedFeedBatchIds = new Set<string>();
+  const nextFeedBatches = (snapshot.feedBatches ?? []).map((fb) => {
+    const fullSpecies = isFullSpeciesFromSource(fb.species);
+    if (fullSpecies && !isSameSpecies(fb.species, targetName)) {
+      feedBatchesMigrated++;
+      migratedFeedBatchIds.add(fb.id);
+      return { ...fb, species: targetName, _rev: bumpRecordRevision(fb), updatedAt: ts };
+    }
+    return fb;
+  });
+
+  let feedAllocationsMigrated = 0;
+  const nextFeedAllocations = (snapshot.feedAllocations ?? []).map((fa) => {
+    const linkedBatchMoved = Boolean(fa.feedBatchId && migratedFeedBatchIds.has(fa.feedBatchId));
+    const linkedAnimalMoved = Boolean(
+      fa.targetType === 'animal' && fa.targetId && actuallyMovingIds.has(fa.targetId)
+    );
+    const linkedBreedingMoved = Boolean(
+      fa.targetType === 'litter' && fa.targetId && migratedBreedingIds.has(fa.targetId)
+    );
+    const fullSpecies = isFullSpeciesFromSource(fa.species);
+    if (
+      (linkedBatchMoved || linkedAnimalMoved || linkedBreedingMoved || fullSpecies) &&
+      !isSameSpecies(fa.species, targetName)
+    ) {
+      feedAllocationsMigrated++;
+      return { ...fa, species: targetName, _rev: bumpRecordRevision(fa), updatedAt: ts };
+    }
+    return fa;
+  });
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     speciesProfiles: nextSpeciesProfiles,
@@ -588,6 +622,8 @@ export function migrateAnimalsToSpecies(
     tasks: nextTasks,
     careLogs: nextCareLogs,
     shows: [...nextShows, ...showsToAppend],
+    feedBatches: nextFeedBatches,
+    feedAllocations: nextFeedAllocations,
     ledgerEntries: nextLedgerEntries,
     processingLogs: nextProcessingLogs,
     youthProjectBooks: nextYouthBooks,
@@ -611,6 +647,8 @@ export function migrateAnimalsToSpecies(
     breedingsMigrated,
     cagesMigratedOrAdded,
     showsUpdated,
+    feedBatchesMigrated,
+    feedAllocationsMigrated,
     createdTargetProfile,
     splitParentLinksCount,
     splitBreedingsCount,

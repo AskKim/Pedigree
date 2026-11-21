@@ -1201,7 +1201,11 @@ export function ImportExportHubScreen({
           appBaseUrl,
         });
 
-        await downloadTextFile(artifact.filename, artifact.content, artifact.mimeType);
+        if (artifact.binaryContent) {
+          await downloadBinaryFile(artifact.filename, artifact.binaryContent, artifact.mimeType);
+        } else {
+          await downloadTextFile(artifact.filename, artifact.content, artifact.mimeType);
+        }
         setExporterFeedback({
           message: artifact.summary,
           warnings: artifact.warnings,
@@ -2420,6 +2424,20 @@ export function ImportExportHubScreen({
                     </div>
                   </div>
 
+                  {(pendingRestoreInspection.inspection.feedBatchCount > 0 ||
+                    pendingRestoreInspection.inspection.feedAllocationCount > 0 ||
+                    pendingRestoreInspection.inspection.ledgerEntryCount > 0 ||
+                    pendingRestoreInspection.inspection.processingLogCount > 0 ||
+                    pendingRestoreInspection.inspection.youthProjectBookCount > 0) && (
+                    <div className="rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] p-2.5 text-[11px] font-mono tabular-nums text-[var(--barn-muted)] flex flex-wrap gap-x-4 gap-y-1">
+                      <span>Feed Lots: {pendingRestoreInspection.inspection.feedBatchCount}</span>
+                      <span>Feed Logs: {pendingRestoreInspection.inspection.feedAllocationCount}</span>
+                      <span>Ledger: {pendingRestoreInspection.inspection.ledgerEntryCount}</span>
+                      <span>Processing: {pendingRestoreInspection.inspection.processingLogCount}</span>
+                      <span>4-H / FFA: {pendingRestoreInspection.inspection.youthProjectBookCount}</span>
+                    </div>
+                  )}
+
                   {pendingRestoreInspection.inspection.speciesBreakdown.length > 0 && (
                     <div className="rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] p-2.5 space-y-1 text-[11px]">
                       <div className="font-semibold text-[var(--barn-muted)]">
@@ -2791,7 +2809,7 @@ export function ImportExportHubScreen({
             })}
           </div>
 
-          {/* Extensible External Schema Roadmap */}
+          {/* Extensible External Schema Registry */}
           <div className="border-t border-[var(--barn-border)] pt-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -2805,33 +2823,37 @@ export function ImportExportHubScreen({
                 </p>
               </div>
               <span className="font-mono text-[11px] text-[var(--barn-muted)]">
-                {BUILTIN_NON_NATIVE_EXPORTERS.length} active ·{' '}
-                {PLANNED_EXTERNAL_SCHEMA_TARGETS.length} reserved schemas
+                {BUILTIN_NON_NATIVE_EXPORTERS.length} active
+                {PLANNED_EXTERNAL_SCHEMA_TARGETS.length > 0
+                  ? ` · ${PLANNED_EXTERNAL_SCHEMA_TARGETS.length} reserved schemas`
+                  : ' · All built-in schemas ready'}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-              {PLANNED_EXTERNAL_SCHEMA_TARGETS.map((target) => (
-                <div
-                  key={target.id}
-                  className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-dashed border-[var(--barn-border)] space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[var(--barn-ink)]">{target.name}</span>
-                    <span className="font-mono text-[10px] text-[var(--barn-muted)]">
-                      {target.formatExtension} · Registered Slot
-                    </span>
+            {PLANNED_EXTERNAL_SCHEMA_TARGETS.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {PLANNED_EXTERNAL_SCHEMA_TARGETS.map((target) => (
+                  <div
+                    key={target.id}
+                    className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-dashed border-[var(--barn-border)] space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--barn-ink)]">{target.name}</span>
+                      <span className="font-mono text-[10px] text-[var(--barn-muted)]">
+                        {target.formatExtension} · Registered Slot
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[var(--barn-muted)]">{target.description}</p>
+                    {target.schemaFields && (
+                      <p className="text-[10px] font-mono text-[var(--barn-muted)]">
+                        Columns: {target.schemaFields.join(' · ')}
+                      </p>
+                    )}
+                    <p className="text-[11px] text-[var(--barn-sage)]">{target.compatibilityNote}</p>
                   </div>
-                  <p className="text-[11px] text-[var(--barn-muted)]">{target.description}</p>
-                  {target.schemaFields && (
-                    <p className="text-[10px] font-mono text-[var(--barn-muted)]">
-                      Columns: {target.schemaFields.join(' · ')}
-                    </p>
-                  )}
-                  <p className="text-[11px] text-[var(--barn-sage)]">{target.compatibilityNote}</p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       )}

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
-import { buildPromptsCatalogManifest } from './src/core/promptsCatalog';
+import { buildPromptsCatalogManifest } from './src/core/promptsCatalog.ts';
 
 async function scanPromptsFolderOnDisk(rootDir: string) {
   const promptsDir = path.resolve(rootDir, 'prompts');

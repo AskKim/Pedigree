@@ -190,18 +190,25 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     defineNonEnumerableMethod(blobCtor.prototype, 'text', textShim);
   }
 
-  const stringCtor = (g.String ?? String) as { prototype?: Record<string, any> } | undefined;
+  const stringCtor = (g.String ?? String) as { prototype?: object } | undefined;
   if (stringCtor?.prototype) {
+    interface LegacyTrimString {
+      trimLeft?: () => string;
+      trimRight?: () => string;
+    }
+
     const trimStartShim: MarkedShimFn = function stringTrimStartShim(this: string) {
-      return typeof (this as any).trimLeft === 'function'
-        ? (this as any).trimLeft()
+      const legacy = this as unknown as LegacyTrimString;
+      return typeof legacy.trimLeft === 'function'
+        ? legacy.trimLeft.call(this)
         : String(this).replace(/^[\s\uFEFF\xA0]+/, '');
     };
     defineNonEnumerableMethod(stringCtor.prototype, 'trimStart', trimStartShim);
 
     const trimEndShim: MarkedShimFn = function stringTrimEndShim(this: string) {
-      return typeof (this as any).trimRight === 'function'
-        ? (this as any).trimRight()
+      const legacy = this as unknown as LegacyTrimString;
+      return typeof legacy.trimRight === 'function'
+        ? legacy.trimRight.call(this)
         : String(this).replace(/[\s\uFEFF\xA0]+$/, '');
     };
     defineNonEnumerableMethod(stringCtor.prototype, 'trimEnd', trimEndShim);

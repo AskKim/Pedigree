@@ -1,3 +1,4 @@
+import { unzipSync, strFromU8 } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import {
   buildExporterCatalog,
@@ -8,10 +9,11 @@ import {
   runExternalExporter,
 } from '../exporters/registry';
 import type { ExternalExporterDescriptor } from '../exporters/exporterTypes';
+import { HerdBossImporter } from '../importers/herdBossImporter';
 import { buildFullPredefinedSampleSnapshot } from '../sampleData';
 
 describe('exporters/registry — extensible non-native format exporters', () => {
-  it('registers all built-in ready exporters and planned external schema targets with unique IDs', () => {
+  it('registers all built-in ready exporters and external schemas with unique IDs', () => {
     const ids = new Set<string>();
     for (const exp of EXTERNAL_EXPORTERS) {
       expect(exp.id.trim().length).toBeGreaterThan(0);
@@ -21,12 +23,14 @@ describe('exporters/registry — extensible non-native format exporters', () => 
         expect(typeof exp.exportPayload).toBe('function');
       }
     }
-    expect(BUILTIN_NON_NATIVE_EXPORTERS.length).toBeGreaterThanOrEqual(5);
-    expect(PLANNED_EXTERNAL_SCHEMA_TARGETS.length).toBeGreaterThanOrEqual(1);
+    expect(BUILTIN_NON_NATIVE_EXPORTERS.length).toBeGreaterThanOrEqual(8);
+    expect(PLANNED_EXTERNAL_SCHEMA_TARGETS).toHaveLength(0);
     expect(getExternalExporterById('clean-csv')?.formatExtension).toBe('.CSV');
+    expect(getExternalExporterById('herdboss-transfer-bundle')?.status).toBe('ready');
+    expect(getExternalExporterById('registry-worksheet-csv')?.status).toBe('ready');
   });
 
-  it('executes CSV, Evans .HTM, Barn Binder .HTM, Report DTO .JSON, and .ICS exporters in pure TS', () => {
+  it('executes CSV, Evans .HTM, Barn Binder .HTM, Report DTO .JSON, .ICS, HerdBoss .ZIP, and Registry Worksheet .CSV in pure TS', () => {
     const snapshot = buildFullPredefinedSampleSnapshot();
     const rabbit = snapshot.animals.find((a) => a.species === 'Rabbit')!;
 
@@ -102,9 +106,51 @@ describe('exporters/registry — extensible non-native format exporters', () => 
     expect(ics.filename.endsWith('.ics')).toBe(true);
     expect(ics.content).toContain('BEGIN:VCALENDAR');
     expect(ics.content).toContain('Kindling Nestbox Check');
+
+    const hbZip = runExternalExporter('herdboss-transfer-bundle', {
+      snapshot,
+      speciesName: 'Rabbit',
+    });
+    expect(hbZip.filename.endsWith('.zip')).toBe(true);
+    expect(hbZip.mimeType).toBe('application/zip');
+    expect(hbZip.binaryContent).toBeInstanceOf(Uint8Array);
+    const unpacked = unzipSync(hbZip.binaryContent!);
+    expect(Object.keys(unpacked).sort()).toEqual([
+      'animals.csv',
+      'breedings.csv',
+      'pedigree_links.csv',
+      'weights.csv',
+    ]);
+    const animalsCsvBytes = unpacked['animals.csv'];
+    expect(Array.from(animalsCsvBytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    const animalsCsvText = strFromU8(animalsCsvBytes);
+    expect(animalsCsvText).toContain(rabbit.name);
+
+    // Round-trip verification back through HerdBossImporter into a clean snapshot
+    const emptySnapshot = {
+      ...snapshot,
+      animals: [],
+      breedings: [],
+      careLogs: [],
+    };
+    const reimportPreview = HerdBossImporter.parse(
+      [{ fileName: hbZip.filename, bytes: hbZip.binaryContent! }],
+      emptySnapshot,
+      { fallbackSpeciesName: 'Rabbit' }
+    );
+    expect(reimportPreview.animals.some((a) => a.name === rabbit.name)).toBe(true);
+
+    const worksheet = runExternalExporter('registry-worksheet-csv', {
+      snapshot,
+      speciesName: 'Rabbit',
+    });
+    expect(worksheet.filename.endsWith('.csv')).toBe(true);
+    expect(worksheet.content.charCodeAt(0)).toBe(0xfeff);
+    expect(worksheet.content).toContain('Gen3_Pat_Grandsire');
+    expect(worksheet.content).toContain(rabbit.name);
   });
 
-  it('supports extending or overriding catalog entries cleanly without UI code changes', () => {
+  it('supports extending or overriding catalog entries and rejects unknown or planned IDs', () => {
     const customSchema: ExternalExporterDescriptor = {
       id: 'kintracs-custom-csv',
       name: 'Kintracs Transfer CSV',
@@ -126,15 +172,27 @@ describe('exporters/registry — extensible non-native format exporters', () => 
         warnings: [],
       }),
     };
+    const plannedSchema: ExternalExporterDescriptor = {
+      id: 'future-planned-schema',
+      name: 'Future Planned Format',
+      formatExtension: '.CSV',
+      category: 'external_schema',
+      targetPlatform: 'Future',
+      scopeMode: 'all_or_species',
+      supportsSpeciesFilter: true,
+      status: 'planned',
+      description: 'Reserved slot.',
+      compatibilityNote: 'Planned.',
+    };
 
-    const extendedCatalog = buildExporterCatalog([customSchema]);
+    const extendedCatalog = buildExporterCatalog([customSchema, plannedSchema]);
     const snapshot = buildFullPredefinedSampleSnapshot();
     const res = runExternalExporter('kintracs-custom-csv', { snapshot }, extendedCatalog);
     expect(res.filename).toBe('kintracs-export.csv');
     expect(res.recordCount).toBe(snapshot.animals.length);
 
-    expect(() => runExternalExporter('herdboss-transfer-bundle', { snapshot })).toThrow(
-      /planned external schema target/i
-    );
+    expect(() =>
+      runExternalExporter('future-planned-schema', { snapshot }, extendedCatalog)
+    ).toThrow(/planned external schema target/i);
   });
 });

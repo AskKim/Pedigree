@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.1.0-prealpha.1",
+  "appVersion": "0.1.0-alpha.2",
   "schemaVersion": 6,
   "minDirectUpgradeSchema": 4,
   "releaseNotes": "Pedigree Gen 4+ lazy branch expansion, PWA update governor, offline toggle & SHA-256 upgrade gate."

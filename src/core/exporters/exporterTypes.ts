@@ -46,6 +46,7 @@ export interface ExportedArtifactPayload {
   filename: string;
   mimeType: string;
   content: string;
+  binaryContent?: Uint8Array;
   recordCount: number;
   summary: string;
   warnings: string[];

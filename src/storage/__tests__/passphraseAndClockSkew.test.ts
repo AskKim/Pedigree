@@ -75,7 +75,7 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
             if (url.includes('version.json')) {
               return new Response(
                 JSON.stringify({
-                  appVersion: '0.1.0-prealpha.1',
+                  appVersion: '0.1.0-alpha.2',
                   schemaVersion: 6,
                   minDirectUpgradeSchema: 1,
                 }),

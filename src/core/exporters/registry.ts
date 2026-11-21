@@ -13,19 +13,38 @@
  * 100% pure TypeScript with zero browser DOM (`window`, `document`, `File`, `Blob`) dependencies.
  */
 
+import { strToU8, zipSync } from 'fflate';
 import {
   buildBarnBinderFileName,
   buildDefaultBarnBinderOptions,
   generateSpeciesBarnBinderHtml,
 } from '../barnBinder';
 import { buildIcsCalendarForTasks } from '../calendarExport';
-import { buildCleanCsvExportFileName, exportAnimalsCsv } from '../csvExport';
 import {
+  analyzeAnimalCarrierLineage,
+  formatClearedProofBadge,
+  getAnimalCarrierDisclosures,
+} from '../carrierGenetics';
+import {
+  buildCleanCsvExportFileName,
+  escapeCsvCell,
+  exportAnimalsCsv,
+  UTF8_BOM,
+} from '../csvExport';
+import { formatGenotypeArray } from '../geneticsEngine';
+import {
+  Animal,
+  formatSexForSpecies,
+  formatWeight,
+  isAnimalArchived,
   isSameSpecies,
   normalizeDefaultPedigreeGenerations,
   normalizePedigreeGenerationDepth,
   nowIsoUtc,
+  resolveSpeciesProfile,
+  resolveSpeciesWeightUnit,
 } from '../models';
+import { buildSpeciesHerdMap } from '../pedigreeCalculator';
 import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
@@ -51,6 +70,14 @@ function sanitizeFileSlug(raw: string | undefined, fallback: string): string {
 
 function getLocalDateSlug(): string {
   return nowIsoUtc().slice(0, 10);
+}
+
+function buildCsvDocument(headers: readonly string[], rows: readonly (readonly unknown[])[]): string {
+  const lines = [headers.join(',')];
+  for (const row of rows) {
+    lines.push(row.map(escapeCsvCell).join(','));
+  }
+  return `${UTF8_BOM}${lines.join('\r\n')}`;
 }
 
 export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[] = [
@@ -404,23 +431,247 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
       };
     },
   },
-];
-
-export const PLANNED_EXTERNAL_SCHEMA_TARGETS: readonly ExternalExporterDescriptor[] = [
   {
     id: 'herdboss-transfer-bundle',
     name: 'HerdBoss Transfer Tables',
-    formatExtension: '.CSV / .ZIP',
+    formatExtension: '.ZIP',
     category: 'external_schema',
-    targetPlatform: 'HerdBoss Schema Target',
+    targetPlatform: 'HerdBoss / Relational Herd CSV Archive',
     scopeMode: 'all_or_species',
     supportsSpeciesFilter: true,
-    status: 'planned',
+    status: 'ready',
     description:
-      'Relational CSV bundle mapping animals, breedings, litters, and weight logs back into HerdBoss column conventions.',
+      'Relational 4-table .ZIP bundle (animals.csv, breedings.csv, weights.csv, pedigree_links.csv) using HerdBoss-compatible columns for multi-table portability.',
     compatibilityNote:
-      'Extensible schema slot reserved; HerdBoss multi-ZIP/CSV import is already active in Section 2.',
+      'Sanitizes spreadsheet formulas and re-imports cleanly through Section 2 HerdBoss importer with multi-gen ancestor linking.',
     schemaFields: ['animals.csv', 'breedings.csv', 'weights.csv', 'pedigree_links.csv'],
+    exportPayload(context: ExporterExecutionContext): ExportedArtifactPayload {
+      const { snapshot, speciesName } = context;
+      const scopedSpecies = speciesName?.trim() || undefined;
+
+      const animalById = new Map<string, Animal>();
+      for (const a of snapshot.animals) {
+        if (a.id) animalById.set(a.id, a);
+      }
+
+      const scopedAnimals = (
+        scopedSpecies
+          ? snapshot.animals.filter((a) => isSameSpecies(a.species, scopedSpecies))
+          : snapshot.animals
+      )
+        .slice()
+        .sort((a, b) => a.species.localeCompare(b.species) || a.name.localeCompare(b.name));
+
+      const animalHeaders = [
+        'Animal_ID',
+        'Species',
+        'Primary_Tag',
+        'Tattoo',
+        'Name',
+        'Breed',
+        'Variety',
+        'Sex',
+        'Birth_Date',
+        'Status',
+        'Sire_ID',
+        'Sire',
+        'Dam_ID',
+        'Dam',
+        'Weight',
+        'Weight_Unit',
+        'Genotype',
+        'Rufus_Level',
+        'Registration_Number',
+        'Grand_Champion_Number',
+        'Legs_Count',
+        'Group_Location',
+        'Breeder_Name',
+        'Owner_Name',
+        'Sold_Date',
+        'Death_Date',
+        'Notes',
+      ];
+      const animalRows = scopedAnimals.map((a) => {
+        const sire = a.sireId ? animalById.get(a.sireId) : undefined;
+        const dam = a.damId ? animalById.get(a.damId) : undefined;
+        return [
+          a.id,
+          a.species,
+          a.tattoo || a.id,
+          a.tattoo,
+          a.name,
+          a.breed,
+          a.variety,
+          a.sex,
+          a.birthDateIso,
+          a.status,
+          sire?.id || a.sireId || '',
+          sire?.name || '',
+          dam?.id || a.damId || '',
+          dam?.name || '',
+          a.weightGrams > 0 ? String(a.weightGrams) : '',
+          a.weightGrams > 0 ? 'g' : '',
+          a.genotypeRaw || formatGenotypeArray(a.genotype),
+          a.rufusLevel || '',
+          a.registrationNumber,
+          a.grandChampionNumber,
+          a.legsCount,
+          a.cageLocation,
+          a.breederName,
+          a.ownerName,
+          a.soldDateIso || '',
+          a.deceasedDateIso || '',
+          a.notes,
+        ];
+      });
+      const animalsCsv = buildCsvDocument(animalHeaders, animalRows);
+
+      const scopedBreedings = snapshot.breedings.filter(
+        (b) => !scopedSpecies || isSameSpecies(b.species, scopedSpecies)
+      );
+      const breedingHeaders = [
+        'Breeding_ID',
+        'Species',
+        'Sire_ID',
+        'Sire',
+        'Dam_ID',
+        'Dam',
+        'Bred_Date',
+        'Expected_Due_Date',
+        'Actual_Birth_Date',
+        'Status',
+        'Live_Count',
+        'Stillborn_Count',
+        'Weaned_Count',
+        'Notes',
+      ];
+      const breedingRows = scopedBreedings.map((b) => {
+        const sire = b.sireId ? animalById.get(b.sireId) : undefined;
+        const dam = b.damId ? animalById.get(b.damId) : undefined;
+        return [
+          b.id,
+          b.species,
+          b.sireId,
+          sire?.name || b.sireName,
+          b.damId,
+          dam?.name || b.damName,
+          b.bredDateIso,
+          b.expectedDueDateIso,
+          b.actualBirthDateIso,
+          b.status,
+          b.liveCount,
+          b.stillbornCount,
+          b.weanedCount,
+          b.notes,
+        ];
+      });
+      const breedingsCsv = buildCsvDocument(breedingHeaders, breedingRows);
+
+      const weightLogs = snapshot.careLogs.filter(
+        (l) =>
+          (l.type === 'Weight Check' || l.weightGrams > 0) &&
+          (!scopedSpecies || isSameSpecies(l.species, scopedSpecies))
+      );
+      const weightHeaders = [
+        'Species',
+        'Animal_ID',
+        'Primary_Tag',
+        'Name',
+        'Weigh_Date',
+        'Weight',
+        'Weight_Unit',
+        'Stage',
+        'Notes',
+      ];
+      const weightRows = weightLogs.map((l) => {
+        const animal = animalById.get(l.animalId);
+        return [
+          l.species,
+          l.animalId,
+          animal?.tattoo || l.animalId,
+          animal?.name || '',
+          l.dateIso,
+          l.weightGrams > 0 ? String(l.weightGrams) : '',
+          l.weightGrams > 0 ? 'g' : '',
+          l.title || 'Weight Check',
+          l.notes,
+        ];
+      });
+      const weightsCsv = buildCsvDocument(weightHeaders, weightRows);
+
+      const pedigreeHeaders = [
+        'Species',
+        'Animal_ID',
+        'Primary_Tag',
+        'Name',
+        'Sire_ID',
+        'Sire_Tag',
+        'Sire_Name',
+        'Dam_ID',
+        'Dam_Tag',
+        'Dam_Name',
+        'Paternal_Grandsire',
+        'Paternal_Granddam',
+        'Maternal_Grandsire',
+        'Maternal_Granddam',
+      ];
+      const pedigreeRows = scopedAnimals
+        .filter((a) => Boolean(a.sireId || a.damId))
+        .map((a) => {
+          const sire = a.sireId ? animalById.get(a.sireId) : undefined;
+          const dam = a.damId ? animalById.get(a.damId) : undefined;
+          const pgs = sire?.sireId ? animalById.get(sire.sireId) : undefined;
+          const pgd = sire?.damId ? animalById.get(sire.damId) : undefined;
+          const mgs = dam?.sireId ? animalById.get(dam.sireId) : undefined;
+          const mgd = dam?.damId ? animalById.get(dam.damId) : undefined;
+          return [
+            a.species,
+            a.id,
+            a.tattoo || a.id,
+            a.name,
+            sire?.id || a.sireId || '',
+            sire?.tattoo || '',
+            sire?.name || '',
+            dam?.id || a.damId || '',
+            dam?.tattoo || '',
+            dam?.name || '',
+            pgs?.name || pgs?.tattoo || '',
+            pgd?.name || pgd?.tattoo || '',
+            mgs?.name || mgs?.tattoo || '',
+            mgd?.name || mgd?.tattoo || '',
+          ];
+        });
+      const pedigreeLinksCsv = buildCsvDocument(pedigreeHeaders, pedigreeRows);
+
+      const zipBytes = zipSync(
+        {
+          'animals.csv': strToU8(animalsCsv),
+          'breedings.csv': strToU8(breedingsCsv),
+          'weights.csv': strToU8(weightsCsv),
+          'pedigree_links.csv': strToU8(pedigreeLinksCsv),
+        },
+        { level: 6 }
+      );
+
+      const barnSlug = sanitizeFileSlug(snapshot.settings.barnName, 'pedigree');
+      const scopeSlug = scopedSpecies ? `-${sanitizeFileSlug(scopedSpecies, 'species')}` : '';
+      const filename = `${barnSlug}${scopeSlug}-herdboss-transfer-${getLocalDateSlug()}.zip`;
+      const totalRecords = scopedAnimals.length + scopedBreedings.length + weightLogs.length;
+
+      return {
+        exporterId: 'herdboss-transfer-bundle',
+        filename,
+        mimeType: 'application/zip',
+        content: '',
+        binaryContent: zipBytes,
+        recordCount: totalRecords,
+        summary: `Exported HerdBoss 4-table .ZIP bundle (${filename}): ${scopedAnimals.length} animals, ${scopedBreedings.length} breedings, ${weightLogs.length} weight logs, and ${pedigreeRows.length} pedigree link rows.`,
+        warnings:
+          scopedAnimals.length === 0
+            ? ['Archive built cleanly with headers only because zero animals matched the active scope.']
+            : [],
+      };
+    },
   },
   {
     id: 'registry-worksheet-csv',
@@ -430,14 +681,154 @@ export const PLANNED_EXTERNAL_SCHEMA_TARGETS: readonly ExternalExporterDescripto
     targetPlatform: 'ARBA / ADGA / Custom Registry Forms',
     scopeMode: 'species_required',
     supportsSpeciesFilter: true,
-    status: 'planned',
+    status: 'ready',
     description:
-      'Targeted per-species worksheet columns tailored for registration applications, show entry secretaries, and external pedigree transfers.',
+      'Targeted per-species worksheet columns tailored for registration applications, show entry secretaries, and 3-generation ancestor transfers.',
     compatibilityNote:
-      'Use Herd Roster Spreadsheet (.CSV) or Printable Barn Binder (.HTM) today for full registration details.',
+      'Exports RFC-4180 UTF-8 BOM CSV scoped to one livestock species with ear tattoo, Reg #, GC #, Legs, 3-gen ancestor Reg #s, and breeder contact.',
     schemaFields: ['Reg #', 'Ear Tattoo', '3-Gen Ancestor Reg #s', 'Legs / GC', 'Breeder Contact'],
+    exportPayload(context: ExporterExecutionContext): ExportedArtifactPayload {
+      const { snapshot, speciesName } = context;
+      const targetSpecies =
+        speciesName?.trim() ||
+        snapshot.settings.defaultSpecies ||
+        snapshot.speciesProfiles[0]?.name ||
+        'Rabbit';
+
+      const sp = resolveSpeciesProfile(targetSpecies, snapshot.speciesProfiles);
+      const unit = resolveSpeciesWeightUnit(sp, snapshot.settings);
+      const herdMap = buildSpeciesHerdMap(snapshot.animals, targetSpecies);
+
+      const animalById = new Map<string, Animal>();
+      for (const a of snapshot.animals) {
+        if (a.id) animalById.set(a.id, a);
+      }
+
+      const scopedAnimals = snapshot.animals
+        .filter((a) => isSameSpecies(a.species, targetSpecies))
+        .slice()
+        .sort((a, b) => {
+          const archDiff = (isAnimalArchived(a) ? 1 : 0) - (isAnimalArchived(b) ? 1 : 0);
+          if (archDiff !== 0) return archDiff;
+          return a.name.localeCompare(b.name) || a.tattoo.localeCompare(b.tattoo);
+        });
+
+      const formatAncestorSummary = (anc: Animal | undefined): string => {
+        if (!anc) return '';
+        const parts: string[] = [];
+        if (anc.name) parts.push(anc.name);
+        if (anc.tattoo) parts.push(`Ear: ${anc.tattoo}`);
+        if (anc.registrationNumber) parts.push(`Reg: ${anc.registrationNumber}`);
+        return parts.join(' | ');
+      };
+
+      const headers = [
+        'Species',
+        'Ear_Tattoo',
+        'Name',
+        'Breed',
+        'Variety',
+        'Sex',
+        'Birth_Date',
+        'Weight',
+        'Registration_No',
+        'Grand_Champion_No',
+        'Legs_Earned',
+        'Sire_Name',
+        'Sire_Tattoo',
+        'Sire_Reg_No',
+        'Dam_Name',
+        'Dam_Tattoo',
+        'Dam_Reg_No',
+        'Gen3_Pat_Grandsire',
+        'Gen3_Pat_Granddam',
+        'Gen3_Mat_Grandsire',
+        'Gen3_Mat_Granddam',
+        'Genotype',
+        'Carrier_Disclosures',
+        'Breeder_Contact',
+        'Owner_Name',
+        'Status',
+      ];
+
+      const rows = scopedAnimals.map((a) => {
+        const sire = a.sireId ? animalById.get(a.sireId) : undefined;
+        const dam = a.damId ? animalById.get(a.damId) : undefined;
+        const pgs = sire?.sireId ? animalById.get(sire.sireId) : undefined;
+        const pgd = sire?.damId ? animalById.get(sire.damId) : undefined;
+        const mgs = dam?.sireId ? animalById.get(dam.sireId) : undefined;
+        const mgd = dam?.damId ? animalById.get(dam.damId) : undefined;
+
+        const carriers = getAnimalCarrierDisclosures(a);
+        const lineage = analyzeAnimalCarrierLineage(a, herdMap);
+        const carrierNotes = [
+          ...carriers.confirmed.map((t) => `Confirmed: ${t}`),
+          ...carriers.suspected.map((t) => `Suspected: ${t}`),
+          ...carriers.cleared.map((c) => `Cleared: ${c.trait} (${formatClearedProofBadge(c)})`),
+          ...lineage.lineagePotential.map(
+            (l) => `Lineage Potential: ${l.trait} (${l.viaBranches.join('/')})`
+          ),
+        ].join('; ');
+
+        const breederContact = [
+          a.breederName || snapshot.settings.breederName || '',
+          snapshot.settings.barnName || '',
+        ]
+          .filter(Boolean)
+          .join(' — ');
+
+        return [
+          a.species,
+          a.tattoo,
+          a.name,
+          a.breed,
+          a.variety,
+          formatSexForSpecies(a.sex, sp),
+          a.birthDateIso,
+          formatWeight(a.weightGrams, unit),
+          a.registrationNumber,
+          a.grandChampionNumber,
+          a.legsCount,
+          sire?.name || '',
+          sire?.tattoo || '',
+          sire?.registrationNumber || '',
+          dam?.name || '',
+          dam?.tattoo || '',
+          dam?.registrationNumber || '',
+          formatAncestorSummary(pgs),
+          formatAncestorSummary(pgd),
+          formatAncestorSummary(mgs),
+          formatAncestorSummary(mgd),
+          a.genotypeRaw || formatGenotypeArray(a.genotype),
+          carrierNotes,
+          breederContact,
+          a.ownerName,
+          a.status,
+        ];
+      });
+
+      const content = buildCsvDocument(headers, rows);
+      const barnSlug = sanitizeFileSlug(snapshot.settings.barnName, 'pedigree');
+      const spSlug = sanitizeFileSlug(targetSpecies, 'species');
+      const filename = `${barnSlug}-${spSlug}-registry-worksheet-${getLocalDateSlug()}.csv`;
+
+      return {
+        exporterId: 'registry-worksheet-csv',
+        filename,
+        mimeType: 'text/csv;charset=utf-8',
+        content,
+        recordCount: scopedAnimals.length,
+        summary: `Exported ${scopedAnimals.length} ${targetSpecies} registration/show worksheet row(s) to ${filename}.`,
+        warnings:
+          scopedAnimals.length === 0
+            ? [`Zero ${targetSpecies} records found — exported header template only.`]
+            : [],
+      };
+    },
   },
 ];
+
+export const PLANNED_EXTERNAL_SCHEMA_TARGETS: readonly ExternalExporterDescriptor[] = [];
 
 export function buildExporterCatalog(
   additionalExporters: readonly ExternalExporterDescriptor[] = []

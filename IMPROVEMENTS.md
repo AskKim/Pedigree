@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (46)
+## Logged Improvements (47)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -972,4 +972,26 @@ npm run lint && npm run build
 1. Keep `LedgerEntry`, `ProcessingLog`, and `YouthProjectBook` interfaces and normalizers in `src/core/models.ts` plus SQLite v4 tables in `src/storage/webSqliteAdapter.ts`.
 2. Restore `src/core/economicsLedger.ts` and `src/core/__tests__/economicsLedger.test.ts` along with the 3 financial/production/youth presets in `reportCatalog.ts` and `reportGenerators.ts`.
 3. Keep store CRUD mutations in `src/hooks/useBarnStore.ts` and wire `EconomicsLedgerScreen.tsx` into `SpeciesDashboardScreen.tsx` and `App.tsx`.
+
+### IMP-047: Post-Crash Alignment, Ready External Exporters, Feed/Archive Parity & Android WebView Print/Share
+
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Realign the entire codebase after build-crash drift, keep the PWA locked to React + Vite + TypeScript, complete half-done exporters and migration/inspector coverage, and make pedigree/binder print & share work seamlessly on desktop, mobile web, and the Android WebView APK.
+- **Summary:** Enforces the React PWA preservation rule in `AGENTS.md` and `prompts/master_system_prompt.md`; aligns PWA/Android versions to `0.1.0-alpha.2`; migrates `feedBatches` and `feedAllocations` during cross-species moves; surfaces v3/v4 feed, ledger, processing, and 4-H/FFA counts in `archiveInspector.ts`; implements `herdboss-transfer-bundle` (.ZIP) and `registry-worksheet-csv` (.CSV) as ready exporters; and fixes `@media print` extraction, accent-ink preservation, native wrapper Share .HTM enablement, and Android `PrintBridge.kt` offscreen HTML + landscape/portrait printing while removing the stale `PedigreePrintNotice` banner.
+- **Tracked Files:** `AGENTS.md`, `.env.example`, `package.json`, `public/version.json`, `src/core/upgradeGate.ts`, `src/core/speciesMigration.ts`, `src/core/archiveInspector.ts`, `src/core/exporters/exporterTypes.ts`, `src/core/exporters/registry.ts`, `src/native/pedigreeBridge.ts`, `src/components/PrintPreviewModal.tsx`, `src/components/ImportExportHubScreen.tsx`, `src/index.css`, `android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/MainActivity.kt`, `android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/PrintBridge.kt`, `.github/structure.txt`
+
+**Automated Invariants Checked:**
+- `AGENTS.md` must contain `Never Convert PWA Away From React` — *Workspace agent rules must lock the PWA against non-React rewrites.*
+- `src/core/speciesMigration.ts` must contain `feedBatchesMigrated`, `feedAllocationsMigrated` — *Cross-species migrations must move linked feedBatches and feedAllocations.*
+- `src/core/archiveInspector.ts` must contain `feedBatchCount`, `feedAllocationCount`, `ledgerEntryCount`, `processingLogCount`, `youthProjectBookCount` — *Pre-restore dry-run inspection must count v3/v4 feed, ledger, processing, and youth records.*
+- `src/core/exporters/registry.ts` must contain `herdboss-transfer-bundle`, `registry-worksheet-csv`, `binaryContent` — *HerdBoss Transfer Tables (.ZIP) and Breed Registry & Show Worksheets (.CSV) must stay active ready exporters.*
+- `src/components/PrintPreviewModal.tsx` must contain `canShareHtmlDocument`, `extractScopedPrintCssFromRules`, `detectDocumentPrintOrientation` — *PrintPreviewModal must enable Share .HTM on native wrappers, extract @media print rules, and forward orientation/HTML to native print.*
+- `android-wrapper/app/src/main/java/org/askkim/pedigree/wrapper/PrintBridge.kt` must contain `printFromBridge`, `printHtmlDocument`, `buildPrintAttributes` — *Android PrintBridge must render self-contained HTML in a hardened offscreen WebView with landscape/portrait PrintAttributes.*
+
+**Restoration Playbook if Overwritten:**
+1. Verify `AGENTS.md` and `prompts/master_system_prompt.md` keep the React PWA lock rule intact.
+2. Ensure `package.json`, `public/version.json`, and `src/core/upgradeGate.ts` match `android-wrapper/app/build.gradle.kts` (`0.1.0-alpha.2`).
+3. Keep `herdboss-transfer-bundle` and `registry-worksheet-csv` in `src/core/exporters/registry.ts` with `binaryContent` download dispatch in `ImportExportHubScreen.tsx`.
+4. Keep `@media print` extraction, native Share .HTM support, and Android `PrintBridge.kt` offscreen HTML rendering intact and do not reintroduce `PedigreePrintNotice`.
 

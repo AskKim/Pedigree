@@ -440,6 +440,27 @@ describe('PedigreeBridge', () => {
       expect(envelope.type).toBe('OPEN_DEV_PANEL');
       expect(typeof envelope.requestId).toBe('string');
     });
+
+    it('serializes sanitized title, orientation, and htmlContent on REQUEST_PRINT in Android mode', () => {
+      const { posted } = setupAndroidMock();
+      bridge = createPedigreeBridge();
+
+      expect(
+        bridge.requestPrint({
+          title: 'Pedigree\nChart\tCC-12',
+          orientation: 'landscape',
+          htmlContent: '<html><body><h1>Chart</h1></body></html>',
+        })
+      ).toBe(true);
+      expect(posted).toHaveLength(1);
+      const envelope = JSON.parse(posted[0] as string);
+      expect(envelope.type).toBe('REQUEST_PRINT');
+      expect(envelope.payload).toEqual({
+        title: 'Pedigree Chart CC-12',
+        orientation: 'landscape',
+        htmlContent: '<html><body><h1>Chart</h1></body></html>',
+      });
+    });
   });
 
   describe('iOS WKScriptMessageHandler serialization', () => {

@@ -23,8 +23,10 @@ import {
   BarnSettings,
   BarnTask,
   BreedingRecord,
+  BreedingStatus,
   CageLocation,
   CareLog,
+  CareLogType,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   FeedAllocation,
   FeedAllocationTargetType,
@@ -54,6 +56,8 @@ import {
   ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  TaskCategory,
+  TaskPriority,
   YouthProjectBook,
 } from '../core/models';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
@@ -108,6 +112,64 @@ function createSqlJsInitConfig(): SqlJsInitConfig {
     locateFile: () => sqlWasmUrl,
     useOldExtensionFunctions: false,
   };
+}
+
+const VALID_BREEDING_STATUSES: ReadonlySet<BreedingStatus> = new Set([
+  'Planned',
+  'Bred',
+  'Palpated Positive',
+  'Born',
+  'Weaned',
+  'Missed',
+]);
+
+function normalizeSqliteBreedingStatus(raw: unknown): BreedingStatus {
+  const s = typeof raw === 'string' ? raw : String(raw ?? '');
+  return VALID_BREEDING_STATUSES.has(s as BreedingStatus)
+    ? (s as BreedingStatus)
+    : 'Planned';
+}
+
+const VALID_TASK_CATEGORIES: ReadonlySet<TaskCategory> = new Set([
+  'Care',
+  'Palpation',
+  'Nestbox',
+  'Birth Check',
+  'Weaning',
+  'Rebreed',
+  'Health',
+  'Show Prep',
+  'Other',
+]);
+
+function normalizeSqliteTaskCategory(raw: unknown): TaskCategory {
+  const s = typeof raw === 'string' ? raw : String(raw ?? '');
+  return VALID_TASK_CATEGORIES.has(s as TaskCategory) ? (s as TaskCategory) : 'Other';
+}
+
+function normalizeSqliteTaskPriority(raw: unknown): TaskPriority {
+  if (raw === 'High' || raw === 'Normal' || raw === 'Low') {
+    return raw;
+  }
+  return 'Normal';
+}
+
+const VALID_CARE_LOG_TYPES: ReadonlySet<CareLogType> = new Set([
+  'Weight Check',
+  'Show / Leg',
+  'Palpation',
+  'Ultrasound',
+  'Health / Vet',
+  'Health Score / BCS',
+  'Grooming & Hoof',
+  'Journal Note',
+]);
+
+function normalizeSqliteCareLogType(raw: unknown): CareLogType {
+  const s = typeof raw === 'string' ? raw : String(raw ?? '');
+  return VALID_CARE_LOG_TYPES.has(s as CareLogType)
+    ? (s as CareLogType)
+    : 'Journal Note';
 }
 
 export interface PersistedWriteEpochMeta {
@@ -1491,7 +1553,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       fosteredCount: finiteNonNeg(r.fostered_count, 0),
       weanedCount: finiteNonNeg(r.weaned_count, 0),
       offspringCreated: Number(r.offspring_created) === 1,
-      status: (r.status as any) || 'Bred',
+      status: normalizeSqliteBreedingStatus(r.status),
       serviceFeeCents: finiteNonNeg(r.service_fee_cents, 0),
       serviceFeeDirection: normalizeServiceFeeDirection(r.service_fee_direction),
       ultrasoundDateIso: String(r.ultrasound_date_iso || ''),
@@ -1518,8 +1580,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       id: String(r.id),
       species: String(r.species),
       title: String(r.title),
-      category: (r.category as any) || 'Care',
-      priority: (r.priority as any) || 'Normal',
+      category: normalizeSqliteTaskCategory(r.category),
+      priority: normalizeSqliteTaskPriority(r.priority),
       dueDateIso: String(r.due_date_iso),
       linkedAnimalId: String(r.linked_animal_id),
       linkedAnimalName: String(r.linked_animal_name),
@@ -1536,7 +1598,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       species: String(r.species),
       animalId: String(r.animal_id),
       dateIso: String(r.date_iso),
-      type: (r.type as any) || 'Weight Check',
+      type: normalizeSqliteCareLogType(r.type),
       title: String(r.title),
       weightGrams: finiteNonNeg(r.weight_grams, 0),
       showLegEarned: Number(r.show_leg_earned) === 1,

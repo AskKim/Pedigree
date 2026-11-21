@@ -466,7 +466,11 @@ export function readEmergencySessionTrace(
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
-      (item: any) => item && typeof item.id === 'string' && typeof item.timestampMs === 'number'
+      (item: unknown): item is DiagnosticLogEntry =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as { id?: unknown }).id === 'string' &&
+        typeof (item as { timestampMs?: unknown }).timestampMs === 'number'
     );
   } catch {
     return [];

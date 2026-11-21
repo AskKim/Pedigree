@@ -167,4 +167,69 @@ describe('speciesMigration — family expansion & cross-species migrations', () 
     // Unrelated Sheep remains untouched
     expect(result.snapshot.animals.find((a) => a.id === 'sb')?.species).toBe('Sheep');
   });
+
+  it('migrates linked feedBatches and feedAllocations and clears remainingSourceRecordsCount', () => {
+    const doe = makeAnimal('d1', { species: 'Rabbit', sex: 'Female' });
+    const buck = makeAnimal('b1', { species: 'Rabbit', sex: 'Male' });
+    const snap = makeEmptySnapshot({
+      speciesProfiles: [makeSpeciesProfile('Rabbit'), makeSpeciesProfile('Goat')],
+      animals: [doe, buck],
+      feedBatches: [
+        {
+          id: 'fb1',
+          species: 'Rabbit',
+          brand: 'Mana Pro',
+          productName: '16% Pelleted',
+          lotNumber: 'LOT-99',
+          millCode: 'MILL-1',
+          manufactureDateIso: '2026-01-15',
+          purchaseDateIso: '2026-02-01',
+          bagCount: 2,
+          bagWeightValue: 50,
+          bagWeightUnit: 'lbs',
+          totalQuantity: 100,
+          remainingQuantity: 80,
+          lowStockThreshold: 15,
+          totalCostCents: 4200,
+          supplierName: 'Local Feed Co',
+          notes: '',
+          _rev: 1,
+          createdAt: '2026-02-01T00:00:00.000Z',
+          updatedAt: '2026-02-01T00:00:00.000Z',
+        },
+      ],
+      feedAllocations: [
+        {
+          id: 'fa1',
+          species: 'Rabbit',
+          feedBatchId: 'fb1',
+          targetType: 'animal',
+          targetId: 'd1',
+          targetLabel: doe.name,
+          dateIso: '2026-02-02',
+          quantity: 0.5,
+          unit: 'lbs',
+          notes: '',
+          _rev: 1,
+          createdAt: '2026-02-02T00:00:00.000Z',
+          updatedAt: '2026-02-02T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const partial = migrateAnimalsToSpecies(snap, ['d1'], 'Goat');
+    expect(partial.feedBatchesMigrated).toBe(0);
+    expect(partial.feedAllocationsMigrated).toBe(1);
+    expect(partial.snapshot.feedAllocations?.[0].species).toBe('Goat');
+    expect(partial.snapshot.feedAllocations?.[0]._rev).toBe(2);
+
+    const bulk = migrateAnimalsToSpecies(partial.snapshot, [], 'Goat', {
+      migrateEntireSpecies: true,
+      sourceSpeciesName: 'Rabbit',
+    });
+    expect(bulk.feedBatchesMigrated).toBe(1);
+    expect(bulk.snapshot.feedBatches?.[0].species).toBe('Goat');
+    expect(bulk.snapshot.feedBatches?.[0]._rev).toBe(2);
+    expect(bulk.remainingSourceRecordsCount).toBe(0);
+  });
 });

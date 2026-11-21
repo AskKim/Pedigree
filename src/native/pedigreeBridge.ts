@@ -40,6 +40,12 @@ export interface BinaryExportResult {
   error?: string;
 }
 
+export interface NativePrintOptions {
+  title?: string;
+  orientation?: 'landscape' | 'portrait';
+  htmlContent?: string;
+}
+
 export interface BackupSnapshotInput {
   snapshotId: string;
   createdAt: string;
@@ -375,16 +381,34 @@ export class PedigreeBridge {
     return this.triggerBrowserDownload(slicedBuffer, options.filename, options.mimeType);
   }
 
-  public requestPrint(): boolean {
+  public requestPrint(options?: NativePrintOptions): boolean {
     this.ensureListenersAttached();
     const platform = this.getPlatform();
     const requestId = createRequestId('print');
 
     if (platform !== 'web') {
-      return this.postControlEnvelope({
-        type: 'REQUEST_PRINT',
-        requestId: requestId,
-      });
+      const payload: Record<string, unknown> = {};
+      if (options?.title && options.title.trim()) {
+        payload.title = options.title.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160);
+      }
+      if (options?.orientation === 'landscape' || options?.orientation === 'portrait') {
+        payload.orientation = options.orientation;
+      }
+      if (typeof options?.htmlContent === 'string' && options.htmlContent.trim()) {
+        payload.htmlContent = options.htmlContent;
+      }
+      return this.postControlEnvelope(
+        Object.keys(payload).length > 0
+          ? {
+              type: 'REQUEST_PRINT',
+              requestId: requestId,
+              payload: payload,
+            }
+          : {
+              type: 'REQUEST_PRINT',
+              requestId: requestId,
+            }
+      );
     }
 
     const win = getWindowRef();

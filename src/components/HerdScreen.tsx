@@ -114,7 +114,6 @@ import { AnimalPhotoGallery } from './AnimalPhotoGallery';
 import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
-import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 import { SpeciesMigrationModal } from './SpeciesMigrationModal';
 
@@ -1290,7 +1289,6 @@ export function HerdScreen({
                 </div>
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <PedigreePrintNotice compact />
                   {primaryPhotoByAnimalId.has(activeAnimal.id) && (
                     <label className="flex items-center gap-2 text-xs text-[var(--barn-muted)] cursor-pointer">
                       <input
@@ -2885,11 +2883,7 @@ export function HerdScreen({
                 : undefined
             }
             headerNotice={
-              previewDoc.isPedigree ? (
-                <PedigreePrintNotice />
-              ) : previewDoc.hasGenetics ? (
-                <ColorGeneticsNotice compact />
-              ) : undefined
+              previewDoc.hasGenetics ? <ColorGeneticsNotice compact /> : undefined
             }
             onClose={() => {
               setPreviewDoc(null);
@@ -2914,9 +2908,6 @@ export function HerdScreen({
           batchAnimalCount={batchPrintSubjects.length}
           batchPageCount={batchPrintPageCount}
           batchPhotoHydrating={batchPhotoHydrating}
-          headerNotice={
-            batchPrintOptions.layout !== 'cage_cards' ? <PedigreePrintNotice /> : undefined
-          }
           onClose={() => {
             setBatchPrintSubjects(null);
             setBatchHydratedPhotos({});

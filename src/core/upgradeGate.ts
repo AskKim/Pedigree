@@ -12,7 +12,7 @@
 import { CURRENT_BACKUP_SCHEMA_VERSION } from './backupVault';
 import { nowEpochMs } from './models';
 
-export const CURRENT_APP_VERSION = '0.1.0-prealpha.1';
+export const CURRENT_APP_VERSION = '0.1.0-alpha.2';
 
 export interface VersionManifest {
   appVersion: string;

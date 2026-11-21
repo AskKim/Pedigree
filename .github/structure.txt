@@ -1,12 +1,19 @@
 Pedigree/
 ├── .github/
 │   ├── workflows/
+│   │   ├── build-android-apk.yml
 │   │   ├── ci.yml
-│   │   └── deploy-pages.yml
+│   │   ├── deploy-pages.yml
+│   │   ├── export_repo_to_md.yml
+│   │   └── unzip.yml
 │   └── structure.txt
+├── android-wrapper/                       <-- Native Android APK shell (Gradle + Kotlin WebView bridges)
 ├── docs/
 │   └── plans/
 │       └── suggestions-backlog.md
+├── fastlane/
+│   └── metadata/
+│       └── android/
 ├── prompts/                               <-- Do not remove prompts without confirmation (update src/components/PromptsDirectoryScreen.tsx, src/core/promptsCatalog.ts, and vite.config.ts if moved)
 │   ├── fix_error_log_prompt.md            <-- Active crash & error log remediation prompt
 │   ├── master_system_prompt.md            <-- Active Master System Prompt
@@ -17,14 +24,23 @@ Pedigree/
 │   └── start_new_backlog_prompt.md        <-- Active backlog plan starter prompt
 ├── public/
 ├── scripts/
+│   └── verify-improvements.ts             <-- Anti-drift invariant checker (npm run verify:improvements)
 ├── src/
-│   ├── components/
-│   ├── core/
-│   ├── hooks/
-│   ├── storage/
-│   └── utils/
+│   ├── components/                        <-- React UI screens, modals & print preview
+│   ├── core/                              <-- Zero-DOM pure TypeScript domain, genetics, exporters, importers
+│   ├── hooks/                             <-- React store (useBarnStore.ts)
+│   ├── native/                            <-- Hybrid Android/iOS/Web bridge (pedigreeBridge.ts)
+│   ├── storage/                           <-- sql.js SQLite adapter, OPFS vault, workers, OCR scanner
+│   └── utils/                             <-- Browser DOM helpers (PDF, file actions, ES2018 shims)
+├── .env.example
+├── AGENTS.md
 ├── ARCHITECTURE.md
 ├── IMPROVEMENTS.md
 ├── LICENSE
+├── README.md
+├── firebase-applet-config.json
+├── index.html
+├── metadata.json
 ├── package.json
-└── README.md
+├── tsconfig.json
+└── vite.config.ts

@@ -43,6 +43,11 @@ export interface PreRestoreArchiveInspection {
   cageCount: number;
   careLogCount: number;
   showCount: number;
+  feedBatchCount: number;
+  feedAllocationCount: number;
+  ledgerEntryCount: number;
+  processingLogCount: number;
+  youthProjectBookCount: number;
   photoCount: number;
   photoBytes: number;
   speciesBreakdown: ArchiveSpeciesSummaryItem[];
@@ -206,6 +211,11 @@ export function inspectSnapshotBeforeRestorePure(
     cageCount: incoming.cages.length,
     careLogCount: incoming.careLogs.length,
     showCount: incoming.shows.length,
+    feedBatchCount: (incoming.feedBatches ?? []).length,
+    feedAllocationCount: (incoming.feedAllocations ?? []).length,
+    ledgerEntryCount: (incoming.ledgerEntries ?? []).length,
+    processingLogCount: (incoming.processingLogs ?? []).length,
+    youthProjectBookCount: (incoming.youthProjectBooks ?? []).length,
     photoCount: photos.length,
     photoBytes,
     speciesBreakdown,
@@ -289,6 +299,11 @@ export function inspectParsedArchiveBeforeRestorePure(
     cageCount: 0,
     careLogCount: 0,
     showCount: 0,
+    feedBatchCount: 0,
+    feedAllocationCount: 0,
+    ledgerEntryCount: 0,
+    processingLogCount: 0,
+    youthProjectBookCount: 0,
     photoCount: photos.length,
     photoBytes,
     speciesBreakdown: Array.from(speciesMap.values()).sort(

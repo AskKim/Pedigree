@@ -66,7 +66,6 @@ import { buildAndDownloadPedigreePdf } from '../utils/webPdfActions';
 import { AnimalEditorModal } from './AnimalEditorModal';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
-import { PedigreePrintNotice } from './PedigreePrintNotice';
 import { PrintPreviewModal } from './PrintPreviewModal';
 
 interface PedigreeScreenProps {
@@ -1190,7 +1189,6 @@ export function PedigreeScreen({
               <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
               Share Card
             </button>
-            <PedigreePrintNotice compact />
             <ColorGeneticsNotice compact />
           </div>
         </div>
@@ -2185,7 +2183,6 @@ export function PedigreeScreen({
                       pdfFilename: `pedigree-${subject.tattoo || subject.id}-${generations}gen.pdf`,
                     })
             }
-            headerNotice={<PedigreePrintNotice />}
             onClose={() => {
               setShowPrintModal(false);
               setHydratedSubjectPhoto(null);
