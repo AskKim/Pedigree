@@ -40,6 +40,7 @@ import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } fr
 import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { TechyStuffErrorBoundary } from './components/TechyStuffErrorBoundary';
+import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
@@ -86,10 +87,6 @@ const EconomicsLedgerScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/EconomicsLedgerScreen')['EconomicsLedgerScreen']>
 >(() => import('./components/EconomicsLedgerScreen'), 'EconomicsLedgerScreen', 'Economics & 4-H Ledger');
 
-const ClientCrmScreen = lazyNamedRoute<
-  ComponentProps<typeof import('./components/ClientCrmScreen')['ClientCrmScreen']>
->(() => import('./components/ClientCrmScreen'), 'ClientCrmScreen', 'Client CRM & Waitlist');
-
 const ReportsScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/ReportsScreen')['ReportsScreen']>
 >(() => import('./components/ReportsScreen'), 'ReportsScreen', 'Reports');
@@ -130,14 +127,6 @@ const CalendarSyncConfirmModal = lazyNamedRoute<
   'Calendar Sync'
 );
 
-const WipedStorageRecoveryModal = lazyNamedRoute<
-  ComponentProps<typeof import('./components/WipedStorageRecoveryModal')['WipedStorageRecoveryModal']>
->(
-  () => import('./components/WipedStorageRecoveryModal'),
-  'WipedStorageRecoveryModal',
-  'Storage Recovery'
-);
-
 const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   home: 'All Species',
   dashboard: 'Species Dashboard',
@@ -147,7 +136,6 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   pedigree: 'Pedigree Explorer',
   feed: 'Feed Ledger',
   economics: 'Economics & 4-H Ledger',
-  crm: 'Client CRM & Waitlist',
   reports: 'Reports',
   memo: 'Species Memo',
   importExport: 'Import / Export Hub',
@@ -422,7 +410,6 @@ export default function App() {
         p: { route: 'pedigree', label: 'Pedigree' },
         f: { route: 'feed', label: 'Feed Ledger' },
         e: { route: 'economics', label: 'Economics & 4-H Ledger' },
-        c: { route: 'crm', label: 'Client CRM & Waitlist' },
         o: { route: 'reports', label: 'Reports' },
         i: { route: 'importExport', label: 'Import / Export Hub' },
         s: { route: 'settings', label: 'Settings' },
@@ -1416,9 +1403,6 @@ export default function App() {
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
-            onSaveWoolHarvest={store.saveWoolHarvest}
-            onDeleteWoolHarvest={store.deleteWoolHarvest}
-            isConstrainedDevice={deviceCapability.assessment.shouldApplyLowMemoryHandling}
           />
         )}
 
@@ -1480,7 +1464,6 @@ export default function App() {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
-            onLoadFullPhotosBatch={store.loadAnimalPhotoDataUrlsBatch}
             onLoadPedigreeNeighborhood={store.loadPedigreeNeighborhood}
             onCheckPedigreeBranchesHaveAncestors={store.checkPedigreeBranchesHaveAncestors}
             onUpdateBreederLogo={(dataUrl) => {
@@ -1525,27 +1508,6 @@ export default function App() {
             onDeleteProcessingLog={store.deleteProcessingLog}
             onSaveYouthProjectBook={store.saveYouthProjectBook}
             onDeleteYouthProjectBook={store.deleteYouthProjectBook}
-          />
-        )}
-
-        {route === 'crm' && (
-          <ClientCrmScreen
-            activeData={activeSpeciesData}
-            settings={snapshot.settings}
-            onBackToHub={() => setRoute('dashboard')}
-            onOpenAnimal={(animalId) => {
-              store.setSelectedAnimalId(animalId);
-              setRoute('herd');
-            }}
-            onOpenReports={() => setRoute('reports')}
-            onSaveClient={store.saveClientContact}
-            onDeleteClient={store.deleteClientContact}
-            onSaveWaitlistEntry={store.saveWaitlistEntry}
-            onDeleteWaitlistEntry={store.deleteWaitlistEntry}
-            onSaveReservation={store.saveAnimalReservation}
-            onDeleteReservation={store.deleteAnimalReservation}
-            onCompleteReservationSale={store.completeReservationSale}
-            onCreateReminderTask={store.createCrmReminderTask}
           />
         )}
 
@@ -1738,7 +1700,6 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">F</kbd> Feed ·{' '}
-              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">C</kbd> CRM ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">I</kbd> Import/Export ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
@@ -1784,22 +1745,18 @@ export default function App() {
       )}
 
       {/* Blocking Wiped-Browser-Storage Recovery Gate (IMP-018) */}
-      {store.wipedRecoveryContext?.detected && (
-        <Suspense fallback={null}>
-          <WipedStorageRecoveryModal
-            context={store.wipedRecoveryContext}
-            archivedHerdBundles={store.archivedHerdBundles}
-            onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
-            onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
-            onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
-            onImportArchiveReplace={(bytes, fileName) =>
-              store.importBackupArchiveBytes(bytes, fileName, 'replace')
-            }
-            onImportSqlite={store.importSqliteBytes}
-            onStartFresh={store.startFreshAfterWipedRecovery}
-          />
-        </Suspense>
-      )}
+      <WipedStorageRecoveryModal
+        context={store.wipedRecoveryContext}
+        archivedHerdBundles={store.archivedHerdBundles}
+        onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+        onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
+        onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
+        onImportArchiveReplace={(bytes, fileName) =>
+          store.importBackupArchiveBytes(bytes, fileName, 'replace')
+        }
+        onImportSqlite={store.importSqliteBytes}
+        onStartFresh={store.startFreshAfterWipedRecovery}
+      />
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (
@@ -1902,7 +1859,6 @@ export default function App() {
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
                 { key: 'F', label: 'Feed & Lot Ledger', desc: 'Feed purchases, tag OCR lot indexing & biosecurity purge' },
                 { key: 'E', label: 'Economics & 4-H Ledger', desc: 'Expenses, receipts, P&L margins, meat/pelt yields & 4-H/FFA books' },
-                { key: 'C', label: 'Client CRM & Waitlist', desc: 'Buyer contacts, ranked waitlist matching, deposits & sales agreements' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
                 { key: 'I', label: 'Import / Export Hub', desc: 'System backups, native restores, sync & external exporters' },
                 { key: 'S', label: 'Settings', desc: 'Barn preferences, calendar sync, appearance & diagnostics' },

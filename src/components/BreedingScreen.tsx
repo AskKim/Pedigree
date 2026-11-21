@@ -8,7 +8,7 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { AlertTriangle, FileText, Loader2, Plus, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   findLitterOffspringTattooConflicts,
@@ -60,16 +60,11 @@ import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
-import {
-  buildBreedingCertificateFileName,
-  generateBreedingCertificateHtml,
-} from '../core/alternativeCertificates';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { CoatExplorerSandbox } from './CoatExplorerSandbox';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { GrowthAndSurvivalLab } from './GrowthAndSurvivalLab';
 import { PairingComparisonMatrix } from './PairingComparisonMatrix';
-import { PrintPreviewModal } from './PrintPreviewModal';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
 interface BreedingScreenProps {
@@ -136,10 +131,6 @@ export function BreedingScreen({
   const [includeArchivedParents, setIncludeArchivedParents] = useState(false);
   const [ledgerQuery, setLedgerQuery] = useState('');
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState<'all' | BreedingStatus>('all');
-  const [breedingCertPreview, setBreedingCertPreview] = useState<{
-    breeding: BreedingRecord;
-    customNotes: string;
-  } | null>(null);
 
   const archivedCount = useMemo(
     () => animals.filter((a) => isAnimalArchived(a)).length,
@@ -1553,17 +1544,6 @@ export function BreedingScreen({
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            setBreedingCertPreview({ breeding: b, customNotes: '' })
-                          }
-                          title="Generate printable Breeding Certificate"
-                          className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
-                        >
-                          <FileText className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                          Breeding Cert
-                        </button>
-                        <button
-                          type="button"
                           onClick={() => onDeleteBreeding(b.id)}
                           aria-label="Delete breeding record"
                           className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center"
@@ -2264,91 +2244,30 @@ export function BreedingScreen({
               className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
             />
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-              {editingRecord ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setBreedingCertPreview({ breeding: editingRecord, customNotes: outNotes })
-                  }
-                  className="min-h-[40px] px-3.5 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5"
-                >
-                  <FileText className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                  Breeding Cert
-                </button>
-              ) : (
-                <span />
-              )}
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={outcomeSubmitLock.isSubmitting}
-                  onClick={closeOutcomeModal}
-                  className="min-h-[40px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium disabled:opacity-55"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={outcomeSubmitLock.isSubmitting}
-                  aria-busy={outcomeSubmitLock.isSubmitting}
-                  className="min-h-[40px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
-                >
-                  {outcomeSubmitLock.isSubmitting && (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                  )}
-                  {outcomeSubmitLock.isSubmitting ? 'Saving Outcome...' : 'Save Outcome'}
-                </button>
-              </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={outcomeSubmitLock.isSubmitting}
+                onClick={closeOutcomeModal}
+                className="min-h-[40px] px-4 py-2 rounded-lg border border-[var(--barn-border)] text-xs font-medium disabled:opacity-55"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={outcomeSubmitLock.isSubmitting}
+                aria-busy={outcomeSubmitLock.isSubmitting}
+                className="min-h-[40px] px-5 py-2 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {outcomeSubmitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                )}
+                {outcomeSubmitLock.isSubmitting ? 'Saving Outcome...' : 'Save Outcome'}
+              </button>
             </div>
             </div>
           </form>
         </div>
-      )}
-
-      {breedingCertPreview && (
-        <PrintPreviewModal
-          title={`Breeding Certificate — ${breedingCertPreview.breeding.sireName} × ${breedingCertPreview.breeding.damName}`}
-          filename={buildBreedingCertificateFileName(breedingCertPreview.breeding)}
-          htmlContent={generateBreedingCertificateHtml(
-            breedingCertPreview.breeding,
-            herdById.get(breedingCertPreview.breeding.sireId),
-            herdById.get(breedingCertPreview.breeding.damId),
-            speciesProfile,
-            settings ?? {
-              id: 'default',
-              barnName: 'Barn Registry',
-              breederName: '',
-              preferredUnit: 'lbs_oz',
-              defaultSpecies: speciesProfile.name,
-              pinnedLandingSpecies: '',
-              defaultGenerations: 3,
-              themeMode: 'light',
-              updatedAt: '',
-            },
-            { serviceNotes: breedingCertPreview.customNotes }
-          )}
-          extraToolbarContent={
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-medium text-[var(--barn-muted)]">
-                Certificate Note:
-              </span>
-              <input
-                type="text"
-                value={breedingCertPreview.customNotes}
-                onChange={(e) =>
-                  setBreedingCertPreview((prev) =>
-                    prev ? { ...prev, customNotes: e.target.value } : null
-                  )
-                }
-                placeholder="Optional stud service / pedigree note for recipient..."
-                aria-label="Optional breeding certificate note"
-                className="flex-1 min-w-[240px] min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
-              />
-            </div>
-          }
-          onClose={() => setBreedingCertPreview(null)}
-        />
       )}
     </div>
   );

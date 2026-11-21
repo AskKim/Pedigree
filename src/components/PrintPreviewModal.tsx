@@ -12,12 +12,9 @@
 
 import {
   AlertCircle,
-  Check,
-  Copy,
   Download,
   FileDown,
   Loader2,
-  Mail,
   Printer,
   Share2,
   ShieldAlert,
@@ -53,7 +50,7 @@ import {
 } from '../storage/crashLogger';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
-import { copyTextWithFallback, downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
+import { downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 const MIN_PREVIEW_ZOOM = 0.2;
@@ -172,9 +169,6 @@ interface PrintPreviewModalProps {
   batchAnimalCount?: number;
   batchPageCount?: number;
   batchPhotoHydrating?: boolean;
-  extraToolbarContent?: ReactNode;
-  mailtoUrl?: string;
-  plainTextSummary?: string;
   onClose: () => void;
 }
 
@@ -202,9 +196,6 @@ export function PrintPreviewModal({
   batchAnimalCount = 0,
   batchPageCount = 0,
   batchPhotoHydrating = false,
-  extraToolbarContent,
-  mailtoUrl,
-  plainTextSummary,
   onClose,
 }: PrintPreviewModalProps) {
   const shareReasonId = useId();
@@ -218,7 +209,6 @@ export function PrintPreviewModal({
   const [fileActionBusy, setFileActionBusy] = useState<PrintPreviewFileActionKind | null>(null);
   const [fileActionError, setFileActionError] = useState<PrintPreviewFileError | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
-  const [copiedSummary, setCopiedSummary] = useState(false);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [docSize, setDocSize] = useState<{ width: number; height: number }>({
     width: 980,
@@ -236,7 +226,6 @@ export function PrintPreviewModal({
   const wheelSyncTimerRef = useRef<number | null>(null);
   const printFallbackTimerRef = useRef<number | null>(null);
   const printSafetyTimerRef = useRef<number | null>(null);
-  const copiedSummaryTimerRef = useRef<number | null>(null);
   const cleanupPrintStageRef = useRef<(() => void) | null>(null);
   const cleanupDocListenersRef = useRef<(() => void) | null>(null);
   const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
@@ -253,9 +242,6 @@ export function PrintPreviewModal({
       }
       if (printSafetyTimerRef.current !== null) {
         window.clearTimeout(printSafetyTimerRef.current);
-      }
-      if (copiedSummaryTimerRef.current !== null) {
-        window.clearTimeout(copiedSummaryTimerRef.current);
       }
       cleanupPrintStageRef.current?.();
       cleanupPrintStageRef.current = null;
@@ -1016,75 +1002,6 @@ export function PrintPreviewModal({
                 )}
                 {fileActionBusy === 'pdf' ? 'Building PDF...' : 'Download .PDF'}
               </button>
-            )}
-            {plainTextSummary && (
-              <button
-                type="button"
-                onClick={async () => {
-                  dismissFileActionError();
-                  try {
-                    const copyMode = await copyTextWithFallback(plainTextSummary);
-                    if (copyMode === 'unsupported') {
-                      if (isMountedRef.current) {
-                        setFileActionError({
-                          action: 'share',
-                          title: 'Could Not Copy Summary',
-                          detail:
-                            'Clipboard access is blocked or unavailable in this browser. Use Download .HTM or Print / Save PDF instead.',
-                        });
-                      }
-                      return;
-                    }
-                    if (isMountedRef.current) {
-                      setCopiedSummary(true);
-                      if (copiedSummaryTimerRef.current !== null) {
-                        window.clearTimeout(copiedSummaryTimerRef.current);
-                      }
-                      copiedSummaryTimerRef.current = window.setTimeout(() => {
-                        copiedSummaryTimerRef.current = null;
-                        if (isMountedRef.current) setCopiedSummary(false);
-                      }, 1800);
-                    }
-                  } catch (err: unknown) {
-                    const detail =
-                      err instanceof Error && err.message.trim()
-                        ? err.message.trim()
-                        : 'Clipboard permission denied.';
-                    logDiagnosticEvent({
-                      level: 'warn',
-                      category: 'storage',
-                      message: `Could not copy print preview summary: ${detail}`,
-                      error: err,
-                    });
-                    if (isMountedRef.current) {
-                      setFileActionError({
-                        action: 'share',
-                        title: 'Could Not Copy Summary',
-                        detail: `${detail} Use Download .HTM or Print / Save PDF instead.`,
-                      });
-                    }
-                  }
-                }}
-                title="Copy plain-text summary for email or messaging"
-                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
-              >
-                {copiedSummary ? (
-                  <Check className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
-                ) : (
-                  <Copy className="w-4 h-4" aria-hidden="true" />
-                )}
-                {copiedSummary ? 'Copied Summary' : 'Copy Text'}
-              </button>
-            )}
-            {mailtoUrl && (
-              <a
-                href={mailtoUrl}
-                title="Compose email with pre-filled show entry summary"
-                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <Mail className="w-4 h-4" aria-hidden="true" />
-                Email Entry
-              </a>
             )}
             <button
               type="button"
@@ -1853,12 +1770,6 @@ export function PrintPreviewModal({
             </div>
           );
         })()}
-
-        {extraToolbarContent && (
-          <div className="px-3 sm:px-5 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75 text-xs">
-            {extraToolbarContent}
-          </div>
-        )}
 
         {(headerNotice ||
           pedigreePrintOptions?.showGenotypes ||

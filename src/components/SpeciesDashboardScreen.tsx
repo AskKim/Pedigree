@@ -28,7 +28,6 @@ import {
   DollarSign,
   Download,
   Edit3,
-  FileText,
   GripVertical,
   LayoutGrid,
   Link2,
@@ -38,7 +37,6 @@ import {
   Package,
   Pin,
   Plus,
-  Printer,
   QrCode,
   RefreshCw,
   Settings,
@@ -49,7 +47,6 @@ import {
   StickyNote,
   Trash2,
   UserPlus,
-  Users,
   X,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
@@ -74,7 +71,6 @@ import {
   generateBatchPrintHtml,
 } from '../core/batchPrint';
 import { formatSystemTaskTitle } from '../core/calendarExport';
-import { evaluateCrmFollowUpReminders } from '../core/clientCrm';
 import { buildFacilityBoardModel } from '../core/facilityBoard';
 import {
   evaluateFeedInventorySummary,
@@ -112,15 +108,6 @@ import {
   mergeEnteredAnimalIdsWithResults,
   normalizeShowResults,
 } from '../core/showResults';
-import {
-  buildShowDocumentFileName,
-  buildShowEntryMailtoUrl,
-  buildShowEntryPlainTextSummary,
-  generateShowEntryFormHtml,
-  generateShowRemarkCardsHtml,
-  RemarkCardLayoutMode,
-  ShowEntryDivision,
-} from '../core/showDocuments';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { countSpeciesNonTestingRecords } from '../core/sampleData';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
@@ -280,23 +267,6 @@ export function SpeciesDashboardScreen({
         todayIso: today,
       }),
     [feedBatches, feedAllocations, speciesProfile.name, settings.feedTagPurgeWindowDays, today]
-  );
-  const crmSummary = useMemo(
-    () =>
-      evaluateCrmFollowUpReminders({
-        clients: activeData.clientContacts,
-        waitlistEntries: activeData.waitlistEntries,
-        reservations: activeData.animalReservations,
-        currencyCode: settings.currencyCode,
-        todayIso: today,
-      }),
-    [
-      activeData.clientContacts,
-      activeData.waitlistEntries,
-      activeData.animalReservations,
-      settings.currencyCode,
-      today,
-    ]
   );
 
   const [taskFilter, setTaskFilter] = useState<'open' | 'completed'>('open');
@@ -467,20 +437,6 @@ export function SpeciesDashboardScreen({
   } | null>(null);
   const [pendingShowWithdrawalWarning, setPendingShowWithdrawalWarning] =
     useState<ShowWithdrawalConflictEvaluation | null>(null);
-  const [showDocPreview, setShowDocPreview] = useState<{
-    show: ShowEvent;
-    kind: 'entry_form' | 'remark_cards';
-    division: ShowEntryDivision;
-    exhibitorName: string;
-    exhibitorAddress: string;
-    exhibitorPhone: string;
-    exhibitorEmail: string;
-    exhibitorArbaNumber: string;
-    secretaryEmail: string;
-    entryFeePerAnimal: string;
-    remarkLayout: RemarkCardLayoutMode;
-    includeFurWool: boolean;
-  } | null>(null);
 
   const closeShowEditor = useCallback(() => {
     setPendingShowWithdrawalWarning(null);
@@ -571,7 +527,6 @@ export function SpeciesDashboardScreen({
     setActiveBirthCheckoffTaskId(null);
     setShowFullFacilityBoard(false);
     setCageQrPrintState(null);
-    setShowDocPreview(null);
   }, [speciesProfile.name]);
 
   useEffect(() => {
@@ -710,93 +665,6 @@ export function SpeciesDashboardScreen({
     snapshot.speciesProfiles,
     photoDataUrlByAnimalId,
   ]);
-
-  const openShowDocumentPreview = (
-    show: ShowEvent,
-    kind: 'entry_form' | 'remark_cards'
-  ) => {
-    setShowDocPreview({
-      show,
-      kind,
-      division: 'Open',
-      exhibitorName: settings.breederName || '',
-      exhibitorAddress: '',
-      exhibitorPhone: '',
-      exhibitorEmail: '',
-      exhibitorArbaNumber: '',
-      secretaryEmail: '',
-      entryFeePerAnimal: '',
-      remarkLayout: '4up',
-      includeFurWool: false,
-    });
-  };
-
-  const renderedShowDocument = useMemo(() => {
-    if (!showDocPreview) return null;
-    const entryOpts = {
-      division: showDocPreview.division,
-      exhibitorName: showDocPreview.exhibitorName,
-      exhibitorBarn: settings.barnName,
-      exhibitorAddress: showDocPreview.exhibitorAddress,
-      exhibitorPhone: showDocPreview.exhibitorPhone,
-      exhibitorEmail: showDocPreview.exhibitorEmail,
-      exhibitorArbaNumber: showDocPreview.exhibitorArbaNumber,
-      secretaryEmail: showDocPreview.secretaryEmail,
-      entryFeePerAnimal: showDocPreview.entryFeePerAnimal,
-      defaultEnterFurWool: showDocPreview.includeFurWool,
-    };
-    if (showDocPreview.kind === 'entry_form') {
-      return {
-        title: `Show Entry Form — ${showDocPreview.show.name}`,
-        filename: buildShowDocumentFileName(showDocPreview.show, 'entry-form'),
-        html: generateShowEntryFormHtml(
-          showDocPreview.show,
-          animals,
-          speciesProfile,
-          settings,
-          entryOpts
-        ),
-        mailtoUrl: buildShowEntryMailtoUrl(
-          showDocPreview.show,
-          animals,
-          speciesProfile,
-          settings,
-          entryOpts
-        ),
-        plainTextSummary: buildShowEntryPlainTextSummary(
-          showDocPreview.show,
-          animals,
-          speciesProfile,
-          settings,
-          entryOpts
-        ),
-      };
-    }
-    return {
-      title: `Show Remark Cards — ${showDocPreview.show.name}`,
-      filename: buildShowDocumentFileName(showDocPreview.show, 'remark-cards'),
-      html: generateShowRemarkCardsHtml(
-        showDocPreview.show,
-        animals,
-        speciesProfile,
-        settings,
-        {
-          layoutMode: showDocPreview.remarkLayout,
-          division: showDocPreview.division,
-          exhibitorName: showDocPreview.exhibitorName || settings.breederName || settings.barnName,
-          includeExistingJudgeNotes: true,
-        }
-      ),
-      mailtoUrl: undefined,
-      plainTextSummary: buildShowEntryPlainTextSummary(
-        showDocPreview.show,
-        animals,
-        speciesProfile,
-        settings,
-        entryOpts
-      ),
-    };
-  }, [showDocPreview, animals, speciesProfile, settings]);
 
   const visibleTasks = tasks.filter((t) => (taskFilter === 'open' ? !t.completed : t.completed));
 
@@ -1561,30 +1429,6 @@ export function SpeciesDashboardScreen({
 
             <button
               type="button"
-              onClick={() => onNavigate('crm')}
-              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
-            >
-              <span className="inline-flex items-center gap-2.5 min-w-0">
-                <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
-                  <Users className="w-4 h-4" aria-hidden="true" />
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
-                    Client CRM &amp; Deposits
-                  </span>
-                  <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
-                    {crmSummary.activeWaitlistCount} waitlist · {crmSummary.activeReservationsCount} holds
-                    {crmSummary.overdueReminderCount + crmSummary.dueSoonReminderCount > 0
-                      ? ` · ${crmSummary.overdueReminderCount + crmSummary.dueSoonReminderCount} due`
-                      : ''}
-                  </span>
-                </span>
-              </span>
-              <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
-            </button>
-
-            <button
-              type="button"
               onClick={openBinderPreview}
               className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
             >
@@ -1664,30 +1508,6 @@ export function SpeciesDashboardScreen({
                 </span>
                 <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
                   {activeData.ledgerEntries.length} ledger · {activeData.youthProjectBooks.length} 4-H
-                </span>
-              </span>
-            </span>
-            <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onNavigate('crm')}
-            className="w-full sm:w-auto max-w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-colors"
-          >
-            <span className="inline-flex items-center gap-2.5 min-w-0">
-              <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
-                <Users className="w-4 h-4" aria-hidden="true" />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
-                  Client CRM &amp; Deposits
-                </span>
-                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
-                  {crmSummary.activeWaitlistCount} waitlist · {crmSummary.activeReservationsCount} holds
-                  {crmSummary.overdueReminderCount + crmSummary.dueSoonReminderCount > 0
-                    ? ` · ${crmSummary.overdueReminderCount + crmSummary.dueSoonReminderCount} due`
-                    : ''}
                 </span>
               </span>
             </span>
@@ -3266,25 +3086,7 @@ export function SpeciesDashboardScreen({
                                 </p>
                               )}
                             </div>
-                            <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => openShowDocumentPreview(s, 'entry_form')}
-                                title="Preview, print, or email ARBA Show Entry Form"
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap"
-                              >
-                                <FileText className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                                <span>Entry Form</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openShowDocumentPreview(s, 'remark_cards')}
-                                title="Print 4-up or 1-up Show Remark Cards"
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap"
-                              >
-                                <Printer className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                                <span>Remark Cards</span>
-                              </button>
+                            <div className="flex items-center gap-1 shrink-0">
                               <button
                                 type="button"
                                 onClick={() => openEditShowEditor(s)}
@@ -3599,150 +3401,6 @@ export function SpeciesDashboardScreen({
             </p>
           }
           onClose={() => setCageQrPrintState(null)}
-        />
-      )}
-
-      {/* Show Entry Form & Remark Cards Print / Email Preview */}
-      {showDocPreview && renderedShowDocument && (
-        <PrintPreviewModal
-          title={renderedShowDocument.title}
-          filename={renderedShowDocument.filename}
-          htmlContent={renderedShowDocument.html}
-          mailtoUrl={renderedShowDocument.mailtoUrl}
-          plainTextSummary={renderedShowDocument.plainTextSummary}
-          onClose={() => setShowDocPreview(null)}
-          extraToolbarContent={
-            <div className="w-full flex flex-wrap items-end gap-2 pt-2 border-t border-[var(--barn-border)] text-xs">
-              <label className="flex flex-col gap-0.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                  Document
-                </span>
-                <select
-                  value={showDocPreview.kind}
-                  onChange={(e) =>
-                    setShowDocPreview((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            kind: e.target.value === 'remark_cards' ? 'remark_cards' : 'entry_form',
-                          }
-                        : prev
-                    )
-                  }
-                  className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs"
-                >
-                  <option value="entry_form">Show Entry Form</option>
-                  <option value="remark_cards">Show Remark Cards</option>
-                </select>
-              </label>
-
-              <label className="flex flex-col gap-0.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                  Division
-                </span>
-                <select
-                  value={showDocPreview.division}
-                  onChange={(e) =>
-                    setShowDocPreview((prev) =>
-                      prev
-                        ? { ...prev, division: e.target.value === 'Youth' ? 'Youth' : 'Open' }
-                        : prev
-                    )
-                  }
-                  className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs"
-                >
-                  <option value="Open">Open</option>
-                  <option value="Youth">Youth</option>
-                </select>
-              </label>
-
-              <label className="flex flex-col gap-0.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                  Exhibitor
-                </span>
-                <input
-                  type="text"
-                  value={showDocPreview.exhibitorName}
-                  onChange={(e) =>
-                    setShowDocPreview((prev) =>
-                      prev ? { ...prev, exhibitorName: e.target.value } : prev
-                    )
-                  }
-                  placeholder="Exhibitor Name"
-                  className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs w-36"
-                />
-              </label>
-
-              {showDocPreview.kind === 'entry_form' ? (
-                <>
-                  <label className="flex flex-col gap-0.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                      Secretary Email
-                    </span>
-                    <input
-                      type="email"
-                      value={showDocPreview.secretaryEmail}
-                      onChange={(e) =>
-                        setShowDocPreview((prev) =>
-                          prev ? { ...prev, secretaryEmail: e.target.value } : prev
-                        )
-                      }
-                      placeholder="secretary@club.org"
-                      className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs w-40"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-0.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                      Fee / Animal ($)
-                    </span>
-                    <input
-                      type="text"
-                      value={showDocPreview.entryFeePerAnimal}
-                      onChange={(e) =>
-                        setShowDocPreview((prev) =>
-                          prev ? { ...prev, entryFeePerAnimal: e.target.value } : prev
-                        )
-                      }
-                      placeholder="e.g. 5.00"
-                      className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs w-20"
-                    />
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={showDocPreview.includeFurWool}
-                      onChange={(e) =>
-                        setShowDocPreview((prev) =>
-                          prev ? { ...prev, includeFurWool: e.target.checked } : prev
-                        )
-                      }
-                    />
-                    <span>Enter Fur / Wool</span>
-                  </label>
-                </>
-              ) : (
-                <label className="flex flex-col gap-0.5">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--barn-muted)]">
-                    Card Layout
-                  </span>
-                  <select
-                    value={showDocPreview.remarkLayout}
-                    onChange={(e) =>
-                      setShowDocPreview((prev) =>
-                        prev
-                          ? { ...prev, remarkLayout: e.target.value === '1up' ? '1up' : '4up' }
-                          : prev
-                      )
-                    }
-                    className="min-h-[32px] px-2 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs"
-                  >
-                    <option value="4up">4-Up Letter Sheet</option>
-                    <option value="1up">1-Up (4x6 Index / Thermal)</option>
-                  </select>
-                </label>
-              )}
-            </div>
-          }
         />
       )}
 
@@ -4318,90 +3976,30 @@ export function SpeciesDashboardScreen({
               )}
             </div>
 
-            <div className="px-5 py-3.5 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/60 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {showAnimalIds.length > 0 && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openShowDocumentPreview(
-                          {
-                            id: editingShowId || 'draft-show',
-                            species: speciesProfile.name,
-                            name: showName.trim() || `${speciesProfile.name} Show`,
-                            location: showLocation.trim(),
-                            sanctioningBody: showSanction,
-                            eventDateIso: showDateIso || today,
-                            entryDeadlineIso: showDeadlineIso || '',
-                            enteredAnimalIds: showAnimalIds,
-                            results: Object.values(showResultsByAnimalId),
-                            notes: showNotes.trim(),
-                            createdAt: today,
-                            updatedAt: today,
-                          },
-                          'entry_form'
-                        )
-                      }
-                      className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                      Entry Form
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openShowDocumentPreview(
-                          {
-                            id: editingShowId || 'draft-show',
-                            species: speciesProfile.name,
-                            name: showName.trim() || `${speciesProfile.name} Show`,
-                            location: showLocation.trim(),
-                            sanctioningBody: showSanction,
-                            eventDateIso: showDateIso || today,
-                            entryDeadlineIso: showDeadlineIso || '',
-                            enteredAnimalIds: showAnimalIds,
-                            results: Object.values(showResultsByAnimalId),
-                            notes: showNotes.trim(),
-                            createdAt: today,
-                            updatedAt: today,
-                          },
-                          'remark_cards'
-                        )
-                      }
-                      className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5"
-                    >
-                      <Printer className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                      Remark Cards
-                    </button>
-                  </>
+            <div className="px-5 py-3.5 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/60 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={showSubmitLock.isSubmitting}
+                onClick={closeShowEditor}
+                className="min-h-[38px] px-4 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={showSubmitLock.isSubmitting || Boolean(showPhotoBusyAnimalId)}
+                aria-busy={showSubmitLock.isSubmitting}
+                className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
+              >
+                {showSubmitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
                 )}
-              </div>
-              <div className="flex items-center gap-2 ml-auto">
-                <button
-                  type="button"
-                  disabled={showSubmitLock.isSubmitting}
-                  onClick={closeShowEditor}
-                  className="min-h-[38px] px-4 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={showSubmitLock.isSubmitting || Boolean(showPhotoBusyAnimalId)}
-                  aria-busy={showSubmitLock.isSubmitting}
-                  className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
-                >
-                  {showSubmitLock.isSubmitting && (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                  )}
-                  {showSubmitLock.isSubmitting
-                    ? 'Saving...'
-                    : editingShowId
-                      ? 'Save Show & Results'
-                      : 'Save Show'}
-                </button>
-              </div>
+                {showSubmitLock.isSubmitting
+                  ? 'Saving...'
+                  : editingShowId
+                    ? 'Save Show & Results'
+                    : 'Save Show'}
+              </button>
             </div>
           </form>
         </div>

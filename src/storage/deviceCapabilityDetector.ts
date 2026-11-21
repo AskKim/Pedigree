@@ -21,11 +21,6 @@ import {
 } from '../core/deviceCapability';
 import { logDiagnosticEvent } from './crashLogger';
 import { isArchiveWorkerDisabled } from './offThreadWorkerClient';
-import {
-  getSafeIndexedDb,
-  getSafeLocalStorage,
-  getSafeStorageManager,
-} from './storageProbes';
 
 const HOME_DISMISSED_KEY = 'pedigree.deviceCapability.homeDismissed.v1';
 const SETTINGS_DISMISSED_KEY = 'pedigree.deviceCapability.settingsDismissed.v1';
@@ -49,9 +44,8 @@ export function probeWebpEncodeSupport(): boolean {
   if (typeof document === 'undefined') {
     return true;
   }
-  let canvas: HTMLCanvasElement | null = null;
   try {
-    canvas = document.createElement('canvas');
+    const canvas = document.createElement('canvas');
     canvas.width = 1;
     canvas.height = 1;
     if (typeof canvas.toDataURL !== 'function') {
@@ -62,22 +56,6 @@ export function probeWebpEncodeSupport(): boolean {
     cachedWebpEncodeSupported = typeof url === 'string' && url.indexOf('data:image/webp') === 0;
   } catch {
     cachedWebpEncodeSupported = false;
-  } finally {
-    if (canvas) {
-      try {
-        canvas.width = 1;
-        canvas.height = 1;
-        const ctx = canvas.getContext('2d');
-        if (ctx && typeof ctx.clearRect === 'function') {
-          ctx.clearRect(0, 0, 1, 1);
-        }
-      } catch {
-        // Ignore teardown error
-      } finally {
-        canvas.width = 0;
-        canvas.height = 0;
-      }
-    }
   }
   return cachedWebpEncodeSupported;
 }
@@ -195,7 +173,12 @@ export function readBrowserFeatureSignals(): BrowserFeatureSignals {
     };
   }
 
-  const indexedDbSupported = getSafeIndexedDb() !== null;
+  let indexedDbSupported = false;
+  try {
+    indexedDbSupported = 'indexedDB' in window && Boolean(window.indexedDB);
+  } catch {
+    indexedDbSupported = false;
+  }
 
   let wasmSupported = false;
   try {
@@ -207,13 +190,17 @@ export function readBrowserFeatureSignals(): BrowserFeatureSignals {
     wasmSupported = false;
   }
 
-  const storageObj = getSafeStorageManager();
+  const storageObj = (navigator as Navigator & { storage?: StorageManager }).storage;
 
   const opfsSupported =
-    storageObj !== null && typeof storageObj.getDirectory === 'function';
+    typeof storageObj !== 'undefined' &&
+    storageObj !== null &&
+    typeof storageObj.getDirectory === 'function';
 
   const persistStorageSupported =
-    storageObj !== null && typeof storageObj.persist === 'function';
+    typeof storageObj !== 'undefined' &&
+    storageObj !== null &&
+    typeof storageObj.persist === 'function';
 
   let directoryPickerSupported = false;
   try {
@@ -265,9 +252,8 @@ export function detectCurrentBrowserCompatibility(
 
 function readLocalFlag(key: string): boolean {
   try {
-    const ls = getSafeLocalStorage();
-    if (!ls) return false;
-    return ls.getItem(key) === '1';
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(key) === '1';
   } catch {
     return false;
   }
@@ -275,12 +261,11 @@ function readLocalFlag(key: string): boolean {
 
 function writeLocalFlag(key: string, value: boolean): void {
   try {
-    const ls = getSafeLocalStorage();
-    if (!ls) return;
+    if (typeof localStorage === 'undefined') return;
     if (value) {
-      ls.setItem(key, '1');
+      localStorage.setItem(key, '1');
     } else {
-      ls.removeItem(key);
+      localStorage.removeItem(key);
     }
   } catch {
     // Ignore quota or private-browsing storage restrictions

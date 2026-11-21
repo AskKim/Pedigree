@@ -189,14 +189,12 @@ export class CrashErrorBoundary extends React.Component<
           busy: false,
           lastBuiltMailMeta,
           feedback:
-            mode === 'cancelled'
-              ? 'Share sheet cancelled — no file was saved.'
-              : mode === 'shared'
-                ? `Opened share sheet with ${built.filename}.${recipient ? ` You can send the bug report directly to ${recipient}.` : ''}`
-                : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP${recipient ? ` to send to ${recipient}` : ''}.`,
+            mode === 'shared'
+              ? `Opened share sheet with ${built.filename}.${recipient ? ` You can send the bug report directly to ${recipient}.` : ''}`
+              : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP${recipient ? ` to send to ${recipient}` : ''}.`,
         });
       } else {
-        const mode = await shareBinaryFileOrDownload({
+        await shareBinaryFileOrDownload({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
@@ -205,12 +203,9 @@ export class CrashErrorBoundary extends React.Component<
         this.setState({
           busy: false,
           lastBuiltMailMeta,
-          feedback:
-            mode === 'cancelled'
-              ? 'Share sheet cancelled — no file was saved.'
-              : `Exported ${built.filename} (${built.logCount} logs${
-                  built.includedData ? `, ${built.animalCount} animals` : ''
-                }).`,
+          feedback: `Exported ${built.filename} (${built.logCount} logs${
+            built.includedData ? `, ${built.animalCount} animals` : ''
+          }).`,
         });
       }
     } catch (err) {

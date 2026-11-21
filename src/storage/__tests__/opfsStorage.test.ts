@@ -35,18 +35,11 @@ import {
   MONTHLY_BACKUP_INTERVAL_MS,
   OpfsDirectoryHandle,
   OpfsFileHandle,
-  OpfsSyncAccessHandle,
   OpfsWritableStream,
-  probeOpfsRuntime,
   readOpfsHerdArchiveBlob,
   readOpfsPruneSyncWarning,
   readOpfsVaultBackupBlob,
-  resetOpfsProbesForTests,
   runOpfsExportCanary,
-  safeAwaitOpfsClose,
-  safeAwaitOpfsFlush,
-  safeAwaitOpfsGetSize,
-  safeAwaitOpfsTruncate,
   saveOpfsHerdArchive,
   saveOpfsVaultBackup,
   setOpfsRootResolverForTest,
@@ -57,7 +50,6 @@ import {
   writeTempOpfsFile,
   writeTempOpfsFileStreamed,
 } from '../opfsStorage';
-import { getOpfsRoot, writeFileToOpfsDir } from '../opfsTempStream';
 
 interface MockFileEntry {
   kind: 'file';
@@ -226,7 +218,6 @@ afterEach(() => {
   setBackupSyncHandleForTest(null);
   clearOpfsPruneSyncWarning();
   clearPriorUseSentinel();
-  resetOpfsProbesForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -869,119 +860,3 @@ describe('opfsStorage Phase B: Tier 1/2 caps, pre-prune sync offload, mixed .vau
   });
 });
 
-describe('opfsTempStream Safari 15.2–16.3 handle compatibility, SyncAccessHandle fallback & restricted probes', () => {
-  it('safely awaits close(), flush(), getSize(), and truncate() across both sync void/number and Promise returns, and skips double-close', async () => {
-    const syncHandle: OpfsSyncAccessHandle = {
-      write: () => 4,
-      flush: vi.fn<() => void>(),
-      getSize: vi.fn<() => number>(() => 42),
-      truncate: vi.fn<() => void>(),
-      close: vi.fn<() => void>(),
-    };
-
-    await safeAwaitOpfsTruncate(syncHandle, 0);
-    await safeAwaitOpfsFlush(syncHandle);
-    expect(await safeAwaitOpfsGetSize(syncHandle)).toBe(42);
-    await safeAwaitOpfsClose(syncHandle);
-    await safeAwaitOpfsClose(syncHandle); // double-close must be a no-op
-    expect(syncHandle.close).toHaveBeenCalledTimes(1);
-
-    const asyncHandle: OpfsSyncAccessHandle = {
-      write: () => 4,
-      flush: vi.fn(async () => {}),
-      getSize: vi.fn(async () => 128),
-      truncate: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-
-    await safeAwaitOpfsTruncate(asyncHandle, 0);
-    await safeAwaitOpfsFlush(asyncHandle);
-    expect(await safeAwaitOpfsGetSize(asyncHandle)).toBe(128);
-    await safeAwaitOpfsClose(asyncHandle);
-    await safeAwaitOpfsClose(asyncHandle);
-    expect(asyncHandle.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('writes via worker createSyncAccessHandle() with 0 args (never readwrite-unsafe) when createWritable is unavailable', async () => {
-    let storedBytes = new Uint8Array(0);
-    const createSyncSpy = vi.fn(async (): Promise<OpfsSyncAccessHandle> => {
-      return {
-        write(buf: ArrayBuffer | ArrayBufferView, opts?: { at?: number }) {
-          const view =
-            buf instanceof ArrayBuffer
-              ? new Uint8Array(buf)
-              : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-          const at = opts?.at ?? 0;
-          const next = new Uint8Array(Math.max(storedBytes.byteLength, at + view.byteLength));
-          next.set(storedBytes);
-          next.set(view, at);
-          storedBytes = next;
-          return view.byteLength;
-        },
-        async truncate(newSize: number) {
-          storedBytes = storedBytes.slice(0, newSize);
-        },
-        async flush() {},
-        async getSize() {
-          return storedBytes.byteLength;
-        },
-        async close() {},
-      };
-    });
-
-    const syncOnlyDir: OpfsDirectoryHandle = {
-      kind: 'directory',
-      name: 'tmp',
-      async getDirectoryHandle() {
-        throw new Error('unexpected subdir');
-      },
-      async getFileHandle(name: string) {
-        return {
-          kind: 'file',
-          name,
-          async getFile() {
-            return new Blob([storedBytes]);
-          },
-          createSyncAccessHandle: createSyncSpy,
-        };
-      },
-      async removeEntry() {},
-    };
-
-    await writeFileToOpfsDir(syncOnlyDir, 'worker-sync.json', '{"ok":true}');
-    expect(createSyncSpy).toHaveBeenCalledTimes(1);
-    expect(createSyncSpy).toHaveBeenCalledWith();
-    expect(new TextDecoder().decode(storedBytes)).toBe('{"ok":true}');
-  });
-
-  it('degrades cleanly without throwing when navigator.storage getter or getDirectory() throws SecurityError', async () => {
-    setOpfsRootResolverForTest(null);
-    resetOpfsProbesForTests();
-
-    const throwingNav = {
-      get storage() {
-        throw new DOMException('Blocked in Lockdown Mode', 'SecurityError');
-      },
-    };
-    vi.stubGlobal('navigator', throwingNav);
-
-    expect(isOpfsSupported()).toBe(false);
-    const probeA = await probeOpfsRuntime();
-    expect(probeA.supported).toBe(false);
-    expect(await getOpfsRoot()).toBeNull();
-
-    // Now simulate navigator.storage present, but getDirectory() rejects with SecurityError
-    resetOpfsProbesForTests();
-    vi.stubGlobal('navigator', {
-      storage: {
-        getDirectory: vi.fn(async () => {
-          throw new DOMException('OPFS unavailable in Private Browsing', 'SecurityError');
-        }),
-      },
-    });
-    const probeB = await probeOpfsRuntime();
-    expect(probeB.supported).toBe(false);
-    expect(isOpfsSupported()).toBe(false);
-    expect(await getOpfsRoot()).toBeNull();
-  });
-});

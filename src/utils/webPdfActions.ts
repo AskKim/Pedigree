@@ -16,7 +16,6 @@ import {
   PedigreePdfExportParams,
   PdfRasterImage,
 } from '../core/pdfExporter';
-import { enforceCanvasDimensions, releaseCanvas } from '../storage/webImageOptimizer';
 import { downloadBinaryFile } from './webFileActions';
 
 function base64DataUrlToBytes(dataUrl: string): Uint8Array | null {
@@ -51,30 +50,16 @@ export async function rasterDataUrlToPdfJpeg(
   return new Promise<PdfRasterImage | undefined>((resolve) => {
     const img = new Image();
     img.decoding = 'async';
-    const clearImageRef = () => {
-      img.onload = null;
-      img.onerror = null;
-      try {
-        img.src = '';
-      } catch {
-        // Ignore readonly src teardown
-      }
-    };
     img.onload = () => {
       const srcW = img.naturalWidth || img.width || 0;
       const srcH = img.naturalHeight || img.height || 0;
       if (srcW <= 0 || srcH <= 0) {
-        clearImageRef();
         resolve(undefined);
         return;
       }
       const scale = Math.min(1, maxDimension / Math.max(srcW, srcH));
-      const safeDims = enforceCanvasDimensions(
-        Math.max(1, Math.round(srcW * scale)),
-        Math.max(1, Math.round(srcH * scale))
-      );
-      const targetW = safeDims.width;
-      const targetH = safeDims.height;
+      const targetW = Math.max(1, Math.round(srcW * scale));
+      const targetH = Math.max(1, Math.round(srcH * scale));
 
       const canvas = document.createElement('canvas');
       try {
@@ -100,14 +85,11 @@ export async function rasterDataUrlToPdfJpeg(
       } catch {
         resolve(undefined);
       } finally {
-        releaseCanvas(canvas);
-        clearImageRef();
+        canvas.width = 0;
+        canvas.height = 0;
       }
     };
-    img.onerror = () => {
-      clearImageRef();
-      resolve(undefined);
-    };
+    img.onerror = () => resolve(undefined);
     img.src = safeUrl;
   });
 }
@@ -125,12 +107,12 @@ export async function buildAndDownloadPedigreePdf(
       : params.settings.breederLogoDataUrl
     : undefined;
 
-  const subjectPhotoJpeg = params.primaryPhotoDataUrl
-    ? await rasterDataUrlToPdfJpeg(params.primaryPhotoDataUrl, 420)
-    : undefined;
-  const breederLogoJpeg = rawLogoUrl
-    ? await rasterDataUrlToPdfJpeg(rawLogoUrl, 360)
-    : undefined;
+  const [subjectPhotoJpeg, breederLogoJpeg] = await Promise.all([
+    params.primaryPhotoDataUrl
+      ? rasterDataUrlToPdfJpeg(params.primaryPhotoDataUrl, 420)
+      : Promise.resolve(undefined),
+    rawLogoUrl ? rasterDataUrlToPdfJpeg(rawLogoUrl, 360) : Promise.resolve(undefined),
+  ]);
 
   const pdfBytes = buildPedigreePdfBytes({
     subject: params.subject,

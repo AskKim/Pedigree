@@ -21,11 +21,7 @@ import {
 } from '../core/feedInventory';
 import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
 import { todayDateIso } from '../core/models';
-import {
-  enforceCanvasDimensions,
-  optimizeImageBlob,
-  releaseCanvas,
-} from './webImageOptimizer';
+import { optimizeImageBlob } from './webImageOptimizer';
 
 export type FeedTagOcrStatus =
   | 'detected'
@@ -80,26 +76,16 @@ async function decodeRawImageForOcr(
     const objectUrl = URL.createObjectURL(file);
     const img = new Image();
     img.decoding = 'async';
-    const releaseImageObjectUrl = () => {
-      img.onload = null;
-      img.onerror = null;
-      try {
-        img.src = '';
-      } catch {
-        // Ignore readonly src teardown
-      }
-      URL.revokeObjectURL(objectUrl);
-    };
     img.onload = () => {
       resolve({
         source: img,
         width: img.naturalWidth || img.width || 1,
         height: img.naturalHeight || img.height || 1,
-        cleanup: releaseImageObjectUrl,
+        cleanup: () => URL.revokeObjectURL(objectUrl),
       });
     };
     img.onerror = () => {
-      releaseImageObjectUrl();
+      URL.revokeObjectURL(objectUrl);
       reject(new Error('Could not decode image file for feed tag OCR.'));
     };
     img.src = objectUrl;
@@ -113,19 +99,14 @@ function buildContrastOcrCanvas(
 ): HTMLCanvasElement {
   const longest = Math.max(srcWidth, srcHeight, 1);
   const scale = longest > OCR_MAX_DIMENSION_PX ? OCR_MAX_DIMENSION_PX / longest : 1;
-  const safeDims = enforceCanvasDimensions(
-    Math.max(1, Math.round(srcWidth * scale)),
-    Math.max(1, Math.round(srcHeight * scale))
-  );
-  const targetWidth = safeDims.width;
-  const targetHeight = safeDims.height;
+  const targetWidth = Math.max(1, Math.round(srcWidth * scale));
+  const targetHeight = Math.max(1, Math.round(srcHeight * scale));
 
   const canvas = document.createElement('canvas');
   canvas.width = targetWidth;
   canvas.height = targetHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    releaseCanvas(canvas);
     throw new Error('2D Canvas context unavailable for feed tag OCR.');
   }
   ctx.fillStyle = '#FFFFFF';
@@ -271,8 +252,11 @@ export async function captureFeedTagWithPreCompressionOcr(
       }
     }
   } finally {
-    releaseCanvas(ocrCanvas);
-    ocrCanvas = null;
+    if (ocrCanvas) {
+      ocrCanvas.width = 0;
+      ocrCanvas.height = 0;
+      ocrCanvas = null;
+    }
     decoded.cleanup();
   }
 

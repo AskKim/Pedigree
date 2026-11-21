@@ -48,26 +48,17 @@ import {
   isOpfsSupported,
   listDirEntries,
   markTempOpfsFileActive,
-  OpfsCloseableHandle,
   OpfsDirectoryHandle,
   OpfsFileHandle,
   OpfsNamespace,
-  OpfsSyncAccessHandle,
   OpfsWritableStream,
-  probeOpfsRuntime,
   purgeOpfsTmp,
   readOpfsFileBytes,
   readOpfsFileText,
   readTempOpfsFileAsBlob,
   registerOpfsDiagnosticLogger,
-  releaseActiveOpfsHandles,
   removeOpfsEntrySafe,
   removeTempOpfsFile,
-  resetOpfsProbesForTests,
-  safeAwaitOpfsClose,
-  safeAwaitOpfsFlush,
-  safeAwaitOpfsGetSize,
-  safeAwaitOpfsTruncate,
   setOpfsRootResolverForTest,
   StreamedOpfsTempFileResult,
   sweepOrphanedOpfsTmpOnBoot,
@@ -76,12 +67,6 @@ import {
   writeTempOpfsFile,
   writeTempOpfsFileStreamed,
 } from './opfsTempStream';
-import {
-  getSafeIndexedDb,
-  getSafeLocalStorage,
-  trackActiveIdbConnection,
-  trackActiveIdbTransaction,
-} from './storageProbes';
 import { isQuotaExceededError } from './storageProtection';
 
 registerOpfsDiagnosticLogger((ev) => {
@@ -92,16 +77,9 @@ export {
   getOpfsSubdir,
   isOpfsSupported,
   markTempOpfsFileActive,
-  probeOpfsRuntime,
   purgeOpfsTmp,
   readTempOpfsFileAsBlob,
-  releaseActiveOpfsHandles,
   removeTempOpfsFile,
-  resetOpfsProbesForTests,
-  safeAwaitOpfsClose,
-  safeAwaitOpfsFlush,
-  safeAwaitOpfsGetSize,
-  safeAwaitOpfsTruncate,
   setOpfsRootResolverForTest,
   sweepOrphanedOpfsTmpOnBoot,
   unmarkTempOpfsFileActive,
@@ -109,11 +87,9 @@ export {
   writeTempOpfsFileStreamed,
 };
 export type {
-  OpfsCloseableHandle,
   OpfsDirectoryHandle,
   OpfsFileHandle,
   OpfsNamespace,
-  OpfsSyncAccessHandle,
   OpfsWritableStream,
   StreamedOpfsTempFileResult,
 };
@@ -162,10 +138,9 @@ export interface OpfsPruneSyncWarning {
 }
 
 export function readOpfsPruneSyncWarning(): OpfsPruneSyncWarning | null {
-  const ls = getSafeLocalStorage();
-  if (!ls) return null;
+  if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = ls.getItem(OPFS_PRUNE_WARNING_KEY);
+    const raw = localStorage.getItem(OPFS_PRUNE_WARNING_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<OpfsPruneSyncWarning>;
     if (!parsed || typeof parsed !== 'object' || typeof parsed.lastFileName !== 'string') {
@@ -195,10 +170,9 @@ export function readOpfsPruneSyncWarning(): OpfsPruneSyncWarning | null {
 }
 
 export function clearOpfsPruneSyncWarning(): void {
-  const ls = getSafeLocalStorage();
-  if (!ls) return;
+  if (typeof localStorage === 'undefined') return;
   try {
-    ls.removeItem(OPFS_PRUNE_WARNING_KEY);
+    localStorage.removeItem(OPFS_PRUNE_WARNING_KEY);
   } catch {
     // Ignore
   }
@@ -235,10 +209,9 @@ function recordOpfsPruneSyncWarning(
       ? `${totalCount} expiring local backup(s) could not offload (${reasonNote}) and were retained locally until sync succeeds. Re-authorize your Backup Sync folder or export a manual backup.`
       : `${totalCount} aging local backup(s) rolled off storage without an off-device sync copy (${reasonNote}). Connect a sync folder or download a manual backup.`,
   };
-  const ls = getSafeLocalStorage();
-  if (ls) {
+  if (typeof localStorage !== 'undefined') {
     try {
-      ls.setItem(OPFS_PRUNE_WARNING_KEY, JSON.stringify(next));
+      localStorage.setItem(OPFS_PRUNE_WARNING_KEY, JSON.stringify(next));
     } catch {
       // Non-fatal
     }
@@ -923,10 +896,9 @@ export async function deleteOpfsHerdArchive(archiveKey: string): Promise<boolean
 // ---------------------------------------------------------------------------
 
 export function readPriorUseSentinel(): PriorUseSentinel | null {
-  const ls = getSafeLocalStorage();
-  if (!ls) return null;
+  if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = ls.getItem(PRIOR_USE_SENTINEL_KEY);
+    const raw = localStorage.getItem(PRIOR_USE_SENTINEL_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PriorUseSentinel>;
     if (!parsed || typeof parsed !== 'object') return null;
@@ -942,8 +914,7 @@ export function readPriorUseSentinel(): PriorUseSentinel | null {
 }
 
 export function markPriorUseSentinelFromSnapshot(snapshot: BarnDatabaseSnapshot): void {
-  const ls = getSafeLocalStorage();
-  if (!ls) return;
+  if (typeof localStorage === 'undefined') return;
   const nonTestingCount = snapshot.animals.filter((a) => !isSampleTestingId(a.id)).length;
   const hasReal = hasNonTestingBarnData(snapshot) || Boolean(snapshot.settings.barnNameOnboarded);
   if (!hasReal && !readPriorUseSentinel()) {
@@ -956,17 +927,16 @@ export function markPriorUseSentinelFromSnapshot(snapshot: BarnDatabaseSnapshot)
       nonTestingCount,
       lastSeenIso: nowIsoUtc(),
     };
-    ls.setItem(PRIOR_USE_SENTINEL_KEY, JSON.stringify(next));
+    localStorage.setItem(PRIOR_USE_SENTINEL_KEY, JSON.stringify(next));
   } catch {
     // Ignore localStorage quota failures
   }
 }
 
 export function clearPriorUseSentinel(): void {
-  const ls = getSafeLocalStorage();
-  if (!ls) return;
+  if (typeof localStorage === 'undefined') return;
   try {
-    ls.removeItem(PRIOR_USE_SENTINEL_KEY);
+    localStorage.removeItem(PRIOR_USE_SENTINEL_KEY);
   } catch {
     // Ignore
   }
@@ -1027,17 +997,16 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
 export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
   if (!isOpfsSupported()) return false;
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-  const ls = getSafeLocalStorage();
-  if (!ls) return true;
+  if (typeof localStorage === 'undefined') return true;
   try {
-    const failRaw = ls.getItem(CANARY_LAST_FAIL_KEY);
+    const failRaw = localStorage.getItem(CANARY_LAST_FAIL_KEY);
     if (failRaw) {
       const failMs = Number(failRaw);
       if (Number.isFinite(failMs) && failMs > 0 && nowMs - failMs < CANARY_FAILURE_COOLDOWN_MS) {
         return false;
       }
     }
-    const raw = ls.getItem(CANARY_LAST_RUN_KEY);
+    const raw = localStorage.getItem(CANARY_LAST_RUN_KEY);
     if (!raw) return true;
     const prevMs = Number(raw);
     if (!Number.isFinite(prevMs) || prevMs <= 0) return true;
@@ -1048,10 +1017,9 @@ export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
 }
 
 function recordCanaryFailureTimestamp(): void {
-  const ls = getSafeLocalStorage();
-  if (!ls) return;
+  if (typeof localStorage === 'undefined') return;
   try {
-    ls.setItem(CANARY_LAST_FAIL_KEY, String(Date.now()));
+    localStorage.setItem(CANARY_LAST_FAIL_KEY, String(Date.now()));
   } catch {
     // Non-fatal
   }
@@ -1100,11 +1068,10 @@ export async function runOpfsExportCanary(
       return { ok: false, skippedHeavyZip: policy.skipHeavyCanaryZip, reason: verified.reason };
     }
 
-    const ls = getSafeLocalStorage();
-    if (ls) {
+    if (typeof localStorage !== 'undefined') {
       try {
-        ls.setItem(CANARY_LAST_RUN_KEY, String(Date.now()));
-        ls.removeItem(CANARY_LAST_FAIL_KEY);
+        localStorage.setItem(CANARY_LAST_RUN_KEY, String(Date.now()));
+        localStorage.removeItem(CANARY_LAST_FAIL_KEY);
       } catch {
         // Non-fatal
       }
@@ -1278,11 +1245,9 @@ export async function dumpIndexedDbDatabaseToOpfs(
   dbName: string,
   reason: string
 ): Promise<VaultBackupMetadata | null> {
-  const idb = getSafeIndexedDb();
-  if (!idb) return null;
+  if (typeof indexedDB === 'undefined') return null;
 
   let rescuedDb: IDBDatabase | null = null;
-  let untrackDb: (() => void) | null = null;
   try {
     rescuedDb = await new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
@@ -1292,7 +1257,7 @@ export async function dumpIndexedDbDatabaseToOpfs(
         reject(new Error('Rescue IndexedDB open timed out'));
       }, 4000);
       try {
-        const req = idb.open(dbName);
+        const req = indexedDB.open(dbName);
         req.onsuccess = () => {
           if (settled) {
             try {
@@ -1320,7 +1285,6 @@ export async function dumpIndexedDbDatabaseToOpfs(
         }
       }
     });
-    untrackDb = trackActiveIdbConnection(rescuedDb);
 
     const storeNames = Array.from(rescuedDb.objectStoreNames);
     const dumpedStores: Record<string, unknown[]> = {};
@@ -1330,7 +1294,6 @@ export async function dumpIndexedDbDatabaseToOpfs(
       await new Promise<void>((resolve) => {
         try {
           const tx = rescuedDb!.transaction(storeNames, 'readonly');
-          const untrackTx = trackActiveIdbTransaction(tx);
           let pending = storeNames.length;
           for (const storeName of storeNames) {
             const store = tx.objectStore(storeName);
@@ -1356,31 +1319,15 @@ export async function dumpIndexedDbDatabaseToOpfs(
                 }
               }
               pending--;
-              if (pending === 0) {
-                untrackTx();
-                resolve();
-              }
+              if (pending === 0) resolve();
             };
             getAllReq.onerror = () => {
               pending--;
-              if (pending === 0) {
-                untrackTx();
-                resolve();
-              }
+              if (pending === 0) resolve();
             };
           }
-          tx.oncomplete = () => {
-            untrackTx();
-            resolve();
-          };
-          tx.onerror = () => {
-            untrackTx();
-            resolve();
-          };
-          tx.onabort = () => {
-            untrackTx();
-            resolve();
-          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
         } catch {
           resolve();
         }
@@ -1402,7 +1349,6 @@ export async function dumpIndexedDbDatabaseToOpfs(
     });
     return null;
   } finally {
-    untrackDb?.();
     if (rescuedDb) {
       try {
         rescuedDb.close();

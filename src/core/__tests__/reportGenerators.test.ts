@@ -391,12 +391,12 @@ function buildMultiSpeciesTestSnapshot(): BarnDatabaseSnapshot {
 }
 
 describe('reportGenerators (Phase 3)', () => {
-  it('generates every single one of the 28 catalog reports for an added species without errors', () => {
+  it('generates every single one of the 26 catalog reports for an added species without errors', () => {
     const snapshot = buildMultiSpeciesTestSnapshot();
     const rabbitProfile = snapshot.speciesProfiles[0];
     const catalog = buildReportCatalogForSpecies(rabbitProfile);
 
-    expect(catalog).toHaveLength(28);
+    expect(catalog).toHaveLength(26);
 
     for (const entry of catalog) {
       const rep = generateSpeciesReport(snapshot, 'Rabbit', entry.id, {

@@ -578,44 +578,6 @@ export function migrateAnimalsToSpecies(
     return yp;
   });
 
-  const nextClientContacts = (snapshot.clientContacts ?? []).map((cc) => {
-    const fullSpecies = isFullSpeciesFromSource(cc.species);
-    if (fullSpecies && !isSameSpecies(cc.species, targetName)) {
-      return { ...cc, species: targetName, _rev: bumpRecordRevision(cc), updatedAt: ts };
-    }
-    return cc;
-  });
-
-  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).map((wl) => {
-    const linkedBreedingMoved = Boolean(
-      wl.preferredBreedingId && migratedBreedingIds.has(wl.preferredBreedingId)
-    );
-    const fullSpecies = isFullSpeciesFromSource(wl.species);
-    if ((linkedBreedingMoved || fullSpecies) && !isSameSpecies(wl.species, targetName)) {
-      return { ...wl, species: targetName, _rev: bumpRecordRevision(wl), updatedAt: ts };
-    }
-    return wl;
-  });
-
-  const nextAnimalReservations = (snapshot.animalReservations ?? []).map((ar) => {
-    const linkedAnimalMoved = Boolean(ar.animalId && actuallyMovingIds.has(ar.animalId));
-    const linkedBreedingMoved = Boolean(ar.breedingId && migratedBreedingIds.has(ar.breedingId));
-    const fullSpecies = isFullSpeciesFromSource(ar.species);
-    if ((linkedAnimalMoved || linkedBreedingMoved || fullSpecies) && !isSameSpecies(ar.species, targetName)) {
-      return { ...ar, species: targetName, _rev: bumpRecordRevision(ar), updatedAt: ts };
-    }
-    return ar;
-  });
-
-  const nextWoolHarvests = (snapshot.woolHarvests ?? []).map((wh) => {
-    const linkedAnimalMoved = Boolean(wh.animalId && actuallyMovingIds.has(wh.animalId));
-    const fullSpecies = isFullSpeciesFromSource(wh.species);
-    if ((linkedAnimalMoved || fullSpecies) && !isSameSpecies(wh.species, targetName)) {
-      return { ...wh, species: targetName, _rev: bumpRecordRevision(wh), updatedAt: ts };
-    }
-    return wh;
-  });
-
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     speciesProfiles: nextSpeciesProfiles,
@@ -629,10 +591,6 @@ export function migrateAnimalsToSpecies(
     ledgerEntries: nextLedgerEntries,
     processingLogs: nextProcessingLogs,
     youthProjectBooks: nextYouthBooks,
-    clientContacts: nextClientContacts,
-    waitlistEntries: nextWaitlistEntries,
-    animalReservations: nextAnimalReservations,
-    woolHarvests: nextWoolHarvests,
   };
 
   let remainingSourceRecordsCount = 0;

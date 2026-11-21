@@ -19,14 +19,12 @@ import {
 import {
   Animal,
   AnimalPhoto,
-  AnimalReservation,
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
   BreedingRecord,
   CageLocation,
   CareLog,
-  ClientContact,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
   FeedAllocation,
   FeedAllocationTargetType,
@@ -35,7 +33,6 @@ import {
   normalizeAnimalStatus,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
-  normalizeClientKind,
   normalizeCurrencyCode,
   normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
@@ -45,28 +42,20 @@ import {
   normalizeLitterWeightMilestones,
   normalizeOwnershipType,
   normalizePeltGrade,
-  normalizePreferredContactMethod,
   normalizeProcessingStatus,
-  normalizeReservationStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
-  normalizeWaitlistIntent,
-  normalizeWaitlistStatus,
   normalizeWeightUnit,
-  normalizeWoolHarvestMethod,
   normalizeYouthOrgType,
   normalizeYouthProjectFeedLogs,
   nowIsoUtc,
   ProcessingLog,
   ShowEvent,
   SpeciesProfile,
-  WaitlistEntry,
-  WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
-import { normalizeIagarbScorecard } from '../core/woolFiber';
 import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { getTierStoragePolicy } from '../core/deviceCapability';
@@ -101,12 +90,6 @@ import {
   loadRollingSnapshotBackup,
   saveRollingSnapshotBackup,
 } from './storageProtection';
-import {
-  getSafeIndexedDb,
-  isIndexedDbBlockedError,
-  trackActiveIdbConnection,
-  trackActiveIdbTransaction,
-} from './storageProbes';
 
 const IDB_DB_NAME = 'community_pedigree_local_db';
 const IDB_STORE_NAME = 'sqlite_files';
@@ -114,7 +97,7 @@ const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
 export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
 export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
-const SQLITE_SCHEMA_VERSION = 6;
+const SQLITE_SCHEMA_VERSION = 4;
 
 type SqlJsInitConfig = NonNullable<Parameters<typeof initSqlJs>[0]> & {
   useOldExtensionFunctions: boolean;
@@ -477,110 +460,13 @@ export const PEDIGREE_SQLITE_SCHEMA = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_youth_project_books_species ON youth_project_books(species);
-
-  CREATE TABLE IF NOT EXISTS client_contacts (
-    id TEXT PRIMARY KEY NOT NULL,
-    species TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    ranch_or_herd_name TEXT NOT NULL DEFAULT '',
-    email TEXT NOT NULL DEFAULT '',
-    phone TEXT NOT NULL DEFAULT '',
-    preferred_contact TEXT NOT NULL DEFAULT 'sms',
-    client_kind TEXT NOT NULL DEFAULT 'pet_buyer',
-    city_state TEXT NOT NULL DEFAULT '',
-    shipping_address TEXT NOT NULL DEFAULT '',
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_client_contacts_species ON client_contacts(species);
-
-  CREATE TABLE IF NOT EXISTS waitlist_entries (
-    id TEXT PRIMARY KEY NOT NULL,
-    species TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    client_name TEXT NOT NULL DEFAULT '',
-    priority_rank INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'Active',
-    intent TEXT NOT NULL DEFAULT 'Show / Breeding',
-    desired_breed TEXT NOT NULL DEFAULT '',
-    desired_variety TEXT NOT NULL DEFAULT '',
-    preferred_sex TEXT NOT NULL DEFAULT 'Any',
-    preferred_breeding_id TEXT NOT NULL DEFAULT '',
-    requested_by_date_iso TEXT NOT NULL DEFAULT '',
-    inquiry_date_iso TEXT NOT NULL DEFAULT '',
-    follow_up_date_iso TEXT NOT NULL DEFAULT '',
-    last_contacted_date_iso TEXT NOT NULL DEFAULT '',
-    max_budget_cents INTEGER NOT NULL DEFAULT 0,
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_waitlist_entries_species ON waitlist_entries(species);
-
-  CREATE TABLE IF NOT EXISTS animal_reservations (
-    id TEXT PRIMARY KEY NOT NULL,
-    species TEXT NOT NULL,
-    agreement_number TEXT NOT NULL DEFAULT '',
-    client_id TEXT NOT NULL,
-    client_name TEXT NOT NULL DEFAULT '',
-    waitlist_entry_id TEXT NOT NULL DEFAULT '',
-    animal_id TEXT NOT NULL DEFAULT '',
-    breeding_id TEXT NOT NULL DEFAULT '',
-    pick_order INTEGER NOT NULL DEFAULT 0,
-    item_label TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'Pending Deposit',
-    reserved_date_iso TEXT NOT NULL DEFAULT '',
-    hold_expires_date_iso TEXT NOT NULL DEFAULT '',
-    total_price_cents INTEGER NOT NULL DEFAULT 0,
-    deposit_required_cents INTEGER NOT NULL DEFAULT 0,
-    deposit_paid_cents INTEGER NOT NULL DEFAULT 0,
-    deposit_due_date_iso TEXT NOT NULL DEFAULT '',
-    deposit_paid_date_iso TEXT NOT NULL DEFAULT '',
-    pickup_scheduled_date_iso TEXT NOT NULL DEFAULT '',
-    completed_date_iso TEXT NOT NULL DEFAULT '',
-    balance_reminder_date_iso TEXT NOT NULL DEFAULT '',
-    payment_method TEXT NOT NULL DEFAULT '',
-    ledger_entry_id TEXT NOT NULL DEFAULT '',
-    terms_summary TEXT NOT NULL DEFAULT '',
-    health_guarantee_notes TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_animal_reservations_species ON animal_reservations(species);
-
-  CREATE TABLE IF NOT EXISTS wool_harvests (
-    id TEXT PRIMARY KEY NOT NULL,
-    species TEXT NOT NULL,
-    animal_id TEXT NOT NULL,
-    harvest_date_iso TEXT NOT NULL,
-    shearing_interval_days INTEGER NOT NULL DEFAULT 0,
-    prime_weight_grams INTEGER NOT NULL DEFAULT 0,
-    grade_weight_grams INTEGER NOT NULL DEFAULT 0,
-    harvest_method TEXT NOT NULL DEFAULT 'Sheared',
-    staple_length_mm REAL NOT NULL DEFAULT 0,
-    iagarb_score_json TEXT NOT NULL DEFAULT '{}',
-    witnessed_by TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_wool_harvests_species ON wool_harvests(species);
-  CREATE INDEX IF NOT EXISTS idx_wool_harvests_animal ON wool_harvests(animal_id);
 `;
 
 const IDB_OPEN_TIMEOUT_MS = 8000;
 
 function openIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const idb = getSafeIndexedDb();
-    if (!idb) {
+    if (typeof indexedDB === 'undefined') {
       reject(new Error('IndexedDB is unavailable in this browser context.'));
       return;
     }
@@ -604,7 +490,7 @@ function openIdb(): Promise<IDBDatabase> {
     }, IDB_OPEN_TIMEOUT_MS);
 
     try {
-      const req = idb.open(IDB_DB_NAME, 1);
+      const req = indexedDB.open(IDB_DB_NAME, 1);
       req.onupgradeneeded = () => {
         try {
           const db = req.result;
@@ -646,32 +532,17 @@ function openIdb(): Promise<IDBDatabase> {
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await openIdb();
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     return await new Promise<T | undefined>((resolve, reject) => {
       const tx = db.transaction(IDB_STORE_NAME, 'readonly');
-      const untrackTx = trackActiveIdbTransaction(tx);
       const req = tx.objectStore(IDB_STORE_NAME).get(key);
-      req.onsuccess = () => {
-        untrackTx();
-        resolve(req.result as T | undefined);
-      };
-      req.onerror = () => {
-        untrackTx();
-        reject(req.error);
-      };
-      tx.onabort = () => {
-        untrackTx();
+      req.onsuccess = () => resolve(req.result as T | undefined);
+      req.onerror = () => reject(req.error);
+      tx.onabort = () =>
         reject(tx.error || new Error('IndexedDB read transaction aborted.'));
-      };
     });
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
@@ -684,29 +555,18 @@ async function idbSetAtomic(
 ): Promise<void> {
   if (entries.length === 0) return;
   let db: IDBDatabase | null = null;
-  let untrackDb: (() => void) | null = null;
   try {
     db = await openIdb();
-    untrackDb = trackActiveIdbConnection(db);
     await new Promise<void>((resolve, reject) => {
       const tx = db!.transaction(IDB_STORE_NAME, 'readwrite');
-      const untrackTx = trackActiveIdbTransaction(tx);
       const store = tx.objectStore(IDB_STORE_NAME);
       for (const entry of entries) {
         store.put(entry.value, entry.key);
       }
-      tx.oncomplete = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onerror = () => {
-        untrackTx();
-        reject(tx.error);
-      };
-      tx.onabort = () => {
-        untrackTx();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () =>
         reject(tx.error || new Error('IndexedDB write transaction aborted.'));
-      };
     });
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -716,44 +576,23 @@ async function idbSetAtomic(
     }
     throw err;
   } finally {
-    untrackDb?.();
-    try {
-      db?.close();
-    } catch {
-      // Ignore close error
-    }
+    db?.close();
   }
 }
 
 async function idbDelete(key: string): Promise<void> {
-  if (!getSafeIndexedDb()) return;
+  if (typeof indexedDB === 'undefined') return;
   const db = await openIdb();
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     await new Promise<void>((resolve) => {
       const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
-      const untrackTx = trackActiveIdbTransaction(tx);
       tx.objectStore(IDB_STORE_NAME).delete(key);
-      tx.oncomplete = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onerror = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onabort = () => {
-        untrackTx();
-        resolve();
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
@@ -898,21 +737,11 @@ export class WebSqliteAdapter implements StorageAdapter {
   private lastRollingSaveMs = 0;
   private wipedRecoveryContext: WipedStorageRecoveryContext | null = null;
   private loadedEpoch = 0;
-  private ephemeralMode = false;
 
   constructor(private readonly tabId: string = getCurrentTabId()) {}
 
   get engineName(): string {
-    if (this.ephemeralMode) {
-      return this.db
-        ? 'Local SQLite (Ephemeral Session)'
-        : 'Ephemeral In-Memory Store (Private/Restricted Mode)';
-    }
     return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
-  }
-
-  isEphemeralMode(): boolean {
-    return this.ephemeralMode;
   }
 
   getWipedRecoveryContext(): WipedStorageRecoveryContext | null {
@@ -924,9 +753,6 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   private async readPersistedWriteEpoch(): Promise<PersistedWriteEpochMeta> {
-    if (this.ephemeralMode || !getSafeIndexedDb()) {
-      return { epoch: 0, writerTabId: '', updatedAtIso: '' };
-    }
     try {
       const meta = await idbGet<Partial<PersistedWriteEpochMeta>>(IDB_WRITE_EPOCH_KEY);
       const epoch = Number(meta?.epoch);
@@ -949,9 +775,6 @@ export class WebSqliteAdapter implements StorageAdapter {
    * initialization under lock).
    */
   private async syncFromPersistedStorageIfStaleLocked(): Promise<boolean> {
-    if (this.ephemeralMode || !getSafeIndexedDb()) {
-      return false;
-    }
     const persisted = await this.readPersistedWriteEpoch();
     if (persisted.epoch <= this.loadedEpoch) {
       return false;
@@ -1008,9 +831,6 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async syncFromPersistedStorageIfStale(): Promise<boolean> {
-    if (this.ephemeralMode || !getSafeIndexedDb()) {
-      return false;
-    }
     const persisted = await this.readPersistedWriteEpoch();
     if (persisted.epoch <= this.loadedEpoch) {
       return false;
@@ -1022,9 +842,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     snapshot: BarnDatabaseSnapshot;
     source: string;
   } | null> {
-    if (this.ephemeralMode || !getSafeIndexedDb()) {
-      return null;
-    }
     const saved = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY).catch(() => undefined);
     if (
       saved &&
@@ -1100,12 +917,11 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   private async initializeLocked(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     this.wipedRecoveryContext = null;
-    this.ephemeralMode = false;
     const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
       options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
 
     const tryDetectWipedStorage = async (): Promise<BarnDatabaseSnapshot | null> => {
-      if (this.ephemeralMode || !getSafeIndexedDb() || options?.allowSeedFresh) return null;
+      if (options?.allowSeedFresh) return null;
       const wiped = await detectReturningUserWipedStorage().catch(() => null);
       if (wiped && wiped.detected) {
         this.wipedRecoveryContext = wiped;
@@ -1121,21 +937,6 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     try {
       this.SQL = await initSqlJs(createSqlJsInitConfig());
-
-      if (!getSafeIndexedDb()) {
-        this.ephemeralMode = true;
-        this.db = new this.SQL.Database();
-        applySchemaMigrations(this.db);
-        const seeded = buildFullPredefinedSampleSnapshot();
-        await this.replaceSnapshotLocked(seeded, 'initializeEphemeralSeed');
-        logDiagnosticEvent({
-          level: 'warn',
-          category: 'storage',
-          message:
-            'IndexedDB unavailable (Private Browsing or Lockdown Mode) — running in ephemeral SQLite session mode',
-        });
-        return finalizeSnapshot(seeded);
-      }
 
       const [savedBytes, epochMeta] = await Promise.all([
         idbGet<Uint8Array>(IDB_PRIMARY_KEY),
@@ -1243,17 +1044,11 @@ export class WebSqliteAdapter implements StorageAdapter {
         return finalizeSnapshot(seeded);
       }
     } catch (err) {
-      if (!getSafeIndexedDb() || isIndexedDbBlockedError(err)) {
-        this.ephemeralMode = true;
-      }
-
-      console.warn('WASM SQLite fallback to IndexedDB JSON / Ephemeral Session:', err);
+      console.warn('WASM SQLite fallback to IndexedDB JSON / Rolling Snapshot:', err);
       logDiagnosticEvent({
-        level: this.ephemeralMode ? 'warn' : 'error',
+        level: 'error',
         category: isMemoryLikeError(err) ? 'memory' : 'storage',
-        message: this.ephemeralMode
-          ? 'Browser storage restricted (Private Browsing or Lockdown Mode) — running safely in ephemeral session mode'
-          : 'Primary SQLite load failed — attempting non-destructive recovery from fallback/rolling backup',
+        message: 'Primary SQLite load failed — attempting non-destructive recovery from fallback/rolling backup',
         error: err,
       });
 
@@ -1261,19 +1056,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         await dumpIndexedDbDatabaseToOpfs(IDB_DB_NAME, 'Primary SQLite IndexedDB VersionError').catch(
           () => {}
         );
-      }
-
-      if (this.ephemeralMode) {
-        const seeded = buildFullPredefinedSampleSnapshot();
-        if (this.SQL) {
-          const rebuilt = await this.tryRestoreIntoFreshSqliteDbLocked(seeded);
-          if (rebuilt) {
-            return finalizeSnapshot(seeded);
-          }
-        }
-        this.fallbackSnapshot = seeded;
-        this.loadedEpoch = Math.max(this.loadedEpoch, 1);
-        return finalizeSnapshot(seeded);
       }
 
       const recovered = await this.findRecoveredBackupSnapshot();
@@ -1317,17 +1099,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     preloadedSnapshot?: BarnDatabaseSnapshot,
     reason?: string
   ): Promise<void> {
-    if (this.ephemeralMode || !getSafeIndexedDb()) {
-      this.ephemeralMode = true;
-      this.loadedEpoch = this.loadedEpoch + 1;
-      publishCrossTabDbCommit({
-        epoch: this.loadedEpoch,
-        writerTabId: this.tabId,
-        reason,
-      });
-      return;
-    }
-
     const persisted = await this.readPersistedWriteEpoch();
     const nextEpoch = Math.max(persisted.epoch, this.loadedEpoch) + 1;
     const epochMeta: PersistedWriteEpochMeta = {
@@ -1356,23 +1127,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         reason,
       });
     } catch (err) {
-      if (!isQuotaExceededError(err) && isIndexedDbBlockedError(err)) {
-        this.ephemeralMode = true;
-        this.loadedEpoch = nextEpoch;
-        logDiagnosticEvent({
-          level: 'warn',
-          category: 'storage',
-          message:
-            'IndexedDB write blocked by browser privacy/lockdown policy — degrading cleanly to ephemeral in-memory session mode',
-          error: err,
-        });
-        publishCrossTabDbCommit({
-          epoch: nextEpoch,
-          writerTabId: this.tabId,
-          reason,
-        });
-        return;
-      }
       logDiagnosticEvent({
         level: 'error',
         category: isMemoryLikeError(err) ? 'memory' : 'storage',
@@ -2055,107 +1809,6 @@ export class WebSqliteAdapter implements StorageAdapter {
       };
     });
 
-    const clientContacts: ClientContact[] = safeTableQuery(
-      'client_contacts',
-      'SELECT * FROM client_contacts ORDER BY full_name ASC, created_at DESC'
-    ).map((r) => {
-      const tags = safeArray<string>(
-        this.safeParseJson<string[]>(
-          r.tags_json || '[]',
-          [],
-          `client_contacts(${String(r.id)}).tags_json`
-        )
-      )
-        .filter((t) => typeof t === 'string' && t.trim().length > 0)
-        .map((t) => t.trim());
-      return {
-        id: String(r.id),
-        species: String(r.species),
-        fullName: String(r.full_name || ''),
-        ranchOrHerdName: String(r.ranch_or_herd_name || ''),
-        email: String(r.email || ''),
-        phone: String(r.phone || ''),
-        preferredContact: normalizePreferredContactMethod(r.preferred_contact, 'sms'),
-        clientKind: normalizeClientKind(r.client_kind, 'pet_buyer'),
-        cityState: String(r.city_state || ''),
-        shippingAddress: String(r.shipping_address || ''),
-        tags,
-        notes: String(r.notes || ''),
-        createdAt: String(r.created_at),
-        updatedAt: String(r.updated_at),
-      };
-    });
-
-    const waitlistEntries: WaitlistEntry[] = safeTableQuery(
-      'waitlist_entries',
-      'SELECT * FROM waitlist_entries ORDER BY priority_rank ASC, inquiry_date_iso ASC, created_at ASC'
-    ).map((r) => {
-      const rawSex = String(r.preferred_sex || 'Any');
-      const preferredSex: WaitlistEntry['preferredSex'] =
-        rawSex === 'Male' || rawSex === 'Female' ? rawSex : 'Any';
-      const maxBudgetRaw = Math.round(finiteNonNeg(r.max_budget_cents, 0));
-      return {
-        id: String(r.id),
-        species: String(r.species),
-        clientId: String(r.client_id || ''),
-        clientName: String(r.client_name || ''),
-        priorityRank: Math.max(1, Math.round(finiteNonNeg(r.priority_rank, 1))),
-        status: normalizeWaitlistStatus(r.status, 'Active'),
-        intent: normalizeWaitlistIntent(r.intent, 'Show / Breeding'),
-        desiredBreed: String(r.desired_breed || ''),
-        desiredVariety: String(r.desired_variety || ''),
-        preferredSex,
-        ...(r.preferred_breeding_id
-          ? { preferredBreedingId: String(r.preferred_breeding_id) }
-          : {}),
-        requestedByDateIso: String(r.requested_by_date_iso || ''),
-        inquiryDateIso: String(r.inquiry_date_iso || ''),
-        followUpDateIso: String(r.follow_up_date_iso || ''),
-        lastContactedDateIso: String(r.last_contacted_date_iso || ''),
-        ...(maxBudgetRaw > 0 ? { maxBudgetCents: maxBudgetRaw } : {}),
-        notes: String(r.notes || ''),
-        createdAt: String(r.created_at),
-        updatedAt: String(r.updated_at),
-      };
-    });
-
-    const animalReservations: AnimalReservation[] = safeTableQuery(
-      'animal_reservations',
-      'SELECT * FROM animal_reservations ORDER BY reserved_date_iso DESC, created_at DESC'
-    ).map((r) => {
-      const pickOrderRaw = Math.round(finiteNonNeg(r.pick_order, 0));
-      return {
-        id: String(r.id),
-        species: String(r.species),
-        agreementNumber: String(r.agreement_number || ''),
-        clientId: String(r.client_id || ''),
-        clientName: String(r.client_name || ''),
-        ...(r.waitlist_entry_id ? { waitlistEntryId: String(r.waitlist_entry_id) } : {}),
-        ...(r.animal_id ? { animalId: String(r.animal_id) } : {}),
-        ...(r.breeding_id ? { breedingId: String(r.breeding_id) } : {}),
-        ...(pickOrderRaw > 0 ? { pickOrder: pickOrderRaw } : {}),
-        itemLabel: String(r.item_label || ''),
-        status: normalizeReservationStatus(r.status, 'Pending Deposit'),
-        reservedDateIso: String(r.reserved_date_iso || ''),
-        holdExpiresDateIso: String(r.hold_expires_date_iso || ''),
-        totalPriceCents: Math.round(finiteNonNeg(r.total_price_cents, 0)),
-        depositRequiredCents: Math.round(finiteNonNeg(r.deposit_required_cents, 0)),
-        depositPaidCents: Math.round(finiteNonNeg(r.deposit_paid_cents, 0)),
-        depositDueDateIso: String(r.deposit_due_date_iso || ''),
-        depositPaidDateIso: String(r.deposit_paid_date_iso || ''),
-        pickupScheduledDateIso: String(r.pickup_scheduled_date_iso || ''),
-        completedDateIso: String(r.completed_date_iso || ''),
-        balanceReminderDateIso: String(r.balance_reminder_date_iso || ''),
-        paymentMethod: String(r.payment_method || ''),
-        ...(r.ledger_entry_id ? { ledgerEntryId: String(r.ledger_entry_id) } : {}),
-        termsSummary: String(r.terms_summary || ''),
-        healthGuaranteeNotes: String(r.health_guarantee_notes || ''),
-        notes: String(r.notes || ''),
-        createdAt: String(r.created_at),
-        updatedAt: String(r.updated_at),
-      };
-    });
-
     if (sanitizedNumericCount > 0) {
       logDiagnosticEvent({
         level: 'warn',
@@ -2179,43 +1832,6 @@ export class WebSqliteAdapter implements StorageAdapter {
       ledgerEntries,
       processingLogs,
       youthProjectBooks,
-      clientContacts,
-      waitlistEntries,
-      animalReservations,
-      woolHarvests: safeTableQuery(
-        'wool_harvests',
-        'SELECT * FROM wool_harvests ORDER BY harvest_date_iso DESC, created_at DESC'
-      ).map((r): WoolHarvest => {
-        const intervalRaw = Math.round(finiteNonNeg(r.shearing_interval_days, 0));
-        const stapleRaw = finiteNonNeg(r.staple_length_mm, 0);
-        const rawScoreJson = r.iagarb_score_json
-          ? this.safeParseJson<Record<string, unknown> | null>(
-              r.iagarb_score_json,
-              null,
-              `wool_harvests(${String(r.id)}).iagarb_score_json`
-            )
-          : null;
-        const iagarbScore =
-          rawScoreJson && Object.keys(rawScoreJson).length > 0
-            ? normalizeIagarbScorecard(rawScoreJson)
-            : undefined;
-        return {
-          id: String(r.id),
-          species: String(r.species),
-          animalId: String(r.animal_id || ''),
-          harvestDateIso: String(r.harvest_date_iso || ''),
-          ...(intervalRaw > 0 ? { shearingIntervalDays: intervalRaw } : {}),
-          primeWeightGrams: Math.round(finiteNonNeg(r.prime_weight_grams, 0)),
-          gradeWeightGrams: Math.round(finiteNonNeg(r.grade_weight_grams, 0)),
-          harvestMethod: normalizeWoolHarvestMethod(r.harvest_method, 'Shear'),
-          ...(stapleRaw > 0 ? { stapleLengthMm: stapleRaw } : {}),
-          ...(iagarbScore ? { iagarbScore } : {}),
-          witnessedBy: String(r.witnessed_by || ''),
-          notes: String(r.notes || ''),
-          createdAt: String(r.created_at),
-          updatedAt: String(r.updated_at),
-        };
-      }),
     };
   }
 
@@ -2594,10 +2210,6 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.db.run('DELETE FROM ledger_entries;');
       this.db.run('DELETE FROM processing_logs;');
       this.db.run('DELETE FROM youth_project_books;');
-      this.db.run('DELETE FROM client_contacts;');
-      this.db.run('DELETE FROM waitlist_entries;');
-      this.db.run('DELETE FROM animal_reservations;');
-      this.db.run('DELETE FROM wool_harvests;');
 
       this.upsertSettingsRow(snapshot.settings);
       for (const sp of snapshot.speciesProfiles) this.upsertSpeciesRow(sp);
@@ -2618,10 +2230,6 @@ export class WebSqliteAdapter implements StorageAdapter {
       for (const le of snapshot.ledgerEntries ?? []) this.upsertLedgerEntryRow(le);
       for (const pl of snapshot.processingLogs ?? []) this.upsertProcessingLogRow(pl);
       for (const yp of snapshot.youthProjectBooks ?? []) this.upsertYouthProjectBookRow(yp);
-      for (const cc of snapshot.clientContacts ?? []) this.upsertClientContactRow(cc);
-      for (const wl of snapshot.waitlistEntries ?? []) this.upsertWaitlistEntryRow(wl);
-      for (const ar of snapshot.animalReservations ?? []) this.upsertAnimalReservationRow(ar);
-      for (const wh of snapshot.woolHarvests ?? []) this.upsertWoolHarvestRow(wh);
 
       this.db.run('COMMIT;');
     } catch (e) {
@@ -3138,150 +2746,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     );
   }
 
-  private upsertClientContactRow(cc: ClientContact): void {
-    this.db?.run(
-      `INSERT OR REPLACE INTO client_contacts
-       (id, species, full_name, ranch_or_herd_name, email, phone, preferred_contact, client_kind, city_state, shipping_address, tags_json, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        cc.id,
-        cc.species,
-        cc.fullName || '',
-        cc.ranchOrHerdName || '',
-        cc.email || '',
-        cc.phone || '',
-        normalizePreferredContactMethod(cc.preferredContact, 'sms'),
-        normalizeClientKind(cc.clientKind, 'pet_buyer'),
-        cc.cityState || '',
-        cc.shippingAddress || '',
-        JSON.stringify(Array.isArray(cc.tags) ? cc.tags : []),
-        cc.notes || '',
-        cc.createdAt,
-        cc.updatedAt,
-      ]
-    );
-  }
-
-  private upsertWaitlistEntryRow(wl: WaitlistEntry): void {
-    const cleanSex =
-      wl.preferredSex === 'Male' || wl.preferredSex === 'Female' ? wl.preferredSex : 'Any';
-    this.db?.run(
-      `INSERT OR REPLACE INTO waitlist_entries
-       (id, species, client_id, client_name, priority_rank, status, intent, desired_breed, desired_variety, preferred_sex, preferred_breeding_id, requested_by_date_iso, inquiry_date_iso, follow_up_date_iso, last_contacted_date_iso, max_budget_cents, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        wl.id,
-        wl.species,
-        wl.clientId || '',
-        wl.clientName || '',
-        Number.isFinite(Number(wl.priorityRank)) && Number(wl.priorityRank) >= 1
-          ? Math.round(Number(wl.priorityRank))
-          : 1,
-        normalizeWaitlistStatus(wl.status, 'Active'),
-        normalizeWaitlistIntent(wl.intent, 'Show / Breeding'),
-        wl.desiredBreed || '',
-        wl.desiredVariety || '',
-        cleanSex,
-        wl.preferredBreedingId || '',
-        wl.requestedByDateIso || '',
-        wl.inquiryDateIso || '',
-        wl.followUpDateIso || '',
-        wl.lastContactedDateIso || '',
-        wl.maxBudgetCents && wl.maxBudgetCents > 0 ? Math.round(wl.maxBudgetCents) : 0,
-        wl.notes || '',
-        wl.createdAt,
-        wl.updatedAt,
-      ]
-    );
-  }
-
-  private upsertAnimalReservationRow(ar: AnimalReservation): void {
-    this.db?.run(
-      `INSERT OR REPLACE INTO animal_reservations
-       (id, species, agreement_number, client_id, client_name, waitlist_entry_id, animal_id, breeding_id, pick_order, item_label, status, reserved_date_iso, hold_expires_date_iso, total_price_cents, deposit_required_cents, deposit_paid_cents, deposit_due_date_iso, deposit_paid_date_iso, pickup_scheduled_date_iso, completed_date_iso, balance_reminder_date_iso, payment_method, ledger_entry_id, terms_summary, health_guarantee_notes, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        ar.id,
-        ar.species,
-        ar.agreementNumber || '',
-        ar.clientId || '',
-        ar.clientName || '',
-        ar.waitlistEntryId || '',
-        ar.animalId || '',
-        ar.breedingId || '',
-        ar.pickOrder && ar.pickOrder > 0 ? Math.round(ar.pickOrder) : 0,
-        ar.itemLabel || '',
-        normalizeReservationStatus(ar.status, 'Pending Deposit'),
-        ar.reservedDateIso || '',
-        ar.holdExpiresDateIso || '',
-        Number.isFinite(Number(ar.totalPriceCents)) && Number(ar.totalPriceCents) >= 0
-          ? Math.round(Number(ar.totalPriceCents))
-          : 0,
-        Number.isFinite(Number(ar.depositRequiredCents)) && Number(ar.depositRequiredCents) >= 0
-          ? Math.round(Number(ar.depositRequiredCents))
-          : 0,
-        Number.isFinite(Number(ar.depositPaidCents)) && Number(ar.depositPaidCents) >= 0
-          ? Math.round(Number(ar.depositPaidCents))
-          : 0,
-        ar.depositDueDateIso || '',
-        ar.depositPaidDateIso || '',
-        ar.pickupScheduledDateIso || '',
-        ar.completedDateIso || '',
-        ar.balanceReminderDateIso || '',
-        ar.paymentMethod || '',
-        ar.ledgerEntryId || '',
-        ar.termsSummary || '',
-        ar.healthGuaranteeNotes || '',
-        ar.notes || '',
-        ar.createdAt,
-        ar.updatedAt,
-      ]
-    );
-  }
-
-  private upsertWoolHarvestRow(wh: WoolHarvest): void {
-    const interval =
-      typeof wh.shearingIntervalDays === 'number' &&
-      Number.isFinite(wh.shearingIntervalDays) &&
-      wh.shearingIntervalDays > 0
-        ? Math.round(wh.shearingIntervalDays)
-        : 0;
-    const staple =
-      typeof wh.stapleLengthMm === 'number' &&
-      Number.isFinite(wh.stapleLengthMm) &&
-      wh.stapleLengthMm > 0
-        ? wh.stapleLengthMm
-        : 0;
-    const scoreJson = wh.iagarbScore
-      ? JSON.stringify(normalizeIagarbScorecard(wh.iagarbScore))
-      : '{}';
-    this.db?.run(
-      `INSERT OR REPLACE INTO wool_harvests
-       (id, species, animal_id, harvest_date_iso, shearing_interval_days, prime_weight_grams, grade_weight_grams, harvest_method, staple_length_mm, iagarb_score_json, witnessed_by, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        wh.id,
-        wh.species,
-        wh.animalId || '',
-        wh.harvestDateIso || '',
-        interval,
-        Number.isFinite(Number(wh.primeWeightGrams)) && Number(wh.primeWeightGrams) >= 0
-          ? Math.round(Number(wh.primeWeightGrams))
-          : 0,
-        Number.isFinite(Number(wh.gradeWeightGrams)) && Number(wh.gradeWeightGrams) >= 0
-          ? Math.round(Number(wh.gradeWeightGrams))
-          : 0,
-        normalizeWoolHarvestMethod(wh.harvestMethod, 'Shear'),
-        staple,
-        scoreJson,
-        wh.witnessedBy || '',
-        wh.notes || '',
-        wh.createdAt,
-        wh.updatedAt,
-      ]
-    );
-  }
-
   private async withLockedWrite(reason: string, mutate: () => void): Promise<void> {
     return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
       await this.syncFromPersistedStorageIfStaleLocked();
@@ -3400,7 +2864,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         this.db.run('DELETE FROM animals WHERE id = ?', [id]);
         this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
         this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
-        this.db.run('DELETE FROM wool_harvests WHERE animal_id = ?', [id]);
       } else if (this.fallbackSnapshot) {
         this.fallbackSnapshot.animals = this.fallbackSnapshot.animals.filter((a) => a.id !== id);
         this.fallbackSnapshot.animalPhotos = (this.fallbackSnapshot.animalPhotos || []).filter(
@@ -3408,9 +2871,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         );
         this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
           (l) => l.animalId !== id
-        );
-        this.fallbackSnapshot.woolHarvests = (this.fallbackSnapshot.woolHarvests || []).filter(
-          (w) => w.animalId !== id
         );
       }
     });
@@ -3427,7 +2887,6 @@ export class WebSqliteAdapter implements StorageAdapter {
             this.db.run('DELETE FROM animals WHERE id = ?', [id]);
             this.db.run('DELETE FROM animal_photos WHERE animal_id = ?', [id]);
             this.db.run('DELETE FROM care_logs WHERE animal_id = ?', [id]);
-            this.db.run('DELETE FROM wool_harvests WHERE animal_id = ?', [id]);
           }
           this.db.run('COMMIT;');
         } catch (e) {
@@ -3445,9 +2904,6 @@ export class WebSqliteAdapter implements StorageAdapter {
         );
         this.fallbackSnapshot.careLogs = this.fallbackSnapshot.careLogs.filter(
           (l) => !idSet.has(l.animalId)
-        );
-        this.fallbackSnapshot.woolHarvests = (this.fallbackSnapshot.woolHarvests || []).filter(
-          (w) => !idSet.has(w.animalId)
         );
       }
     });
@@ -3948,222 +3404,6 @@ export class WebSqliteAdapter implements StorageAdapter {
     });
   }
 
-  async saveClientContact(client: ClientContact): Promise<void> {
-    await this.withLockedWrite('saveClientContact', () => {
-      if (this.db) {
-        this.upsertClientContactRow(client);
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.clientContacts ?? [];
-        const idx = list.findIndex((x) => x.id === client.id);
-        if (idx >= 0) list[idx] = client;
-        else list.push(client);
-        this.fallbackSnapshot.clientContacts = list;
-      }
-    });
-  }
-
-  async saveClientContactsBatch(clients: ClientContact[]): Promise<void> {
-    if (clients.length === 0) return;
-    await this.withLockedWrite('saveClientContactsBatch', () => {
-      if (this.db) {
-        this.db.run('BEGIN TRANSACTION;');
-        try {
-          for (const cc of clients) this.upsertClientContactRow(cc);
-          this.db.run('COMMIT;');
-        } catch (err) {
-          try {
-            this.db.run('ROLLBACK;');
-          } catch {
-            // Ignore rollback error
-          }
-          throw err;
-        }
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.clientContacts ?? [];
-        for (const cc of clients) {
-          const idx = list.findIndex((x) => x.id === cc.id);
-          if (idx >= 0) list[idx] = cc;
-          else list.push(cc);
-        }
-        this.fallbackSnapshot.clientContacts = list;
-      }
-    });
-  }
-
-  async deleteClientContact(id: string): Promise<void> {
-    await this.withLockedWrite('deleteClientContact', () => {
-      if (this.db) {
-        this.db.run('DELETE FROM client_contacts WHERE id = ?', [id]);
-      } else if (this.fallbackSnapshot) {
-        this.fallbackSnapshot.clientContacts = (
-          this.fallbackSnapshot.clientContacts ?? []
-        ).filter((x) => x.id !== id);
-      }
-    });
-  }
-
-  async saveWaitlistEntry(entry: WaitlistEntry): Promise<void> {
-    await this.withLockedWrite('saveWaitlistEntry', () => {
-      if (this.db) {
-        this.upsertWaitlistEntryRow(entry);
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.waitlistEntries ?? [];
-        const idx = list.findIndex((x) => x.id === entry.id);
-        if (idx >= 0) list[idx] = entry;
-        else list.push(entry);
-        this.fallbackSnapshot.waitlistEntries = list;
-      }
-    });
-  }
-
-  async saveWaitlistEntriesBatch(entries: WaitlistEntry[]): Promise<void> {
-    if (entries.length === 0) return;
-    await this.withLockedWrite('saveWaitlistEntriesBatch', () => {
-      if (this.db) {
-        this.db.run('BEGIN TRANSACTION;');
-        try {
-          for (const wl of entries) this.upsertWaitlistEntryRow(wl);
-          this.db.run('COMMIT;');
-        } catch (err) {
-          try {
-            this.db.run('ROLLBACK;');
-          } catch {
-            // Ignore rollback error
-          }
-          throw err;
-        }
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.waitlistEntries ?? [];
-        for (const wl of entries) {
-          const idx = list.findIndex((x) => x.id === wl.id);
-          if (idx >= 0) list[idx] = wl;
-          else list.push(wl);
-        }
-        this.fallbackSnapshot.waitlistEntries = list;
-      }
-    });
-  }
-
-  async deleteWaitlistEntry(id: string): Promise<void> {
-    await this.withLockedWrite('deleteWaitlistEntry', () => {
-      if (this.db) {
-        this.db.run('DELETE FROM waitlist_entries WHERE id = ?', [id]);
-      } else if (this.fallbackSnapshot) {
-        this.fallbackSnapshot.waitlistEntries = (
-          this.fallbackSnapshot.waitlistEntries ?? []
-        ).filter((x) => x.id !== id);
-      }
-    });
-  }
-
-  async saveAnimalReservation(reservation: AnimalReservation): Promise<void> {
-    await this.withLockedWrite('saveAnimalReservation', () => {
-      if (this.db) {
-        this.upsertAnimalReservationRow(reservation);
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.animalReservations ?? [];
-        const idx = list.findIndex((x) => x.id === reservation.id);
-        if (idx >= 0) list[idx] = reservation;
-        else list.push(reservation);
-        this.fallbackSnapshot.animalReservations = list;
-      }
-    });
-  }
-
-  async saveAnimalReservationsBatch(reservations: AnimalReservation[]): Promise<void> {
-    if (reservations.length === 0) return;
-    await this.withLockedWrite('saveAnimalReservationsBatch', () => {
-      if (this.db) {
-        this.db.run('BEGIN TRANSACTION;');
-        try {
-          for (const ar of reservations) this.upsertAnimalReservationRow(ar);
-          this.db.run('COMMIT;');
-        } catch (err) {
-          try {
-            this.db.run('ROLLBACK;');
-          } catch {
-            // Ignore rollback error
-          }
-          throw err;
-        }
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.animalReservations ?? [];
-        for (const ar of reservations) {
-          const idx = list.findIndex((x) => x.id === ar.id);
-          if (idx >= 0) list[idx] = ar;
-          else list.push(ar);
-        }
-        this.fallbackSnapshot.animalReservations = list;
-      }
-    });
-  }
-
-  async deleteAnimalReservation(id: string): Promise<void> {
-    await this.withLockedWrite('deleteAnimalReservation', () => {
-      if (this.db) {
-        this.db.run('DELETE FROM animal_reservations WHERE id = ?', [id]);
-      } else if (this.fallbackSnapshot) {
-        this.fallbackSnapshot.animalReservations = (
-          this.fallbackSnapshot.animalReservations ?? []
-        ).filter((x) => x.id !== id);
-      }
-    });
-  }
-
-  async saveWoolHarvest(harvest: WoolHarvest): Promise<void> {
-    await this.withLockedWrite('saveWoolHarvest', () => {
-      if (this.db) {
-        this.upsertWoolHarvestRow(harvest);
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.woolHarvests ?? [];
-        const idx = list.findIndex((x) => x.id === harvest.id);
-        if (idx >= 0) list[idx] = harvest;
-        else list.push(harvest);
-        this.fallbackSnapshot.woolHarvests = list;
-      }
-    });
-  }
-
-  async saveWoolHarvestsBatch(harvests: WoolHarvest[]): Promise<void> {
-    if (harvests.length === 0) return;
-    await this.withLockedWrite('saveWoolHarvestsBatch', () => {
-      if (this.db) {
-        this.db.run('BEGIN TRANSACTION;');
-        try {
-          for (const wh of harvests) this.upsertWoolHarvestRow(wh);
-          this.db.run('COMMIT;');
-        } catch (err) {
-          try {
-            this.db.run('ROLLBACK;');
-          } catch {
-            // Ignore rollback error
-          }
-          throw err;
-        }
-      } else if (this.fallbackSnapshot) {
-        const list = this.fallbackSnapshot.woolHarvests ?? [];
-        for (const wh of harvests) {
-          const idx = list.findIndex((x) => x.id === wh.id);
-          if (idx >= 0) list[idx] = wh;
-          else list.push(wh);
-        }
-        this.fallbackSnapshot.woolHarvests = list;
-      }
-    });
-  }
-
-  async deleteWoolHarvest(id: string): Promise<void> {
-    await this.withLockedWrite('deleteWoolHarvest', () => {
-      if (this.db) {
-        this.db.run('DELETE FROM wool_harvests WHERE id = ?', [id]);
-      } else if (this.fallbackSnapshot) {
-        this.fallbackSnapshot.woolHarvests = (
-          this.fallbackSnapshot.woolHarvests ?? []
-        ).filter((x) => x.id !== id);
-      }
-    });
-  }
-
   async exportRawSqliteBytes(): Promise<Uint8Array | null> {
     await this.syncFromPersistedStorageIfStale();
     if (!this.db) return null;
@@ -4241,13 +3481,10 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.SQL = null;
       this.fallbackSnapshot = null;
       this.loadedEpoch = 0;
-      this.ephemeralMode = false;
-      if (getSafeIndexedDb()) {
-        try {
-          await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-        } catch {
-          // Ignore fallback delete failure
-        }
+      try {
+        await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+      } catch {
+        // Ignore fallback delete failure
       }
       return this.initializeLocked(options);
     });
@@ -4266,17 +3503,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.SQL = null;
       this.fallbackSnapshot = null;
       this.loadedEpoch = 0;
-      this.ephemeralMode = false;
-      if (getSafeIndexedDb()) {
-        try {
-          await idbDelete(IDB_PRIMARY_KEY);
-          await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-        } catch (err) {
-          if (!isIndexedDbBlockedError(err)) {
-            throw err;
-          }
-        }
-      }
+      await idbDelete(IDB_PRIMARY_KEY);
+      await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
       return this.initializeLocked({ ...options, allowSeedFresh: options?.allowSeedFresh ?? true });
     });
   }

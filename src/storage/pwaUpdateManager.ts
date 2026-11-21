@@ -26,7 +26,6 @@ import {
   getEffectiveOnlineStatus,
   recordServerDateHeaderSkew,
 } from './storageProtection';
-import { getSafeLocalStorage } from './storageProbes';
 
 export type PwaUpdatePolicy = 'auto' | 'notify' | 'pinned';
 
@@ -55,9 +54,8 @@ type RegisterSwFn = (options?: {
 
 function readPersistedUpdatePolicy(): PwaUpdatePolicy {
   try {
-    const ls = getSafeLocalStorage();
-    if (!ls) return 'auto';
-    const raw = ls.getItem(PWA_UPDATE_POLICY_KEY);
+    if (typeof localStorage === 'undefined') return 'auto';
+    const raw = localStorage.getItem(PWA_UPDATE_POLICY_KEY);
     if (raw === 'auto' || raw === 'notify' || raw === 'pinned') {
       return raw;
     }
@@ -111,9 +109,8 @@ export function getPwaUpdatePolicy(): PwaUpdatePolicy {
 
 export function setPwaUpdatePolicy(policy: PwaUpdatePolicy): void {
   try {
-    const ls = getSafeLocalStorage();
-    if (ls) {
-      ls.setItem(PWA_UPDATE_POLICY_KEY, policy);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PWA_UPDATE_POLICY_KEY, policy);
     }
   } catch {
     // Ignore storage restriction
@@ -148,9 +145,8 @@ export function resetPwaUpdateManagerForTests(): void {
     teardownLifecycleListeners = null;
   }
   try {
-    const ls = getSafeLocalStorage();
-    if (ls) {
-      ls.removeItem(PWA_UPDATE_POLICY_KEY);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(PWA_UPDATE_POLICY_KEY);
     }
   } catch {
     // Ignore

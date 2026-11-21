@@ -38,12 +38,6 @@ import {
 import { hexToPdfRgb, resolvePedigreePrintTheme } from './pedigreePrintStyles';
 import { computeAnimalShowSummary } from './showResults';
 import type { PedigreePrintOrientation, PedigreePrintOptions } from './syncAndExports';
-import {
-  AnimalWoolSummary,
-  buildWoolHarvestSummaryByAnimalId,
-  formatWoolWeightSummary,
-  summarizeAnimalWoolHarvests,
-} from './woolFiber';
 
 export interface PdfRasterImage {
   /** Raw JPEG bytes (`FF D8 ... FF D9`) for native PDF `/DCTDecode` embedding. */
@@ -298,15 +292,6 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
     subjectFields.push(`Show Points: ${subjShow.totalPoints}`);
   }
   if (subject.rufusLevel) subjectFields.push(`Rufus: ${subject.rufusLevel}`);
-  const woolHarvestList = printOptions?.woolHarvests ?? [];
-  const woolSummaryByAnimalId =
-    woolHarvestList.length > 0
-      ? buildWoolHarvestSummaryByAnimalId(woolHarvestList)
-      : new Map<string, AnimalWoolSummary>();
-  const subjectWool =
-    woolHarvestList.length > 0 ? summarizeAnimalWoolHarvests(woolHarvestList, subject.id) : null;
-  const subjectWoolLine = subjectWool ? formatWoolWeightSummary(subjectWool) : '';
-  if (subjectWoolLine) subjectFields.push(`Wool / Fiber: ${subjectWoolLine}`);
   if (showGenotypes && subjectGeno) subjectFields.push(`Genotype: ${subjectGeno}`);
   if (subjectCarriers) subjectFields.push(`Carriers: ${subjectCarriers}`);
 
@@ -481,13 +466,9 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
     const headerHeight = isCompactLedger ? (hasLogo ? 32 : 26) : hasLogo ? 40 : 32;
     const barnTitle = settings.barnName || 'Community Pedigree';
     const pageSuffix = slice.totalPages > 1 ? ` | Page ${slice.pageNumber}/${slice.totalPages}` : '';
-    const subLeft = `${
-      theme.layoutPreset === 'iagarb_angora'
-        ? `IAGARB German Angora ${depth}-Generation Wool Pedigree`
-        : theme.layoutPreset === 'family_portrait'
-        ? `Family Portrait ${depth}-Generation ${subject.species} Pedigree`
-        : `Official ${depth}-Generation ${subject.species} Pedigree Certificate`
-    }${settings.breederName ? ` | Breeder: ${settings.breederName}` : ''}`;
+    const subLeft = `Official ${depth}-Generation ${subject.species} Pedigree Certificate${
+      settings.breederName ? ` | Breeder: ${settings.breederName}` : ''
+    }`;
     const rightMeta = `Generated ${formatReadableDate(nowIsoUtc().slice(0, 10))} | Wright COI: ${coi.coiPercent.toFixed(2)}% (${coi.risk.label})${pageSuffix}`;
 
     if (isShowCert && !hasLogo) {
@@ -755,17 +736,6 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
           ancLegs > 0 ? `Legs: ${ancLegs}` : '',
           ancShowSummary?.awardsSummaryText ? ancShowSummary.awardsSummaryText : '',
         ].filter(Boolean);
-        const ancWool = woolSummaryByAnimalId.get(animal.id);
-        const ancWoolText =
-          ancWool && (ancWool.harvestCount > 0 || ancWool.highestIagarbScore)
-            ? formatWoolWeightSummary(ancWool, { compact: true })
-            : '';
-        if (!compactMode && ancWoolText && cellH >= 40) {
-          const woolWrapped = wrapPdfLines(ancWoolText, innerCellW, metaSize, 1);
-          for (const wl of woolWrapped) {
-            linesToRender.push({ text: wl, font: 'F3', size: metaSize, rgb: primaryRgb });
-          }
-        }
         if (!compactMode && regParts.length > 0 && cellH >= 36) {
           const regWrapped = wrapPdfLines(regParts.join(' | '), innerCellW, metaSize, 1);
           for (const rl of regWrapped) {

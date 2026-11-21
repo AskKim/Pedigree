@@ -262,21 +262,5 @@ export function buildReportCatalogForSpecies(
       scopeLabel,
       iconKey: 'roster',
     },
-    {
-      id: 'crm-waitlist-report',
-      title: `Buyer Waitlist Queue (${spName})`,
-      category: 'Sales & CRM',
-      description: `Prioritized buyer waitlist inquiries, desired breeds/varieties, follow-up dates, and contact methods for ${spLower}`,
-      scopeLabel,
-      iconKey: 'users',
-    },
-    {
-      id: 'crm-reservations-deposits-report',
-      title: `Reservations & Deposit Tracking (${spName})`,
-      category: 'Sales & CRM',
-      description: `Active holds, deposits collected, remaining balances, and scheduled pickup dates for ${spLower}`,
-      scopeLabel,
-      iconKey: 'income',
-    },
   ];
 }

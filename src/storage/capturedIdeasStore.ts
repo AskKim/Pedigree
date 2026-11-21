@@ -23,18 +23,7 @@ import {
 } from '../core/suggestionsBacklog';
 import { logDiagnosticEvent } from './crashLogger';
 import { isOpfsSupported, purgeOpfsTmp } from './opfsStorage';
-import {
-  getOpfsRoot,
-  writeFileToOpfsDir,
-} from './opfsTempStream';
-import {
-  getSafeIndexedDb,
-  getSafeLocalStorage,
-  trackActiveIdbConnection,
-  trackActiveIdbTransaction,
-} from './storageProbes';
 import { isQuotaExceededError } from './storageProtection';
-import { readBlobAsText } from '../utils/es2018Shims';
 
 const IDEAS_IDB_NAME = 'community_pedigree_ideas_v1';
 const IDEAS_IDB_VERSION = 1;
@@ -65,10 +54,9 @@ function parseIdeaList(raw: unknown): CapturedIdeaEntry[] {
 }
 
 function readLocalFallback(): CapturedIdeaEntry[] {
-  const ls = getSafeLocalStorage();
-  if (!ls) return [];
+  if (typeof localStorage === 'undefined') return [];
   try {
-    const raw = ls.getItem(IDEAS_LOCAL_STORAGE_KEY);
+    const raw = localStorage.getItem(IDEAS_LOCAL_STORAGE_KEY);
     if (!raw) return [];
     return parseIdeaList(JSON.parse(raw));
   } catch {
@@ -77,10 +65,9 @@ function readLocalFallback(): CapturedIdeaEntry[] {
 }
 
 function writeLocalFallback(ideas: readonly CapturedIdeaEntry[]): boolean {
-  const ls = getSafeLocalStorage();
-  if (!ls) return false;
+  if (typeof localStorage === 'undefined') return false;
   try {
-    ls.setItem(IDEAS_LOCAL_STORAGE_KEY, JSON.stringify(ideas));
+    localStorage.setItem(IDEAS_LOCAL_STORAGE_KEY, JSON.stringify(ideas));
     return true;
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -91,8 +78,7 @@ function writeLocalFallback(ideas: readonly CapturedIdeaEntry[]): boolean {
 }
 
 async function openIdeasIndexedDb(): Promise<IDBDatabase | null> {
-  const idb = getSafeIndexedDb();
-  if (!idb) return null;
+  if (typeof indexedDB === 'undefined') return null;
   try {
     return await new Promise<IDBDatabase | null>((resolve) => {
       let settled = false;
@@ -103,7 +89,7 @@ async function openIdeasIndexedDb(): Promise<IDBDatabase | null> {
         }
       };
       try {
-        const req = idb.open(IDEAS_IDB_NAME, IDEAS_IDB_VERSION);
+        const req = indexedDB.open(IDEAS_IDB_NAME, IDEAS_IDB_VERSION);
         req.onupgradeneeded = () => {
           try {
             const db = req.result;
@@ -129,25 +115,13 @@ async function openIdeasIndexedDb(): Promise<IDBDatabase | null> {
 async function readAllFromIdb(): Promise<CapturedIdeaEntry[] | null> {
   const db = await openIdeasIndexedDb();
   if (!db) return null;
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     const rows = await new Promise<unknown[]>((resolve, reject) => {
       const tx = db.transaction(IDEAS_STORE_NAME, 'readonly');
-      const untrackTx = trackActiveIdbTransaction(tx);
       const store = tx.objectStore(IDEAS_STORE_NAME);
       const req = store.getAll();
-      req.onsuccess = () => {
-        untrackTx();
-        resolve(Array.isArray(req.result) ? req.result : []);
-      };
-      req.onerror = () => {
-        untrackTx();
-        reject(req.error || new Error('IndexedDB read failed.'));
-      };
-      tx.onabort = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB read aborted.'));
-      };
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => reject(req.error || new Error('IndexedDB read failed.'));
     });
     return parseIdeaList(rows);
   } catch (err) {
@@ -159,134 +133,99 @@ async function readAllFromIdb(): Promise<CapturedIdeaEntry[] | null> {
     });
     return null;
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
 async function putEntryInIdb(entry: CapturedIdeaEntry): Promise<boolean> {
   const db = await openIdeasIndexedDb();
   if (!db) return false;
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(IDEAS_STORE_NAME, 'readwrite');
-      const untrackTx = trackActiveIdbTransaction(tx);
-      tx.oncomplete = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onerror = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB write failed.'));
-      };
-      tx.onabort = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB write aborted.'));
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed.'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted.'));
       tx.objectStore(IDEAS_STORE_NAME).put(entry);
     });
     return true;
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
 async function deleteEntryInIdb(id: string): Promise<boolean> {
   const db = await openIdeasIndexedDb();
   if (!db) return false;
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(IDEAS_STORE_NAME, 'readwrite');
-      const untrackTx = trackActiveIdbTransaction(tx);
-      tx.oncomplete = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onerror = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB delete failed.'));
-      };
-      tx.onabort = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB delete aborted.'));
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB delete failed.'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB delete aborted.'));
       tx.objectStore(IDEAS_STORE_NAME).delete(id);
     });
     return true;
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
 async function clearAllInIdb(): Promise<boolean> {
   const db = await openIdeasIndexedDb();
   if (!db) return false;
-  const untrackDb = trackActiveIdbConnection(db);
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(IDEAS_STORE_NAME, 'readwrite');
-      const untrackTx = trackActiveIdbTransaction(tx);
-      tx.oncomplete = () => {
-        untrackTx();
-        resolve();
-      };
-      tx.onerror = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB clear failed.'));
-      };
-      tx.onabort = () => {
-        untrackTx();
-        reject(tx.error || new Error('IndexedDB clear aborted.'));
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB clear failed.'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB clear aborted.'));
       tx.objectStore(IDEAS_STORE_NAME).clear();
     });
     return true;
   } finally {
-    untrackDb();
-    try {
-      db.close();
-    } catch {
-      // Ignore close error
-    }
+    db.close();
   }
 }
 
 async function writeIdeasToOpfs(ideas: readonly CapturedIdeaEntry[]): Promise<boolean> {
   if (!isOpfsSupported()) return false;
-  const root = await getOpfsRoot();
-  if (!root) return false;
+  const storage =
+    typeof navigator !== 'undefined'
+      ? (navigator.storage as (StorageManager & {
+          getDirectory?: () => Promise<FileSystemDirectoryHandle>;
+        }) | undefined)
+      : undefined;
+  if (!storage || typeof storage.getDirectory !== 'function') return false;
 
+  const root = await storage.getDirectory();
   const ideasDir = await root.getDirectoryHandle(IDEAS_OPFS_DIR, { create: true });
-  await writeFileToOpfsDir(ideasDir, IDEAS_OPFS_FILE, JSON.stringify(ideas, null, 2));
+  const fileHandle = await ideasDir.getFileHandle(IDEAS_OPFS_FILE, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(JSON.stringify(ideas, null, 2));
+  } finally {
+    await writable.close();
+  }
   return true;
 }
 
 async function readIdeasFromOpfs(): Promise<CapturedIdeaEntry[] | null> {
   if (!isOpfsSupported()) return null;
-  const root = await getOpfsRoot();
-  if (!root) return null;
+  const storage =
+    typeof navigator !== 'undefined'
+      ? (navigator.storage as (StorageManager & {
+          getDirectory?: () => Promise<FileSystemDirectoryHandle>;
+        }) | undefined)
+      : undefined;
+  if (!storage || typeof storage.getDirectory !== 'function') return null;
 
   try {
+    const root = await storage.getDirectory();
     const ideasDir = await root.getDirectoryHandle(IDEAS_OPFS_DIR, { create: false });
     const fileHandle = await ideasDir.getFileHandle(IDEAS_OPFS_FILE, { create: false });
     const file = await fileHandle.getFile();
-    const text = await readBlobAsText(file);
+    const text = await file.text();
     if (!text.trim()) return [];
     return parseIdeaList(JSON.parse(text));
   } catch {

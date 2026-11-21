@@ -10,10 +10,18 @@
  * or restricted environments where `Worker` is unavailable.
  */
 
-import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
-import type {
+import {
+  inspectParsedArchiveBeforeRestorePure,
+  PreRestoreArchiveInspection,
+} from '../core/archiveInspector';
+import {
   BackupArchiveBuildResult,
+  buildCompleteBackupZipArchive,
+  buildPhotosOnlyZipArchive,
+  parseBackupArchiveInput,
   ParsedBackupArchive,
+  streamCompleteBackupZipArchive,
+  streamPhotosOnlyZipArchive,
   StreamingZipArchiveSummary,
 } from '../core/backupArchive';
 import type {
@@ -21,12 +29,14 @@ import type {
   PlatformImportPreview,
   RawArchiveInput,
 } from '../core/importers/importerTypes';
+import { getPlatformImporterById } from '../core/importers/registry';
 import {
   type BarnDatabaseSnapshot,
   type BarnSettings,
   getCoreClockSkewMs,
 } from '../core/models';
-import type {
+import {
+  buildSupportBundleZipArchive,
   SupportBundleBuildParams,
   SupportBundleBuildResult,
 } from '../core/supportBundle';
@@ -288,7 +298,6 @@ export async function buildCompleteBackupZipToOpfsTmpOffThread(
     }
     return res;
   }
-  const { streamCompleteBackupZipArchive } = await import('../core/backupArchive');
   return runStreamedZipMainThreadFallback('archive', (onChunk) =>
     streamCompleteBackupZipArchive(snapshot, onChunk, filterSpecies, extraMeta)
   );
@@ -311,7 +320,6 @@ export async function buildPhotosOnlyZipToOpfsTmpOffThread(
     }
     return res;
   }
-  const { streamPhotosOnlyZipArchive } = await import('../core/backupArchive');
   return runStreamedZipMainThreadFallback('photos-archive', (onChunk) =>
     streamPhotosOnlyZipArchive(snapshot, onChunk, filterSpecies)
   );
@@ -337,7 +345,6 @@ export async function buildCompleteBackupZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildCompleteBackupZipArchive } = await import('../core/backupArchive');
   return buildCompleteBackupZipArchive(snapshot, filterSpecies, extraMeta);
 }
 
@@ -355,7 +362,6 @@ export async function buildPhotosOnlyZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildPhotosOnlyZipArchive } = await import('../core/backupArchive');
   return buildPhotosOnlyZipArchive(snapshot, filterSpecies);
 }
 
@@ -375,7 +381,6 @@ export async function parseBackupArchiveOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { parseBackupArchiveInput } = await import('../core/backupArchive');
   return parseBackupArchiveInput(bytes, fileName, fallbackSettings);
 }
 
@@ -398,7 +403,6 @@ export async function parseExternalImportOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { getPlatformImporterById } = await import('../core/importers/registry');
   const importer = getPlatformImporterById(platformId);
   return importer.parse(inputs, lightSnapshot, options);
 }
@@ -415,7 +419,6 @@ export async function buildSupportBundleZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildSupportBundleZipArchive } = await import('../core/supportBundle');
   return buildSupportBundleZipArchive(params);
 }
 
@@ -444,11 +447,6 @@ export async function inspectBackupArchiveOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const [{ parseBackupArchiveInput }, { inspectParsedArchiveBeforeRestorePure }] =
-    await Promise.all([
-      import('../core/backupArchive'),
-      import('../core/archiveInspector'),
-    ]);
   const parsed = parseBackupArchiveInput(
     bytes,
     fileName,

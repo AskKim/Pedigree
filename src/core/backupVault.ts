@@ -331,10 +331,6 @@ export function buildEmptyShellSnapshot(): BarnDatabaseSnapshot {
     ledgerEntries: [],
     processingLogs: [],
     youthProjectBooks: [],
-    clientContacts: [],
-    waitlistEntries: [],
-    animalReservations: [],
-    woolHarvests: [],
   };
 }
 
@@ -1101,10 +1097,6 @@ export function extractArchiveIndexMetadataOnly(
       ledgerEntries: [],
       processingLogs: [],
       youthProjectBooks: [],
-      clientContacts: [],
-      waitlistEntries: [],
-      animalReservations: [],
-      woolHarvests: [],
     }),
     fallback
   );
@@ -1214,10 +1206,6 @@ export function unpackArchivedAnimalBundle(
       ledgerEntries: [],
       processingLogs: [],
       youthProjectBooks: [],
-      clientContacts: [],
-      waitlistEntries: [],
-      animalReservations: [],
-      woolHarvests: [],
     }),
     fallbackSettings
   );

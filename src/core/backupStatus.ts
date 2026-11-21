@@ -103,10 +103,6 @@ export function getLatestSnapshotTimestamp(snapshot: BarnDatabaseSnapshot): stri
   checkItems(snapshot.ledgerEntries);
   checkItems(snapshot.processingLogs);
   checkItems(snapshot.youthProjectBooks);
-  checkItems(snapshot.clientContacts);
-  checkItems(snapshot.waitlistEntries);
-  checkItems(snapshot.animalReservations);
-  checkItems(snapshot.woolHarvests);
   return latest;
 }
 
@@ -127,10 +123,6 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
   const hasRealLedgerEntries = (snapshot.ledgerEntries ?? []).some((e) => !isSampleTestingId(e.id));
   const hasRealProcessingLogs = (snapshot.processingLogs ?? []).some((p) => !isSampleTestingId(p.id));
   const hasRealYouthBooks = (snapshot.youthProjectBooks ?? []).some((y) => !isSampleTestingId(y.id));
-  const hasRealClients = (snapshot.clientContacts ?? []).some((c) => !isSampleTestingId(c.id));
-  const hasRealWaitlist = (snapshot.waitlistEntries ?? []).some((w) => !isSampleTestingId(w.id));
-  const hasRealReservations = (snapshot.animalReservations ?? []).some((r) => !isSampleTestingId(r.id));
-  const hasRealWoolHarvests = (snapshot.woolHarvests ?? []).some((w) => !isSampleTestingId(w.id));
   const hasCustomSpecies = snapshot.speciesProfiles.some(
     (sp) => !PREDEFINED_SPECIES_LOWER.has(sp.name.trim().toLowerCase())
   );
@@ -151,10 +143,6 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
     hasRealLedgerEntries ||
     hasRealProcessingLogs ||
     hasRealYouthBooks ||
-    hasRealClients ||
-    hasRealWaitlist ||
-    hasRealReservations ||
-    hasRealWoolHarvests ||
     hasCustomSpecies ||
     hasSpeciesMemo
   );

@@ -12,13 +12,6 @@
  *   storage quota, partial I/O failure) to a sticky user-acknowledged prompt.
  */
 
-import { releaseActiveOpfsHandles } from './opfsTempStream';
-import {
-  abortPendingWebLocks,
-  releaseOpenBroadcastChannels,
-  releaseOpenIdbResources,
-} from './storageProbes';
-
 export class BackgroundPausedError extends Error {
   readonly taskName: string;
   readonly severityIssue: string | null;
@@ -49,7 +42,6 @@ export interface FreezeLifecycleListener {
   id: string;
   onHidden?: () => void | Promise<void>;
   onVisible?: () => void | Promise<void>;
-  onReleaseResources?: (reason: 'hidden' | 'pagehide') => void | Promise<void>;
 }
 
 export interface PausedBackgroundJob {
@@ -67,17 +59,8 @@ const lifecycleListeners = new Map<string, FreezeLifecycleListener>();
 const pausedJobs = new Map<string, PausedBackgroundJob>();
 const pausedJobSubscribers = new Set<PausedJobsSubscriber>();
 
-function readInitialVisibilityState(): 'visible' | 'hidden' {
-  try {
-    return typeof document !== 'undefined' && document.visibilityState === 'hidden'
-      ? 'hidden'
-      : 'visible';
-  } catch {
-    return 'visible';
-  }
-}
-
-let lastVisibilityState: 'visible' | 'hidden' = readInitialVisibilityState();
+let lastVisibilityState: 'visible' | 'hidden' =
+  typeof document !== 'undefined' && document.visibilityState === 'hidden' ? 'hidden' : 'visible';
 
 function emitPausedJobs(): void {
   const snapshot = Array.from(pausedJobs.values());
@@ -91,12 +74,8 @@ function emitPausedJobs(): void {
 }
 
 export function isDocumentHidden(docOverride?: { visibilityState?: string }): boolean {
-  try {
-    const target = docOverride ?? (typeof document !== 'undefined' ? document : undefined);
-    return Boolean(target && target.visibilityState === 'hidden');
-  } catch {
-    return false;
-  }
+  const target = docOverride ?? (typeof document !== 'undefined' ? document : undefined);
+  return Boolean(target && target.visibilityState === 'hidden');
 }
 
 export function assertForegroundOrPause(
@@ -172,48 +151,13 @@ export async function resumePausedBackgroundJob(taskId: string): Promise<boolean
   return true;
 }
 
-function emitReleaseResources(reason: 'hidden' | 'pagehide'): void {
-  try {
-    abortPendingWebLocks();
-  } catch {
-    // Non-fatal
-  }
-  try {
-    releaseOpenIdbResources();
-  } catch {
-    // Non-fatal
-  }
-  try {
-    releaseOpenBroadcastChannels();
-  } catch {
-    // Non-fatal
-  }
-  try {
-    void releaseActiveOpfsHandles().catch(() => {});
-  } catch {
-    // Non-fatal
-  }
-
-  const listeners = Array.from(lifecycleListeners.values());
-  for (const listener of listeners) {
-    if (typeof listener.onReleaseResources === 'function') {
-      try {
-        void Promise.resolve(listener.onReleaseResources(reason)).catch(() => {});
-      } catch {
-        // Non-fatal resource release failure
-      }
-    }
-  }
-}
-
-function applyBackgroundTransition(
-  nextState: 'hidden' | 'visible',
-  releaseReason: 'hidden' | 'pagehide'
-): void {
-  if (nextState === 'hidden') {
-    emitReleaseResources(releaseReason);
-  }
-
+/**
+ * Called from `crashLogger`'s single `visibilitychange` / `pagehide` dispatcher.
+ * - On `'hidden'`: notifies all registered jobs/flushes to checkpoint & pause cleanly.
+ * - On `'visible'`: auto-resumes clean minor paused jobs immediately (zero tap friction),
+ *   while leaving `'severity'` paused jobs intact until acknowledged by the user.
+ */
+export function notifyBackgroundTransition(nextState: 'hidden' | 'visible'): void {
   if (nextState === lastVisibilityState && nextState === 'hidden') {
     return;
   }
@@ -260,25 +204,6 @@ function applyBackgroundTransition(
   if (removedAny) {
     emitPausedJobs();
   }
-}
-
-/**
- * Called from `crashLogger`'s single `visibilitychange` / `pagehide` dispatcher.
- * - On `'hidden'`: releases OPFS/IDB/channel handles and notifies registered jobs to checkpoint & pause cleanly.
- * - On `'visible'`: auto-resumes clean minor paused jobs immediately (zero tap friction),
- *   while leaving `'severity'` paused jobs intact until acknowledged by the user.
- */
-export function notifyBackgroundTransition(nextState: 'hidden' | 'visible'): void {
-  applyBackgroundTransition(nextState, 'hidden');
-}
-
-/**
- * Called on `pagehide` (including bfcache transitions) to release active OPFS handles,
- * open IDB transactions/connections, and BroadcastChannels even if `visibilitychange`
- * already transitioned to `'hidden'`.
- */
-export function notifyPageHide(): void {
-  applyBackgroundTransition('hidden', 'pagehide');
 }
 
 export function resetBackgroundFreezeCoordinatorForTests(): void {

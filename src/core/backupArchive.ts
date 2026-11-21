@@ -429,18 +429,6 @@ export function buildCompleteBackupZipFiles(
         youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
           isSameSpecies(y.species, filterSpecies)
         ),
-        clientContacts: (snapshot.clientContacts ?? []).filter((c) =>
-          isSameSpecies(c.species, filterSpecies)
-        ),
-        waitlistEntries: (snapshot.waitlistEntries ?? []).filter((w) =>
-          isSameSpecies(w.species, filterSpecies)
-        ),
-        animalReservations: (snapshot.animalReservations ?? []).filter((r) =>
-          isSameSpecies(r.species, filterSpecies)
-        ),
-        woolHarvests: (snapshot.woolHarvests ?? []).filter((w) =>
-          isSameSpecies(w.species, filterSpecies)
-        ),
       }
     : {
         ...snapshot,
@@ -926,18 +914,6 @@ export async function streamCompleteBackupZipArchive(
           ),
           youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
             isSameSpecies(y.species, filterSpecies)
-          ),
-          clientContacts: (snapshot.clientContacts ?? []).filter((c) =>
-            isSameSpecies(c.species, filterSpecies)
-          ),
-          waitlistEntries: (snapshot.waitlistEntries ?? []).filter((w) =>
-            isSameSpecies(w.species, filterSpecies)
-          ),
-          animalReservations: (snapshot.animalReservations ?? []).filter((r) =>
-            isSameSpecies(r.species, filterSpecies)
-          ),
-          woolHarvests: (snapshot.woolHarvests ?? []).filter((w) =>
-            isSameSpecies(w.species, filterSpecies)
           ),
         }
       : {

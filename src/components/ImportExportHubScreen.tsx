@@ -1545,11 +1545,9 @@ export function ImportExportHubScreen({
                     title: 'Community Pedigree Multi-Device Delta Log',
                   });
                   setSyncFeedback(
-                    mode === 'cancelled'
-                      ? 'Share sheet cancelled — no delta file was saved.'
-                      : mode === 'shared'
-                        ? `Shared ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} via native share sheet.`
-                        : `Downloaded ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} for SyncThing or family sharing.`
+                    mode === 'shared'
+                      ? `Shared ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} via native share sheet.`
+                      : `Downloaded ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} for SyncThing or family sharing.`
                   );
                 })
               }

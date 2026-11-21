@@ -419,19 +419,17 @@ export function DiagnosticsAndSupportPanel({
         });
 
         setFeedback(
-          mode === 'cancelled'
-            ? 'Share sheet cancelled — no file was saved.'
-            : mode === 'shared'
-              ? `Opened Share Sheet with ${built.filename} (${formatByteSizePure(
-                  built.bytes.byteLength
-                )}). Choose your email app to send${recipient ? ` to ${recipient}` : ''}.`
-              : `Downloaded ${built.filename} (${formatByteSizePure(
-                  built.bytes.byteLength
-                )}).${
-                  recipient
-                    ? ` Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
-                    : ' Type a recipient email above or tap "Open Email Draft" below and attach the downloaded .ZIP.'
-                }`
+          mode === 'shared'
+            ? `Opened Share Sheet with ${built.filename} (${formatByteSizePure(
+                built.bytes.byteLength
+              )}). Choose your email app to send${recipient ? ` to ${recipient}` : ''}.`
+            : `Downloaded ${built.filename} (${formatByteSizePure(
+                built.bytes.byteLength
+              )}).${
+                recipient
+                  ? ` Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
+                  : ' Type a recipient email above or tap "Open Email Draft" below and attach the downloaded .ZIP.'
+              }`
         );
       } else {
         await downloadBinaryFile(built.filename, built.bytes, 'application/zip');

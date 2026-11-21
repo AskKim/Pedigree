@@ -33,9 +33,7 @@ export type PedigreeBorderStyleId =
 export type PedigreeLayoutPresetId =
   | 'evans_standard'
   | 'show_certificate'
-  | 'compact_ledger'
-  | 'family_portrait'
-  | 'iagarb_angora';
+  | 'compact_ledger';
 
 export interface PedigreeColorPresetSpec {
   id: PedigreeColorPresetId;
@@ -183,16 +181,6 @@ export const PEDIGREE_LAYOUT_PRESETS: readonly PedigreeLayoutPresetSpec[] = [
     label: 'Compact Ledger',
     description: 'Tighter header & subject summary leaving maximum vertical space for deep trees.',
   },
-  {
-    id: 'family_portrait',
-    label: 'Family Portrait (Photos)',
-    description: 'Multi-photo pedigree displaying portrait thumbnails for subject, parents & grandparents.',
-  },
-  {
-    id: 'iagarb_angora',
-    label: 'IAGARB German Angora',
-    description: 'Official 100-point wool judging breakdown, 325g/90d yield stats & ancestor fiber table.',
-  },
 ];
 
 export const PEDIGREE_QUICK_STYLE_PRESETS: readonly PedigreeQuickPresetSpec[] = [
@@ -211,22 +199,6 @@ export const PEDIGREE_QUICK_STYLE_PRESETS: readonly PedigreeQuickPresetSpec[] = 
     colorPreset: 'royal_navy',
     borderStyle: 'double_frame',
     layoutPreset: 'show_certificate',
-  },
-  {
-    id: 'family-portrait',
-    label: 'Family Photo Keepsake',
-    description: 'Barn Sage · Double Frame · Multi-Photo Portrait',
-    colorPreset: 'classic_sage',
-    borderStyle: 'double_frame',
-    layoutPreset: 'family_portrait',
-  },
-  {
-    id: 'iagarb-german-angora',
-    label: 'IAGARB German Angora',
-    description: 'Heritage Burgundy · Classic Rule · Wool Yield & 100-pt Scale',
-    colorPreset: 'heritage_burgundy',
-    borderStyle: 'classic_rule',
-    layoutPreset: 'iagarb_angora',
   },
   {
     id: 'deep-archival',
@@ -300,9 +272,7 @@ export function normalizeLayoutPresetId(raw: unknown): PedigreeLayoutPresetId {
   if (
     raw === 'evans_standard' ||
     raw === 'show_certificate' ||
-    raw === 'compact_ledger' ||
-    raw === 'family_portrait' ||
-    raw === 'iagarb_angora'
+    raw === 'compact_ledger'
   ) {
     return raw;
   }

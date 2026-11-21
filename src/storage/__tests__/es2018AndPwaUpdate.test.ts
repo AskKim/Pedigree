@@ -120,55 +120,6 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
       vi.unstubAllGlobals();
     }
   });
-
-  it('prefers native blob.text()/arrayBuffer() over FileReader and degrades cleanly if FileReader throws SecurityError', async () => {
-    const fileReaderSpy = vi.fn(function () {
-      throw new DOMException('FileReader blocked', 'SecurityError');
-    });
-    vi.stubGlobal('FileReader', fileReaderSpy);
-    try {
-      const nativeBlob = new Blob(['Hello Pedigree'], { type: 'text/plain' });
-      expect(await readBlobAsText(nativeBlob)).toBe('Hello Pedigree');
-      expect(new TextDecoder().decode(await readBlobAsArrayBuffer(nativeBlob))).toBe(
-        'Hello Pedigree'
-      );
-      expect(fileReaderSpy).not.toHaveBeenCalled();
-
-      // Legacy blob without .text()/.arrayBuffer() when FileReader is blocked -> Response fallback
-      const rawBytes = new TextEncoder().encode('ResponseFallback');
-      const noMethodBlob = {
-        size: rawBytes.byteLength,
-        type: 'text/plain',
-        slice() {
-          return new Blob([rawBytes]);
-        },
-      } as unknown as Blob;
-      const origResponse = globalThis.Response;
-      vi.stubGlobal(
-        'Response',
-        class FakeResponse {
-          constructor(private readonly body: unknown) {}
-          async arrayBuffer() {
-            void this.body;
-            return rawBytes.buffer.slice(0);
-          }
-          async text() {
-            return 'ResponseFallback';
-          }
-        }
-      );
-      try {
-        expect(await readBlobAsText(noMethodBlob)).toBe('ResponseFallback');
-        expect(new TextDecoder().decode(await readBlobAsArrayBuffer(noMethodBlob))).toBe(
-          'ResponseFallback'
-        );
-      } finally {
-        vi.stubGlobal('Response', origResponse);
-      }
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
 });
 
 describe('pwaUpdateManager (manual prompt gate & controllerchange handshake)', () => {

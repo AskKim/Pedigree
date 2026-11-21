@@ -70,65 +70,6 @@ export const IMAGE_OPTIMIZATION_PRESETS: Record<
 
 export const DEFAULT_IMAGE_OPTIMIZATION_PRESET: ImageOptimizationPresetId = 'balanced';
 
-/** Hard single-canvas backing store area ceiling (16M px) to avoid WebKit/mobile OOM crashes. */
-export const MAX_CANVAS_AREA_PX = 16_000_000;
-/** Tighter single-canvas area ceiling (3M px) for Low-Memory / constrained tier devices. */
-export const MAX_CONSTRAINED_CANVAS_AREA_PX = 3_000_000;
-
-export function getCanvasAreaCeiling(isConstrained: boolean): number {
-  return isConstrained ? MAX_CONSTRAINED_CANVAS_AREA_PX : MAX_CANVAS_AREA_PX;
-}
-
-/**
- * Proportionally clamps canvas dimensions so `width * height <= maxAreaPx` (never returning < 1px).
- */
-export function clampCanvasDimensionsToAreaCeiling(
-  width: number,
-  height: number,
-  maxAreaPx: number = MAX_CANVAS_AREA_PX
-): { width: number; height: number; wasClamped: boolean } {
-  const safeW = Number.isFinite(width) ? Math.max(1, Math.round(width)) : 1;
-  const safeH = Number.isFinite(height) ? Math.max(1, Math.round(height)) : 1;
-  const ceiling = Number.isFinite(maxAreaPx)
-    ? Math.max(1, Math.floor(maxAreaPx))
-    : MAX_CANVAS_AREA_PX;
-
-  if (safeW * safeH <= ceiling) {
-    return { width: safeW, height: safeH, wasClamped: false };
-  }
-
-  const scale = Math.sqrt(ceiling / (safeW * safeH));
-  let outW = Math.max(1, Math.floor(safeW * scale));
-  let outH = Math.max(1, Math.floor(safeH * scale));
-  while (outW * outH > ceiling && (outW > 1 || outH > 1)) {
-    if (outW >= outH && outW > 1) {
-      outW -= 1;
-    } else if (outH > 1) {
-      outH -= 1;
-    } else {
-      break;
-    }
-  }
-  return { width: outW, height: outH, wasClamped: true };
-}
-
-/**
- * Caps canvas backing-store DPR at `Math.min(2, dpr || 1)`, or `1` in Low-Memory / constrained mode.
- */
-export function capCanvasDevicePixelRatio(
-  rawDevicePixelRatio: number | null | undefined,
-  isConstrained: boolean
-): number {
-  if (isConstrained) return 1;
-  const dpr =
-    typeof rawDevicePixelRatio === 'number' &&
-    Number.isFinite(rawDevicePixelRatio) &&
-    rawDevicePixelRatio > 0
-      ? rawDevicePixelRatio
-      : 1;
-  return Math.min(2, dpr);
-}
-
 export function resolveImageOptimizationPreset(
   presetId?: string | null
 ): ImageOptimizationPreset {
@@ -139,35 +80,27 @@ export function resolveImageOptimizationPreset(
 }
 
 /**
- * Computes proportional output dimensions capped to `maxDimension` on the longest edge
- * and clamped to `maxAreaPx` total canvas pixels. Never upscales images that are smaller.
+ * Computes proportional output dimensions capped to `maxDimension` on the longest edge.
+ * Never upscales images that are already smaller than `maxDimension`.
  */
 export function computeScaledDimensions(
   sourceWidth: number,
   sourceHeight: number,
-  maxDimension: number,
-  maxAreaPx: number = MAX_CANVAS_AREA_PX
+  maxDimension: number
 ): { width: number; height: number; wasResized: boolean } {
-  const safeW = Number.isFinite(sourceWidth) ? Math.max(1, Math.round(sourceWidth)) : 1;
-  const safeH = Number.isFinite(sourceHeight) ? Math.max(1, Math.round(sourceHeight)) : 1;
+  const safeW = Math.max(1, Math.round(sourceWidth));
+  const safeH = Math.max(1, Math.round(sourceHeight));
   const longest = Math.max(safeW, safeH);
 
-  let targetW = safeW;
-  let targetH = safeH;
-  let wasResized = false;
-
-  if (longest > maxDimension) {
-    const scale = maxDimension / longest;
-    targetW = Math.max(1, Math.round(safeW * scale));
-    targetH = Math.max(1, Math.round(safeH * scale));
-    wasResized = true;
+  if (longest <= maxDimension) {
+    return { width: safeW, height: safeH, wasResized: false };
   }
 
-  const clamped = clampCanvasDimensionsToAreaCeiling(targetW, targetH, maxAreaPx);
+  const scale = maxDimension / longest;
   return {
-    width: clamped.width,
-    height: clamped.height,
-    wasResized: wasResized || clamped.wasClamped,
+    width: Math.max(1, Math.round(safeW * scale)),
+    height: Math.max(1, Math.round(safeH * scale)),
+    wasResized: true,
   };
 }
 
