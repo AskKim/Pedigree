@@ -56,6 +56,7 @@ import {
 } from './economicsLedger';
 import { buildReportCatalogForSpecies, ReportCatalogEntrySpec } from './reportCatalog';
 import { computeAnimalShowSummary } from './showResults';
+import { evaluateReservationFinancials, formatPreferredContactLabel } from './clientCrm';
 
 export type ReportAudienceFilter =
   | 'All'
@@ -2690,6 +2691,186 @@ function buildReportBody(ctx: ReportContext): ReportBody {
             label: 'Combined Net Return',
             value: formatCurrencyCents(totalNetCents, currencyCode),
             tone: totalNetCents >= 0 ? 'positive' : 'danger',
+          },
+        ],
+      };
+    }
+
+    // 26. CRM Buyer Waitlist Queue Report
+    case 'crm-waitlist-report': {
+      const speciesClients = (ctx.snapshot.clientContacts ?? []).filter((cc) =>
+        isSameSpecies(cc.species, speciesProfile.name)
+      );
+      const clientMap = new Map(speciesClients.map((c) => [c.id, c]));
+      const speciesWaitlist = (ctx.snapshot.waitlistEntries ?? [])
+        .filter((wl) => {
+          if (!isSameSpecies(wl.species, speciesProfile.name)) return false;
+          if (!isIsoWithinRange(wl.inquiryDateIso, dateFromIso, dateToIso)) return false;
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            (a.priorityRank || 9999) - (b.priorityRank || 9999) ||
+            a.inquiryDateIso.localeCompare(b.inquiryDateIso)
+        );
+
+      const activeCount = speciesWaitlist.filter(
+        (w) => w.status === 'Active' || w.status === 'Matched'
+      ).length;
+      const overdueFollowUps = speciesWaitlist.filter(
+        (w) =>
+          (w.status === 'Active' || w.status === 'Matched') &&
+          Boolean(w.followUpDateIso) &&
+          w.followUpDateIso < referenceDateIso
+      ).length;
+
+      const rows: ReportRow[] = speciesWaitlist.map((w) => {
+        const client = clientMap.get(w.clientId);
+        const contactInfo = client
+          ? `${formatPreferredContactLabel(client.preferredContact)}: ${client.phone || client.email || '—'}`
+          : '—';
+        return {
+          id: w.id,
+          highlightTone:
+            (w.status === 'Active' || w.status === 'Matched') &&
+            Boolean(w.followUpDateIso) &&
+            w.followUpDateIso < referenceDateIso
+              ? 'warning'
+              : w.status === 'Deposited' || w.status === 'Fulfilled'
+                ? 'success'
+                : 'normal',
+          cells: {
+            rank: `#${w.priorityRank || 1}`,
+            buyer: client?.fullName || w.clientName || 'Buyer',
+            status: w.status,
+            intent: w.intent,
+            preferences:
+              [w.desiredBreed, w.desiredVariety, w.preferredSex !== 'Any' ? w.preferredSex : '']
+                .filter(Boolean)
+                .join(' · ') || 'Any',
+            inquiryDate: formatReadableDate(w.inquiryDateIso),
+            followUp: w.followUpDateIso ? formatReadableDate(w.followUpDateIso) : '—',
+            budget:
+              w.maxBudgetCents && w.maxBudgetCents > 0
+                ? formatCurrencyCents(w.maxBudgetCents, currencyCode)
+                : '—',
+            contact: contactInfo,
+          },
+        };
+      });
+
+      return {
+        columns: [
+          { key: 'rank', label: 'Rank', align: 'right' },
+          { key: 'buyer', label: 'Buyer' },
+          { key: 'status', label: 'Status' },
+          { key: 'intent', label: 'Intent' },
+          { key: 'preferences', label: 'Desired Stock' },
+          { key: 'inquiryDate', label: 'Inquiry Date' },
+          { key: 'followUp', label: 'Follow-Up' },
+          { key: 'budget', label: 'Max Budget', align: 'right' },
+          { key: 'contact', label: 'Contact' },
+        ],
+        rows,
+        summaryMetrics: [
+          { label: 'Waitlist Entries', value: String(rows.length) },
+          { label: 'Active / Matched', value: String(activeCount), tone: activeCount > 0 ? 'positive' : 'neutral' },
+          {
+            label: 'Overdue Follow-Ups',
+            value: String(overdueFollowUps),
+            tone: overdueFollowUps > 0 ? 'danger' : 'neutral',
+          },
+        ],
+      };
+    }
+
+    // 27. CRM Reservations & Deposit Tracking Report
+    case 'crm-reservations-deposits-report': {
+      const speciesReservations = (ctx.snapshot.animalReservations ?? [])
+        .filter((ar) => {
+          if (!isSameSpecies(ar.species, speciesProfile.name)) return false;
+          if (!isIsoWithinRange(ar.reservedDateIso, dateFromIso, dateToIso)) return false;
+          if (filter !== 'All' && ar.animalId) {
+            return matchesFilter(animalById.get(ar.animalId));
+          }
+          return true;
+        })
+        .sort((a, b) => (b.reservedDateIso || '').localeCompare(a.reservedDateIso || ''));
+
+      let totalAgreedCents = 0;
+      let totalPaidCents = 0;
+      let totalRemainingCents = 0;
+      let overdueDepositsCount = 0;
+
+      const rows: ReportRow[] = speciesReservations.map((r) => {
+        const fin = evaluateReservationFinancials(r);
+        if (r.status !== 'Cancelled') {
+          totalAgreedCents += fin.totalPriceCents;
+          totalPaidCents += fin.depositPaidCents;
+          if (r.status !== 'Picked Up / Completed') {
+            totalRemainingCents += fin.balanceRemainingCents;
+          }
+        }
+        const depositOverdue =
+          r.status !== 'Cancelled' &&
+          r.status !== 'Picked Up / Completed' &&
+          fin.depositRemainingCents > 0 &&
+          Boolean(r.depositDueDateIso) &&
+          r.depositDueDateIso < referenceDateIso;
+        if (depositOverdue) overdueDepositsCount += 1;
+        return {
+          id: r.id,
+          animalId: r.animalId,
+          highlightTone: depositOverdue
+            ? 'danger'
+            : r.status === 'Picked Up / Completed' || fin.isPaidInFull
+              ? 'success'
+              : 'normal',
+          cells: {
+            agreement: r.agreementNumber || '—',
+            buyer: r.clientName || 'Buyer',
+            item: r.itemLabel || 'Reserved Stock',
+            status: r.status,
+            reservedDate: formatReadableDate(r.reservedDateIso),
+            totalPrice: formatCurrencyCents(fin.totalPriceCents, currencyCode),
+            depositReq: formatCurrencyCents(fin.depositRequiredCents, currencyCode),
+            paid: formatCurrencyCents(fin.depositPaidCents, currencyCode),
+            balanceDue: formatCurrencyCents(fin.balanceRemainingCents, currencyCode),
+            pickupDate: r.pickupScheduledDateIso ? formatReadableDate(r.pickupScheduledDateIso) : '—',
+          },
+        };
+      });
+
+      return {
+        columns: [
+          { key: 'agreement', label: 'Agreement #' },
+          { key: 'buyer', label: 'Buyer' },
+          { key: 'item', label: 'Animal / Pick' },
+          { key: 'status', label: 'Status' },
+          { key: 'reservedDate', label: 'Reserved' },
+          { key: 'totalPrice', label: 'Price', align: 'right' },
+          { key: 'depositReq', label: 'Deposit Req', align: 'right' },
+          { key: 'paid', label: 'Paid', align: 'right' },
+          { key: 'balanceDue', label: 'Balance Due', align: 'right' },
+          { key: 'pickupDate', label: 'Pickup Date' },
+        ],
+        rows,
+        summaryMetrics: [
+          { label: 'Reservations', value: String(rows.length) },
+          { label: 'Total Price Value', value: formatCurrencyCents(totalAgreedCents, currencyCode) },
+          {
+            label: 'Deposits / Payments Collected',
+            value: formatCurrencyCents(totalPaidCents, currencyCode),
+            tone: totalPaidCents > 0 ? 'positive' : 'neutral',
+          },
+          {
+            label: 'Open Balance Due',
+            value: formatCurrencyCents(totalRemainingCents, currencyCode),
+          },
+          {
+            label: 'Overdue Deposits',
+            value: String(overdueDepositsCount),
+            tone: overdueDepositsCount > 0 ? 'danger' : 'neutral',
           },
         ],
       };

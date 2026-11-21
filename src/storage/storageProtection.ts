@@ -53,6 +53,10 @@ function estimateSnapshotByteSize(snapshot: BarnDatabaseSnapshot): number {
   for (const yp of snapshot.youthProjectBooks ?? []) {
     bytes += 540 + (yp.feedLogs?.length || 0) * 140;
   }
+  bytes += (snapshot.clientContacts?.length || 0) * 320;
+  bytes += (snapshot.waitlistEntries?.length || 0) * 320;
+  bytes += (snapshot.animalReservations?.length || 0) * 440;
+  bytes += (snapshot.woolHarvests?.length || 0) * 420;
   for (const photo of snapshot.animalPhotos ?? []) {
     const estimatedDataUrlBytes =
       photo.dataUrl?.length || (photo.storedBytes ? Math.ceil(photo.storedBytes * 1.37) : 0);

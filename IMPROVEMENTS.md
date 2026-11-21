@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (46)
+## Logged Improvements (48)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -972,4 +972,51 @@ npm run lint && npm run build
 1. Keep `LedgerEntry`, `ProcessingLog`, and `YouthProjectBook` interfaces and normalizers in `src/core/models.ts` plus SQLite v4 tables in `src/storage/webSqliteAdapter.ts`.
 2. Restore `src/core/economicsLedger.ts` and `src/core/__tests__/economicsLedger.test.ts` along with the 3 financial/production/youth presets in `reportCatalog.ts` and `reportGenerators.ts`.
 3. Keep store CRUD mutations in `src/hooks/useBarnStore.ts` and wire `EconomicsLedgerScreen.tsx` into `SpeciesDashboardScreen.tsx` and `App.tsx`.
+
+### IMP-047: Client CRM, Buyer Waitlist, Reservations & Deposit Reminders
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Track buyer contacts, waitlist queues, animal/litter reservations, deposit due reminders, and printable sales agreements offline without cloud dependencies.
+- **Summary:** Adds species-isolated local-first breeder CRM tracking buyer contacts (`ClientContact`), ranked waitlist inquiries (`WaitlistEntry`) with live unreserved animal/pairing match scoring (`findWaitlistMatches`), animal/litter-pick reservations (`AnimalReservation`) with sequential agreement numbering and deposit/balance progress (`evaluateReservationFinancials`), automated overdue/due/upcoming follow-up reminders (`evaluateCrmFollowUpReminders`) with 1-click Master Task creation, XSS-safe printable Sales Agreements with optional breeder logo and active withdrawal disclosures (`generateSalesAgreementHtml`), SQLite v5 persistence, sync outbox deltas, 2 CRM report presets, and `ClientCrmScreen.tsx` accessible from Species Dashboard & `C` shortcut.
+- **Tracked Files:** `src/core/models.ts`, `src/core/clientCrm.ts`, `src/core/__tests__/clientCrm.test.ts`, `src/core/reportCatalog.ts`, `src/core/reportGenerators.ts`, `src/core/syncOutbox.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/ClientCrmScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `ClientContact`, `WaitlistEntry`, `AnimalReservation`, `RESERVATION_STATUSES`, `WAITLIST_STATUSES` — *ClientContact, WaitlistEntry, and AnimalReservation domain models and normalizers must remain intact.*
+- `src/core/clientCrm.ts` must contain `evaluateReservationFinancials`, `evaluateCrmFollowUpReminders`, `findWaitlistMatches`, `generateSalesAgreementHtml`, `formatReservationsCsv` — *Pure TS CRM financial evaluation, automated follow-up reminders, waitlist matching, CSV export, and printable Sales Agreement generator must stay zero-DOM.*
+- `src/storage/webSqliteAdapter.ts` must contain `client_contacts`, `waitlist_entries`, `animal_reservations`, `saveClientContact`, `saveWaitlistEntry`, `saveAnimalReservation` — *SQLite schema v5 and adapter CRUD methods must store and hydrate CRM contacts, waitlist entries, and reservations.*
+- `src/hooks/useBarnStore.ts` must contain `saveClientContact`, `saveWaitlistEntry`, `saveAnimalReservation`, `completeReservationSale`, `createCrmReminderTask` — *Store must expose species-isolated CRM mutations, atomic sale completion, and reminder task creation with delta outbox sync.*
+- `src/components/ClientCrmScreen.tsx` must contain `ClientCrmScreen`, `generateSalesAgreementHtml`, `evaluateCrmFollowUpReminders`, `findWaitlistMatches` — *ClientCrmScreen must render reminders, reservation/deposit tracking, ranked waitlist matching, client directory, and printable sales agreements.*
+- `src/App.tsx` must contain `ClientCrmScreen`, `route === 'crm'` — *Root router must lazy-load and mount ClientCrmScreen on route crm.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `ClientContact`, `WaitlistEntry`, and `AnimalReservation` interfaces and normalizers in `src/core/models.ts` plus SQLite v5 tables in `src/storage/webSqliteAdapter.ts`.
+2. Restore `src/core/clientCrm.ts` and `src/core/__tests__/clientCrm.test.ts` along with the 2 CRM presets in `reportCatalog.ts` and `reportGenerators.ts`.
+3. Keep CRM mutations in `src/hooks/useBarnStore.ts` and wire `ClientCrmScreen.tsx` into `SpeciesDashboardScreen.tsx` and `App.tsx`.
+
+### IMP-048: Alternative Certificates, Show Entry/Remark Cards & IAGARB Wool/Fiber Tracking
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Support alternative companion birth/breeding certificates, printable/emailable show documents directly from show rosters, family portrait & IAGARB Angora pedigree templates, and wool/fiber harvest logging.
+- **Summary:** Adds privacy-scoped Pet-Sale Birth Certificates (omitting breeder contact info & pricing), official Breeding/Service Certificates, ARBA-style Show Entry Forms (`mailto:` + plain-text copy + Open/Youth/fees) & 4-up/1-up Show Remark Cards from ShowEvent rosters, Gen 0–2 multi-photo Family Portrait and IAGARB German Angora pedigree layouts, and SQLite v6 `wool_harvests` tracking with 7-position 100-pt IAGARB scoring and 90-day 325g shearing yield calculations.
+- **Tracked Files:** `src/core/models.ts`, `src/core/woolFiber.ts`, `src/core/alternativeCertificates.ts`, `src/core/showDocuments.ts`, `src/core/pedigreePrintStyles.ts`, `src/core/syncAndExports.ts`, `src/core/pdfExporter.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/PrintPreviewModal.tsx`, `src/components/HerdScreen.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`, `src/core/__tests__/woolFiber.test.ts`, `src/core/__tests__/alternativeCertificates.test.ts`, `src/core/__tests__/showDocuments.test.ts`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `WoolHarvest`, `IagarbScorecard`, `WOOL_HARVEST_METHODS`, `normalizeWoolHarvestMethod` — *WoolHarvest and IagarbScorecard domain models and normalizers must remain intact.*
+- `src/core/woolFiber.ts` must contain `IAGARB_JUDGING_POSITIONS`, `computeIagarbScoreTotal`, `evaluateIagarbEligibility`, `compute90DayEquivalentGrams`, `summarizeAnimalWoolHarvests` — *Pure TS IAGARB 100-point rubric, 325g/90-day performance yield normalization, and harvest summary calculators must stay zero-DOM.*
+- `src/core/alternativeCertificates.ts` must contain `generatePetBirthCertificateHtml`, `generateBreedingCertificateHtml`, `buildPetBirthCertificateFileName`, `buildBreedingCertificateFileName` — *Pure TS Pet-Sale Birth Certificate (no breeder contact/pricing) and Breeding Certificate generators must remain zero-DOM and XSS-safe.*
+- `src/core/showDocuments.ts` must contain `generateShowEntryFormHtml`, `generateShowRemarkCardsHtml`, `buildShowEntryMailtoUrl`, `buildShowEntryPlainTextSummary` — *Pure TS ARBA Show Entry Form, emailable plain-text/mailto dispatchers, and 4-up/1-up Remark Card generators must remain zero-DOM.*
+- `src/core/pedigreePrintStyles.ts` must contain `family_portrait`, `iagarb_angora` — *Family Portrait and IAGARB German Angora pedigree presets must stay registered.*
+- `src/storage/webSqliteAdapter.ts` must contain `wool_harvests`, `saveWoolHarvest`, `deleteWoolHarvest` — *SQLite schema v6 must store and hydrate wool_harvests cleanly.*
+- `src/hooks/useBarnStore.ts` must contain `saveWoolHarvest`, `deleteWoolHarvest` — *Store must expose species-isolated wool harvest mutations with delta outbox sync.*
+- `src/components/HerdScreen.tsx` must contain `generatePetBirthCertificateHtml`, `onSaveWoolHarvest`, `IAGARB_JUDGING_POSITIONS` — *HerdScreen must provide Pet-Sale Birth Certificate previews and Wool / Fiber + IAGARB scoring.*
+- `src/components/BreedingScreen.tsx` must contain `generateBreedingCertificateHtml`, `Breeding Cert` — *BreedingScreen must expose Breeding Certificate preview controls.*
+- `src/components/SpeciesDashboardScreen.tsx` must contain `generateShowEntryFormHtml`, `generateShowRemarkCardsHtml`, `buildShowEntryMailtoUrl` — *SpeciesDashboardScreen must expose Show Entry Form and Remark Cards print/email previews directly from ShowEvents.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `WoolHarvest` and `IagarbScorecard` models in `src/core/models.ts` and `wool_harvests` SQLite v6 schema in `src/storage/webSqliteAdapter.ts`.
+2. Restore pure modules `src/core/woolFiber.ts`, `src/core/alternativeCertificates.ts`, and `src/core/showDocuments.ts` with their unit tests.
+3. Keep `family_portrait` & `iagarb_angora` rendering in `pedigreePrintStyles.ts`, `syncAndExports.ts`, and `pdfExporter.ts`, plus UI wiring in `HerdScreen.tsx`, `PedigreeScreen.tsx`, `BreedingScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `App.tsx`.
+
 

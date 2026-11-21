@@ -29,6 +29,7 @@ import {
   Plus,
   Printer,
   RotateCcw,
+  Scissors,
   Search,
   ShieldAlert,
   Trash2,
@@ -76,6 +77,7 @@ import {
   formatWeight,
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
+  IagarbScorecard,
   isAnimalArchived,
   normalizeOwnershipType,
   parseWeightInputToGrams,
@@ -84,7 +86,22 @@ import {
   todayDateIso,
   ULTRASOUND_RESULTS,
   UltrasoundResult,
+  WOOL_HARVEST_METHODS,
+  WoolHarvest,
+  WoolHarvestMethod,
 } from '../core/models';
+import {
+  buildPetBirthCertificateFileName,
+  generatePetBirthCertificateHtml,
+} from '../core/alternativeCertificates';
+import {
+  compute90DayEquivalentGrams,
+  computeDaysBetweenDateIso,
+  computeIagarbScoreTotal,
+  evaluateIagarbEligibility,
+  IAGARB_JUDGING_POSITIONS,
+  summarizeAnimalWoolHarvests,
+} from '../core/woolFiber';
 import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
@@ -170,6 +187,10 @@ interface HerdScreenProps {
   onOpenBarnBench?: () => void;
   onCompareGrowthForAnimals?: (animalIds: string[]) => void;
   onUpdateSettings?: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
+  onSaveWoolHarvest?: (
+    draft: Omit<WoolHarvest, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => Promise<string | null> | void;
+  onDeleteWoolHarvest?: (id: string) => void;
 }
 
 type HerdFilterTab =
@@ -228,6 +249,8 @@ export function HerdScreen({
   onOpenBarnBench,
   onCompareGrowthForAnimals,
   onUpdateSettings,
+  onSaveWoolHarvest,
+  onDeleteWoolHarvest,
 }: HerdScreenProps) {
   const {
     speciesProfile,
@@ -241,6 +264,7 @@ export function HerdScreen({
     cages,
     careLogs,
     shows,
+    woolHarvests = [],
   } = activeData;
 
   const effectiveWeightUnit = resolveSpeciesWeightUnit(speciesProfile, settings);
@@ -313,7 +337,20 @@ export function HerdScreen({
     hasGenetics?: boolean;
     pedigreeSubject?: Animal;
     cageCardSubject?: Animal;
+    birthCertSubject?: Animal;
   } | null>(null);
+  const [birthCertOptions, setBirthCertOptions] = useState<{
+    companionFamilyName: string;
+    keepsakeMessage: string;
+    includePrimaryPhoto: boolean;
+  }>({
+    companionFamilyName: '',
+    keepsakeMessage: '',
+    includePrimaryPhoto: true,
+  });
+  const [familyPortraitPhotosByAnimalId, setFamilyPortraitPhotosByAnimalId] = useState<
+    Record<string, string>
+  >({});
   const [includeThermalCageCardQr, setIncludeThermalCageCardQr] = useState(true);
   const [hydratedPedigreePhoto, setHydratedPedigreePhoto] = useState<{
     photoId: string;
@@ -327,13 +364,19 @@ export function HerdScreen({
   const [batchPhotoHydrating, setBatchPhotoHydrating] = useState(false);
 
   useEffect(() => {
-    if (!previewDoc?.isPedigree || !previewDoc.pedigreeSubject || !settings.includePhotoOnPedigree) {
+    const photoSubject = previewDoc?.pedigreeSubject ?? previewDoc?.birthCertSubject;
+    const shouldIncludePhoto = previewDoc?.pedigreeSubject
+      ? Boolean(settings.includePhotoOnPedigree)
+      : previewDoc?.birthCertSubject
+      ? birthCertOptions.includePrimaryPhoto
+      : false;
+    if (!photoSubject || !shouldIncludePhoto) {
       if (hydratedPedigreePhoto !== null) {
         setHydratedPedigreePhoto(null);
       }
       return;
     }
-    const primary = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
+    const primary = primaryPhotoByAnimalId.get(photoSubject.id);
     if (!primary || primary.dataUrl || !onLoadFullPhoto) return;
     if (hydratedPedigreePhoto?.photoId === primary.id) return;
     let cancelled = false;
@@ -348,10 +391,69 @@ export function HerdScreen({
   }, [
     previewDoc,
     settings.includePhotoOnPedigree,
+    birthCertOptions.includePrimaryPhoto,
     primaryPhotoByAnimalId,
     onLoadFullPhoto,
     hydratedPedigreePhoto,
   ]);
+
+  useEffect(() => {
+    if (
+      !previewDoc?.isPedigree ||
+      !previewDoc.pedigreeSubject ||
+      pedigreePrintOptions.layoutPreset !== 'family_portrait'
+    ) {
+      setFamilyPortraitPhotosByAnimalId((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    const animalById = new Map<string, Animal>(allAnimals.map((a) => [a.id, a]));
+    const subj = previewDoc.pedigreeSubject;
+    const sire = subj.sireId ? animalById.get(subj.sireId) : undefined;
+    const dam = subj.damId ? animalById.get(subj.damId) : undefined;
+    const familyIds = [
+      subj.id,
+      sire?.id,
+      dam?.id,
+      sire?.sireId,
+      sire?.damId,
+      dam?.sireId,
+      dam?.damId,
+    ].filter((id): id is string => Boolean(id));
+
+    const nextImmediate: Record<string, string> = {};
+    const photoIdsToHydrate: Array<{ animalId: string; photoId: string }> = [];
+    for (const animalId of familyIds) {
+      const rec = primaryPhotoByAnimalId.get(animalId);
+      if (!rec) continue;
+      if (rec.dataUrl) {
+        nextImmediate[animalId] = rec.dataUrl;
+      } else {
+        if (rec.thumbnailDataUrl) nextImmediate[animalId] = rec.thumbnailDataUrl;
+        if (onLoadFullPhotosBatch) {
+          photoIdsToHydrate.push({ animalId, photoId: rec.id });
+        }
+      }
+    }
+    setFamilyPortraitPhotosByAnimalId(nextImmediate);
+
+    if (photoIdsToHydrate.length === 0 || !onLoadFullPhotosBatch) return;
+    let cancelled = false;
+    void onLoadFullPhotosBatch(photoIdsToHydrate.map((x) => x.photoId)).then((loadedMap) => {
+      if (cancelled) return;
+      setFamilyPortraitPhotosByAnimalId((prev) => {
+        const merged = { ...prev };
+        for (const item of photoIdsToHydrate) {
+          if (loadedMap[item.photoId]) {
+            merged[item.animalId] = loadedMap[item.photoId];
+          }
+        }
+        return merged;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewDoc, pedigreePrintOptions.layoutPreset, allAnimals, primaryPhotoByAnimalId, onLoadFullPhotosBatch]);
 
   useEffect(() => {
     if (!batchPrintSubjects || batchPrintSubjects.length === 0 || !batchPrintOptions.includePhotos) {
@@ -597,6 +699,43 @@ export function HerdScreen({
     [activeAnimal, shows, careLogs]
   );
 
+  const activeAnimalWoolHarvests = useMemo(
+    () => (activeAnimal ? woolHarvests.filter((wh) => wh.animalId === activeAnimal.id) : []),
+    [activeAnimal, woolHarvests]
+  );
+
+  const activeAnimalWoolSummary = useMemo(
+    () =>
+      activeAnimal
+        ? summarizeAnimalWoolHarvests(activeAnimalWoolHarvests, activeAnimal.id)
+        : null,
+    [activeAnimal, activeAnimalWoolHarvests]
+  );
+
+  const [showWoolForm, setShowWoolForm] = useState(false);
+  const [woolDateIso, setWoolDateIso] = useState(() => todayDateIso());
+  const [woolIntervalDays, setWoolIntervalDays] = useState('90');
+  const [woolPrimeGrams, setWoolPrimeGrams] = useState('');
+  const [woolGradeGrams, setWoolGradeGrams] = useState('');
+  const [woolMethod, setWoolMethod] = useState<WoolHarvestMethod>('Shear');
+  const [woolStapleMm, setWoolStapleMm] = useState('');
+  const [woolWitnessedBy, setWoolWitnessedBy] = useState('');
+  const [woolNotes, setWoolNotes] = useState('');
+  const [showIagarbScorecard, setShowIagarbScorecard] = useState(false);
+  const [woolIagarbScore, setWoolIagarbScore] = useState<IagarbScorecard>(() => ({
+    weightPts: 0,
+    bodyTypePts: 0,
+    densityLengthPts: 0,
+    uniformityPts: 0,
+    texturePts: 0,
+    furnishingsPts: 0,
+    conditionPts: 0,
+    totalPts: 0,
+    evaluatorName: '',
+    evaluationDateIso: '',
+  }));
+  const woolSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
+
   const [eLegLightbox, setELegLightbox] = useState<{
     imageUrl: string;
     title: string;
@@ -729,10 +868,73 @@ export function HerdScreen({
     setLogUltrasoundFetalCount('');
   };
 
+  const resetWoolFields = () => {
+    setWoolDateIso(todayDateIso());
+    setWoolIntervalDays('90');
+    setWoolPrimeGrams('');
+    setWoolGradeGrams('');
+    setWoolMethod('Shear');
+    setWoolStapleMm('');
+    setWoolWitnessedBy('');
+    setWoolNotes('');
+    setShowIagarbScorecard(false);
+    setWoolIagarbScore({
+      weightPts: 0,
+      bodyTypePts: 0,
+      densityLengthPts: 0,
+      uniformityPts: 0,
+      texturePts: 0,
+      furnishingsPts: 0,
+      conditionPts: 0,
+      totalPts: 0,
+      evaluatorName: '',
+      evaluationDateIso: '',
+    });
+  };
+
   useEffect(() => {
     setShowLogForm(false);
     resetLogFields();
+    setShowWoolForm(false);
+    resetWoolFields();
   }, [speciesProfile.id, selectedAnimalId]);
+
+  const submitWoolHarvest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAnimal || !onSaveWoolHarvest) return;
+    await woolSubmitLock.runLocked(async () => {
+      const prime = safeNonNegNumber(woolPrimeGrams, true, 100_000);
+      const grade = safeNonNegNumber(woolGradeGrams, true, 100_000);
+      const interval = safeNonNegNumber(woolIntervalDays, true, 1825);
+      const staple = safeNonNegNumber(woolStapleMm, false, 1000);
+      const hasIagarbFields = Object.values(woolIagarbScore).some(
+        (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
+      );
+      await onSaveWoolHarvest({
+        species: speciesProfile.name,
+        animalId: activeAnimal.id,
+        harvestDateIso: woolDateIso || todayDateIso(),
+        shearingIntervalDays: interval > 0 ? interval : undefined,
+        primeWeightGrams: prime,
+        gradeWeightGrams: grade,
+        harvestMethod: woolMethod,
+        stapleLengthMm: staple > 0 ? staple : undefined,
+        iagarbScore:
+          showIagarbScorecard && hasIagarbFields
+            ? {
+                ...woolIagarbScore,
+                totalPts: computeIagarbScoreTotal(woolIagarbScore),
+                evaluatorName: woolWitnessedBy.trim(),
+                evaluationDateIso: woolDateIso || todayDateIso(),
+              }
+            : undefined,
+        witnessedBy: woolWitnessedBy.trim(),
+        notes: woolNotes.trim(),
+      });
+      resetWoolFields();
+      setShowWoolForm(false);
+    });
+  };
 
   const safeNonNegNumber = (raw: string, roundInt = false, max = Number.MAX_SAFE_INTEGER): number => {
     const num = Number(raw);
@@ -810,8 +1012,37 @@ export function HerdScreen({
           ...pedigreePrintOptions,
           shows,
           careLogs,
+          woolHarvests,
+          ancestorPhotosByAnimalId:
+            pedigreePrintOptions.layoutPreset === 'family_portrait'
+              ? familyPortraitPhotosByAnimalId
+              : undefined,
         }
       ),
+    });
+  };
+
+  const openBirthCertificatePreview = (subject: Animal) => {
+    setBatchPrintSubjects(null);
+    setBatchHydratedPhotos({});
+    setBirthCertOptions((prev) => ({
+      ...prev,
+      companionFamilyName: subject.buyerName || prev.companionFamilyName || '',
+    }));
+    const primaryRec = primaryPhotoByAnimalId.get(subject.id);
+    const photoUrl =
+      primaryRec && birthCertOptions.includePrimaryPhoto
+        ? primaryRec.dataUrl || primaryRec.thumbnailDataUrl
+        : undefined;
+    setPreviewDoc({
+      title: `Pet Birth Certificate — ${subject.name}`,
+      filename: buildPetBirthCertificateFileName(subject),
+      birthCertSubject: subject,
+      html: generatePetBirthCertificateHtml(subject, allAnimals, speciesProfiles, settings, {
+        primaryPhotoDataUrl: photoUrl,
+        companionFamilyName: subject.buyerName || birthCertOptions.companionFamilyName,
+        keepsakeMessage: birthCertOptions.keepsakeMessage,
+      }),
     });
   };
 
@@ -1275,6 +1506,15 @@ export function HerdScreen({
                   >
                     <FileText className="w-3.5 h-3.5" aria-hidden="true" />
                     .HTM / PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openBirthCertificatePreview(activeAnimal)}
+                    title="Print keepsake Birth Certificate (omits breeder contact & sale pricing)"
+                    className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Award className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                    Birth Cert
                   </button>
                   <button
                     type="button"
@@ -2122,6 +2362,340 @@ export function HerdScreen({
               )}
             </div>
 
+            {/* Wool / Fiber Harvests & IAGARB Angora Evaluation */}
+            <div className="border-t border-[var(--barn-border)] pt-5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold inline-flex items-center gap-1.5">
+                    <Scissors className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                    <span>Wool / Fiber Harvests &amp; IAGARB Scoring</span>
+                  </h3>
+                  <p className="text-xs text-[var(--barn-muted)]">
+                    Track prime &amp; grade fleece weights (g), 90-day shearing yield vs. 325g benchmark, and IAGARB 7-position scores.
+                  </p>
+                </div>
+                {onSaveWoolHarvest && (
+                  <button
+                    type="button"
+                    aria-expanded={showWoolForm}
+                    onClick={() => setShowWoolForm((v) => !v)}
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap self-start sm:self-auto"
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    Log Wool Harvest
+                  </button>
+                )}
+              </div>
+
+              {activeAnimalWoolSummary && activeAnimalWoolSummary.harvestCount > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs">
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Lifetime Total</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.totalGrams} g ({activeAnimalWoolSummary.harvestCount} clip{activeAnimalWoolSummary.harvestCount === 1 ? '' : 's'})
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Prime vs Grade</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.primeGrams}g Prime / {activeAnimalWoolSummary.gradeGrams}g Grade
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Latest 90-Day Rate</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.latest90DayRateGrams !== null
+                        ? `${activeAnimalWoolSummary.latest90DayRateGrams} g/90d`
+                        : '—'}
+                      {activeAnimalWoolSummary.eligibility.meets90DayYieldThreshold && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] text-[10px]">
+                          ≥325g Pass
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[var(--barn-muted)]">Best IAGARB Score</div>
+                    <div className="font-mono font-semibold tabular-nums mt-0.5">
+                      {activeAnimalWoolSummary.highestIagarbScore !== null
+                        ? `${activeAnimalWoolSummary.highestIagarbScore.totalPts}/100`
+                        : '—'}
+                      {activeAnimalWoolSummary.eligibility.meetsPointsThreshold && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] text-[10px]">
+                          Reg Eligible
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showWoolForm && onSaveWoolHarvest && (
+                <form
+                  onSubmit={submitWoolHarvest}
+                  className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3 text-xs"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Harvest Date</span>
+                      <input
+                        type="date"
+                        required
+                        value={woolDateIso}
+                        onChange={(e) => {
+                          const nextDate = e.target.value;
+                          setWoolDateIso(nextDate);
+                          const lastDate = activeAnimalWoolHarvests[0]?.harvestDateIso;
+                          if (lastDate && nextDate) {
+                            const diff = computeDaysBetweenDateIso(lastDate, nextDate);
+                            if (diff !== null && diff > 0) setWoolIntervalDays(String(diff));
+                          }
+                        }}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Interval (Days)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="1825"
+                        placeholder="90"
+                        value={woolIntervalDays}
+                        onChange={(e) => setWoolIntervalDays(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Prime Weight (g)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 285"
+                        value={woolPrimeGrams}
+                        onChange={(e) => setWoolPrimeGrams(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Grade / Seconds (g)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 60"
+                        value={woolGradeGrams}
+                        onChange={(e) => setWoolGradeGrams(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Method</span>
+                      <select
+                        value={woolMethod}
+                        onChange={(e) => setWoolMethod(e.target.value as WoolHarvestMethod)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                      >
+                        {WOOL_HARVEST_METHODS.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Staple Length (mm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        placeholder="e.g. 75"
+                        value={woolStapleMm}
+                        onChange={(e) => setWoolStapleMm(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-[var(--barn-muted)]">Witnessed By / Judge</span>
+                      <input
+                        type="text"
+                        placeholder="Registrar / judge name (optional)"
+                        value={woolWitnessedBy}
+                        onChange={(e) => setWoolWitnessedBy(e.target.value)}
+                        className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                      />
+                    </label>
+                  </div>
+
+                  {(() => {
+                    const p = Number(woolPrimeGrams) || 0;
+                    const g = Number(woolGradeGrams) || 0;
+                    const d = Number(woolIntervalDays) || 0;
+                    const eq90 = compute90DayEquivalentGrams(p + g, d);
+                    const totalPts = computeIagarbScoreTotal(woolIagarbScore);
+                    const elig = evaluateIagarbEligibility(
+                      showIagarbScorecard ? totalPts : 0,
+                      eq90
+                    );
+                    return (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                        <span className="font-mono text-[11px]">
+                          Total Clip: <strong>{Math.round(p + g)} g</strong>
+                          {eq90 !== null ? ` · 90-Day Est: ${eq90} g` : ''}
+                        </span>
+                        <span className="text-[11px] font-medium text-[var(--barn-sage)]">
+                          {elig.statusLabel}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowIagarbScorecard((v) => !v)}
+                      className="text-xs font-medium text-[var(--barn-sage)] hover:underline"
+                    >
+                      {showIagarbScorecard
+                        ? '− Hide IAGARB 7-Position Judging Scorecard'
+                        : '+ Add IAGARB 7-Position Judging Scorecard (100-Pt Scale)'}
+                    </button>
+                  </div>
+
+                  {showIagarbScorecard && (
+                    <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold">IAGARB 7-Position Scorecard</span>
+                        <span className="font-mono font-semibold tabular-nums">
+                          Total: {computeIagarbScoreTotal(woolIagarbScore)} / 100 (Min 80 for Reg)
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        {IAGARB_JUDGING_POSITIONS.map((pos) => (
+                          <label key={pos.key} className="space-y-0.5">
+                            <span className="text-[11px] text-[var(--barn-muted)] block truncate" title={pos.guidance}>
+                              {pos.label} (/{pos.maxPoints})
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              max={pos.maxPoints}
+                              step="0.5"
+                              value={woolIagarbScore[pos.key] || ''}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const val =
+                                  raw === ''
+                                    ? 0
+                                    : Math.min(pos.maxPoints, Math.max(0, Number(raw) || 0));
+                                setWoolIagarbScore((prev) => ({
+                                  ...prev,
+                                  [pos.key]: val,
+                                }));
+                              }}
+                              className="w-full min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    aria-label="Wool harvest notes"
+                    placeholder="Optional fleece quality notes (crimps, web density, matting)..."
+                    value={woolNotes}
+                    onChange={(e) => setWoolNotes(e.target.value)}
+                    className="w-full min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                  />
+
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowWoolForm(false)}
+                      className="min-h-[36px] px-3 py-1 rounded-lg border border-[var(--barn-border)] font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={woolSubmitLock.isSubmitting}
+                      aria-busy={woolSubmitLock.isSubmitting}
+                      className="min-h-[36px] px-4 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold disabled:opacity-55 inline-flex items-center gap-1.5"
+                    >
+                      {woolSubmitLock.isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      Save Harvest
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {activeAnimalWoolHarvests.length > 0 && (
+                <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl bg-[var(--barn-surface)]">
+                  {activeAnimalWoolHarvests.map((wh) => {
+                    const total = wh.primeWeightGrams + wh.gradeWeightGrams;
+                    const eq90 = compute90DayEquivalentGrams(total, wh.shearingIntervalDays);
+                    const pts = wh.iagarbScore ? computeIagarbScoreTotal(wh.iagarbScore) : null;
+                    return (
+                      <div key={wh.id} className="px-3 py-2.5 flex items-start justify-between gap-2 text-xs">
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                            <span className="font-mono">{formatReadableDate(wh.harvestDateIso)}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[10.5px]">
+                              {wh.harvestMethod}
+                            </span>
+                            <span className="font-mono tabular-nums font-semibold">
+                              {total} g total ({wh.primeWeightGrams}g Prime / {wh.gradeWeightGrams}g Grade)
+                            </span>
+                            {eq90 !== null && (
+                              <span className="font-mono text-[10.5px] text-[var(--barn-muted)]">
+                                · {eq90} g/90d
+                              </span>
+                            )}
+                            {pts !== null && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded font-mono text-[10.5px] font-semibold ${
+                                  pts >= 80
+                                    ? 'bg-[var(--barn-sage-tint)] text-[var(--barn-sage)]'
+                                    : 'bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-muted)]'
+                                }`}
+                              >
+                                IAGARB {pts}/100
+                              </span>
+                            )}
+                          </div>
+                          {(wh.stapleLengthMm || wh.witnessedBy || wh.notes) && (
+                            <div className="text-[11px] text-[var(--barn-muted)]">
+                              {wh.stapleLengthMm ? `Staple ${wh.stapleLengthMm} mm` : ''}
+                              {wh.stapleLengthMm && wh.witnessedBy ? ' · ' : ''}
+                              {wh.witnessedBy ? `Witnessed by ${wh.witnessedBy}` : ''}
+                              {(wh.stapleLengthMm || wh.witnessedBy) && wh.notes ? ' · ' : ''}
+                              {wh.notes}
+                            </div>
+                          )}
+                        </div>
+                        {onDeleteWoolHarvest && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteWoolHarvest(wh.id)}
+                            aria-label="Delete wool harvest"
+                            className="min-h-[32px] min-w-[32px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             {activeAnimal.notes && (
               <div className="border-t border-[var(--barn-border)] pt-4 text-xs text-[var(--barn-muted)]">
                 <strong className="text-[var(--barn-ink)]">Notes:</strong> {activeAnimal.notes}
@@ -2768,10 +3342,17 @@ export function HerdScreen({
 
       {previewDoc && (() => {
         const resolvedPedigreeSubject = previewDoc.pedigreeSubject;
-        const resolvedPedigreePhoto =
-          resolvedPedigreeSubject && settings.includePhotoOnPedigree
+        const resolvedBirthCertSubject = previewDoc.birthCertSubject;
+        const resolvedSubjectForPhoto = resolvedPedigreeSubject ?? resolvedBirthCertSubject;
+        const shouldUseSubjectPhoto = resolvedPedigreeSubject
+          ? Boolean(settings.includePhotoOnPedigree)
+          : resolvedBirthCertSubject
+          ? birthCertOptions.includePrimaryPhoto
+          : false;
+        const resolvedSubjectPhoto =
+          resolvedSubjectForPhoto && shouldUseSubjectPhoto
             ? (() => {
-                const primaryRec = primaryPhotoByAnimalId.get(resolvedPedigreeSubject.id);
+                const primaryRec = primaryPhotoByAnimalId.get(resolvedSubjectForPhoto.id);
                 if (!primaryRec) return undefined;
                 return (
                   primaryRec.dataUrl ||
@@ -2781,8 +3362,19 @@ export function HerdScreen({
                 );
               })()
             : undefined;
+        const resolvedPedigreePhoto = resolvedPedigreeSubject ? resolvedSubjectPhoto : undefined;
         const isShareableCard =
           Boolean(resolvedPedigreeSubject) && pedigreeDocMode === 'shareable_card';
+        const effectivePedigreeOptions: PedigreePrintOptions = {
+          ...pedigreePrintOptions,
+          shows,
+          careLogs,
+          woolHarvests,
+          ancestorPhotosByAnimalId:
+            pedigreePrintOptions.layoutPreset === 'family_portrait'
+              ? familyPortraitPhotosByAnimalId
+              : undefined,
+        };
         return (
           <PrintPreviewModal
             title={
@@ -2806,9 +3398,7 @@ export function HerdScreen({
                       settings.defaultGenerations,
                       resolvedPedigreePhoto,
                       {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
+                        ...effectivePedigreeOptions,
                         appBaseUrl,
                         includeQrCode: Boolean(appBaseUrl),
                       }
@@ -2820,10 +3410,18 @@ export function HerdScreen({
                       settings,
                       settings.defaultGenerations,
                       resolvedPedigreePhoto,
+                      effectivePedigreeOptions
+                    )
+                : resolvedBirthCertSubject
+                  ? generatePetBirthCertificateHtml(
+                      resolvedBirthCertSubject,
+                      allAnimals,
+                      speciesProfiles,
+                      settings,
                       {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
+                        primaryPhotoDataUrl: resolvedSubjectPhoto,
+                        companionFamilyName: birthCertOptions.companionFamilyName,
+                        keepsakeMessage: birthCertOptions.keepsakeMessage,
                       }
                     )
                 : previewDoc.cageCardSubject
@@ -2840,10 +3438,18 @@ export function HerdScreen({
                   : previewDoc.html
             }
             includePrimaryPhoto={
-              previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
+              previewDoc.isPedigree
+                ? settings.includePhotoOnPedigree
+                : resolvedBirthCertSubject
+                ? birthCertOptions.includePrimaryPhoto
+                : undefined
             }
             onToggleIncludePrimaryPhoto={
-              previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
+              previewDoc.isPedigree
+                ? onToggleIncludePhotoOnPedigree
+                : resolvedBirthCertSubject
+                ? (inc) => setBirthCertOptions((prev) => ({ ...prev, includePrimaryPhoto: inc }))
+                : undefined
             }
             includeCageCardQr={
               previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
@@ -2874,15 +3480,46 @@ export function HerdScreen({
                       speciesProfiles,
                       settings,
                       generations: settings.defaultGenerations,
-                      printOptions: {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
-                      },
+                      printOptions: effectivePedigreeOptions,
                       primaryPhotoDataUrl: resolvedPedigreePhoto,
                       pdfFilename: `${previewDoc.filename.replace(/\.html?$/i, '')}.pdf`,
                     })
                 : undefined
+            }
+            extraToolbarContent={
+              resolvedBirthCertSubject ? (
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <input
+                    type="text"
+                    value={birthCertOptions.companionFamilyName}
+                    onChange={(e) =>
+                      setBirthCertOptions((prev) => ({
+                        ...prev,
+                        companionFamilyName: e.target.value,
+                      }))
+                    }
+                    placeholder="Companion / adopter family name (optional)"
+                    aria-label="Companion or adopter family name"
+                    className="min-h-[30px] min-w-[200px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                  <input
+                    type="text"
+                    value={birthCertOptions.keepsakeMessage}
+                    onChange={(e) =>
+                      setBirthCertOptions((prev) => ({
+                        ...prev,
+                        keepsakeMessage: e.target.value,
+                      }))
+                    }
+                    placeholder="Optional keepsake welcome note..."
+                    aria-label="Optional keepsake welcome note"
+                    className="flex-1 min-w-[220px] min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                  <span className="text-[11px] text-[var(--barn-muted)]">
+                    Privacy mode: Breeder contact info &amp; pricing omitted.
+                  </span>
+                </div>
+              ) : undefined
             }
             headerNotice={
               previewDoc.isPedigree ? (
@@ -2894,6 +3531,7 @@ export function HerdScreen({
             onClose={() => {
               setPreviewDoc(null);
               setHydratedPedigreePhoto(null);
+              setFamilyPortraitPhotosByAnimalId({});
             }}
           />
         );

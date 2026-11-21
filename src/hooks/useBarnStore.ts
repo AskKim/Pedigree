@@ -47,6 +47,7 @@ import {
   Animal,
   AnimalConflictKind,
   AnimalPhoto,
+  AnimalReservation,
   applyAnimalNamePrefix,
   BarnDatabaseSnapshot,
   BarnSettings,
@@ -54,6 +55,7 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  ClientContact,
   FeedAllocation,
   FeedBatch,
   FeedPurgeWindowDays,
@@ -64,6 +66,7 @@ import {
   LitterWeightMilestone,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
+  normalizeClientKind,
   normalizeDefaultPedigreeGenerations,
   normalizeFeedPurgeWindowDays,
   normalizeIgnoredConflicts,
@@ -71,12 +74,16 @@ import {
   normalizeLedgerEntryType,
   normalizeLitterWeightMilestones,
   normalizePeltGrade,
+  normalizePreferredContactMethod,
   normalizeProcessingStatus,
+  normalizeReservationStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
+  normalizeWaitlistIntent,
+  normalizeWaitlistStatus,
   normalizeYouthOrgType,
   normalizeYouthProjectFeedLogs,
   PedigreeGenerationDepth,
@@ -90,8 +97,16 @@ import {
   TargetWeightPoint,
   todayDateIso,
   UltrasoundResult,
+  WaitlistEntry,
+  WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
+import { normalizeWoolHarvest } from '../core/woolFiber';
+import {
+  buildSuggestedAgreementNumber,
+  CrmFollowUpReminder,
+  evaluateReservationFinancials,
+} from '../core/clientCrm';
 import { calculateDressOutPercent } from '../core/economicsLedger';
 import {
   applyFeedAllocationToBatch,
@@ -305,6 +320,7 @@ export type WorkspaceRoute =
   | 'pedigree'
   | 'feed'
   | 'economics'
+  | 'crm'
   | 'reports'
   | 'memo'
   | 'importExport'
@@ -349,6 +365,10 @@ export interface ActiveSpeciesData {
   ledgerEntries: LedgerEntry[];
   processingLogs: ProcessingLog[];
   youthProjectBooks: YouthProjectBook[];
+  clientContacts: ClientContact[];
+  waitlistEntries: WaitlistEntry[];
+  animalReservations: AnimalReservation[];
+  woolHarvests: WoolHarvest[];
   testingRecordCount: number;
   nonTestingRecordCount: number;
   totalRecordCount: number;
@@ -1146,6 +1166,35 @@ export function useBarnStore() {
         b.createdAt.localeCompare(a.createdAt)
       );
 
+    const clientContacts = (snapshot.clientContacts ?? [])
+      .filter((c) => isSameSpecies(c.species, speciesProfile.name))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
+
+    const waitlistEntries = (snapshot.waitlistEntries ?? [])
+      .filter((w) => isSameSpecies(w.species, speciesProfile.name))
+      .sort(
+        (a, b) =>
+          (a.priorityRank || 9999) - (b.priorityRank || 9999) ||
+          (a.inquiryDateIso || '').localeCompare(b.inquiryDateIso || '') ||
+          a.createdAt.localeCompare(b.createdAt)
+      );
+
+    const animalReservations = (snapshot.animalReservations ?? [])
+      .filter((r) => isSameSpecies(r.species, speciesProfile.name))
+      .sort(
+        (a, b) =>
+          (b.reservedDateIso || '').localeCompare(a.reservedDateIso || '') ||
+          b.createdAt.localeCompare(a.createdAt)
+      );
+
+    const woolHarvests = (snapshot.woolHarvests ?? [])
+      .filter((w) => isSameSpecies(w.species, speciesProfile.name))
+      .sort(
+        (a, b) =>
+          (b.harvestDateIso || '').localeCompare(a.harvestDateIso || '') ||
+          b.createdAt.localeCompare(a.createdAt)
+      );
+
     const testingRecordCount = countSpeciesTestingRecords(snapshot, speciesProfile.name);
     const nonTestingRecordCount = countSpeciesNonTestingRecords(snapshot, speciesProfile.name);
     const totalRecordCount = countAllSpeciesRecords(snapshot, speciesProfile.name);
@@ -1169,6 +1218,10 @@ export function useBarnStore() {
       ledgerEntries,
       processingLogs,
       youthProjectBooks,
+      clientContacts,
+      waitlistEntries,
+      animalReservations,
+      woolHarvests,
       testingRecordCount,
       nonTestingRecordCount,
       totalRecordCount,
@@ -2001,6 +2054,33 @@ export function useBarnStore() {
                 ),
                 shows: currentSnapshot.shows.map((s) =>
                   isSameSpecies(s.species, oldName) ? { ...s, species: newName, updatedAt: ts } : s
+                ),
+                feedBatches: (currentSnapshot.feedBatches ?? []).map((fb) =>
+                  isSameSpecies(fb.species, oldName) ? { ...fb, species: newName, updatedAt: ts } : fb
+                ),
+                feedAllocations: (currentSnapshot.feedAllocations ?? []).map((fa) =>
+                  isSameSpecies(fa.species, oldName) ? { ...fa, species: newName, updatedAt: ts } : fa
+                ),
+                ledgerEntries: (currentSnapshot.ledgerEntries ?? []).map((le) =>
+                  isSameSpecies(le.species, oldName) ? { ...le, species: newName, updatedAt: ts } : le
+                ),
+                processingLogs: (currentSnapshot.processingLogs ?? []).map((pl) =>
+                  isSameSpecies(pl.species, oldName) ? { ...pl, species: newName, updatedAt: ts } : pl
+                ),
+                youthProjectBooks: (currentSnapshot.youthProjectBooks ?? []).map((yp) =>
+                  isSameSpecies(yp.species, oldName) ? { ...yp, species: newName, updatedAt: ts } : yp
+                ),
+                clientContacts: (currentSnapshot.clientContacts ?? []).map((c) =>
+                  isSameSpecies(c.species, oldName) ? { ...c, species: newName, updatedAt: ts } : c
+                ),
+                waitlistEntries: (currentSnapshot.waitlistEntries ?? []).map((w) =>
+                  isSameSpecies(w.species, oldName) ? { ...w, species: newName, updatedAt: ts } : w
+                ),
+                animalReservations: (currentSnapshot.animalReservations ?? []).map((r) =>
+                  isSameSpecies(r.species, oldName) ? { ...r, species: newName, updatedAt: ts } : r
+                ),
+                woolHarvests: (currentSnapshot.woolHarvests ?? []).map((w) =>
+                  isSameSpecies(w.species, oldName) ? { ...w, species: newName, updatedAt: ts } : w
                 ),
               };
               await adapterRef.current!.replaceSnapshot(renamedSnapshot);
@@ -5624,6 +5704,706 @@ export function useBarnStore() {
     ]
   );
 
+  const saveClientContact = useCallback(
+    async (
+      draft: Omit<ClientContact, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<string | null> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.clientContacts ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const cleanTags = Array.isArray(draft.tags)
+          ? Array.from(new Set(draft.tags.map((t) => t.trim()).filter(Boolean)))
+          : [];
+        const contact: ClientContact = {
+          ...draft,
+          id,
+          fullName: (draft.fullName || '').trim() || 'Buyer',
+          ranchOrHerdName: (draft.ranchOrHerdName || '').trim(),
+          email: (draft.email || '').trim(),
+          phone: (draft.phone || '').trim(),
+          preferredContact: normalizePreferredContactMethod(draft.preferredContact, 'sms'),
+          clientKind: normalizeClientKind(draft.clientKind, 'pet_buyer'),
+          cityState: (draft.cityState || '').trim(),
+          shippingAddress: (draft.shippingAddress || '').trim(),
+          tags: cleanTags,
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveClientContact(contact);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'clientContact',
+              previous: prev,
+              next: contact,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Saved client contact: ${contact.fullName}.`);
+          return id;
+        } catch (err) {
+          reportPersistenceFailure(`save client contact ${contact.fullName}`, err);
+          return null;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteClientContact = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.clientContacts ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteClientContact(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'clientContact',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Client contact deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete client contact', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const saveWaitlistEntry = useCallback(
+    async (
+      draft: Omit<WaitlistEntry, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<string | null> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.waitlistEntries ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const linkedClient = draft.clientId
+          ? (latestSnapshot?.clientContacts ?? []).find((c) => c.id === draft.clientId)
+          : undefined;
+        const maxBudgetNum =
+          draft.maxBudgetCents !== undefined && Number.isFinite(Number(draft.maxBudgetCents))
+            ? Math.max(0, Math.round(Number(draft.maxBudgetCents)))
+            : undefined;
+        const entry: WaitlistEntry = {
+          ...draft,
+          id,
+          clientName: linkedClient?.fullName || (draft.clientName || '').trim() || 'Buyer',
+          priorityRank: Math.max(1, Math.round(Number(draft.priorityRank) || 1)),
+          status: normalizeWaitlistStatus(draft.status, 'Active'),
+          intent: normalizeWaitlistIntent(draft.intent, 'Show / Breeding'),
+          desiredBreed: (draft.desiredBreed || '').trim(),
+          desiredVariety: (draft.desiredVariety || '').trim(),
+          preferredSex:
+            draft.preferredSex === 'Male' || draft.preferredSex === 'Female'
+              ? draft.preferredSex
+              : 'Any',
+          preferredBreedingId: draft.preferredBreedingId || undefined,
+          requestedByDateIso: (draft.requestedByDateIso || '').trim(),
+          inquiryDateIso: (draft.inquiryDateIso || '').trim() || todayDateIso(),
+          followUpDateIso: (draft.followUpDateIso || '').trim(),
+          lastContactedDateIso: (draft.lastContactedDateIso || '').trim(),
+          maxBudgetCents: maxBudgetNum && maxBudgetNum > 0 ? maxBudgetNum : undefined,
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveWaitlistEntry(entry);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'waitlistEntry',
+              previous: prev,
+              next: entry,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Saved waitlist entry #${entry.priorityRank} for ${entry.clientName}.`);
+          return id;
+        } catch (err) {
+          reportPersistenceFailure(`save waitlist entry for ${entry.clientName}`, err);
+          return null;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteWaitlistEntry = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.waitlistEntries ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteWaitlistEntry(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'waitlistEntry',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Waitlist entry deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete waitlist entry', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const saveAnimalReservation = useCallback(
+    async (
+      draft: Omit<AnimalReservation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<string | null> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.animalReservations ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const linkedClient = draft.clientId
+          ? (latestSnapshot?.clientContacts ?? []).find((c) => c.id === draft.clientId)
+          : undefined;
+        const speciesReservations = (latestSnapshot?.animalReservations ?? []).filter((r) =>
+          isSameSpecies(r.species, draft.species)
+        );
+        const agreementNumber =
+          (draft.agreementNumber || '').trim() ||
+          prev?.agreementNumber ||
+          buildSuggestedAgreementNumber(speciesReservations);
+        const status = normalizeReservationStatus(draft.status, 'Pending Deposit');
+        const totalPriceCents = Math.max(0, Math.round(Number(draft.totalPriceCents) || 0));
+        const depositRequiredCents = Math.max(
+          0,
+          Math.round(Number(draft.depositRequiredCents) || 0)
+        );
+        const depositPaidCents = Math.max(0, Math.round(Number(draft.depositPaidCents) || 0));
+        const fin = evaluateReservationFinancials({
+          status,
+          totalPriceCents,
+          depositRequiredCents,
+          depositPaidCents,
+        });
+        const reservation: AnimalReservation = {
+          ...draft,
+          id,
+          agreementNumber,
+          clientName: linkedClient?.fullName || (draft.clientName || '').trim() || 'Buyer',
+          waitlistEntryId: draft.waitlistEntryId || undefined,
+          animalId: draft.animalId || undefined,
+          breedingId: draft.breedingId || undefined,
+          pickOrder:
+            draft.pickOrder !== undefined && Number(draft.pickOrder) > 0
+              ? Math.round(Number(draft.pickOrder))
+              : undefined,
+          itemLabel: (draft.itemLabel || '').trim() || 'Reserved Animal / Pick',
+          status: draft.id ? status : fin.suggestedStatus,
+          reservedDateIso: (draft.reservedDateIso || '').trim() || todayDateIso(),
+          holdExpiresDateIso: (draft.holdExpiresDateIso || '').trim(),
+          totalPriceCents,
+          depositRequiredCents,
+          depositPaidCents,
+          depositDueDateIso: (draft.depositDueDateIso || '').trim(),
+          depositPaidDateIso: (draft.depositPaidDateIso || '').trim(),
+          pickupScheduledDateIso: (draft.pickupScheduledDateIso || '').trim(),
+          completedDateIso: (draft.completedDateIso || '').trim(),
+          balanceReminderDateIso: (draft.balanceReminderDateIso || '').trim(),
+          paymentMethod: (draft.paymentMethod || '').trim(),
+          ledgerEntryId: draft.ledgerEntryId || undefined,
+          termsSummary: (draft.termsSummary || '').trim(),
+          healthGuaranteeNotes: (draft.healthGuaranteeNotes || '').trim(),
+          notes: (draft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveAnimalReservation(reservation);
+          const outboxOps = diffEntityFieldsToOperations({
+            entityType: 'animalReservation',
+            previous: prev,
+            next: reservation,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
+          });
+          if (
+            reservation.waitlistEntryId &&
+            reservation.status !== 'Cancelled' &&
+            reservation.status !== 'Inquiry Hold'
+          ) {
+            const linkedWait = (latestSnapshot?.waitlistEntries ?? []).find(
+              (w) => w.id === reservation.waitlistEntryId
+            );
+            if (linkedWait && (linkedWait.status === 'Active' || linkedWait.status === 'Matched')) {
+              const nextWaitStatus =
+                reservation.status === 'Picked Up / Completed' ? 'Fulfilled' : 'Deposited';
+              const waitRev = nextEntityRev(linkedWait.id, linkedWait._rev);
+              const updatedWait: WaitlistEntry = {
+                ...linkedWait,
+                status: nextWaitStatus,
+                _rev: waitRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveWaitlistEntry(updatedWait);
+              outboxOps.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'waitlistEntry',
+                  previous: linkedWait,
+                  next: updatedWait,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: waitRev,
+                })
+              );
+            }
+          }
+          await recordOutboxOps(outboxOps);
+          await reloadFromAdapter();
+          notify(`Saved reservation ${reservation.agreementNumber} (${reservation.clientName}).`);
+          return id;
+        } catch (err) {
+          reportPersistenceFailure(`save reservation ${reservation.agreementNumber}`, err);
+          return null;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteAnimalReservation = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.animalReservations ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteAnimalReservation(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'animalReservation',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Reservation deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete reservation', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const saveWoolHarvest = useCallback(
+    async (
+      draft: Omit<WoolHarvest, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<string | null> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = draft.id
+          ? (latestSnapshot?.woolHarvests ?? []).find((x) => x.id === draft.id)
+          : undefined;
+        const id = draft.id || generateUuid();
+        const rev = nextEntityRev(id, prev?._rev);
+        const normalized = normalizeWoolHarvest(
+          {
+            ...draft,
+            id,
+            _rev: rev,
+            createdAt: prev?.createdAt || ts,
+            updatedAt: ts,
+          },
+          draft.species || activeSpeciesName || 'Rabbit'
+        );
+        if (!normalized) return null;
+        try {
+          await adapterRef.current!.saveWoolHarvest(normalized);
+          const outboxOps = diffEntityFieldsToOperations({
+            entityType: 'woolHarvest',
+            previous: prev,
+            next: normalized,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
+          });
+          await recordOutboxOps(outboxOps);
+          await reloadFromAdapter();
+          const totalG = normalized.primeWeightGrams + normalized.gradeWeightGrams;
+          notify(`Saved wool harvest (${totalG} g on ${normalized.harvestDateIso}).`);
+          return id;
+        } catch (err) {
+          reportPersistenceFailure('save wool harvest', err);
+          return null;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteWoolHarvest = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.woolHarvests ?? []).find((x) => x.id === id);
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteWoolHarvest(id);
+          await recordOutboxOps([
+            createOutboxOperation({
+              entityType: 'woolHarvest',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ]);
+          await reloadFromAdapter();
+          notify('Wool harvest record deleted.');
+        } catch (err) {
+          reportPersistenceFailure('delete wool harvest', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const completeReservationSale = useCallback(
+    async (params: {
+      reservationId: string;
+      completedDateIso?: string;
+      markAnimalSold?: boolean;
+      recordLedgerIncome?: boolean;
+    }): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        if (!latestSnapshot) return false;
+        const target = (latestSnapshot.animalReservations ?? []).find(
+          (r) => r.id === params.reservationId
+        );
+        if (!target) return false;
+
+        const ts = getAdjustedNowIsoUtc();
+        const completedDateIso = (params.completedDateIso || '').trim() || todayDateIso();
+        const finalPaidCents = Math.max(target.totalPriceCents, target.depositPaidCents);
+        let ledgerEntryId = target.ledgerEntryId;
+        const outboxOps: SyncOperation[] = [];
+
+        try {
+          if (params.recordLedgerIncome && finalPaidCents > 0 && !ledgerEntryId) {
+            const newLedgerId = generateUuid();
+            const ledgerRev = nextEntityRev(newLedgerId);
+            const ledgerEntry: LedgerEntry = {
+              id: newLedgerId,
+              species: target.species,
+              dateIso: completedDateIso,
+              entryType: 'income',
+              category: 'animal_sale',
+              amountCents: finalPaidCents,
+              title: `${target.agreementNumber || 'Sale'} — ${target.itemLabel}`,
+              vendorOrParty: target.clientName,
+              linkedAnimalId: target.animalId,
+              linkedBreedingId: target.breedingId,
+              notes: `Completed reservation ${target.agreementNumber || target.id}`,
+              _rev: ledgerRev,
+              createdAt: ts,
+              updatedAt: ts,
+            };
+            await adapterRef.current!.saveLedgerEntry(ledgerEntry);
+            outboxOps.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'ledgerEntry',
+                previous: undefined,
+                next: ledgerEntry,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: ledgerRev,
+              })
+            );
+            ledgerEntryId = newLedgerId;
+          }
+
+          if (params.markAnimalSold !== false && target.animalId) {
+            const animalPrev = latestSnapshot.animals.find((a) => a.id === target.animalId);
+            if (animalPrev) {
+              const animalRev = nextEntityRev(animalPrev.id, animalPrev._rev);
+              const updatedAnimal: Animal = {
+                ...animalPrev,
+                status: 'Sold',
+                soldDateIso: animalPrev.soldDateIso || completedDateIso,
+                salePriceCents: finalPaidCents > 0 ? finalPaidCents : animalPrev.salePriceCents,
+                buyerName: target.clientName || animalPrev.buyerName,
+                _rev: animalRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveAnimal(updatedAnimal);
+              outboxOps.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'animal',
+                  previous: animalPrev,
+                  next: updatedAnimal,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: animalRev,
+                })
+              );
+            }
+          }
+
+          if (target.waitlistEntryId) {
+            const waitPrev = (latestSnapshot.waitlistEntries ?? []).find(
+              (w) => w.id === target.waitlistEntryId
+            );
+            if (waitPrev && waitPrev.status !== 'Fulfilled') {
+              const waitRev = nextEntityRev(waitPrev.id, waitPrev._rev);
+              const updatedWait: WaitlistEntry = {
+                ...waitPrev,
+                status: 'Fulfilled',
+                _rev: waitRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveWaitlistEntry(updatedWait);
+              outboxOps.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'waitlistEntry',
+                  previous: waitPrev,
+                  next: updatedWait,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: waitRev,
+                })
+              );
+            }
+          }
+
+          const resRev = nextEntityRev(target.id, target._rev);
+          const updatedRes: AnimalReservation = {
+            ...target,
+            status: 'Picked Up / Completed',
+            depositPaidCents: finalPaidCents,
+            depositPaidDateIso: target.depositPaidDateIso || completedDateIso,
+            completedDateIso,
+            ledgerEntryId,
+            _rev: resRev,
+            updatedAt: ts,
+          };
+          await adapterRef.current!.saveAnimalReservation(updatedRes);
+          outboxOps.push(
+            ...diffEntityFieldsToOperations({
+              entityType: 'animalReservation',
+              previous: target,
+              next: updatedRes,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: resRev,
+            })
+          );
+
+          await recordOutboxOps(outboxOps);
+          await reloadFromAdapter();
+          notify(`Completed sale for ${target.agreementNumber} (${target.clientName}).`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`complete sale ${target.agreementNumber}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const createCrmReminderTask = useCallback(
+    async (speciesName: string, reminder: CrmFollowUpReminder): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const ts = getAdjustedNowIsoUtc();
+        const taskId = generateUuid();
+        const taskRev = nextEntityRev(taskId);
+        const linkedAnimal = reminder.linkedAnimalId
+          ? currentSnapshot?.animals.find((a) => a.id === reminder.linkedAnimalId)
+          : undefined;
+        const task: BarnTask = {
+          id: taskId,
+          species: speciesName,
+          title: reminder.suggestedTaskTitle,
+          category: reminder.suggestedTaskCategory,
+          priority: reminder.suggestedTaskPriority,
+          dueDateIso: reminder.targetDateIso || todayDateIso(),
+          completed: false,
+          linkedBreedingId: reminder.linkedBreedingId || '',
+          linkedAnimalId: reminder.linkedAnimalId || '',
+          linkedAnimalName: linkedAnimal?.name || reminder.clientName || '',
+          _rev: taskRev,
+          createdAt: ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveTask(task);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'task',
+              previous: undefined,
+              next: task,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: taskRev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(`Added Master Task: ${task.title}`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`create CRM task ${task.title}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
   const seedSpeciesSampleData = useCallback(
     async (speciesName: string) => {
       return enqueueStoreMutation(async () => {
@@ -5668,6 +6448,10 @@ export function useBarnStore() {
               ledgerEntries: [],
               processingLogs: [],
               youthProjectBooks: [],
+              clientContacts: [],
+              waitlistEntries: [],
+              animalReservations: [],
+              woolHarvests: [],
             }
           );
           await adapterRef.current!.replaceSnapshot(report.snapshot);
@@ -5861,6 +6645,10 @@ export function useBarnStore() {
           ledgerEntries: [],
           processingLogs: [],
           youthProjectBooks: [],
+          clientContacts: [],
+          waitlistEntries: [],
+          animalReservations: [],
+          woolHarvests: [],
         };
         await adapterRef.current!.replaceSnapshot(empty);
         photoCacheRef.current.clear();
@@ -6815,6 +7603,10 @@ export function useBarnStore() {
             ledgerEntries: [],
             processingLogs: [],
             youthProjectBooks: [],
+            clientContacts: [],
+            waitlistEntries: [],
+            animalReservations: [],
+            woolHarvests: [],
           };
           const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
           const importedIds = new Set(resolvedAnimals.map((a) => a.id));
@@ -7393,6 +8185,16 @@ export function useBarnStore() {
     deleteProcessingLog,
     saveYouthProjectBook,
     deleteYouthProjectBook,
+    saveClientContact,
+    deleteClientContact,
+    saveWaitlistEntry,
+    deleteWaitlistEntry,
+    saveAnimalReservation,
+    deleteAnimalReservation,
+    completeReservationSale,
+    createCrmReminderTask,
+    saveWoolHarvest,
+    deleteWoolHarvest,
     seedSpeciesSampleData,
     seedAllPredefinedSpecies,
     deleteSpeciesTestingData,

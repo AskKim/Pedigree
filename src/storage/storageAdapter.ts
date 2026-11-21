@@ -13,18 +13,22 @@
 import {
   Animal,
   AnimalPhoto,
+  AnimalReservation,
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
   BreedingRecord,
   CageLocation,
   CareLog,
+  ClientContact,
   FeedAllocation,
   FeedBatch,
   LedgerEntry,
   ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  WaitlistEntry,
+  WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
 import type { WipedStorageRecoveryContext } from './opfsStorage';
@@ -131,6 +135,26 @@ export interface StorageAdapter {
   saveYouthProjectBook(project: YouthProjectBook): Promise<void>;
   saveYouthProjectBooksBatch(projects: YouthProjectBook[]): Promise<void>;
   deleteYouthProjectBook(id: string): Promise<void>;
+
+  /** Upserts or deletes ClientContact CRM records (single or batch). */
+  saveClientContact(client: ClientContact): Promise<void>;
+  saveClientContactsBatch(clients: ClientContact[]): Promise<void>;
+  deleteClientContact(id: string): Promise<void>;
+
+  /** Upserts or deletes buyer WaitlistEntry records (single or batch). */
+  saveWaitlistEntry(entry: WaitlistEntry): Promise<void>;
+  saveWaitlistEntriesBatch(entries: WaitlistEntry[]): Promise<void>;
+  deleteWaitlistEntry(id: string): Promise<void>;
+
+  /** Upserts or deletes AnimalReservation records (single or batch). */
+  saveAnimalReservation(reservation: AnimalReservation): Promise<void>;
+  saveAnimalReservationsBatch(reservations: AnimalReservation[]): Promise<void>;
+  deleteAnimalReservation(id: string): Promise<void>;
+
+  /** Upserts or deletes WoolHarvest fiber & IAGARB records (single or batch). */
+  saveWoolHarvest(harvest: WoolHarvest): Promise<void>;
+  saveWoolHarvestsBatch(harvests: WoolHarvest[]): Promise<void>;
+  deleteWoolHarvest(id: string): Promise<void>;
 
   /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
   exportRawSqliteBytes(): Promise<Uint8Array | null>;

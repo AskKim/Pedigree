@@ -38,6 +38,12 @@ import { resolvePedigreePrintTheme } from './pedigreePrintStyles';
 import { buildAnimalProfileDeepLink, renderQrSvg } from './qrCode';
 import { computeAnimalShowSummary } from './showResults';
 import type { PedigreePrintOptions } from './syncAndExports';
+import {
+  AnimalWoolSummary,
+  buildWoolHarvestSummaryByAnimalId,
+  formatWoolWeightSummary,
+  summarizeAnimalWoolHarvests,
+} from './woolFiber';
 
 export interface ShareablePedigreeCardOptions extends PedigreePrintOptions {
   /** Optional PWA base URL used to embed a scannable QR profile link when desired. */
@@ -117,6 +123,15 @@ export function generateShareablePedigreeCardHtml(
       })
     : '';
 
+  const woolHarvestList = options?.woolHarvests ?? [];
+  const woolByAnimalId =
+    woolHarvestList.length > 0
+      ? buildWoolHarvestSummaryByAnimalId(woolHarvestList)
+      : new Map<string, AnimalWoolSummary>();
+  const subjectWool =
+    woolHarvestList.length > 0 ? summarizeAnimalWoolHarvests(woolHarvestList, subject.id) : null;
+  const subjectWoolLine = subjectWool ? formatWoolWeightSummary(subjectWool) : '';
+
   const renderNodeHtml = (gen: number, idx: number, compact = false): string => {
     const slot = slotMap.get(`${gen}:${idx}`);
     const a = slot?.animal;
@@ -140,11 +155,17 @@ export function generateShareablePedigreeCardHtml(
         ? computeAnimalShowSummary(a, options?.shows ?? [], options?.careLogs ?? [])
         : null;
     const ancLegs = ancShow ? ancShow.effectiveLegs : a.legsCount;
+    const ancWool = woolByAnimalId.get(a.id);
+    const ancWoolCompact =
+      ancWool && (ancWool.harvestCount > 0 || ancWool.highestIagarbScore)
+        ? formatWoolWeightSummary(ancWool, { compact: true })
+        : '';
     const honors = [
       a.registrationNumber ? `Reg ${escapeSafeHtml(a.registrationNumber)}` : '',
       a.grandChampionNumber ? `GC ${escapeSafeHtml(a.grandChampionNumber)}` : '',
       ancLegs > 0 ? `${ancLegs} Leg${ancLegs === 1 ? '' : 's'}` : '',
       ancShow?.awardsSummaryText ? escapeSafeHtml(ancShow.awardsSummaryText) : '',
+      !compact && ancWoolCompact ? escapeSafeHtml(ancWoolCompact) : '',
     ].filter(Boolean);
 
     return `<div class="node ${isSire ? 'sire' : 'dam'}">
@@ -307,6 +328,7 @@ export function generateShareablePedigreeCardHtml(
         <div class="facts">
           ${subject.birthDateIso ? `<span><strong>DOB:</strong> ${escapeSafeHtml(formatReadableDate(subject.birthDateIso))}</span>` : ''}
           ${showWeights ? `<span>${subject.birthDateIso ? ' &middot; ' : ''}<strong>Weight:</strong> ${escapeSafeHtml(formatPedigreeWeight(subject.weightGrams, effectiveWeightUnit, arbaLbsOzDotNotation))}</span>` : ''}
+          ${subjectWoolLine ? `<div><strong>Wool / Fiber:</strong> ${escapeSafeHtml(subjectWoolLine)}</div>` : ''}
           ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeSafeHtml(subjectGeno)}</code></div>` : ''}
         </div>
       </div>

@@ -18,12 +18,14 @@
 import {
   Animal,
   AnimalPhoto,
+  AnimalReservation,
   BarnDatabaseSnapshot,
   BarnSettings,
   BarnTask,
   BreedingRecord,
   CageLocation,
   CareLog,
+  ClientContact,
   FeedAllocation,
   FeedBatch,
   generateUuid,
@@ -33,6 +35,8 @@ import {
   ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  WaitlistEntry,
+  WoolHarvest,
   YouthProjectBook,
 } from './models';
 import { normalizeShowResults, mergeEnteredAnimalIdsWithResults } from './showResults';
@@ -58,7 +62,11 @@ export type SyncEntityType =
   | 'feedAllocation'
   | 'ledgerEntry'
   | 'processingLog'
-  | 'youthProjectBook';
+  | 'youthProjectBook'
+  | 'clientContact'
+  | 'waitlistEntry'
+  | 'animalReservation'
+  | 'woolHarvest';
 
 export interface SyncOperation {
   op_id: string;
@@ -336,6 +344,10 @@ export function diffSnapshotsToSyncOperations(params: {
   diffCollection('ledgerEntry', params.previous.ledgerEntries ?? [], params.next.ledgerEntries ?? []);
   diffCollection('processingLog', params.previous.processingLogs ?? [], params.next.processingLogs ?? []);
   diffCollection('youthProjectBook', params.previous.youthProjectBooks ?? [], params.next.youthProjectBooks ?? []);
+  diffCollection('clientContact', params.previous.clientContacts ?? [], params.next.clientContacts ?? []);
+  diffCollection('waitlistEntry', params.previous.waitlistEntries ?? [], params.next.waitlistEntries ?? []);
+  diffCollection('animalReservation', params.previous.animalReservations ?? [], params.next.animalReservations ?? []);
+  diffCollection('woolHarvest', params.previous.woolHarvests ?? [], params.next.woolHarvests ?? []);
 
   if (params.includeSettings) {
     ops.push(
@@ -407,6 +419,22 @@ function labelForEntity(
     const yp = (snapshot.youthProjectBooks ?? []).find((x) => x.id === uuid);
     return yp ? yp.projectTitle : uuid;
   }
+  if (type === 'clientContact') {
+    const cc = (snapshot.clientContacts ?? []).find((x) => x.id === uuid);
+    return cc ? cc.fullName : uuid;
+  }
+  if (type === 'waitlistEntry') {
+    const wl = (snapshot.waitlistEntries ?? []).find((x) => x.id === uuid);
+    return wl ? `${wl.clientName || 'Waitlist'} (#${wl.priorityRank})` : uuid;
+  }
+  if (type === 'animalReservation') {
+    const ar = (snapshot.animalReservations ?? []).find((x) => x.id === uuid);
+    return ar ? `${ar.agreementNumber || ar.clientName || uuid}` : uuid;
+  }
+  if (type === 'woolHarvest') {
+    const wh = (snapshot.woolHarvests ?? []).find((x) => x.id === uuid);
+    return wh ? `Wool Harvest (${wh.harvestDateIso})` : uuid;
+  }
   if (type === 'settings') return 'Barn Settings';
   return uuid;
 }
@@ -470,6 +498,10 @@ export function mergeDeltaOperations(
   const ledgerEntries = getCollectionMap<LedgerEntry>(localSnapshot.ledgerEntries ?? []);
   const processingLogs = getCollectionMap<ProcessingLog>(localSnapshot.processingLogs ?? []);
   const youthProjectBooks = getCollectionMap<YouthProjectBook>(localSnapshot.youthProjectBooks ?? []);
+  const clientContacts = getCollectionMap<ClientContact>(localSnapshot.clientContacts ?? []);
+  const waitlistEntries = getCollectionMap<WaitlistEntry>(localSnapshot.waitlistEntries ?? []);
+  const animalReservations = getCollectionMap<AnimalReservation>(localSnapshot.animalReservations ?? []);
+  const woolHarvests = getCollectionMap<WoolHarvest>(localSnapshot.woolHarvests ?? []);
   const speciesProfiles = getCollectionMap<SpeciesProfile>(localSnapshot.speciesProfiles);
   let settings: BarnSettings = { ...localSnapshot.settings };
 
@@ -641,6 +673,18 @@ export function mergeDeltaOperations(
       case 'youthProjectBook':
         applyToMap(youthProjectBooks);
         break;
+      case 'clientContact':
+        applyToMap(clientContacts);
+        break;
+      case 'waitlistEntry':
+        applyToMap(waitlistEntries);
+        break;
+      case 'animalReservation':
+        applyToMap(animalReservations);
+        break;
+      case 'woolHarvest':
+        applyToMap(woolHarvests);
+        break;
       case 'species':
         applyToMap(speciesProfiles);
         break;
@@ -685,6 +729,10 @@ export function mergeDeltaOperations(
       ledgerEntries: Array.from(ledgerEntries.values()),
       processingLogs: Array.from(processingLogs.values()),
       youthProjectBooks: Array.from(youthProjectBooks.values()),
+      clientContacts: Array.from(clientContacts.values()),
+      waitlistEntries: Array.from(waitlistEntries.values()),
+      animalReservations: Array.from(animalReservations.values()),
+      woolHarvests: Array.from(woolHarvests.values()),
     },
     mergedOperations: allOpsSorted,
     newConflicts,

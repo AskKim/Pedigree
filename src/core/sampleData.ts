@@ -430,6 +430,18 @@ export function countSpeciesTestingRecords(
   const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter(
     (yp) => isSameSpecies(yp.species, speciesName) && isSampleTestingId(yp.id)
   ).length;
+  const clientContacts = (snapshot.clientContacts ?? []).filter(
+    (cc) => isSameSpecies(cc.species, speciesName) && isSampleTestingId(cc.id)
+  ).length;
+  const waitlistEntries = (snapshot.waitlistEntries ?? []).filter(
+    (wl) => isSameSpecies(wl.species, speciesName) && isSampleTestingId(wl.id)
+  ).length;
+  const animalReservations = (snapshot.animalReservations ?? []).filter(
+    (ar) => isSameSpecies(ar.species, speciesName) && isSampleTestingId(ar.id)
+  ).length;
+  const woolHarvests = (snapshot.woolHarvests ?? []).filter(
+    (wh) => isSameSpecies(wh.species, speciesName) && isSampleTestingId(wh.id)
+  ).length;
 
   return (
     seedAnimalIds.size +
@@ -443,7 +455,11 @@ export function countSpeciesTestingRecords(
     feedAllocations +
     ledgerEntries +
     processingLogs +
-    youthProjectBooks
+    youthProjectBooks +
+    clientContacts +
+    waitlistEntries +
+    animalReservations +
+    woolHarvests
   );
 }
 
@@ -478,6 +494,18 @@ export function countAllSpeciesRecords(
   const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) =>
     isSameSpecies(yp.species, speciesName)
   ).length;
+  const clientContacts = (snapshot.clientContacts ?? []).filter((cc) =>
+    isSameSpecies(cc.species, speciesName)
+  ).length;
+  const waitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) =>
+    isSameSpecies(wl.species, speciesName)
+  ).length;
+  const animalReservations = (snapshot.animalReservations ?? []).filter((ar) =>
+    isSameSpecies(ar.species, speciesName)
+  ).length;
+  const woolHarvests = (snapshot.woolHarvests ?? []).filter((wh) =>
+    isSameSpecies(wh.species, speciesName)
+  ).length;
 
   return (
     animals +
@@ -491,7 +519,11 @@ export function countAllSpeciesRecords(
     feedAllocations +
     ledgerEntries +
     processingLogs +
-    youthProjectBooks
+    youthProjectBooks +
+    clientContacts +
+    waitlistEntries +
+    animalReservations +
+    woolHarvests
   );
 }
 
@@ -649,6 +681,32 @@ export function purgeSpeciesTestingDataPure(
     return !remove;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    const remove = isSameSpecies(cc.species, speciesName) && isSampleTestingId(cc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    const remove = isSameSpecies(wl.species, speciesName) && isSampleTestingId(wl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    const remove = isSameSpecies(ar.species, speciesName) && isSampleTestingId(ar.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    const remove =
+      (isSameSpecies(wh.species, speciesName) && isSampleTestingId(wh.id)) ||
+      removedAnimalIds.has(wh.animalId);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -664,6 +722,10 @@ export function purgeSpeciesTestingDataPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -810,6 +872,32 @@ export function purgeSpeciesNonTestingDataPure(
     return !remove;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    const remove = isSameSpecies(cc.species, speciesName) && !isSampleTestingId(cc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    const remove = isSameSpecies(wl.species, speciesName) && !isSampleTestingId(wl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    const remove = isSameSpecies(ar.species, speciesName) && !isSampleTestingId(ar.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    const remove =
+      (isSameSpecies(wh.species, speciesName) && !isSampleTestingId(wh.id)) ||
+      removedAnimalIds.has(wh.animalId);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -825,6 +913,10 @@ export function purgeSpeciesNonTestingDataPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -945,6 +1037,38 @@ export function purgeAllSpeciesRecordsPure(
     return true;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    if (isSameSpecies(cc.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    if (isSameSpecies(wl.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    if (isSameSpecies(ar.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    if (isSameSpecies(wh.species, speciesName) || removedAnimalIds.has(wh.animalId)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -960,6 +1084,10 @@ export function purgeAllSpeciesRecordsPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -1623,5 +1751,9 @@ export function buildFullPredefinedSampleSnapshot(
     ledgerEntries: [],
     processingLogs: [],
     youthProjectBooks: [],
+    clientContacts: [],
+    waitlistEntries: [],
+    animalReservations: [],
+    woolHarvests: [],
   };
 }

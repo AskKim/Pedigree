@@ -12,9 +12,12 @@
 
 import {
   AlertCircle,
+  Check,
+  Copy,
   Download,
   FileDown,
   Loader2,
+  Mail,
   Printer,
   Share2,
   ShieldAlert,
@@ -169,6 +172,9 @@ interface PrintPreviewModalProps {
   batchAnimalCount?: number;
   batchPageCount?: number;
   batchPhotoHydrating?: boolean;
+  extraToolbarContent?: ReactNode;
+  mailtoUrl?: string;
+  plainTextSummary?: string;
   onClose: () => void;
 }
 
@@ -196,6 +202,9 @@ export function PrintPreviewModal({
   batchAnimalCount = 0,
   batchPageCount = 0,
   batchPhotoHydrating = false,
+  extraToolbarContent,
+  mailtoUrl,
+  plainTextSummary,
   onClose,
 }: PrintPreviewModalProps) {
   const shareReasonId = useId();
@@ -209,6 +218,7 @@ export function PrintPreviewModal({
   const [fileActionBusy, setFileActionBusy] = useState<PrintPreviewFileActionKind | null>(null);
   const [fileActionError, setFileActionError] = useState<PrintPreviewFileError | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
+  const [copiedSummary, setCopiedSummary] = useState(false);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [docSize, setDocSize] = useState<{ width: number; height: number }>({
     width: 980,
@@ -1003,6 +1013,43 @@ export function PrintPreviewModal({
                 {fileActionBusy === 'pdf' ? 'Building PDF...' : 'Download .PDF'}
               </button>
             )}
+            {plainTextSummary && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                      await navigator.clipboard.writeText(plainTextSummary);
+                      setCopiedSummary(true);
+                      window.setTimeout(() => {
+                        if (isMountedRef.current) setCopiedSummary(false);
+                      }, 1800);
+                    }
+                  } catch {
+                    // Clipboard permission denied
+                  }
+                }}
+                title="Copy plain-text summary for email or messaging"
+                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                {copiedSummary ? (
+                  <Check className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                ) : (
+                  <Copy className="w-4 h-4" aria-hidden="true" />
+                )}
+                {copiedSummary ? 'Copied Summary' : 'Copy Text'}
+              </button>
+            )}
+            {mailtoUrl && (
+              <a
+                href={mailtoUrl}
+                title="Compose email with pre-filled show entry summary"
+                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Mail className="w-4 h-4" aria-hidden="true" />
+                Email Entry
+              </a>
+            )}
             <button
               type="button"
               onClick={handlePrint}
@@ -1770,6 +1817,12 @@ export function PrintPreviewModal({
             </div>
           );
         })()}
+
+        {extraToolbarContent && (
+          <div className="px-3 sm:px-5 py-2.5 border-b border-[var(--barn-border)] bg-[var(--barn-canvas)]/75 text-xs">
+            {extraToolbarContent}
+          </div>
+        )}
 
         {(headerNotice ||
           pedigreePrintOptions?.showGenotypes ||

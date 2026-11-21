@@ -88,6 +88,7 @@ interface PedigreeScreenProps {
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
+  onLoadFullPhotosBatch?: (photoIds: string[]) => Promise<Record<string, string>>;
   onLoadPedigreeNeighborhood?: (rootIds: string[], maxDepth: number) => Promise<Animal[]>;
   onCheckPedigreeBranchesHaveAncestors?: (
     animalIds: string[]
@@ -117,6 +118,7 @@ export function PedigreeScreen({
   onIgnoreConflicts,
   onRestoreConflictAlert,
   onLoadFullPhoto,
+  onLoadFullPhotosBatch,
   onLoadPedigreeNeighborhood,
   onCheckPedigreeBranchesHaveAncestors,
   onUpdateBreederLogo,
@@ -131,6 +133,7 @@ export function PedigreeScreen({
     cages,
     shows,
     careLogs,
+    woolHarvests = [],
   } = activeData;
 
   const [zoom, setZoom] = useState<number>(1);
@@ -153,6 +156,9 @@ export function PedigreeScreen({
     photoId: string;
     dataUrl: string;
   } | null>(null);
+  const [familyPortraitPhotosByAnimalId, setFamilyPortraitPhotosByAnimalId] = useState<
+    Record<string, string>
+  >({});
   const [pedigreePrintOptions, setPedigreePrintOptions] = useState<PedigreePrintOptions>({
     orientation: 'landscape',
     showWeights: true,
@@ -230,6 +236,74 @@ export function PedigreeScreen({
     subjectPrimaryPhoto,
     onLoadFullPhoto,
     hydratedSubjectPhoto,
+  ]);
+
+  useEffect(() => {
+    if (
+      !showPrintModal ||
+      !subject ||
+      pedigreePrintOptions.layoutPreset !== 'family_portrait'
+    ) {
+      setFamilyPortraitPhotosByAnimalId((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    const animalById = new Map<string, Animal>();
+    for (const a of lazyAncestorsById.values()) animalById.set(a.id, a);
+    for (const a of allAnimals) animalById.set(a.id, a);
+
+    const sire = subject.sireId ? animalById.get(subject.sireId) : undefined;
+    const dam = subject.damId ? animalById.get(subject.damId) : undefined;
+    const familyIds = [
+      subject.id,
+      sire?.id,
+      dam?.id,
+      sire?.sireId,
+      sire?.damId,
+      dam?.sireId,
+      dam?.damId,
+    ].filter((id): id is string => Boolean(id));
+
+    const nextImmediate: Record<string, string> = {};
+    const photoIdsToHydrate: Array<{ animalId: string; photoId: string }> = [];
+    for (const animalId of familyIds) {
+      const rec = primaryPhotoByAnimalId.get(animalId);
+      if (!rec) continue;
+      if (rec.dataUrl) {
+        nextImmediate[animalId] = rec.dataUrl;
+      } else {
+        if (rec.thumbnailDataUrl) nextImmediate[animalId] = rec.thumbnailDataUrl;
+        if (onLoadFullPhotosBatch) {
+          photoIdsToHydrate.push({ animalId, photoId: rec.id });
+        }
+      }
+    }
+    setFamilyPortraitPhotosByAnimalId(nextImmediate);
+
+    if (photoIdsToHydrate.length === 0 || !onLoadFullPhotosBatch) return;
+    let cancelled = false;
+    void onLoadFullPhotosBatch(photoIdsToHydrate.map((x) => x.photoId)).then((loadedMap) => {
+      if (cancelled) return;
+      setFamilyPortraitPhotosByAnimalId((prev) => {
+        const merged = { ...prev };
+        for (const item of photoIdsToHydrate) {
+          if (loadedMap[item.photoId]) {
+            merged[item.animalId] = loadedMap[item.photoId];
+          }
+        }
+        return merged;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showPrintModal,
+    subject,
+    pedigreePrintOptions.layoutPreset,
+    lazyAncestorsById,
+    allAnimals,
+    primaryPhotoByAnimalId,
+    onLoadFullPhotosBatch,
   ]);
 
   const [historyIds, setHistoryIds] = useState<string[]>(() =>
@@ -2124,6 +2198,11 @@ export function PedigreeScreen({
           ...pedigreePrintOptions,
           shows,
           careLogs,
+          woolHarvests,
+          ancestorPhotosByAnimalId:
+            pedigreePrintOptions.layoutPreset === 'family_portrait'
+              ? familyPortraitPhotosByAnimalId
+              : undefined,
         };
         return (
           <PrintPreviewModal
@@ -2189,6 +2268,7 @@ export function PedigreeScreen({
             onClose={() => {
               setShowPrintModal(false);
               setHydratedSubjectPhoto(null);
+              setFamilyPortraitPhotosByAnimalId({});
             }}
           />
         );
