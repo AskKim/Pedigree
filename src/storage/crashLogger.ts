@@ -31,7 +31,16 @@ import type {
 import {
   BackgroundPausedError,
   notifyBackgroundTransition,
+  notifyPageHide,
 } from './backgroundFreezeCoordinator';
+import {
+  getSafeIndexedDb,
+  getSafeLocalStorage,
+  getSafeSessionStorage,
+  getSafeStorageManager,
+  trackActiveIdbConnection,
+  trackActiveIdbTransaction,
+} from './storageProbes';
 
 export type {
   DiagnosticCategory,
@@ -256,9 +265,10 @@ export function setCurrentDiagnosticRoute(route: string): void {
 }
 
 export function getDiagnosticConfig(): DiagnosticConfig {
-  if (typeof localStorage === 'undefined') return { ...DEFAULT_CONFIG };
+  const ls = getSafeLocalStorage();
+  if (!ls) return { ...DEFAULT_CONFIG };
   try {
-    const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
+    const raw = ls.getItem(CONFIG_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_CONFIG };
     const parsed = JSON.parse(raw) as Partial<DiagnosticConfig>;
     const days = parsed.retentionDays === 3 || parsed.retentionDays === 7 || parsed.retentionDays === 14
@@ -283,9 +293,10 @@ export function updateDiagnosticConfig(patch: Partial<DiagnosticConfig>): Diagno
   if (next.retentionDays !== 3 && next.retentionDays !== 7 && next.retentionDays !== 14) {
     next.retentionDays = 7;
   }
-  if (typeof localStorage !== 'undefined') {
+  const ls = getSafeLocalStorage();
+  if (ls) {
     try {
-      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
+      ls.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
     } catch {
       // Ignore quota issue while saving config
     }
@@ -356,9 +367,10 @@ export function captureMemorySample(): MemorySample {
 
 export async function captureMemoryAndStorageSample(): Promise<MemorySample> {
   const base = captureMemorySample();
-  if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+  const storage = getSafeStorageManager();
+  if (storage && typeof storage.estimate === 'function') {
     try {
-      const est = await navigator.storage.estimate();
+      const est = await storage.estimate();
       base.storageUsageBytes = Number(est.usage) || 0;
       base.storageQuotaBytes = Number(est.quota) || 0;
     } catch {
@@ -435,9 +447,10 @@ export function normalizeStoredDiagnosticEntry(
 }
 
 function readRingBuffer(): DiagnosticLogEntry[] {
-  if (typeof localStorage === 'undefined') return [];
+  const ls = getSafeLocalStorage();
+  if (!ls) return [];
   try {
-    const raw = localStorage.getItem(RING_STORAGE_KEY);
+    const raw = ls.getItem(RING_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -456,8 +469,7 @@ function readRingBuffer(): DiagnosticLogEntry[] {
 }
 
 export function readEmergencySessionTrace(
-  sessionStore: Pick<Storage, 'getItem'> | null | undefined =
-    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+  sessionStore: Pick<Storage, 'getItem'> | null | undefined = getSafeSessionStorage()
 ): DiagnosticLogEntry[] {
   if (!sessionStore) return [];
   try {
@@ -474,8 +486,7 @@ export function readEmergencySessionTrace(
 }
 
 export function clearEmergencySessionTrace(
-  sessionStore: Pick<Storage, 'removeItem'> | null | undefined =
-    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+  sessionStore: Pick<Storage, 'removeItem'> | null | undefined = getSafeSessionStorage()
 ): void {
   if (!sessionStore) return;
   try {
@@ -487,8 +498,7 @@ export function clearEmergencySessionTrace(
 
 export function writeEmergencySessionTraceSync(
   entry: DiagnosticLogEntry,
-  sessionStore: Pick<Storage, 'getItem' | 'setItem'> | null | undefined =
-    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+  sessionStore: Pick<Storage, 'getItem' | 'setItem'> | null | undefined = getSafeSessionStorage()
 ): boolean {
   if (!sessionStore) return false;
   const compactEntry: DiagnosticLogEntry = {
@@ -519,7 +529,8 @@ export function writeEmergencySessionTraceSync(
 
 function writeRingBufferSync(entry: DiagnosticLogEntry): void {
   let localWriteOk = false;
-  if (typeof localStorage !== 'undefined') {
+  const ls = getSafeLocalStorage();
+  if (ls) {
     try {
       const existing = readRingBuffer();
       const cutoff = getCutoffTimestampMs(getDiagnosticConfig().retentionDays);
@@ -527,12 +538,12 @@ function writeRingBufferSync(entry: DiagnosticLogEntry): void {
         ...existing.filter((e) => e.id !== entry.id && e.timestampMs >= cutoff),
         entry,
       ].slice(-MAX_RING_ENTRIES);
-      localStorage.setItem(RING_STORAGE_KEY, JSON.stringify(filtered));
+      ls.setItem(RING_STORAGE_KEY, JSON.stringify(filtered));
       localWriteOk = true;
     } catch {
       // If localStorage is completely full, trim aggressively and retry once
       try {
-        localStorage.setItem(RING_STORAGE_KEY, JSON.stringify([entry]));
+        ls.setItem(RING_STORAGE_KEY, JSON.stringify([entry]));
         localWriteOk = true;
       } catch {
         localWriteOk = false;
@@ -546,7 +557,8 @@ function writeRingBufferSync(entry: DiagnosticLogEntry): void {
 
 function openLogsIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
+    const idb = getSafeIndexedDb();
+    if (!idb) {
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -558,7 +570,7 @@ function openLogsIdb(): Promise<IDBDatabase> {
     }, 6000);
 
     try {
-      const req = indexedDB.open(LOG_IDB_NAME, 1);
+      const req = idb.open(LOG_IDB_NAME, 1);
       req.onupgradeneeded = () => {
         try {
           const db = req.result;
@@ -626,21 +638,34 @@ function openLogsIdb(): Promise<IDBDatabase> {
 }
 
 async function persistEntryToIdb(entry: DiagnosticLogEntry): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
+  if (!getSafeIndexedDb()) return;
   let db: IDBDatabase | null = null;
+  let untrackDb: (() => void) | null = null;
   try {
     db = await openLogsIdb();
+    untrackDb = trackActiveIdbConnection(db);
     await new Promise<void>((resolve) => {
       const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
+      const untrackTx = trackActiveIdbTransaction(tx);
       const store = tx.objectStore(LOG_STORE_NAME);
       store.put(entry);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
+      tx.oncomplete = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onerror = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onabort = () => {
+        untrackTx();
+        resolve();
+      };
     });
   } catch {
     // Ring buffer already persisted critical entries synchronously
   } finally {
+    untrackDb?.();
     db?.close();
   }
 }
@@ -649,21 +674,25 @@ export async function pruneExpiredDiagnosticLogs(): Promise<void> {
   const cfg = getDiagnosticConfig();
   const cutoff = getCutoffTimestampMs(cfg.retentionDays);
 
-  if (typeof localStorage !== 'undefined') {
+  const ls = getSafeLocalStorage();
+  if (ls) {
     try {
       const ring = readRingBuffer().filter((e) => e.timestampMs >= cutoff);
-      localStorage.setItem(RING_STORAGE_KEY, JSON.stringify(ring));
+      ls.setItem(RING_STORAGE_KEY, JSON.stringify(ring));
     } catch {
       // Ignore
     }
   }
 
-  if (typeof indexedDB === 'undefined') return;
+  if (!getSafeIndexedDb()) return;
   let db: IDBDatabase | null = null;
+  let untrackDb: (() => void) | null = null;
   try {
     db = await openLogsIdb();
+    untrackDb = trackActiveIdbConnection(db);
     await new Promise<void>((resolve) => {
       const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
+      const untrackTx = trackActiveIdbTransaction(tx);
       const store = tx.objectStore(LOG_STORE_NAME);
       const req = store.getAll();
       req.onsuccess = () => {
@@ -675,13 +704,23 @@ export async function pruneExpiredDiagnosticLogs(): Promise<void> {
           }
         });
       };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
+      tx.oncomplete = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onerror = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onabort = () => {
+        untrackTx();
+        resolve();
+      };
     });
   } catch {
     // Ignore
   } finally {
+    untrackDb?.();
     db?.close();
   }
 }
@@ -695,16 +734,28 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
     if (e.timestampMs >= cutoff) byId.set(e.id, e);
   }
 
-  if (typeof indexedDB !== 'undefined') {
+  if (getSafeIndexedDb()) {
     let db: IDBDatabase | null = null;
+    let untrackDb: (() => void) | null = null;
     try {
       db = await openLogsIdb();
+      untrackDb = trackActiveIdbConnection(db);
       const idbItems = await new Promise<DiagnosticLogEntry[]>((resolve) => {
         const tx = db!.transaction(LOG_STORE_NAME, 'readonly');
+        const untrackTx = trackActiveIdbTransaction(tx);
         const req = tx.objectStore(LOG_STORE_NAME).getAll();
-        req.onsuccess = () => resolve((req.result as DiagnosticLogEntry[]) || []);
-        req.onerror = () => resolve([]);
-        tx.onabort = () => resolve([]);
+        req.onsuccess = () => {
+          untrackTx();
+          resolve((req.result as DiagnosticLogEntry[]) || []);
+        };
+        req.onerror = () => {
+          untrackTx();
+          resolve([]);
+        };
+        tx.onabort = () => {
+          untrackTx();
+          resolve([]);
+        };
       });
       for (const e of idbItems) {
         const clean = normalizeStoredDiagnosticEntry(e);
@@ -715,6 +766,7 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
     } catch {
       // Fall back to ring buffer entries
     } finally {
+      untrackDb?.();
       db?.close();
     }
   }
@@ -731,27 +783,41 @@ export async function listDiagnosticLogs(): Promise<DiagnosticLogEntry[]> {
 
 export async function clearAllDiagnosticLogs(): Promise<void> {
   clearEmergencySessionTrace();
-  if (typeof localStorage !== 'undefined') {
+  const ls = getSafeLocalStorage();
+  if (ls) {
     try {
-      localStorage.removeItem(RING_STORAGE_KEY);
+      ls.removeItem(RING_STORAGE_KEY);
     } catch {
       // Ignore
     }
   }
-  if (typeof indexedDB !== 'undefined') {
+  if (getSafeIndexedDb()) {
     let db: IDBDatabase | null = null;
+    let untrackDb: (() => void) | null = null;
     try {
       db = await openLogsIdb();
+      untrackDb = trackActiveIdbConnection(db);
       await new Promise<void>((resolve) => {
         const tx = db!.transaction(LOG_STORE_NAME, 'readwrite');
+        const untrackTx = trackActiveIdbTransaction(tx);
         tx.objectStore(LOG_STORE_NAME).clear();
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
-        tx.onabort = () => resolve();
+        tx.oncomplete = () => {
+          untrackTx();
+          resolve();
+        };
+        tx.onerror = () => {
+          untrackTx();
+          resolve();
+        };
+        tx.onabort = () => {
+          untrackTx();
+          resolve();
+        };
       });
     } catch {
       // Ignore
     } finally {
+      untrackDb?.();
       db?.close();
     }
   }
@@ -876,7 +942,8 @@ export function recordReactCrash(
 }
 
 function updateSessionHeartbeat(active: boolean): void {
-  if (typeof localStorage === 'undefined') return;
+  const ls = getSafeLocalStorage();
+  if (!ls) return;
   try {
     const mem = captureMemorySample();
     const hb: SessionHeartbeat = {
@@ -888,7 +955,7 @@ function updateSessionHeartbeat(active: boolean): void {
       lastHeapPercent: mem.heapPercent,
       lastHeapBytes: mem.usedHeapBytes,
     };
-    localStorage.setItem(SESSION_HEARTBEAT_KEY, JSON.stringify(hb));
+    ls.setItem(SESSION_HEARTBEAT_KEY, JSON.stringify(hb));
   } catch {
     // Ignore heartbeat write failures
   }
@@ -907,9 +974,10 @@ export function markCleanSessionExit(): void {
 }
 
 export function inspectPreviousSessionUncleanExit(): DiagnosticLogEntry | null {
-  if (typeof localStorage === 'undefined') return null;
+  const ls = getSafeLocalStorage();
+  if (!ls) return null;
   try {
-    const raw = localStorage.getItem(SESSION_HEARTBEAT_KEY);
+    const raw = ls.getItem(SESSION_HEARTBEAT_KEY);
     if (!raw) return null;
     const prev = JSON.parse(raw) as Partial<SessionHeartbeat>;
     if (prev.active && prev.sessionId && prev.sessionId !== SESSION_ID) {
@@ -1206,17 +1274,20 @@ export function installGlobalCrashHandlers(): void {
     }
   };
 
-  const handleCleanBackgroundOrExit = () => {
+  const handleCleanBackgroundHide = () => {
     markCleanSessionExit();
     notifyBackgroundTransition('hidden');
   };
 
-  // 4. Clean exit & visibility lifecycle hooks (shared dispatcher to BackgroundFreezeCoordinator)
-  window.addEventListener('pagehide', handleCleanBackgroundOrExit);
+  const handleCleanPageHide = () => {
+    markCleanSessionExit();
+    notifyPageHide();
+  };
 
-  window.addEventListener('beforeunload', handleCleanBackgroundOrExit);
+  // 4. bfcache-safe pagehide / freeze / visibilitychange lifecycle hooks (avoid beforeunload)
+  window.addEventListener('pagehide', handleCleanPageHide);
 
-  document.addEventListener('freeze', handleCleanBackgroundOrExit);
+  document.addEventListener('freeze', handleCleanPageHide);
 
   document.addEventListener('resume', () => {
     updateSessionHeartbeat(true);
@@ -1227,7 +1298,7 @@ export function installGlobalCrashHandlers(): void {
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      handleCleanBackgroundOrExit();
+      handleCleanBackgroundHide();
     } else {
       updateSessionHeartbeat(true);
       void sampleMemoryPressure();

@@ -14,84 +14,117 @@
 
 type MarkedShimFn = ((...args: any[]) => any) & { __pedigreeEs2018Shim?: boolean };
 
-/**
- * Reads any Blob/File into an ArrayBuffer safely on 2018 browsers (Chrome 68–75, Safari 12–13,
- * Firefox 63–68) where native `Blob.prototype.arrayBuffer()` does not exist yet.
- */
-export function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
-  const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
-  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
-    return Promise.resolve(candidate.call(blob));
+export function isFileReaderSupported(): boolean {
+  try {
+    if (typeof FileReader !== 'function') return false;
+    const probe = new FileReader();
+    return Boolean(probe && typeof probe.readAsArrayBuffer === 'function');
+  } catch {
+    return false;
   }
-
-  if (typeof FileReader === 'function') {
-    return new Promise<ArrayBuffer>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (reader.result instanceof ArrayBuffer) {
-          resolve(reader.result);
-        } else {
-          reject(new Error('FileReader did not return an ArrayBuffer.'));
-        }
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error('Failed to read binary file data.'));
-      };
-      reader.onabort = () => {
-        reject(new Error('Binary file read was aborted.'));
-      };
-      reader.readAsArrayBuffer(blob);
-    });
-  }
-
-  if (typeof Response === 'function') {
-    return new Response(blob).arrayBuffer();
-  }
-
-  return Promise.reject(new Error('Blob binary reader is unavailable in this browser.'));
 }
 
 /**
- * Reads any Blob/File as UTF-8 text safely on 2018 browsers where native `Blob.prototype.text()`
- * is unavailable, falling back to `FileReader.prototype.readAsText` or `TextDecoder`.
+ * Reads any Blob/File into an ArrayBuffer safely across modern browsers (preferring native
+ * `blob.arrayBuffer()`), legacy 2018 browsers (`FileReader`), and Safari Lockdown Mode (`Response`).
  */
-export function readBlobAsText(blob: Blob): Promise<string> {
-  const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
+export async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
   if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
-    return Promise.resolve(candidate.call(blob));
+    try {
+      return await Promise.resolve(candidate.call(blob));
+    } catch {
+      // Fall through cleanly if native method rejects or is blocked
+    }
   }
 
-  if (typeof FileReader === 'function') {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        resolve(typeof reader.result === 'string' ? reader.result : '');
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error('Failed to read text file data.'));
-      };
-      reader.onabort = () => {
-        reject(new Error('Text file read was aborted.'));
-      };
-      reader.readAsText(blob, 'utf-8');
-    });
+  if (isFileReaderSupported()) {
+    try {
+      return await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (reader.result instanceof ArrayBuffer) {
+            resolve(reader.result);
+          } else {
+            reject(new Error('FileReader did not return an ArrayBuffer.'));
+          }
+        };
+        reader.onerror = () => {
+          reject(reader.error || new Error('Failed to read binary file data.'));
+        };
+        reader.onabort = () => {
+          reject(new Error('Binary file read was aborted.'));
+        };
+        reader.readAsArrayBuffer(blob);
+      });
+    } catch {
+      // Fall through cleanly to Response fallback
+    }
   }
 
   if (typeof Response === 'function') {
-    return new Response(blob).text();
+    try {
+      return await new Response(blob).arrayBuffer();
+    } catch {
+      // Fall through to structured error below
+    }
   }
 
-  return readBlobAsArrayBuffer(blob).then((buf) => {
-    if (typeof TextDecoder === 'function') {
-      return new TextDecoder('utf-8').decode(new Uint8Array(buf));
+  throw new Error('Blob binary reader is unavailable in this browser.');
+}
+
+/**
+ * Reads any Blob/File as UTF-8 text safely, preferring native `blob.text()` first, then
+ * `FileReader`, `Response`, and `TextDecoder` fallbacks.
+ */
+export async function readBlobAsText(blob: Blob): Promise<string> {
+  const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
+  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+    try {
+      return await Promise.resolve(candidate.call(blob));
+    } catch {
+      // Fall through cleanly if native method rejects or is blocked
     }
-    const bytes = new Uint8Array(buf);
-    let out = '';
-    for (let i = 0; i < bytes.length; i += 1) {
-      out += String.fromCharCode(bytes[i]);
+  }
+
+  if (isFileReaderSupported()) {
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve(typeof reader.result === 'string' ? reader.result : '');
+        };
+        reader.onerror = () => {
+          reject(reader.error || new Error('Failed to read text file data.'));
+        };
+        reader.onabort = () => {
+          reject(new Error('Text file read was aborted.'));
+        };
+        reader.readAsText(blob, 'utf-8');
+      });
+    } catch {
+      // Fall through cleanly to Response / TextDecoder fallback
     }
-    return out;
-  });
+  }
+
+  if (typeof Response === 'function') {
+    try {
+      return await new Response(blob).text();
+    } catch {
+      // Fall through to ArrayBuffer decode fallback
+    }
+  }
+
+  const buf = await readBlobAsArrayBuffer(blob);
+  if (typeof TextDecoder === 'function') {
+    return new TextDecoder('utf-8').decode(new Uint8Array(buf));
+  }
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += String.fromCharCode(bytes[i]);
+  }
+  return out;
 }
 
 function defineNonEnumerableMethod(

@@ -329,6 +329,15 @@ export type WorkspaceRoute =
   | 'prompts'
   | 'suggestions';
 
+const NON_SPECIES_ROUTES: ReadonlySet<WorkspaceRoute> = new Set([
+  'home',
+  'settings',
+  'importExport',
+  'techyStuff',
+  'prompts',
+  'suggestions',
+]);
+
 export type BreedingTaskCheckoffAction =
   | { kind: 'palpated_positive' }
   | { kind: 'missed'; notes?: string }
@@ -464,14 +473,27 @@ export function useBarnStore() {
     readOpfsPruneSyncWarning()
   );
 
-  const nextEntityRev = useCallback((entityUuid: string, currentRev?: number): number => {
-    let maxSeen = typeof currentRev === 'number' && Number.isFinite(currentRev) ? currentRev : 0;
-    for (const op of syncOperationsRef.current) {
-      if (op.entity_uuid === entityUuid && typeof op.record_rev === 'number' && op.record_rev > maxSeen) {
-        maxSeen = op.record_rev;
+  const maxRevByEntityRef = useRef<Map<string, number>>(new Map());
+
+  const rebuildMaxRevIndex = useCallback((ops: SyncOperation[]) => {
+    const next = new Map<string, number>();
+    for (const op of ops) {
+      if (typeof op.record_rev === 'number' && Number.isFinite(op.record_rev)) {
+        const prev = next.get(op.entity_uuid) ?? 0;
+        if (op.record_rev > prev) {
+          next.set(op.entity_uuid, op.record_rev);
+        }
       }
     }
-    return bumpRecordRevision({ _rev: maxSeen });
+    maxRevByEntityRef.current = next;
+  }, []);
+
+  const nextEntityRev = useCallback((entityUuid: string, currentRev?: number): number => {
+    const current = typeof currentRev === 'number' && Number.isFinite(currentRev) ? currentRev : 0;
+    const indexed = maxRevByEntityRef.current.get(entityUuid) ?? 0;
+    const nextRev = bumpRecordRevision({ _rev: Math.max(current, indexed) });
+    maxRevByEntityRef.current.set(entityUuid, nextRev);
+    return nextRev;
   }, []);
 
   const enqueueStoreMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
@@ -558,6 +580,14 @@ export function useBarnStore() {
   const recordOutboxOps = useCallback(async (ops: SyncOperation[]) => {
     if (ops.length === 0) return;
     const writtenOps = await appendSyncOperationsToIdb(ops);
+    for (const op of writtenOps) {
+      if (typeof op.record_rev === 'number' && Number.isFinite(op.record_rev)) {
+        const prev = maxRevByEntityRef.current.get(op.entity_uuid) ?? 0;
+        if (op.record_rev > prev) {
+          maxRevByEntityRef.current.set(op.entity_uuid, op.record_rev);
+        }
+      }
+    }
     const nextOps = [...syncOperationsRef.current, ...writtenOps];
     syncOperationsRef.current = nextOps;
     setSyncOperations(nextOps);
@@ -566,6 +596,7 @@ export function useBarnStore() {
   const clearLocalSyncAndBackupReminderState = useCallback(async () => {
     await clearAllSyncStateInIdb();
     clearPausedBackgroundJob('directory_sync');
+    maxRevByEntityRef.current.clear();
     syncOperationsRef.current = [];
     setSyncOperations([]);
     syncConflictsRef.current = [];
@@ -745,8 +776,13 @@ export function useBarnStore() {
     }, 0);
   }, [route]);
 
-  // Monitor Google Calendar auth state (access token is kept strictly in memory)
+  const calendarDeliveryMode = snapshot?.settings.calendarSync?.deliveryMode;
+
+  // Monitor Google Calendar auth state lazily only when Google Calendar delivery is enabled
   useEffect(() => {
+    if (calendarDeliveryMode !== 'google_calendar') {
+      return undefined;
+    }
     return initGoogleCalendarAuth(
       (user) => {
         setGoogleAuthConnected(true);
@@ -757,7 +793,7 @@ export function useBarnStore() {
         setGoogleUserEmail(user?.email || null);
       }
     );
-  }, []);
+  }, [calendarDeliveryMode]);
 
   // Initialize local SQLite / IndexedDB store + request persistent storage lock + load outbox
   useEffect(() => {
@@ -862,6 +898,8 @@ export function useBarnStore() {
         setWipedRecoveryContext(detectedWiped && detectedWiped.detected ? detectedWiped : null);
         setPedigreeGenerations(initial.settings.defaultGenerations);
         setStorageStatus(persistedStatus);
+        rebuildMaxRevIndex(ops);
+        syncOperationsRef.current = ops;
         setSyncOperations(ops);
         setSyncConflicts(conflicts);
         void refreshVaultAndArchives();
@@ -1051,6 +1089,10 @@ export function useBarnStore() {
    */
   const selectSpeciesWorkspace = useCallback(
     (speciesName: string, targetRoute: WorkspaceRoute = 'dashboard') => {
+      if (!isSameSpecies(speciesName, activeSpeciesName)) {
+        pedigreeAncestorCacheRef.current.clear();
+        loadedPedigreeArchiveKeysRef.current.clear();
+      }
       setActiveSpeciesName(speciesName);
       setSelectedAnimalId(null);
       setPedigreeAnimalId(null);
@@ -1060,16 +1102,48 @@ export function useBarnStore() {
         window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
       }
     },
-    []
+    [activeSpeciesName]
   );
+
+  const isNonSpeciesRoute = NON_SPECIES_ROUTES.has(route);
 
   /**
    * Strictly species-isolated slice of all records for `activeSpeciesName`.
-   * Decoupled from `route` so navigating between screens never re-filters/re-sorts herd records.
+   * Skips heavy filtering/sorting when on non-species routes (`home`, `settings`, etc.)
+   * and avoids re-evaluating across species-tab switches.
    */
   const baseSpeciesData = useMemo(() => {
     if (!snapshot) return null;
     const speciesProfile = resolveSpeciesProfile(activeSpeciesName, snapshot.speciesProfiles);
+    if (isNonSpeciesRoute) {
+      return {
+        speciesProfile,
+        animals: [],
+        activeAnimals: [],
+        archivedAnimals: [],
+        animalPhotos: [],
+        photosByAnimalId: new Map<string, AnimalPhoto[]>(),
+        primaryPhotoByAnimalId: new Map<string, AnimalPhoto>(),
+        herdById: new Map<string, Animal>(),
+        cages: [],
+        breedings: [],
+        tasks: [],
+        careLogs: [],
+        shows: [],
+        feedBatches: [],
+        feedAllocations: [],
+        ledgerEntries: [],
+        processingLogs: [],
+        youthProjectBooks: [],
+        clientContacts: [],
+        waitlistEntries: [],
+        animalReservations: [],
+        woolHarvests: [],
+        testingRecordCount: 0,
+        nonTestingRecordCount: 0,
+        totalRecordCount: 0,
+      };
+    }
     const animals = snapshot.animals
       .filter((a) => isSameSpecies(a.species, speciesProfile.name))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1226,10 +1300,10 @@ export function useBarnStore() {
       nonTestingRecordCount,
       totalRecordCount,
     };
-  }, [snapshot, activeSpeciesName]);
+  }, [snapshot, activeSpeciesName, isNonSpeciesRoute]);
 
   const conflictsBySpeciesAnimalId = useMemo(() => {
-    if (!baseSpeciesData) {
+    if (!baseSpeciesData || baseSpeciesData.animals.length === 0) {
       return {
         map: new Map<string, AnimalConflictSummary>(),
         conflictedAnimalCount: 0,
@@ -1248,15 +1322,24 @@ export function useBarnStore() {
 
   const coiByAnimalId = useMemo(() => {
     const map = new Map<string, CoiAnalysis>();
-    if (!baseSpeciesData) return map;
-    if (route === 'herd' || route === 'pedigree' || route === 'breeding') {
-      const evaluator = createSpeciesCoiEvaluator(baseSpeciesData.herdById);
-      for (const animal of baseSpeciesData.animals) {
-        map.set(animal.id, evaluator.calculateAnimalCoi(animal));
+    if (!baseSpeciesData || baseSpeciesData.animals.length === 0) return map;
+    if (route === 'pedigree') {
+      const target =
+        (pedigreeAnimalId ? baseSpeciesData.herdById.get(pedigreeAnimalId) : undefined) ??
+        baseSpeciesData.animals[0];
+      if (target) {
+        const evaluator = createSpeciesCoiEvaluator(baseSpeciesData.herdById);
+        map.set(target.id, evaluator.calculateAnimalCoi(target));
+      }
+    } else if (route === 'herd' && selectedAnimalId) {
+      const target = baseSpeciesData.herdById.get(selectedAnimalId);
+      if (target) {
+        const evaluator = createSpeciesCoiEvaluator(baseSpeciesData.herdById);
+        map.set(target.id, evaluator.calculateAnimalCoi(target));
       }
     }
     return map;
-  }, [baseSpeciesData, route]);
+  }, [baseSpeciesData, route, pedigreeAnimalId, selectedAnimalId]);
 
   const activeSpeciesData: ActiveSpeciesData | null = useMemo(() => {
     if (!baseSpeciesData) return null;
@@ -1620,6 +1703,7 @@ export function useBarnStore() {
     snapshotRef.current = fresh;
     setSnapshot(fresh);
     setPedigreeGenerations(fresh.settings.defaultGenerations);
+    rebuildMaxRevIndex(freshOps);
     syncOperationsRef.current = freshOps;
     setSyncOperations(freshOps);
     syncConflictsRef.current = freshConflicts;
@@ -1663,6 +1747,8 @@ export function useBarnStore() {
       id: 'barn-store-photo-cache-trim',
       onHidden: () => {
         photoCacheRef.current?.clear();
+        pedigreeAncestorCacheRef.current.clear();
+        loadedPedigreeArchiveKeysRef.current.clear();
       },
       onVisible: () => {
         if (isLoading) return;
@@ -4324,17 +4410,25 @@ export function useBarnStore() {
           mimeType: 'text/calendar',
           title: filenameHint || `${snapshot.settings.barnName} Barn Chores`,
           text: 'Import barn chore into your calendar app',
-        }).then((outcome) => {
-          notify(
-            outcome === 'shared'
-              ? `Opened external calendar handoff for ${ics.eventCount} event${
-                  ics.eventCount === 1 ? '' : 's'
-                }.`
-              : `Saved ${ics.eventCount} event${
-                  ics.eventCount === 1 ? '' : 's'
-                } (.ICS) — open file to add to Outlook, Apple, or system calendar.`
-          );
-        });
+        })
+          .then((outcome) => {
+            if (outcome === 'cancelled') {
+              notify('Calendar share cancelled.');
+              return;
+            }
+            notify(
+              outcome === 'shared'
+                ? `Opened external calendar handoff for ${ics.eventCount} event${
+                    ics.eventCount === 1 ? '' : 's'
+                  }.`
+                : `Saved ${ics.eventCount} event${
+                    ics.eventCount === 1 ? '' : 's'
+                  } (.ICS) — open file to add to Outlook, Apple, or system calendar.`
+            );
+          })
+          .catch((err) => {
+            reportPersistenceFailure('share .ICS calendar file', err);
+          });
         return ics.eventCount;
       }
 
@@ -6962,6 +7056,7 @@ export function useBarnStore() {
           }
           await adapterRef.current!.replaceSnapshot(result.nextSnapshot);
           await replaceSyncOperationsInIdb(result.mergedOperations);
+          rebuildMaxRevIndex(result.mergedOperations);
           syncOperationsRef.current = result.mergedOperations;
           setSyncOperations(result.mergedOperations);
           if (result.newConflicts.length > 0) {
@@ -7012,6 +7107,7 @@ export function useBarnStore() {
           );
           await adapterRef.current!.replaceSnapshot(applied.nextSnapshot);
           await replaceSyncOperationsInIdb(applied.mergedOperations);
+          rebuildMaxRevIndex(applied.mergedOperations);
           syncOperationsRef.current = applied.mergedOperations;
           setSyncOperations(applied.mergedOperations);
 

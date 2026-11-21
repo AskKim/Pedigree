@@ -51,6 +51,9 @@ export interface StorageAdapter {
   /** Human-readable description of the active local storage engine (e.g., `"SQLite WASM + IndexedDB"`). */
   readonly engineName: string;
 
+  /** Returns true when IndexedDB is blocked (e.g. Lockdown/Private mode) and storage is session-ephemeral. */
+  isEphemeralMode?(): boolean;
+
   /** Initializes tables and seeds starter multi-species sample data on first launch if empty. */
   initialize(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot>;
 

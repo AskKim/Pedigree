@@ -101,6 +101,12 @@ import {
   loadRollingSnapshotBackup,
   saveRollingSnapshotBackup,
 } from './storageProtection';
+import {
+  getSafeIndexedDb,
+  isIndexedDbBlockedError,
+  trackActiveIdbConnection,
+  trackActiveIdbTransaction,
+} from './storageProbes';
 
 const IDB_DB_NAME = 'community_pedigree_local_db';
 const IDB_STORE_NAME = 'sqlite_files';
@@ -573,7 +579,8 @@ const IDB_OPEN_TIMEOUT_MS = 8000;
 
 function openIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
+    const idb = getSafeIndexedDb();
+    if (!idb) {
       reject(new Error('IndexedDB is unavailable in this browser context.'));
       return;
     }
@@ -597,7 +604,7 @@ function openIdb(): Promise<IDBDatabase> {
     }, IDB_OPEN_TIMEOUT_MS);
 
     try {
-      const req = indexedDB.open(IDB_DB_NAME, 1);
+      const req = idb.open(IDB_DB_NAME, 1);
       req.onupgradeneeded = () => {
         try {
           const db = req.result;
@@ -639,17 +646,32 @@ function openIdb(): Promise<IDBDatabase> {
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await openIdb();
+  const untrackDb = trackActiveIdbConnection(db);
   try {
     return await new Promise<T | undefined>((resolve, reject) => {
       const tx = db.transaction(IDB_STORE_NAME, 'readonly');
+      const untrackTx = trackActiveIdbTransaction(tx);
       const req = tx.objectStore(IDB_STORE_NAME).get(key);
-      req.onsuccess = () => resolve(req.result as T | undefined);
-      req.onerror = () => reject(req.error);
-      tx.onabort = () =>
+      req.onsuccess = () => {
+        untrackTx();
+        resolve(req.result as T | undefined);
+      };
+      req.onerror = () => {
+        untrackTx();
+        reject(req.error);
+      };
+      tx.onabort = () => {
+        untrackTx();
         reject(tx.error || new Error('IndexedDB read transaction aborted.'));
+      };
     });
   } finally {
-    db.close();
+    untrackDb();
+    try {
+      db.close();
+    } catch {
+      // Ignore close error
+    }
   }
 }
 
@@ -662,18 +684,29 @@ async function idbSetAtomic(
 ): Promise<void> {
   if (entries.length === 0) return;
   let db: IDBDatabase | null = null;
+  let untrackDb: (() => void) | null = null;
   try {
     db = await openIdb();
+    untrackDb = trackActiveIdbConnection(db);
     await new Promise<void>((resolve, reject) => {
       const tx = db!.transaction(IDB_STORE_NAME, 'readwrite');
+      const untrackTx = trackActiveIdbTransaction(tx);
       const store = tx.objectStore(IDB_STORE_NAME);
       for (const entry of entries) {
         store.put(entry.value, entry.key);
       }
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () =>
+      tx.oncomplete = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onerror = () => {
+        untrackTx();
+        reject(tx.error);
+      };
+      tx.onabort = () => {
+        untrackTx();
         reject(tx.error || new Error('IndexedDB write transaction aborted.'));
+      };
     });
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -683,23 +716,44 @@ async function idbSetAtomic(
     }
     throw err;
   } finally {
-    db?.close();
+    untrackDb?.();
+    try {
+      db?.close();
+    } catch {
+      // Ignore close error
+    }
   }
 }
 
 async function idbDelete(key: string): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
+  if (!getSafeIndexedDb()) return;
   const db = await openIdb();
+  const untrackDb = trackActiveIdbConnection(db);
   try {
     await new Promise<void>((resolve) => {
       const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+      const untrackTx = trackActiveIdbTransaction(tx);
       tx.objectStore(IDB_STORE_NAME).delete(key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
+      tx.oncomplete = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onerror = () => {
+        untrackTx();
+        resolve();
+      };
+      tx.onabort = () => {
+        untrackTx();
+        resolve();
+      };
     });
   } finally {
-    db.close();
+    untrackDb();
+    try {
+      db.close();
+    } catch {
+      // Ignore close error
+    }
   }
 }
 
@@ -844,11 +898,21 @@ export class WebSqliteAdapter implements StorageAdapter {
   private lastRollingSaveMs = 0;
   private wipedRecoveryContext: WipedStorageRecoveryContext | null = null;
   private loadedEpoch = 0;
+  private ephemeralMode = false;
 
   constructor(private readonly tabId: string = getCurrentTabId()) {}
 
   get engineName(): string {
+    if (this.ephemeralMode) {
+      return this.db
+        ? 'Local SQLite (Ephemeral Session)'
+        : 'Ephemeral In-Memory Store (Private/Restricted Mode)';
+    }
     return this.db ? 'Local SQLite (WASM + IndexedDB)' : 'Local IndexedDB Store';
+  }
+
+  isEphemeralMode(): boolean {
+    return this.ephemeralMode;
   }
 
   getWipedRecoveryContext(): WipedStorageRecoveryContext | null {
@@ -860,6 +924,9 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   private async readPersistedWriteEpoch(): Promise<PersistedWriteEpochMeta> {
+    if (this.ephemeralMode || !getSafeIndexedDb()) {
+      return { epoch: 0, writerTabId: '', updatedAtIso: '' };
+    }
     try {
       const meta = await idbGet<Partial<PersistedWriteEpochMeta>>(IDB_WRITE_EPOCH_KEY);
       const epoch = Number(meta?.epoch);
@@ -882,6 +949,9 @@ export class WebSqliteAdapter implements StorageAdapter {
    * initialization under lock).
    */
   private async syncFromPersistedStorageIfStaleLocked(): Promise<boolean> {
+    if (this.ephemeralMode || !getSafeIndexedDb()) {
+      return false;
+    }
     const persisted = await this.readPersistedWriteEpoch();
     if (persisted.epoch <= this.loadedEpoch) {
       return false;
@@ -938,6 +1008,9 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async syncFromPersistedStorageIfStale(): Promise<boolean> {
+    if (this.ephemeralMode || !getSafeIndexedDb()) {
+      return false;
+    }
     const persisted = await this.readPersistedWriteEpoch();
     if (persisted.epoch <= this.loadedEpoch) {
       return false;
@@ -949,6 +1022,9 @@ export class WebSqliteAdapter implements StorageAdapter {
     snapshot: BarnDatabaseSnapshot;
     source: string;
   } | null> {
+    if (this.ephemeralMode || !getSafeIndexedDb()) {
+      return null;
+    }
     const saved = await idbGet<BarnDatabaseSnapshot>(IDB_FALLBACK_SNAPSHOT_KEY).catch(() => undefined);
     if (
       saved &&
@@ -1024,11 +1100,12 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   private async initializeLocked(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     this.wipedRecoveryContext = null;
+    this.ephemeralMode = false;
     const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
       options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
 
     const tryDetectWipedStorage = async (): Promise<BarnDatabaseSnapshot | null> => {
-      if (options?.allowSeedFresh) return null;
+      if (this.ephemeralMode || !getSafeIndexedDb() || options?.allowSeedFresh) return null;
       const wiped = await detectReturningUserWipedStorage().catch(() => null);
       if (wiped && wiped.detected) {
         this.wipedRecoveryContext = wiped;
@@ -1044,6 +1121,21 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     try {
       this.SQL = await initSqlJs(createSqlJsInitConfig());
+
+      if (!getSafeIndexedDb()) {
+        this.ephemeralMode = true;
+        this.db = new this.SQL.Database();
+        applySchemaMigrations(this.db);
+        const seeded = buildFullPredefinedSampleSnapshot();
+        await this.replaceSnapshotLocked(seeded, 'initializeEphemeralSeed');
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message:
+            'IndexedDB unavailable (Private Browsing or Lockdown Mode) — running in ephemeral SQLite session mode',
+        });
+        return finalizeSnapshot(seeded);
+      }
 
       const [savedBytes, epochMeta] = await Promise.all([
         idbGet<Uint8Array>(IDB_PRIMARY_KEY),
@@ -1151,11 +1243,17 @@ export class WebSqliteAdapter implements StorageAdapter {
         return finalizeSnapshot(seeded);
       }
     } catch (err) {
-      console.warn('WASM SQLite fallback to IndexedDB JSON / Rolling Snapshot:', err);
+      if (!getSafeIndexedDb() || isIndexedDbBlockedError(err)) {
+        this.ephemeralMode = true;
+      }
+
+      console.warn('WASM SQLite fallback to IndexedDB JSON / Ephemeral Session:', err);
       logDiagnosticEvent({
-        level: 'error',
+        level: this.ephemeralMode ? 'warn' : 'error',
         category: isMemoryLikeError(err) ? 'memory' : 'storage',
-        message: 'Primary SQLite load failed — attempting non-destructive recovery from fallback/rolling backup',
+        message: this.ephemeralMode
+          ? 'Browser storage restricted (Private Browsing or Lockdown Mode) — running safely in ephemeral session mode'
+          : 'Primary SQLite load failed — attempting non-destructive recovery from fallback/rolling backup',
         error: err,
       });
 
@@ -1163,6 +1261,19 @@ export class WebSqliteAdapter implements StorageAdapter {
         await dumpIndexedDbDatabaseToOpfs(IDB_DB_NAME, 'Primary SQLite IndexedDB VersionError').catch(
           () => {}
         );
+      }
+
+      if (this.ephemeralMode) {
+        const seeded = buildFullPredefinedSampleSnapshot();
+        if (this.SQL) {
+          const rebuilt = await this.tryRestoreIntoFreshSqliteDbLocked(seeded);
+          if (rebuilt) {
+            return finalizeSnapshot(seeded);
+          }
+        }
+        this.fallbackSnapshot = seeded;
+        this.loadedEpoch = Math.max(this.loadedEpoch, 1);
+        return finalizeSnapshot(seeded);
       }
 
       const recovered = await this.findRecoveredBackupSnapshot();
@@ -1206,6 +1317,17 @@ export class WebSqliteAdapter implements StorageAdapter {
     preloadedSnapshot?: BarnDatabaseSnapshot,
     reason?: string
   ): Promise<void> {
+    if (this.ephemeralMode || !getSafeIndexedDb()) {
+      this.ephemeralMode = true;
+      this.loadedEpoch = this.loadedEpoch + 1;
+      publishCrossTabDbCommit({
+        epoch: this.loadedEpoch,
+        writerTabId: this.tabId,
+        reason,
+      });
+      return;
+    }
+
     const persisted = await this.readPersistedWriteEpoch();
     const nextEpoch = Math.max(persisted.epoch, this.loadedEpoch) + 1;
     const epochMeta: PersistedWriteEpochMeta = {
@@ -1234,6 +1356,23 @@ export class WebSqliteAdapter implements StorageAdapter {
         reason,
       });
     } catch (err) {
+      if (!isQuotaExceededError(err) && isIndexedDbBlockedError(err)) {
+        this.ephemeralMode = true;
+        this.loadedEpoch = nextEpoch;
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'storage',
+          message:
+            'IndexedDB write blocked by browser privacy/lockdown policy — degrading cleanly to ephemeral in-memory session mode',
+          error: err,
+        });
+        publishCrossTabDbCommit({
+          epoch: nextEpoch,
+          writerTabId: this.tabId,
+          reason,
+        });
+        return;
+      }
       logDiagnosticEvent({
         level: 'error',
         category: isMemoryLikeError(err) ? 'memory' : 'storage',
@@ -4102,10 +4241,13 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.SQL = null;
       this.fallbackSnapshot = null;
       this.loadedEpoch = 0;
-      try {
-        await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
-      } catch {
-        // Ignore fallback delete failure
+      this.ephemeralMode = false;
+      if (getSafeIndexedDb()) {
+        try {
+          await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+        } catch {
+          // Ignore fallback delete failure
+        }
       }
       return this.initializeLocked(options);
     });
@@ -4124,8 +4266,17 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.SQL = null;
       this.fallbackSnapshot = null;
       this.loadedEpoch = 0;
-      await idbDelete(IDB_PRIMARY_KEY);
-      await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+      this.ephemeralMode = false;
+      if (getSafeIndexedDb()) {
+        try {
+          await idbDelete(IDB_PRIMARY_KEY);
+          await idbDelete(IDB_FALLBACK_SNAPSHOT_KEY);
+        } catch (err) {
+          if (!isIndexedDbBlockedError(err)) {
+            throw err;
+          }
+        }
+      }
       return this.initializeLocked({ ...options, allowSeedFresh: options?.allowSeedFresh ?? true });
     });
   }

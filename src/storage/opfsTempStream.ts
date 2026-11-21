@@ -11,19 +11,33 @@
 
 import { generateUuid } from '../core/models';
 import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
+import { getSafeStorageManager } from './storageProbes';
 
 export type OpfsNamespace = 'tmp' | 'backups' | 'archives';
 
 export interface OpfsWritableStream {
   write(data: string | Uint8Array | ArrayBuffer | Blob): Promise<void>;
-  close(): Promise<void>;
+  close(): void | Promise<void>;
+  flush?: () => void | Promise<void>;
+  truncate?: (size: number) => void | Promise<void>;
 }
+
+export interface OpfsSyncAccessHandle {
+  write(buffer: ArrayBuffer | ArrayBufferView, options?: { at?: number }): number;
+  flush(): void | Promise<void>;
+  getSize(): number | Promise<number>;
+  truncate(newSize: number): void | Promise<void>;
+  close(): void | Promise<void>;
+}
+
+export type OpfsCloseableHandle = OpfsWritableStream | OpfsSyncAccessHandle;
 
 export interface OpfsFileHandle {
   kind?: 'file';
   name: string;
   getFile(): Promise<File | Blob>;
-  createWritable(): Promise<OpfsWritableStream>;
+  createWritable?: () => Promise<OpfsWritableStream>;
+  createSyncAccessHandle?: () => Promise<OpfsSyncAccessHandle>;
 }
 
 export interface OpfsDirectoryHandle {
@@ -54,6 +68,9 @@ const TEMP_WRITE_CHUNK_BYTES = 256 * 1024;
 const TEMP_TEXT_SLICE_CHARS = 128 * 1024;
 
 const activeTempFiles = new Set<string>();
+const activeOpfsHandles = new Set<OpfsCloseableHandle>();
+const closedOpfsHandles = new WeakSet<object>();
+let blockedStorageManagers = new WeakSet<object>();
 let testRootResolver: (() => Promise<OpfsDirectoryHandle | null>) | null = null;
 let diagnosticLogger: OpfsDiagnosticLogger | null = null;
 
@@ -81,6 +98,85 @@ export function isOpfsQuotaError(err: unknown): boolean {
   );
 }
 
+/**
+ * Safely awaits `handle.close()` across both modern synchronous returns (`void`)
+ * and legacy Promise returns (Safari 15.2–16.3), preventing double-close errors.
+ */
+export async function safeAwaitOpfsClose(handle: OpfsCloseableHandle | null | undefined): Promise<void> {
+  if (!handle) return;
+  activeOpfsHandles.delete(handle);
+  if (typeof handle === 'object' && closedOpfsHandles.has(handle)) {
+    return;
+  }
+  if (typeof handle === 'object') {
+    closedOpfsHandles.add(handle);
+  }
+  if (typeof handle.close === 'function') {
+    await Promise.resolve(handle.close());
+  }
+}
+
+/**
+ * Safely awaits `handle.flush()` across synchronous (`void`) and legacy Promise returns.
+ */
+export async function safeAwaitOpfsFlush(
+  handle: { flush?: () => void | Promise<void> } | null | undefined
+): Promise<void> {
+  if (!handle || typeof handle.flush !== 'function') return;
+  await Promise.resolve(handle.flush());
+}
+
+/**
+ * Safely awaits `handle.getSize()` across synchronous (`number`) and legacy Promise returns (Safari 15.2–16.3).
+ */
+export async function safeAwaitOpfsGetSize(
+  handle: { getSize?: () => number | Promise<number> } | null | undefined
+): Promise<number> {
+  if (!handle || typeof handle.getSize !== 'function') return 0;
+  const size = await Promise.resolve(handle.getSize());
+  return Number.isFinite(Number(size)) ? Number(size) : 0;
+}
+
+/**
+ * Safely awaits `handle.truncate(newSize)` across synchronous (`void`) and legacy Promise returns (Safari 15.2–16.3).
+ */
+export async function safeAwaitOpfsTruncate(
+  handle: { truncate?: (newSize: number) => void | Promise<void> } | null | undefined,
+  newSize: number
+): Promise<void> {
+  if (!handle || typeof handle.truncate !== 'function') return;
+  await Promise.resolve(handle.truncate(newSize));
+}
+
+export function trackActiveOpfsHandle<T extends OpfsCloseableHandle>(handle: T): () => void {
+  activeOpfsHandles.add(handle);
+  return () => {
+    activeOpfsHandles.delete(handle);
+  };
+}
+
+/**
+ * Closes any currently tracked open OPFS writable or sync handles cleanly on `pagehide`
+ * or `visibilitychange` (`hidden`) to protect bfcache and avoid stale locks.
+ */
+export async function releaseActiveOpfsHandles(): Promise<number> {
+  const handles = Array.from(activeOpfsHandles);
+  let released = 0;
+  for (const handle of handles) {
+    try {
+      await safeAwaitOpfsClose(handle);
+      released++;
+    } catch {
+      // Ignore release failures on already-closed or invalidated handles
+    }
+  }
+  return released;
+}
+
+export function getActiveOpfsHandleCountForTests(): number {
+  return activeOpfsHandles.size;
+}
+
 export function markTempOpfsFileActive(fileName: string): void {
   if (fileName) activeTempFiles.add(fileName);
 }
@@ -93,6 +189,12 @@ export function isTempOpfsFileActive(fileName: string): boolean {
   return Boolean(fileName && activeTempFiles.has(fileName));
 }
 
+export function resetOpfsProbesForTests(): void {
+  blockedStorageManagers = new WeakSet<object>();
+  activeOpfsHandles.clear();
+  activeTempFiles.clear();
+}
+
 /**
  * Allows deterministic unit tests to inject an in-memory OPFS root handle mock.
  * Pass `null` to restore native browser `navigator.storage.getDirectory()`.
@@ -103,30 +205,82 @@ export function setOpfsRootResolverForTest(
   testRootResolver = resolver;
   if (!resolver) {
     activeTempFiles.clear();
+    activeOpfsHandles.clear();
   }
 }
 
 export function isOpfsSupported(): boolean {
   if (testRootResolver) return true;
-  if (typeof navigator === 'undefined') return false;
-  const storage = navigator.storage as (StorageManager & { getDirectory?: unknown }) | undefined;
-  return Boolean(storage && typeof storage.getDirectory === 'function');
+  const storage = getSafeStorageManager();
+  if (!storage) return false;
+  if (blockedStorageManagers.has(storage)) return false;
+  try {
+    return typeof storage.getDirectory === 'function';
+  } catch {
+    return false;
+  }
+}
+
+export async function probeOpfsRuntime(): Promise<{
+  supported: boolean;
+  reason?: string;
+}> {
+  if (testRootResolver) {
+    try {
+      const root = await testRootResolver();
+      return { supported: Boolean(root) };
+    } catch (err) {
+      return { supported: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const storage = getSafeStorageManager();
+  if (!storage || typeof storage.getDirectory !== 'function') {
+    return { supported: false, reason: 'navigator.storage.getDirectory is unavailable' };
+  }
+  try {
+    const root = (await storage.getDirectory()) as OpfsDirectoryHandle | null;
+    if (!root) {
+      blockedStorageManagers.add(storage);
+      return { supported: false, reason: 'OPFS root directory returned null' };
+    }
+    return { supported: true };
+  } catch (err) {
+    blockedStorageManagers.add(storage);
+    return { supported: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function getOpfsRoot(): Promise<OpfsDirectoryHandle | null> {
   if (testRootResolver) {
-    return testRootResolver();
+    try {
+      return await testRootResolver();
+    } catch (err) {
+      emitOpfsLog({
+        level: 'warn',
+        category: 'storage',
+        message: 'OPFS root resolver rejected — using fallback storage',
+        error: err,
+      });
+      return null;
+    }
   }
-  if (typeof navigator === 'undefined') return null;
-  const storage = navigator.storage as
-    | (StorageManager & { getDirectory?: () => Promise<OpfsDirectoryHandle> })
-    | undefined;
-  if (!storage || typeof storage.getDirectory !== 'function') {
+  const storage = getSafeStorageManager();
+  if (!storage) return null;
+  if (blockedStorageManagers.has(storage)) return null;
+  let getDirFn: (() => Promise<unknown>) | undefined;
+  try {
+    getDirFn = typeof storage.getDirectory === 'function' ? storage.getDirectory : undefined;
+  } catch {
+    blockedStorageManagers.add(storage);
+    return null;
+  }
+  if (!getDirFn) {
     return null;
   }
   try {
-    return (await storage.getDirectory()) as unknown as OpfsDirectoryHandle;
+    return (await getDirFn.call(storage)) as unknown as OpfsDirectoryHandle;
   } catch (err) {
+    blockedStorageManagers.add(storage);
     emitOpfsLog({
       level: 'warn',
       category: 'storage',
@@ -256,8 +410,90 @@ async function writeChunkedDataToWritable(
   await writable.write(data);
 }
 
+async function chunkDataToUint8Arrays(data: string | Uint8Array | Blob): Promise<Uint8Array[]> {
+  if (typeof data === 'string') {
+    if (data.length === 0) return [];
+    const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+    const chunks: Uint8Array[] = [];
+    let offset = 0;
+    while (offset < data.length) {
+      const { slice, nextOffset } = sliceUtf16Safe(data, offset, TEMP_TEXT_SLICE_CHARS);
+      if (slice.length > 0) {
+        if (encoder) {
+          chunks.push(encoder.encode(slice));
+        } else {
+          const buf = await readBlobAsArrayBuffer(new Blob([slice]));
+          chunks.push(new Uint8Array(buf));
+        }
+      }
+      offset = nextOffset;
+    }
+    return chunks;
+  }
+
+  if (data instanceof Uint8Array) {
+    if (data.byteLength <= TEMP_WRITE_CHUNK_BYTES) return [data];
+    const chunks: Uint8Array[] = [];
+    for (let offset = 0; offset < data.byteLength; offset += TEMP_WRITE_CHUNK_BYTES) {
+      chunks.push(
+        data.subarray(offset, Math.min(data.byteLength, offset + TEMP_WRITE_CHUNK_BYTES))
+      );
+    }
+    return chunks;
+  }
+
+  const buf = await readBlobAsArrayBuffer(data);
+  const bytes = new Uint8Array(buf);
+  return chunkDataToUint8Arrays(bytes);
+}
+
+async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
+  handle: OpfsCloseableHandle;
+  writeChunk: (chunk: string | Uint8Array | Blob) => Promise<void>;
+  flushAndSize: () => Promise<number | null>;
+}> {
+  if (typeof fh.createWritable === 'function') {
+    const writable = await fh.createWritable();
+    trackActiveOpfsHandle(writable);
+    return {
+      handle: writable,
+      writeChunk: (chunk) => writeChunkedDataToWritable(writable, chunk),
+      flushAndSize: async () => {
+        await safeAwaitOpfsFlush(writable);
+        return null;
+      },
+    };
+  }
+
+  if (typeof fh.createSyncAccessHandle === 'function') {
+    // Standard Worker OPFS access (no Chromium-only { mode: 'readwrite-unsafe' })
+    const syncHandle = await fh.createSyncAccessHandle();
+    trackActiveOpfsHandle(syncHandle);
+    await safeAwaitOpfsTruncate(syncHandle, 0);
+    let cursor = 0;
+    return {
+      handle: syncHandle,
+      writeChunk: async (chunk) => {
+        const byteSlices = await chunkDataToUint8Arrays(chunk);
+        for (const slice of byteSlices) {
+          if (slice.byteLength === 0) continue;
+          const written = syncHandle.write(slice, { at: cursor });
+          cursor += Number(written) > 0 ? Number(written) : slice.byteLength;
+        }
+      },
+      flushAndSize: async () => {
+        await safeAwaitOpfsFlush(syncHandle);
+        return safeAwaitOpfsGetSize(syncHandle);
+      },
+    };
+  }
+
+  throw new Error('OPFS file handle supports neither createWritable nor createSyncAccessHandle.');
+}
+
 /**
- * Writes payload to a file inside `dir`, guaranteeing `writable.close()` inside `try / finally`.
+ * Writes payload to a file inside `dir`, guaranteeing handle flush + close inside `try / finally`
+ * across both `FileSystemWritableFileStream` and Safari 15.2–16.3 worker `FileSystemSyncAccessHandle`.
  * If `QuotaExceededError` occurs, purges `/tmp` and retries the write once cleanly.
  */
 export async function writeFileToOpfsDir(
@@ -267,17 +503,18 @@ export async function writeFileToOpfsDir(
 ): Promise<void> {
   const runWrite = async () => {
     const fh = await dir.getFileHandle(fileName, { create: true });
-    const writable = await fh.createWritable();
+    const sink = await openOpfsHandleSink(fh);
     let bodySucceeded = false;
     try {
-      await writeChunkedDataToWritable(writable, data);
+      await sink.writeChunk(data);
+      await sink.flushAndSize();
       bodySucceeded = true;
     } finally {
       if (bodySucceeded) {
-        await writable.close();
+        await safeAwaitOpfsClose(sink.handle);
       } else {
         try {
-          await writable.close();
+          await safeAwaitOpfsClose(sink.handle);
         } catch {
           // Preserve primary write error so QuotaExceededError recovery runs cleanly
         }
@@ -360,7 +597,7 @@ function buildTempOpfsFileName(prefix: string, extension: string): string {
 
 /**
  * Streams incremental chunks directly into an OPFS `/tmp` file handle without materializing
- * full-export string or `Uint8Array` buffers in JS heap beforehand. Guarantees `writable.close()`
+ * full-export string or `Uint8Array` buffers in JS heap beforehand. Guarantees `safeAwaitOpfsClose()`
  * inside `try/finally`, cleans up partial files on abort, and recovers from `QuotaExceededError` once.
  */
 export async function writeTempOpfsFileStreamed<T = void>(
@@ -380,22 +617,24 @@ export async function writeTempOpfsFileStreamed<T = void>(
 
   const runAttempt = async (): Promise<StreamedOpfsTempFileResult<T>> => {
     const fh = await tmpDir.getFileHandle(fileName, { create: true });
-    const writable = await fh.createWritable();
+    const sink = await openOpfsHandleSink(fh);
     let bodySucceeded = false;
     let meta: T;
+    let flushedSize: number | null = null;
     try {
       meta = await produceChunks(async (chunk) => {
         if (typeof chunk === 'string' && chunk.length === 0) return;
         if (chunk instanceof Uint8Array && chunk.byteLength === 0) return;
-        await writeChunkedDataToWritable(writable, chunk);
+        await sink.writeChunk(chunk);
       });
+      flushedSize = await sink.flushAndSize();
       bodySucceeded = true;
     } finally {
       if (bodySucceeded) {
-        await writable.close();
+        await safeAwaitOpfsClose(sink.handle);
       } else {
         try {
-          await writable.close();
+          await safeAwaitOpfsClose(sink.handle);
         } catch {
           // Preserve primary write error so QuotaExceededError recovery triggers cleanly
         }
@@ -404,7 +643,7 @@ export async function writeTempOpfsFileStreamed<T = void>(
     const file = await fh.getFile();
     return {
       fileName,
-      byteSize: Number(file.size) || 0,
+      byteSize: Number(file.size) || flushedSize || 0,
       blob: file,
       meta,
     };

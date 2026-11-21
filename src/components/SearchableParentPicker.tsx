@@ -9,9 +9,23 @@
  */
 
 import { Check, Search, X } from 'lucide-react';
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Animal, doesAnimalNeedAttention, isAnimalArchived } from '../core/models';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
+import { useVirtualWindow } from '../utils/useVirtualWindow';
+
+const PICKER_OPTION_ESTIMATE_PX = 38;
+const PICKER_FALLBACK_VIEWPORT_PX = 208;
+
+function matchesParentCandidateQuery(candidate: Animal, q: string): boolean {
+  return (
+    candidate.name.toLowerCase().includes(q) ||
+    candidate.tattoo.toLowerCase().includes(q) ||
+    candidate.breed.toLowerCase().includes(q) ||
+    candidate.variety.toLowerCase().includes(q) ||
+    candidate.registrationNumber.toLowerCase().includes(q)
+  );
+}
 
 interface SearchableParentPickerProps {
   id?: string;
@@ -20,6 +34,7 @@ interface SearchableParentPickerProps {
   candidates: Animal[];
   unknownLabel?: string;
   placeholder?: string;
+  isConstrained?: boolean;
   onChange: (animalId: string) => void;
 }
 
@@ -30,10 +45,12 @@ export function SearchableParentPicker({
   candidates,
   unknownLabel,
   placeholder,
+  isConstrained = false,
   onChange,
 }: SearchableParentPickerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const listboxElRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
   const listboxId = useId();
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
@@ -47,12 +64,7 @@ export function SearchableParentPicker({
   const filteredCandidates = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return candidates;
-    return candidates.filter((c) =>
-      [c.name, c.tattoo, c.breed, c.variety, c.registrationNumber]
-        .join(' ')
-        .toLowerCase()
-        .includes(q)
-    );
+    return candidates.filter((c) => matchesParentCandidateQuery(c, q));
   }, [candidates, query]);
 
   const selectableOptions = useMemo(() => {
@@ -69,17 +81,69 @@ export function SearchableParentPicker({
     return items;
   }, [unknownLabel, filteredCandidates]);
 
+  const pickerVirtual = useVirtualWindow({
+    itemCount: isOpen ? selectableOptions.length : 0,
+    estimateSize: PICKER_OPTION_ESTIMATE_PX,
+    overscan: isConstrained ? 2 : 4,
+    initialFallbackCount: isConstrained ? 10 : 16,
+    resetKey: `${isOpen}::${query}::${selectableOptions.length}`,
+  });
+
+  const { scrollContainerRef: virtualScrollContainerRef, measureRowRef } = pickerVirtual;
+
+  const setListboxRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      listboxElRef.current = node;
+      virtualScrollContainerRef(node);
+    },
+    [virtualScrollContainerRef]
+  );
+
+  const visibleOptions = useMemo(() => {
+    if (!isOpen || selectableOptions.length === 0) return [];
+    const { startIndex, endIndex } = pickerVirtual.windowRange;
+    if (endIndex < startIndex) return [];
+    return selectableOptions.slice(startIndex, endIndex + 1);
+  }, [
+    isOpen,
+    selectableOptions,
+    pickerVirtual.windowRange.startIndex,
+    pickerVirtual.windowRange.endIndex,
+  ]);
+
   useEffect(() => {
     if (!isOpen) {
       setActiveIndex(-1);
+      optionRefs.current.clear();
       return;
     }
     setActiveIndex((prev) => clampComboboxIndex(prev, selectableOptions.length));
   }, [isOpen, selectableOptions.length]);
 
   useEffect(() => {
+    const refs = optionRefs.current;
+    return () => {
+      refs.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isOpen || activeIndex < 0) return;
-    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+    const mountedEl = optionRefs.current.get(activeIndex);
+    if (mountedEl) {
+      mountedEl.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
+    const container = listboxElRef.current;
+    if (!container) return;
+    const viewportHeight = container.clientHeight || PICKER_FALLBACK_VIEWPORT_PX;
+    const approxTop = activeIndex * PICKER_OPTION_ESTIMATE_PX;
+    const approxBottom = approxTop + PICKER_OPTION_ESTIMATE_PX;
+    if (approxTop < container.scrollTop) {
+      container.scrollTop = approxTop;
+    } else if (approxBottom > container.scrollTop + viewportHeight) {
+      container.scrollTop = Math.max(0, approxBottom - viewportHeight);
+    }
   }, [isOpen, activeIndex]);
 
   const handleSelect = (nextId: string) => {
@@ -218,100 +282,121 @@ export function SearchableParentPicker({
         )}
       </div>
 
-      {/* Searchable Results Dropdown List */}
+      {/* Searchable Results Dropdown List (Virtualized) */}
       {isOpen && (
         <div
+          ref={setListboxRef}
           id={listboxId}
           role="listbox"
           aria-label={`${label} search results`}
-          className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg divide-y divide-[var(--barn-border)]"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg"
         >
-          {selectableOptions.map((item, idx) => {
-            const optionId = `${listboxId}-opt-${idx}`;
-            const isHighlighted = idx === activeIndex;
+          {pickerVirtual.windowRange.paddingTop > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${pickerVirtual.windowRange.paddingTop}px` }}
+            />
+          )}
+          <div className="divide-y divide-[var(--barn-border)]">
+            {visibleOptions.map((item, localIdx) => {
+              const idx = pickerVirtual.windowRange.startIndex + localIdx;
+              const optionId = `${listboxId}-opt-${idx}`;
+              const isHighlighted = idx === activeIndex;
+              const rowMeasure = measureRowRef(idx);
 
-            if (item.kind === 'unknown') {
+              if (item.kind === 'unknown') {
+                return (
+                  <button
+                    key="__unknown__"
+                    id={optionId}
+                    ref={(el) => {
+                      rowMeasure(el);
+                      if (el) optionRefs.current.set(idx, el);
+                      else optionRefs.current.delete(idx);
+                    }}
+                    type="button"
+                    role="option"
+                    aria-selected={value === ''}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => handleSelect('')}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
+                      value === '' ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
+                    } ${
+                      isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {value === '' && (
+                      <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                    )}
+                  </button>
+                );
+              }
+
+              const cand = item.candidate;
+              const isSelected = cand.id === value;
+              const archived = isAnimalArchived(cand);
+              const needsAttn = doesAnimalNeedAttention(cand);
               return (
                 <button
-                  key="__unknown__"
+                  key={cand.id}
                   id={optionId}
                   ref={(el) => {
-                    optionRefs.current[idx] = el;
+                    rowMeasure(el);
+                    if (el) optionRefs.current.set(idx, el);
+                    else optionRefs.current.delete(idx);
                   }}
                   type="button"
                   role="option"
-                  aria-selected={value === ''}
+                  aria-selected={isSelected}
                   onMouseDown={(e) => e.preventDefault()}
                   onMouseEnter={() => setActiveIndex(idx)}
-                  onClick={() => handleSelect('')}
+                  onClick={() => handleSelect(cand.id)}
                   className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
-                    value === '' ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
+                    isSelected ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
                   } ${
                     isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
                   }`}
                 >
-                  <span>{item.label}</span>
-                  {value === '' && (
-                    <Check className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-                  )}
+                  <span className="min-w-0 truncate">
+                    <span className="text-[var(--barn-ink)]">{cand.name}</span>
+                    {cand.tattoo && (
+                      <span className="font-mono text-[var(--barn-muted)] ml-1.5">
+                        ({cand.tattoo})
+                      </span>
+                    )}
+                    {cand.breed && (
+                      <span className="text-[11px] text-[var(--barn-muted)] ml-1.5">
+                        · {cand.breed}
+                      </span>
+                    )}
+                  </span>
+                  <span className="inline-flex items-center gap-1 shrink-0">
+                    {archived && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--barn-subtle)] text-[var(--barn-muted)]">
+                        Archived
+                      </span>
+                    )}
+                    {needsAttn && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--barn-terracotta-tint)] text-[var(--barn-terracotta)]">
+                        Needs Attention
+                      </span>
+                    )}
+                    {isSelected && (
+                      <Check className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                    )}
+                  </span>
                 </button>
               );
-            }
-
-            const cand = item.candidate;
-            const isSelected = cand.id === value;
-            const archived = isAnimalArchived(cand);
-            const needsAttn = doesAnimalNeedAttention(cand);
-            return (
-              <button
-                key={cand.id}
-                id={optionId}
-                ref={(el) => {
-                  optionRefs.current[idx] = el;
-                }}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                onMouseDown={(e) => e.preventDefault()}
-                onMouseEnter={() => setActiveIndex(idx)}
-                onClick={() => handleSelect(cand.id)}
-                className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
-                  isSelected ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
-                } ${
-                  isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
-                }`}
-              >
-                <span className="min-w-0 truncate">
-                  <span className="text-[var(--barn-ink)]">{cand.name}</span>
-                  {cand.tattoo && (
-                    <span className="font-mono text-[var(--barn-muted)] ml-1.5">
-                      ({cand.tattoo})
-                    </span>
-                  )}
-                  {cand.breed && (
-                    <span className="text-[11px] text-[var(--barn-muted)] ml-1.5">
-                      · {cand.breed}
-                    </span>
-                  )}
-                </span>
-                <span className="inline-flex items-center gap-1 shrink-0">
-                  {archived && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--barn-subtle)] text-[var(--barn-muted)]">
-                      Archived
-                    </span>
-                  )}
-                  {needsAttn && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--barn-terracotta-tint)] text-[var(--barn-terracotta)]">
-                      Needs Attention
-                    </span>
-                  )}
-                  {isSelected && (
-                    <Check className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-                  )}
-                </span>
-              </button>
-            );
-          })}
+            })}
+          </div>
+          {pickerVirtual.windowRange.paddingBottom > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${pickerVirtual.windowRange.paddingBottom}px` }}
+            />
+          )}
 
           {filteredCandidates.length === 0 && (
             <div className="px-3 py-3 text-xs text-[var(--barn-muted)]">

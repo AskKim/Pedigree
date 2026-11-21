@@ -40,7 +40,6 @@ import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } fr
 import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { TechyStuffErrorBoundary } from './components/TechyStuffErrorBoundary';
-import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
@@ -129,6 +128,14 @@ const CalendarSyncConfirmModal = lazyNamedRoute<
   () => import('./components/CalendarIntegrationModals'),
   'CalendarSyncConfirmModal',
   'Calendar Sync'
+);
+
+const WipedStorageRecoveryModal = lazyNamedRoute<
+  ComponentProps<typeof import('./components/WipedStorageRecoveryModal')['WipedStorageRecoveryModal']>
+>(
+  () => import('./components/WipedStorageRecoveryModal'),
+  'WipedStorageRecoveryModal',
+  'Storage Recovery'
 );
 
 const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
@@ -1411,6 +1418,7 @@ export default function App() {
             }}
             onSaveWoolHarvest={store.saveWoolHarvest}
             onDeleteWoolHarvest={store.deleteWoolHarvest}
+            isConstrainedDevice={deviceCapability.assessment.shouldApplyLowMemoryHandling}
           />
         )}
 
@@ -1776,18 +1784,22 @@ export default function App() {
       )}
 
       {/* Blocking Wiped-Browser-Storage Recovery Gate (IMP-018) */}
-      <WipedStorageRecoveryModal
-        context={store.wipedRecoveryContext}
-        archivedHerdBundles={store.archivedHerdBundles}
-        onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
-        onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
-        onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
-        onImportArchiveReplace={(bytes, fileName) =>
-          store.importBackupArchiveBytes(bytes, fileName, 'replace')
-        }
-        onImportSqlite={store.importSqliteBytes}
-        onStartFresh={store.startFreshAfterWipedRecovery}
-      />
+      {store.wipedRecoveryContext?.detected && (
+        <Suspense fallback={null}>
+          <WipedStorageRecoveryModal
+            context={store.wipedRecoveryContext}
+            archivedHerdBundles={store.archivedHerdBundles}
+            onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+            onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
+            onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
+            onImportArchiveReplace={(bytes, fileName) =>
+              store.importBackupArchiveBytes(bytes, fileName, 'replace')
+            }
+            onImportSqlite={store.importSqliteBytes}
+            onStartFresh={store.startFreshAfterWipedRecovery}
+          />
+        </Suspense>
+      )}
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (

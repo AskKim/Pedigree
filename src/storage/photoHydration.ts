@@ -120,11 +120,29 @@ export function stripPhotoDataUrlsFromSnapshot(
   };
 }
 
+export const DEFAULT_PHOTO_HYDRATION_BATCH_SIZE = 12;
+export const CONSTRAINED_PHOTO_HYDRATION_BATCH_SIZE = 4;
+
+/**
+ * Safely revokes a `blob:` object URL when it is no longer needed. Ignores `data:`/`https:` strings.
+ */
+export function revokeBlobUrlIfNeeded(url: string | null | undefined): void {
+  if (!url || !url.startsWith('blob:')) return;
+  if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // Ignore already-revoked or invalid object URL errors
+    }
+  }
+}
+
 export async function hydrateSnapshotWithPhotoDataUrls(
   snapshot: BarnDatabaseSnapshot,
   fetchBatch: (photoIds: string[]) => Promise<Record<string, string>>,
   filterSpecies?: string,
-  cache?: BoundedPhotoDataCache
+  cache?: BoundedPhotoDataCache,
+  options?: { batchSize?: number; isConstrained?: boolean }
 ): Promise<BarnDatabaseSnapshot> {
   const photos = snapshot.animalPhotos ?? [];
   if (photos.length === 0) return snapshot;
@@ -158,7 +176,24 @@ export async function hydrateSnapshotWithPhotoDataUrls(
     return snapshot;
   }
 
-  const fetched = missingIds.length > 0 ? await fetchBatch(missingIds) : {};
+  const defaultBatch = options?.isConstrained
+    ? CONSTRAINED_PHOTO_HYDRATION_BATCH_SIZE
+    : DEFAULT_PHOTO_HYDRATION_BATCH_SIZE;
+  const batchSize = Math.max(1, Math.floor(options?.batchSize ?? defaultBatch));
+
+  // Fetch sequentially in bounded chunks to avoid concurrent full-res bitmap/buffer spikes
+  const fetched: Record<string, string> = {};
+  for (let i = 0; i < missingIds.length; i += batchSize) {
+    const chunk = missingIds.slice(i, i + batchSize);
+    const chunkResult = await fetchBatch(chunk);
+    for (const id of chunk) {
+      const val = chunkResult[id];
+      if (val) {
+        fetched[id] = val;
+      }
+    }
+  }
+
   const nextPhotos: AnimalPhoto[] = photos.map((p) => {
     if (p.dataUrl) return p;
     const resolved = fetched[p.id] || cachedById.get(p.id);

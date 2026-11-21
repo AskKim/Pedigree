@@ -758,6 +758,7 @@ export interface BarnTask {
   title: string;
   category: TaskCategory;
   priority: TaskPriority;
+  startDateIso?: string; // YYYY-MM-DD or ""
   dueDateIso: string; // YYYY-MM-DD or ""
   linkedAnimalId: string;
   linkedAnimalName: string;

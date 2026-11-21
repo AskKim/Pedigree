@@ -53,7 +53,7 @@ import {
 } from '../storage/crashLogger';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
-import { downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
+import { copyTextWithFallback, downloadTextFile, shareTextFileOrDownload } from '../utils/webFileActions';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 const MIN_PREVIEW_ZOOM = 0.2;
@@ -236,6 +236,7 @@ export function PrintPreviewModal({
   const wheelSyncTimerRef = useRef<number | null>(null);
   const printFallbackTimerRef = useRef<number | null>(null);
   const printSafetyTimerRef = useRef<number | null>(null);
+  const copiedSummaryTimerRef = useRef<number | null>(null);
   const cleanupPrintStageRef = useRef<(() => void) | null>(null);
   const cleanupDocListenersRef = useRef<(() => void) | null>(null);
   const dialogRef = useAccessibleDialog({ isOpen: true, onClose });
@@ -252,6 +253,9 @@ export function PrintPreviewModal({
       }
       if (printSafetyTimerRef.current !== null) {
         window.clearTimeout(printSafetyTimerRef.current);
+      }
+      if (copiedSummaryTimerRef.current !== null) {
+        window.clearTimeout(copiedSummaryTimerRef.current);
       }
       cleanupPrintStageRef.current?.();
       cleanupPrintStageRef.current = null;
@@ -1017,16 +1021,48 @@ export function PrintPreviewModal({
               <button
                 type="button"
                 onClick={async () => {
+                  dismissFileActionError();
                   try {
-                    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                      await navigator.clipboard.writeText(plainTextSummary);
+                    const copyMode = await copyTextWithFallback(plainTextSummary);
+                    if (copyMode === 'unsupported') {
+                      if (isMountedRef.current) {
+                        setFileActionError({
+                          action: 'share',
+                          title: 'Could Not Copy Summary',
+                          detail:
+                            'Clipboard access is blocked or unavailable in this browser. Use Download .HTM or Print / Save PDF instead.',
+                        });
+                      }
+                      return;
+                    }
+                    if (isMountedRef.current) {
                       setCopiedSummary(true);
-                      window.setTimeout(() => {
+                      if (copiedSummaryTimerRef.current !== null) {
+                        window.clearTimeout(copiedSummaryTimerRef.current);
+                      }
+                      copiedSummaryTimerRef.current = window.setTimeout(() => {
+                        copiedSummaryTimerRef.current = null;
                         if (isMountedRef.current) setCopiedSummary(false);
                       }, 1800);
                     }
-                  } catch {
-                    // Clipboard permission denied
+                  } catch (err: unknown) {
+                    const detail =
+                      err instanceof Error && err.message.trim()
+                        ? err.message.trim()
+                        : 'Clipboard permission denied.';
+                    logDiagnosticEvent({
+                      level: 'warn',
+                      category: 'storage',
+                      message: `Could not copy print preview summary: ${detail}`,
+                      error: err,
+                    });
+                    if (isMountedRef.current) {
+                      setFileActionError({
+                        action: 'share',
+                        title: 'Could Not Copy Summary',
+                        detail: `${detail} Use Download .HTM or Print / Save PDF instead.`,
+                      });
+                    }
                   }
                 }}
                 title="Copy plain-text summary for email or messaging"

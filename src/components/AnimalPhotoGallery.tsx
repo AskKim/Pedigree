@@ -34,6 +34,8 @@ import {
   validateUploadFileSize,
 } from '../core/inputSanitization';
 import { Animal, AnimalPhoto } from '../core/models';
+import { logDiagnosticEvent } from '../storage/crashLogger';
+import { revokeBlobUrlIfNeeded } from '../storage/photoHydration';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
@@ -89,22 +91,37 @@ export function AnimalPhotoGallery({
   });
 
   const captionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hydratedUrlsRef = useRef<Record<string, string>>({});
+  const hydrationQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    hydratedUrlsRef.current = hydratedUrls;
+  }, [hydratedUrls]);
 
   useEffect(() => {
     return () => {
       if (captionPulseTimerRef.current !== null) {
         clearTimeout(captionPulseTimerRef.current);
       }
+      for (const url of Object.values(hydratedUrlsRef.current)) {
+        revokeBlobUrlIfNeeded(url);
+      }
+      hydratedUrlsRef.current = {};
     };
   }, []);
 
   // Clear per-animal resolved full-res image URLs when switching animals
   useEffect(() => {
-    setHydratedUrls({});
+    setHydratedUrls((prev) => {
+      for (const url of Object.values(prev)) {
+        revokeBlobUrlIfNeeded(url);
+      }
+      return {};
+    });
     setLoadingPhotoId(null);
   }, [animal.id]);
 
-  // Lazily fetch full-resolution dataUrl from SQLite when viewing a dehydrated photo
+  // Lazily and sequentially fetch full-resolution URL from SQLite when viewing a dehydrated photo
   useEffect(() => {
     if (!activePhoto || activePhoto.dataUrl || hydratedUrls[activePhoto.id] || !onLoadFullPhoto) {
       return;
@@ -112,22 +129,52 @@ export function AnimalPhotoGallery({
     let cancelled = false;
     const targetId = activePhoto.id;
     setLoadingPhotoId(targetId);
-    void onLoadFullPhoto(targetId)
-      .then((resolved) => {
-        if (cancelled || !resolved) return;
+
+    const runLoad = async () => {
+      if (cancelled) return;
+      try {
+        const resolved = await onLoadFullPhoto(targetId);
+        if (cancelled) {
+          revokeBlobUrlIfNeeded(resolved);
+          return;
+        }
+        if (!resolved) return;
         setHydratedUrls((prev) => {
           if (prev[targetId] === resolved) return prev;
+          if (prev[targetId]) {
+            revokeBlobUrlIfNeeded(prev[targetId]);
+          }
           const entries = Object.entries(prev).filter(([k]) => k !== targetId);
           // Keep local component state bounded even on large multi-photo galleries
+          const evicted = entries.slice(0, Math.max(0, entries.length - 7));
+          for (const [, evictedUrl] of evicted) {
+            revokeBlobUrlIfNeeded(evictedUrl);
+          }
           const trimmed = entries.slice(-7);
           return Object.fromEntries([...trimmed, [targetId, resolved]]);
         });
-      })
-      .finally(() => {
+      } catch (err) {
+        logDiagnosticEvent({
+          level: 'warn',
+          category: 'media',
+          message: `Failed to load full-resolution photo "${targetId}"`,
+          error: err,
+        });
+        if (!cancelled) {
+          setUploadError(
+            err instanceof Error && err.message
+              ? `Could not load full photo: ${err.message}`
+              : 'Could not load full-resolution photo from local storage.'
+          );
+        }
+      } finally {
         if (!cancelled) {
           setLoadingPhotoId((curr) => (curr === targetId ? null : curr));
         }
-      });
+      }
+    };
+
+    hydrationQueueRef.current = hydrationQueueRef.current.then(runLoad, runLoad);
     return () => {
       cancelled = true;
     };
@@ -235,15 +282,53 @@ export function AnimalPhotoGallery({
     if (!activePhoto) return;
     const trimmed = captionDraft.trim();
     if (trimmed === activePhoto.caption) return;
-    await onUpdateCaption(activePhoto.id, trimmed);
-    setCaptionSavedPulse(true);
-    if (captionPulseTimerRef.current !== null) {
-      clearTimeout(captionPulseTimerRef.current);
+    try {
+      await onUpdateCaption(activePhoto.id, trimmed);
+      setCaptionSavedPulse(true);
+      if (captionPulseTimerRef.current !== null) {
+        clearTimeout(captionPulseTimerRef.current);
+      }
+      captionPulseTimerRef.current = setTimeout(() => {
+        captionPulseTimerRef.current = null;
+        setCaptionSavedPulse(false);
+      }, 1800);
+    } catch (err) {
+      setUploadError(
+        err instanceof Error && err.message ? err.message : 'Could not save photo caption.'
+      );
     }
-    captionPulseTimerRef.current = setTimeout(() => {
-      captionPulseTimerRef.current = null;
-      setCaptionSavedPulse(false);
-    }, 1800);
+  };
+
+  const handleSetPrimaryPhoto = async (photoId: string) => {
+    try {
+      setUploadError(null);
+      await onSetPrimary(photoId);
+    } catch (err) {
+      setUploadError(
+        err instanceof Error && err.message ? err.message : 'Could not update primary photo.'
+      );
+    }
+  };
+
+  const handleDeletePhoto = async (photoId: string) => {
+    try {
+      setUploadError(null);
+      await onDeletePhoto(photoId);
+      setHydratedUrls((prev) => {
+        const existing = prev[photoId];
+        if (!existing) return prev;
+        revokeBlobUrlIfNeeded(existing);
+        const next = { ...prev };
+        delete next[photoId];
+        return next;
+      });
+    } catch (err) {
+      setUploadError(
+        err instanceof Error && err.message ? err.message : 'Could not delete photo.'
+      );
+    } finally {
+      setConfirmDeleteId(null);
+    }
   };
 
   return (
@@ -390,7 +475,7 @@ export function AnimalPhotoGallery({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => void onSetPrimary(activePhoto.id)}
+                      onClick={() => void handleSetPrimaryPhoto(activePhoto.id)}
                       className="min-h-[28px] px-2.5 py-1 rounded-lg bg-black/70 hover:bg-black/85 text-white text-[11px] font-medium inline-flex items-center gap-1 backdrop-blur-xs"
                     >
                       <Star className="w-3 h-3" aria-hidden="true" />
@@ -480,10 +565,7 @@ export function AnimalPhotoGallery({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => {
-                          void onDeletePhoto(activePhoto.id);
-                          setConfirmDeleteId(null);
-                        }}
+                        onClick={() => void handleDeletePhoto(activePhoto.id)}
                         className="min-h-[28px] px-2 py-0.5 rounded-md bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-[11px] font-semibold"
                       >
                         Remove
@@ -583,7 +665,7 @@ export function AnimalPhotoGallery({
                           type="button"
                           disabled={p.isPrimary}
                           onClick={() => {
-                            void onSetPrimary(p.id);
+                            void handleSetPrimaryPhoto(p.id);
                             setSelectedPhotoId(p.id);
                             setShowPrimaryPrompt(false);
                           }}
