@@ -26,16 +26,14 @@ describe('suggestionsBacklog — markdown parser, idea sanitization & exports', 
 
     expect(SUGGESTIONS_BACKLOG_PATH).toBe('/docs/plans/suggestions-backlog.md');
     expect(parsed.isEmpty).toBe(false);
-    expect(parsed.totalItems).toBe(12);
-    expect(parsed.sections).toHaveLength(2);
-    expect(parsed.sections[0].title).toContain('Priority 3');
-    expect(parsed.sections[0].items).toHaveLength(1);
-    expect(parsed.sections[1].title).toContain('Priority 4');
-    expect(parsed.sections[1].items).toHaveLength(11);
+    expect(parsed.totalItems).toBe(10);
+    expect(parsed.sections).toHaveLength(1);
+    expect(parsed.sections[0].title).toContain('Priority 4');
+    expect(parsed.sections[0].items).toHaveLength(10);
 
     const firstItem = parsed.sections[0].items[0];
     expect(firstItem.number).toBe(1);
-    expect(firstItem.title).toBe('Rate of Gain, Comparative Weight Charts & Litter Survival Curves');
+    expect(firstItem.title).toBe('Offline Photo Pedigree Scanning & Local OCR Importer');
     expect(firstItem.codeTag).toBeNull();
     expect(firstItem.details.length).toBeGreaterThan(0);
 

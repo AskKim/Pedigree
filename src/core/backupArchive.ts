@@ -416,6 +416,10 @@ export function buildCompleteBackupZipFiles(
         tasks: snapshot.tasks.filter((t) => isSameSpecies(t.species, filterSpecies)),
         careLogs: snapshot.careLogs.filter((l) => isSameSpecies(l.species, filterSpecies)),
         shows: snapshot.shows.filter((s) => isSameSpecies(s.species, filterSpecies)),
+        feedBatches: (snapshot.feedBatches ?? []).filter((f) => isSameSpecies(f.species, filterSpecies)),
+        feedAllocations: (snapshot.feedAllocations ?? []).filter((a) =>
+          isSameSpecies(a.species, filterSpecies)
+        ),
       }
     : {
         ...snapshot,
@@ -887,6 +891,12 @@ export async function streamCompleteBackupZipArchive(
           tasks: snapshot.tasks.filter((t) => isSameSpecies(t.species, filterSpecies)),
           careLogs: snapshot.careLogs.filter((l) => isSameSpecies(l.species, filterSpecies)),
           shows: snapshot.shows.filter((s) => isSameSpecies(s.species, filterSpecies)),
+          feedBatches: (snapshot.feedBatches ?? []).filter((f) =>
+            isSameSpecies(f.species, filterSpecies)
+          ),
+          feedAllocations: (snapshot.feedAllocations ?? []).filter((a) =>
+            isSameSpecies(a.species, filterSpecies)
+          ),
         }
       : {
           ...snapshot,

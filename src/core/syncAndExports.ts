@@ -26,6 +26,9 @@ import {
   CageLocation,
   CareLog,
   CareLogType,
+  FeedAllocation,
+  FeedAllocationTargetType,
+  FeedBatch,
   formatPedigreeWeight,
   formatReadableDate,
   formatSexForSpecies,
@@ -39,12 +42,15 @@ import {
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
   normalizeIgnoredConflicts,
+  normalizeLitterWeightMilestones,
   normalizeOwnershipType,
   normalizePedigreeGenerationDepth,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
+  normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
   nowEpochMs,
@@ -208,6 +214,7 @@ export function mergeBarnSnapshots(
       memoText: sanitizeSpeciesMemo(sp.memoText),
       memoUpdatedAt: typeof sp.memoUpdatedAt === 'string' ? sp.memoUpdatedAt : '',
       breedOverrides: normalizeBreedScheduleOverrides(sp.breedOverrides),
+      targetWeightCurve: normalizeTargetWeightCurve(sp.targetWeightCurve),
     });
   }
   for (const incSp of incoming.speciesProfiles) {
@@ -216,6 +223,7 @@ export function mergeBarnSnapshots(
     const cleanIncText = sanitizeSpeciesMemo(incSp.memoText);
     const cleanIncMemoTs = typeof incSp.memoUpdatedAt === 'string' ? incSp.memoUpdatedAt : '';
     const cleanIncOverrides = normalizeBreedScheduleOverrides(incSp.breedOverrides);
+    const cleanIncTargetCurve = normalizeTargetWeightCurve(incSp.targetWeightCurve);
 
     if (!prev) {
       speciesByName.set(key, {
@@ -223,6 +231,7 @@ export function mergeBarnSnapshots(
         memoText: cleanIncText,
         memoUpdatedAt: cleanIncMemoTs,
         breedOverrides: cleanIncOverrides,
+        targetWeightCurve: cleanIncTargetCurve,
       });
       continue;
     }
@@ -243,9 +252,20 @@ export function mergeBarnSnapshots(
         id: prev.id,
         ...winnerMemo,
         breedOverrides: cleanIncOverrides,
+        targetWeightCurve:
+          cleanIncTargetCurve.length > 0
+            ? cleanIncTargetCurve
+            : normalizeTargetWeightCurve(prev.targetWeightCurve),
       });
     } else {
-      speciesByName.set(key, { ...prev, ...winnerMemo });
+      speciesByName.set(key, {
+        ...prev,
+        ...winnerMemo,
+        targetWeightCurve:
+          normalizeTargetWeightCurve(prev.targetWeightCurve).length > 0
+            ? normalizeTargetWeightCurve(prev.targetWeightCurve)
+            : cleanIncTargetCurve,
+      });
     }
   }
 
@@ -259,6 +279,14 @@ export function mergeBarnSnapshots(
   const tasksRes = mergeByIdAndTimestamp(local.tasks, incoming.tasks);
   const careLogsRes = mergeByIdAndTimestamp(local.careLogs, incoming.careLogs);
   const showsRes = mergeByIdAndTimestamp(local.shows, incoming.shows);
+  const feedBatchesRes = mergeByIdAndTimestamp(
+    local.feedBatches ?? [],
+    incoming.feedBatches ?? []
+  );
+  const feedAllocationsRes = mergeByIdAndTimestamp(
+    local.feedAllocations ?? [],
+    incoming.feedAllocations ?? []
+  );
 
   const sortedSpecies = Array.from(speciesByName.values())
     .sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name))
@@ -275,6 +303,8 @@ export function mergeBarnSnapshots(
       tasks: tasksRes.merged,
       careLogs: careLogsRes.merged,
       shows: showsRes.merged,
+      feedBatches: feedBatchesRes.merged,
+      feedAllocations: feedAllocationsRes.merged,
     },
     animalsAdded: animalsRes.added,
     animalsUpdated: animalsRes.updated,
@@ -437,6 +467,8 @@ function buildBarnBackupEnvelopeContext(
         animalPhotos: (snapshot.animalPhotos ?? []).length,
         breedings: snapshot.breedings.length,
         tasks: snapshot.tasks.length,
+        feedBatches: (snapshot.feedBatches ?? []).length,
+        feedAllocations: (snapshot.feedAllocations ?? []).length,
       },
       bySpecies: Array.from(bySpeciesMap.values()),
     },
@@ -475,6 +507,8 @@ export function exportBarnBackupJson(
     tasks: snapshot.tasks,
     careLogs: snapshot.careLogs,
     shows: snapshot.shows,
+    feedBatches: snapshot.feedBatches ?? [],
+    feedAllocations: snapshot.feedAllocations ?? [],
   };
   return JSON.stringify(payload, null, 2);
 }
@@ -508,6 +542,8 @@ export function* generateBarnBackupJsonChunks(
     { key: 'tasks', items: snapshot.tasks },
     { key: 'careLogs', items: snapshot.careLogs },
     { key: 'shows', items: snapshot.shows },
+    { key: 'feedBatches', items: snapshot.feedBatches ?? [] },
+    { key: 'feedAllocations', items: snapshot.feedAllocations ?? [] },
   ];
 
   for (let sIdx = 0; sIdx < sections.length; sIdx++) {
@@ -696,6 +732,10 @@ export function parseBarnBackupJson(
       typeof rawSettings.autoOffloadRetiredToOpfs === 'boolean'
         ? rawSettings.autoOffloadRetiredToOpfs
         : fallbackSettings.autoOffloadRetiredToOpfs ?? false,
+    feedTagPurgeWindowDays: normalizeFeedPurgeWindowDays(
+      rawSettings.feedTagPurgeWindowDays,
+      fallbackSettings.feedTagPurgeWindowDays ?? 60
+    ),
     updatedAt: sanitizeSingleLineText(rawSettings.updatedAt || ts, 64) || ts,
   };
 
@@ -762,6 +802,7 @@ export function parseBarnBackupJson(
                     }))
                   : []
               ),
+              targetWeightCurve: normalizeTargetWeightCurve(item.targetWeightCurve),
               createdAt: typeof item.createdAt === 'string' && item.createdAt ? item.createdAt : ts,
               updatedAt: typeof item.updatedAt === 'string' && item.updatedAt ? item.updatedAt : ts,
             };
@@ -939,6 +980,7 @@ export function parseBarnBackupJson(
         ultrasoundResult: normalizeUltrasoundResult(b.ultrasoundResult),
         ultrasoundFetalCount: Math.round(finiteNonNeg(b.ultrasoundFetalCount, 0)),
         ultrasoundProjectedDueIso: sanitizeSingleLineText(b.ultrasoundProjectedDueIso || '', 32),
+        litterWeightMilestones: normalizeLitterWeightMilestones(b.litterWeightMilestones),
         notes: sanitizePlainText(b.notes || '', 20_000),
         createdAt: typeof b.createdAt === 'string' && b.createdAt ? b.createdAt : ts,
         updatedAt: typeof b.updatedAt === 'string' && b.updatedAt ? b.updatedAt : ts,
@@ -1074,6 +1116,98 @@ export function parseBarnBackupJson(
     })
     .filter((p: AnimalPhoto | null): p is AnimalPhoto => Boolean(p));
 
+  const feedBatches: FeedBatch[] = (Array.isArray(raw.feedBatches) ? raw.feedBatches : [])
+    .filter(isObj)
+    .map((f: any) => {
+      const safeTagPhoto = sanitizeSafeRasterImageDataUrl(f.tagPhotoDataUrl) || undefined;
+      const safeTagThumb =
+        sanitizeSafeRasterImageDataUrl(f.tagPhotoThumbnailDataUrl) || safeTagPhoto || undefined;
+      const rawCapDate =
+        typeof f.tagPhotoCapturedDateIso === 'string' ? f.tagPhotoCapturedDateIso.trim() : '';
+      const rawMfgDate =
+        typeof f.manufactureDateIso === 'string' ? f.manufactureDateIso.trim() : '';
+      const rawPurchaseDate =
+        typeof f.purchaseDateIso === 'string' ? f.purchaseDateIso.trim() : '';
+      return {
+        id: safeId(f.id),
+        species: sanitizeSingleLineText(f.species, 100) || 'Rabbit',
+        brand: sanitizeSingleLineText(f.brand || '', 140),
+        productName: sanitizeSingleLineText(f.productName || '', 180) || 'Feed Batch',
+        lotNumber: sanitizeSingleLineText(f.lotNumber || '', 80),
+        millCode: sanitizeSingleLineText(f.millCode || '', 80),
+        manufactureDateIso: /^\d{4}-\d{2}-\d{2}$/.test(rawMfgDate) ? rawMfgDate : '',
+        purchaseDateIso: /^\d{4}-\d{2}-\d{2}$/.test(rawPurchaseDate)
+          ? rawPurchaseDate
+          : todayDateIso(),
+        bagCount: finiteNonNeg(f.bagCount, 0),
+        bagWeightValue: finiteNonNeg(f.bagWeightValue, 0),
+        bagWeightUnit: sanitizeSingleLineText(f.bagWeightUnit || 'lbs', 30) || 'lbs',
+        totalQuantity: finiteNonNeg(f.totalQuantity, 0),
+        remainingQuantity: finiteNonNeg(f.remainingQuantity, 0),
+        lowStockThreshold: finiteNonNeg(f.lowStockThreshold, 0),
+        totalCostCents:
+          f.totalCostCents !== undefined ? Math.round(finiteNonNeg(f.totalCostCents, 0)) : undefined,
+        supplierName: sanitizeSingleLineText(f.supplierName || '', 160),
+        proteinPercent:
+          f.proteinPercent !== undefined && finiteNonNeg(f.proteinPercent, 0) > 0
+            ? finiteNonNeg(f.proteinPercent, 0)
+            : undefined,
+        notes: sanitizePlainText(f.notes || '', 20_000),
+        ...(safeTagPhoto ? { tagPhotoDataUrl: safeTagPhoto } : {}),
+        ...(safeTagThumb ? { tagPhotoThumbnailDataUrl: safeTagThumb } : {}),
+        ...(f.tagPhotoMimeType ? { tagPhotoMimeType: sanitizeSingleLineText(f.tagPhotoMimeType, 80) } : {}),
+        ...(finiteNonNeg(f.tagPhotoBytes, 0) > 0 ? { tagPhotoBytes: finiteNonNeg(f.tagPhotoBytes, 0) } : {}),
+        ...( /^\d{4}-\d{2}-\d{2}$/.test(rawCapDate) ? { tagPhotoCapturedDateIso: rawCapDate } : {}),
+        ...(typeof f.tagPhotoPurgedAtIso === 'string' && f.tagPhotoPurgedAtIso
+          ? { tagPhotoPurgedAtIso: sanitizeSingleLineText(f.tagPhotoPurgedAtIso, 64) }
+          : {}),
+        ...(finiteNonNeg(f.tagPhotoBytesReclaimed, 0) > 0
+          ? { tagPhotoBytesReclaimed: finiteNonNeg(f.tagPhotoBytesReclaimed, 0) }
+          : {}),
+        ...(typeof f.ocrRawText === 'string' && f.ocrRawText
+          ? { ocrRawText: sanitizePlainText(f.ocrRawText, 6000) }
+          : {}),
+        ...(f.ocrConfidence !== undefined && Number.isFinite(Number(f.ocrConfidence))
+          ? { ocrConfidence: Math.max(0, Math.min(100, Number(f.ocrConfidence))) }
+          : {}),
+        ...(f.ocrManualOverride ? { ocrManualOverride: true } : {}),
+        ...(f.recallFlagged ? { recallFlagged: true } : {}),
+        ...(f.recallNote ? { recallNote: sanitizePlainText(f.recallNote, 1000) } : {}),
+        ...(typeof f._rev === 'number' && Number.isFinite(f._rev) ? { _rev: Math.floor(f._rev) } : {}),
+        createdAt: typeof f.createdAt === 'string' && f.createdAt ? f.createdAt : ts,
+        updatedAt: typeof f.updatedAt === 'string' && f.updatedAt ? f.updatedAt : ts,
+      } satisfies FeedBatch;
+    });
+
+  const feedAllocations: FeedAllocation[] = (
+    Array.isArray(raw.feedAllocations) ? raw.feedAllocations : []
+  )
+    .filter(isObj)
+    .map((fa: any) => {
+      const targetType: FeedAllocationTargetType =
+        fa.targetType === 'cage' ||
+        fa.targetType === 'litter' ||
+        fa.targetType === 'animal'
+          ? fa.targetType
+          : 'general';
+      const rawDate = typeof fa.dateIso === 'string' ? fa.dateIso.trim() : '';
+      return {
+        id: safeId(fa.id),
+        species: sanitizeSingleLineText(fa.species, 100) || 'Rabbit',
+        feedBatchId: typeof fa.feedBatchId === 'string' && isSafeRecordKey(fa.feedBatchId) ? fa.feedBatchId : '',
+        targetType,
+        targetId: typeof fa.targetId === 'string' && isSafeRecordKey(fa.targetId) ? fa.targetId : '',
+        targetLabel: sanitizeSingleLineText(fa.targetLabel || '', 160),
+        dateIso: /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayDateIso(),
+        quantity: finiteNonNeg(fa.quantity, 0),
+        unit: sanitizeSingleLineText(fa.unit || 'lbs', 30) || 'lbs',
+        notes: sanitizePlainText(fa.notes || '', 5000),
+        ...(typeof fa._rev === 'number' && Number.isFinite(fa._rev) ? { _rev: Math.floor(fa._rev) } : {}),
+        createdAt: typeof fa.createdAt === 'string' && fa.createdAt ? fa.createdAt : ts,
+        updatedAt: typeof fa.updatedAt === 'string' && fa.updatedAt ? fa.updatedAt : ts,
+      } satisfies FeedAllocation;
+    });
+
   return {
     settings,
     speciesProfiles,
@@ -1084,6 +1218,8 @@ export function parseBarnBackupJson(
     tasks,
     careLogs,
     shows,
+    feedBatches,
+    feedAllocations,
   };
 }
 
@@ -1476,6 +1612,12 @@ export function exportSpeciesBackupJson(
     (l) => isSameSpecies(l.species, speciesName) || animalIds.has(l.animalId)
   );
   const shows = snapshot.shows.filter((s) => isSameSpecies(s.species, speciesName));
+  const feedBatches = (snapshot.feedBatches ?? []).filter((f) =>
+    isSameSpecies(f.species, speciesName)
+  );
+  const feedAllocations = (snapshot.feedAllocations ?? []).filter((fa) =>
+    isSameSpecies(fa.species, speciesName)
+  );
 
   return exportBarnBackupJson(
     {
@@ -1488,6 +1630,8 @@ export function exportSpeciesBackupJson(
       tasks,
       careLogs,
       shows,
+      feedBatches,
+      feedAllocations,
     },
     {
       backupScope: 'species',

@@ -175,6 +175,8 @@ function makeRichSnapshot(): BarnDatabaseSnapshot {
     tasks: [],
     careLogs,
     shows: [],
+    feedBatches: [],
+    feedAllocations: [],
   };
 }
 

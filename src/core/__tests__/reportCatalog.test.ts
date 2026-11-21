@@ -53,7 +53,7 @@ describe('buildReportCatalogForSpecies', () => {
       offspringLabel: 'Chick',
     };
     const quailCatalog = buildReportCatalogForSpecies(customProfile);
-    expect(quailCatalog).toHaveLength(22);
+    expect(quailCatalog).toHaveLength(23);
     expect(quailCatalog[0].title).toBe('Hatching Calendar (By ID)');
     expect(quailCatalog.every((e) => e.scopeLabel === 'Quail Only')).toBe(true);
   });

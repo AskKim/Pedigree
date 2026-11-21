@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (42)
+## Logged Improvements (44)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -885,3 +885,49 @@ npm run lint && npm run build
 1. Keep `SingleGenotypeEvaluation`, `evaluateSingleGenotypeSandbox`, and `buildSandboxHypotheticalAnimal` in `src/core/geneticsEngine.ts` with tests in `src/core/__tests__/geneticsEngine.test.ts`.
 2. Restore `src/components/CoatExplorerSandbox.tsx` with Single Genotype & What-If Cross modes, variety presets, locus selectors, and `ColorGeneticsNotice`.
 3. Mount `<CoatExplorerSandbox />` inside `src/components/BreedingScreen.tsx`.
+
+### IMP-043: Rate of Gain, Comparative Weight Charts & Litter Survival Curves
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Track kit/offspring survival rate per dam and sire, chart litter weight-gain milestones across seasons, and compare multi-animal Rate of Gain curves on an age-in-days axis with native target/goal overlays.
+- **Summary:** Adds pure TS age-in-days Rate of Gain (ADG), Barn Cohort Benchmark, interpolated user-defined goal weight curves, meteorological seasonal bucketing, and dam/sire litter survival & milestone analytics (`growthAnalytics.ts`) backed by `SpeciesProfile.targetWeightCurve` and `BreedingRecord.litterWeightMilestones` across SQLite, JSON, store hooks, `GrowthAndSurvivalLab`, `BreedingScreen` Outcome milestone editor, `HerdScreen` compare actions, and the `litter-survival-performance-report`.
+- **Tracked Files:** `src/core/models.ts`, `src/core/growthAnalytics.ts`, `src/core/__tests__/growthAnalytics.test.ts`, `src/core/syncAndExports.ts`, `src/core/reportCatalog.ts`, `src/core/reportGenerators.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/GrowthAndSurvivalLab.tsx`, `src/components/BreedingScreen.tsx`, `src/components/HerdScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `TargetWeightPoint`, `normalizeTargetWeightCurve`, `LitterWeightMilestone`, `normalizeLitterWeightMilestones` — *Target weight curve points and litter weight-gain milestone types/normalizers must remain intact on SpeciesProfile and BreedingRecord.*
+- `src/core/growthAnalytics.ts` must contain `evaluateLitterSurvivalAndMilestones`, `buildAnimalGrowthSeries`, `buildBarnCohortBenchmarkCurve`, `buildComparativeGrowthChartModel`, `resolveMeteorologicalSeason` — *Pure TS growth, seasonal litter survival, cohort benchmark, and comparative ADG engine must stay zero-DOM.*
+- `src/storage/webSqliteAdapter.ts` must contain `target_weight_curve_json`, `litter_weight_milestones_json` — *SQLite schema and idempotent migrations must persist species target curves and breeding litter milestones.*
+- `src/hooks/useBarnStore.ts` must contain `updateSpeciesTargetWeightCurve`, `openGrowthCompareForAnimals` — *Store must persist species target weight curves, litter milestones, and launch preselected multi-animal growth comparisons.*
+- `src/components/GrowthAndSurvivalLab.tsx` must contain `GrowthAndSurvivalLab`, `buildComparativeGrowthChartModel`, `evaluateLitterSurvivalAndMilestones` — *GrowthAndSurvivalLab UI must expose Comparative Rate of Gain charts with goal/cohort overlays and Litter Survival & Parent Curves.*
+- `src/components/BreedingScreen.tsx` must contain `<GrowthAndSurvivalLab`, `litterWeightMilestones` — *BreedingScreen must mount GrowthAndSurvivalLab and expose litter weight milestone editing inside the Outcome modal.*
+- `src/core/reportGenerators.ts` must contain `litter-survival-performance-report`, `evaluateLitterSurvivalAndMilestones` — *Reports catalog and generator must expose Litter Survival & Parent Performance Report.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `TargetWeightPoint`, `normalizeTargetWeightCurve`, `LitterWeightMilestone`, and `normalizeLitterWeightMilestones` in `src/core/models.ts` plus `target_weight_curve_json` & `litter_weight_milestones_json` in `src/storage/webSqliteAdapter.ts` and `src/core/syncAndExports.ts`.
+2. Restore `src/core/growthAnalytics.ts` and `src/core/__tests__/growthAnalytics.test.ts`.
+3. Keep `updateSpeciesTargetWeightCurve`, `openGrowthCompareForAnimals`, `GrowthAndSurvivalLab.tsx`, Outcome milestone inputs in `BreedingScreen.tsx`, Herd growth compare buttons in `HerdScreen.tsx` / `App.tsx`, and `litter-survival-performance-report` in `reportCatalog.ts` / `reportGenerators.ts`.
+
+### IMP-044: Feed Inventory Ledger, Tag Lot-Number OCR & Biosecurity Auto-Purge
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Track purchased feed lots, allocate intake to pens and litters, scan feed tag stamps before deep compression with manual fallback, auto-purge heavy raw tag images after lot indexing, and keep an offline feed manufacturer recall & hotline directory.
+- **Summary:** Adds strictly species-isolated `FeedBatch` & `FeedAllocation` tracking across SQLite schema v3 (`feed_batches`, `feed_allocations`), JSON/ZIP backups, data health repair, and `useBarnStore`, paired with pre-compression local OCR (`captureFeedTagWithPreCompressionOcr` + `extractFeedTagDetailsFromOcrText`) to index mill lot numbers and plant codes with manual override, configurable 30/60/90-day biosecurity auto-purge of stored tag images (`purgeExpiredFeedTagPhotosPure`), lot traceability across cages/litters/animals (`traceFeedLotToCagesAndLitters`), and an offline manufacturer emergency directory (`FEED_MANUFACTURER_DIRECTORY`).
+- **Tracked Files:** `src/core/models.ts`, `src/core/feedInventory.ts`, `src/core/feedManufacturerDirectory.ts`, `src/core/__tests__/feedInventory.test.ts`, `src/storage/feedTagOcr.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/FeedLedgerScreen.tsx`, `src/components/FacilityPenBoard.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `FeedBatch`, `FeedAllocation`, `FEED_PURGE_WINDOW_OPTIONS`, `normalizeFeedPurgeWindowDays` — *FeedBatch, FeedAllocation, and 30/60/90/0 biosecurity purge window options must remain intact in core models.*
+- `src/core/feedInventory.ts` must contain `extractFeedTagDetailsFromOcrText`, `purgeExpiredFeedTagPhotosPure`, `traceFeedLotToCagesAndLitters`, `formatFeedLedgerCsv` — *Pure TS lot OCR parser, lot-gated biosecurity purge transform, lot traceability, and CSV exporter must stay zero-DOM.*
+- `src/core/feedManufacturerDirectory.ts` must contain `FEED_MANUFACTURER_DIRECTORY`, `filterFeedManufacturerDirectory`, `matchManufacturerForBrand` — *Bundled offline manufacturer emergency & recall directory must stay accessible with zero network.*
+- `src/storage/feedTagOcr.ts` must contain `captureFeedTagWithPreCompressionOcr`, `optimizeImageBlob` — *Feed tag OCR must decode and analyze full-resolution images BEFORE compact image compression.*
+- `src/storage/webSqliteAdapter.ts` must contain `feed_batches`, `feed_allocations`, `saveFeedBatchesBatch` — *SQLite persistence schema and adapter methods must store and hydrate feed batches and intake allocations.*
+- `src/hooks/useBarnStore.ts` must contain `saveFeedBatch`, `logFeedAllocation`, `runFeedTagBiosecurityAutoPurge` — *Store must expose species-isolated feed ledger mutations, cage stock sync, and idle biosecurity auto-purge.*
+- `src/components/FeedLedgerScreen.tsx` must contain `FeedLedgerScreen`, `captureFeedTagWithPreCompressionOcr`, `FEED_MANUFACTURER_DIRECTORY` — *FeedLedgerScreen must provide purchase/OCR scanning, intake allocations, lot traceability, and offline manufacturer contacts.*
+- `src/App.tsx` must contain `FeedLedgerScreen`, `route === 'feed'` — *Root router must lazy-load and mount FeedLedgerScreen on route feed.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `FeedBatch`, `FeedAllocation`, `FEED_PURGE_WINDOW_OPTIONS`, and `normalizeFeedPurgeWindowDays` in `src/core/models.ts` plus SQLite tables in `src/storage/webSqliteAdapter.ts`.
+2. Restore `src/core/feedInventory.ts`, `src/core/feedManufacturerDirectory.ts`, `src/core/__tests__/feedInventory.test.ts`, and `src/storage/feedTagOcr.ts`.
+3. Keep `saveFeedBatch`, `logFeedAllocation`, `runFeedTagBiosecurityAutoPurge` in `useBarnStore.ts` and mount `FeedLedgerScreen.tsx` in `SpeciesDashboardScreen.tsx`, `FacilityPenBoard.tsx`, and `App.tsx`.
+

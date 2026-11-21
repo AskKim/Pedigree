@@ -41,6 +41,7 @@ import {
   todayDateIso,
   WeightUnit,
 } from './models';
+import { evaluateLitterSurvivalAndMilestones } from './growthAnalytics';
 import {
   buildSpeciesHerdMap,
   createSpeciesCoiEvaluator,
@@ -1215,6 +1216,110 @@ function buildReportBody(ctx: ReportContext): ReportBody {
           { label: 'Conception Rate', value: conceptionRate },
           { label: `Total Live ${offspringPlural}`, value: String(totalLive), tone: 'positive' },
           { label: `Total Weaned / Stillborn`, value: `${totalWeaned} / ${totalStillborn}` },
+        ],
+      };
+    }
+
+    // 9b. Litter Survival & Parent Performance Report
+    case 'litter-survival-performance-report': {
+      const filteredBreedings = speciesBreedings.filter((b) => {
+        if (!isIsoWithinRange(b.actualBirthDateIso || b.bredDateIso, dateFromIso, dateToIso)) {
+          return false;
+        }
+        if (filter === 'Male' || filter === 'Non-Adult Male') {
+          return matchesFilter(animalById.get(b.sireId));
+        }
+        if (filter === 'Female' || filter === 'Non-Adult Female') {
+          return matchesFilter(animalById.get(b.damId));
+        }
+        return true;
+      });
+
+      const evalRes = evaluateLitterSurvivalAndMilestones({
+        speciesProfile,
+        breedings: filteredBreedings,
+        animals: speciesAnimals,
+        careLogs: speciesCareLogs,
+      });
+
+      const summaries =
+        filter === 'Male' || filter === 'Non-Adult Male'
+          ? evalRes.sireSummaries
+          : evalRes.damSummaries;
+
+      const roleLabel =
+        filter === 'Male' || filter === 'Non-Adult Male' ? 'Male' : 'Female';
+
+      const rows: ReportRow[] = summaries.map((p) => ({
+        id: `${p.role}-${p.parentId || p.parentName}`,
+        animalId: p.parentId || undefined,
+        highlightTone:
+          p.weaningSurvivalRatePct !== null && p.weaningSurvivalRatePct >= 85
+            ? 'success'
+            : p.weaningSurvivalRatePct !== null && p.weaningSurvivalRatePct < 60
+            ? 'warning'
+            : 'normal',
+        cells: {
+          parent: p.parentName,
+          idTag: p.parentTattoo || 'Unmarked',
+          role: roleLabel,
+          litters: String(p.littersBornCount),
+          liveBorn: String(p.totalLiveBorn),
+          stillborn: String(p.totalStillborn),
+          weaned: String(p.totalWeaned),
+          liveBirthPct: p.liveBirthRatePct !== null ? `${p.liveBirthRatePct.toFixed(1)}%` : '—',
+          weanSurvivalPct:
+            p.weaningSurvivalRatePct !== null ? `${p.weaningSurvivalRatePct.toFixed(1)}%` : '—',
+          avg3w: p.avg3WeekGrams !== null ? formatWeight(p.avg3WeekGrams, weightUnit) : '—',
+          avg6w: p.avg6WeekGrams !== null ? formatWeight(p.avg6WeekGrams, weightUnit) : '—',
+          avg8w: p.avg8WeekGrams !== null ? formatWeight(p.avg8WeekGrams, weightUnit) : '—',
+          litterAdg:
+            p.meanLitterAdgGramsPerDay !== null
+              ? formatWeightRatePerDay(p.meanLitterAdgGramsPerDay, weightUnit)
+              : '—',
+        },
+      }));
+
+      return {
+        columns: [
+          { key: 'parent', label: roleLabel },
+          { key: 'idTag', label: idShortLabel },
+          { key: 'litters', label: 'Litters', align: 'right' },
+          { key: 'liveBorn', label: 'Live Born', align: 'right' },
+          { key: 'stillborn', label: 'Stillborn', align: 'right' },
+          { key: 'weaned', label: 'Weaned', align: 'right' },
+          { key: 'liveBirthPct', label: 'Live Birth %', align: 'right' },
+          { key: 'weanSurvivalPct', label: 'Wean Survival %', align: 'right' },
+          { key: 'avg3w', label: '3w Avg', align: 'right' },
+          { key: 'avg6w', label: '6w Avg', align: 'right' },
+          { key: 'avg8w', label: '8w Avg', align: 'right' },
+          { key: 'litterAdg', label: 'Litter ADG', align: 'right' },
+        ],
+        rows,
+        summaryMetrics: [
+          { label: 'Litters Born', value: String(evalRes.overallSummary.littersBornCount) },
+          {
+            label: 'Live Birth Survival',
+            value:
+              evalRes.overallSummary.liveBirthRatePct !== null
+                ? `${evalRes.overallSummary.liveBirthRatePct.toFixed(1)}%`
+                : 'N/A',
+            tone: 'positive',
+          },
+          {
+            label: 'Weaning Survival',
+            value:
+              evalRes.overallSummary.weaningSurvivalRatePct !== null
+                ? `${evalRes.overallSummary.weaningSurvivalRatePct.toFixed(1)}%`
+                : 'N/A',
+          },
+          {
+            label: 'Mean 8w Avg',
+            value:
+              evalRes.overallSummary.avg8WeekGrams !== null
+                ? formatWeight(evalRes.overallSummary.avg8WeekGrams, weightUnit)
+                : '—',
+          },
         ],
       };
     }

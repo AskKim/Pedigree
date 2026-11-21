@@ -19,6 +19,8 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  FeedAllocation,
+  FeedBatch,
   ShowEvent,
   SpeciesProfile,
 } from '../core/models';
@@ -104,6 +106,13 @@ export interface StorageAdapter {
   /** Upserts or deletes a ShowEvent. */
   saveShow(show: ShowEvent): Promise<void>;
   deleteShow(id: string): Promise<void>;
+
+  /** Upserts or deletes FeedBatch inventory lots and FeedAllocation usage entries. */
+  saveFeedBatch(batch: FeedBatch): Promise<void>;
+  saveFeedBatchesBatch(batches: FeedBatch[]): Promise<void>;
+  deleteFeedBatch(id: string): Promise<void>;
+  saveFeedAllocation(allocation: FeedAllocation): Promise<void>;
+  deleteFeedAllocation(id: string): Promise<void>;
 
   /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
   exportRawSqliteBytes(): Promise<Uint8Array | null>;

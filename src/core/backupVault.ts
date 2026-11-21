@@ -326,6 +326,8 @@ export function buildEmptyShellSnapshot(): BarnDatabaseSnapshot {
     tasks: [],
     careLogs: [],
     shows: [],
+    feedBatches: [],
+    feedAllocations: [],
   };
 }
 
@@ -1087,6 +1089,8 @@ export function extractArchiveIndexMetadataOnly(
       tasks: [],
       shows: [],
       animalPhotos: [],
+      feedBatches: [],
+      feedAllocations: [],
     }),
     fallback
   );
@@ -1191,6 +1195,8 @@ export function unpackArchivedAnimalBundle(
       tasks: [],
       shows: [],
       animalPhotos: [],
+      feedBatches: [],
+      feedAllocations: [],
     }),
     fallbackSettings
   );

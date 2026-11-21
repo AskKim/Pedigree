@@ -41,6 +41,7 @@ import {
   Animal,
   BarnTask,
   CageLocation,
+  FeedBatch,
   HOUSING_UNIT_TYPES,
   HousingUnitType,
   SpeciesProfile,
@@ -67,6 +68,8 @@ export interface FacilityPenBoardProps {
     draft: Omit<BarnTask, 'id' | 'createdAt' | 'updatedAt'>
   ) => Promise<boolean | void> | void;
   onPrintCageCardsForAnimals: (animals: Animal[], titleContext: string) => void;
+  feedBatches?: FeedBatch[];
+  onOpenFeedLedger?: () => void;
   fullScreen?: boolean;
   onCloseFullScreen?: () => void;
 }
@@ -138,6 +141,8 @@ export function FacilityPenBoard({
   onAssignAnimalToCage,
   onSaveTask,
   onPrintCageCardsForAnimals,
+  feedBatches = [],
+  onOpenFeedLedger,
   fullScreen = false,
   onCloseFullScreen,
 }: FacilityPenBoardProps) {
@@ -659,14 +664,29 @@ export function FacilityPenBoard({
                 Feedlot Inventory Link (Optional)
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <input
-                  type="text"
-                  aria-label="Feed lot or bin name"
-                  value={editDraft.feedLotName}
-                  onChange={(e) => setEditDraft({ ...editDraft, feedLotName: e.target.value })}
-                  placeholder="Feed lot (e.g. 18% Show Pellet - Bin A)"
-                  className="w-full min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
-                />
+                <div className="min-w-0">
+                  <input
+                    type="text"
+                    aria-label="Feed lot or bin name"
+                    list={
+                      feedBatches.length > 0 ? `facility-feed-lot-list-${cage.id}` : undefined
+                    }
+                    value={editDraft.feedLotName}
+                    onChange={(e) => setEditDraft({ ...editDraft, feedLotName: e.target.value })}
+                    placeholder="Feed lot (e.g. 18% Show Pellet - Bin A)"
+                    className="w-full min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs"
+                  />
+                  {feedBatches.length > 0 && (
+                    <datalist id={`facility-feed-lot-list-${cage.id}`}>
+                      {feedBatches.map((b) => {
+                        const lotLabel = b.lotNumber
+                          ? `${[b.brand, b.productName].filter(Boolean).join(' ')} (Lot ${b.lotNumber})`
+                          : [b.brand, b.productName].filter(Boolean).join(' ');
+                        return lotLabel ? <option key={b.id} value={lotLabel} /> : null;
+                      })}
+                    </datalist>
+                  )}
+                </div>
                 <input
                   type="text"
                   aria-label="Daily ration note"
@@ -970,9 +990,20 @@ export function FacilityPenBoard({
       {/* Feedlot Inventory Rollup Strip */}
       {boardModel.feedLots.length > 0 && (
         <div className="rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] p-2.5 space-y-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--barn-ink)]">
-            <Package className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
-            <span>Linked Feedlot Inventories ({boardModel.feedLots.length})</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-[var(--barn-ink)]">
+            <div className="flex items-center gap-1.5">
+              <Package className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+              <span>Linked Feedlot Inventories ({boardModel.feedLots.length})</span>
+            </div>
+            {onOpenFeedLedger && (
+              <button
+                type="button"
+                onClick={onOpenFeedLedger}
+                className="text-[11px] font-semibold text-[var(--barn-sage)] hover:underline"
+              >
+                Open Feed Ledger
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             {boardModel.feedLots.map((lot) => (

@@ -8,7 +8,7 @@
  * Logging a breeding automatically cascades downstream barn chores via the `Master Task List`.
  */
 
-import { AlertTriangle, Loader2, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, RefreshCw, Search, Trash2, UserPlus, X } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   findLitterOffspringTattooConflicts,
@@ -31,12 +31,20 @@ import {
   formatCurrencyCents,
   formatReadableDate,
   formatSexForSpecies,
+  formatWeight,
+  formatWeightInputValue,
   getSpeciesIdentifierLabels,
+  getWeightInputMeta,
   isAnimalArchived,
+  LitterWeightMilestone,
   normalizeCurrencyCode,
+  normalizeLitterWeightMilestones,
   normalizeServiceFeeDirection,
   normalizeUltrasoundResult,
+  parseWeightInputToGrams,
+  resolveSpeciesWeightUnit,
   ServiceFeeDirection,
+  TargetWeightPoint,
   todayDateIso,
   ULTRASOUND_RESULTS,
   UltrasoundResult,
@@ -55,6 +63,7 @@ import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { CoatExplorerSandbox } from './CoatExplorerSandbox';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
+import { GrowthAndSurvivalLab } from './GrowthAndSurvivalLab';
 import { PairingComparisonMatrix } from './PairingComparisonMatrix';
 import { SearchableParentPicker } from './SearchableParentPicker';
 
@@ -88,6 +97,7 @@ interface BreedingScreenProps {
       ultrasoundResult?: UltrasoundResult;
       ultrasoundFetalCount?: number;
       ultrasoundProjectedDueIso?: string;
+      litterWeightMilestones?: LitterWeightMilestone[];
       notes: string;
       registerJuniorCount: number;
       offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
@@ -96,6 +106,12 @@ interface BreedingScreenProps {
   ) => Promise<boolean | void> | void;
   onRecalculatePostBirthTasks?: (breedingId: string) => Promise<boolean | void> | void;
   onDeleteBreeding: (id: string) => void;
+  preselectedGrowthAnimalIds?: string[] | null;
+  onConsumePreselectedGrowthAnimalIds?: () => void;
+  onSaveTargetWeightCurve?: (
+    speciesId: string,
+    curve: TargetWeightPoint[]
+  ) => Promise<boolean> | boolean;
 }
 
 export function BreedingScreen({
@@ -105,6 +121,9 @@ export function BreedingScreen({
   onUpdateOutcome,
   onRecalculatePostBirthTasks,
   onDeleteBreeding,
+  preselectedGrowthAnimalIds,
+  onConsumePreselectedGrowthAnimalIds,
+  onSaveTargetWeightCurve,
 }: BreedingScreenProps) {
   const { speciesProfile, animals, herdById, breedings, tasks } = activeData;
   const baseId = useId();
@@ -243,12 +262,35 @@ export function BreedingScreen({
   const [outUltrasoundFetalCount, setOutUltrasoundFetalCount] = useState('');
   const [outUltrasoundProjectedDueIso, setOutUltrasoundProjectedDueIso] = useState('');
   const [outNotes, setOutNotes] = useState('');
+  const [outMilestones, setOutMilestones] = useState<
+    Array<{
+      id: string;
+      ageDaysInput: string;
+      label: string;
+      liveCountInput: string;
+      weightInput: string;
+      entryMode: 'total' | 'avg';
+    }>
+  >([]);
   const [outOffspringDrafts, setOutOffspringDrafts] = useState<LitterOffspringDraft[]>([]);
   const [outOverrideInput, setOutOverrideInput] = useState('');
   const [outConflictError, setOutConflictError] = useState<string | null>(null);
   const [outShiftPostBirthTasks, setOutShiftPostBirthTasks] = useState(true);
   const breedingSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
   const recalcTasksLock = useAsyncKeyedLock();
+
+  const effectiveWeightUnit = useMemo(
+    () =>
+      resolveSpeciesWeightUnit(
+        speciesProfile,
+        settings ?? { preferredUnit: speciesProfile.preferredUnit || 'lbs_oz' }
+      ),
+    [speciesProfile, settings]
+  );
+  const weightInputMeta = useMemo(
+    () => getWeightInputMeta(effectiveWeightUnit),
+    [effectiveWeightUnit]
+  );
 
   const idLabels = useMemo(
     () => getSpeciesIdentifierLabels(speciesProfile.name),
@@ -524,6 +566,18 @@ export function BreedingScreen({
         : ''
     );
     setOutUltrasoundProjectedDueIso(rec.ultrasoundProjectedDueIso || '');
+    const existingMilestones = normalizeLitterWeightMilestones(rec.litterWeightMilestones);
+    setOutMilestones(
+      existingMilestones.map((m) => ({
+        id: m.id,
+        ageDaysInput: String(m.ageDays),
+        label: m.label,
+        liveCountInput:
+          m.liveCount !== undefined ? String(m.liveCount) : String(rec.liveCount || ''),
+        weightInput: formatWeightInputValue(m.totalWeightGrams, effectiveWeightUnit),
+        entryMode: 'total',
+      }))
+    );
     setOutNotes(rec.notes || '');
     setOutOffspringDrafts([]);
     setOutOverrideInput('');
@@ -575,6 +629,32 @@ export function BreedingScreen({
     }
     await outcomeSubmitLock.runLocked(async () => {
       const regCount = Math.min(16, Math.max(0, Math.round(Number(outRegisterCount) || 0)));
+      const normalizedOutMilestones: LitterWeightMilestone[] = outMilestones
+        .map((row): LitterWeightMilestone | null => {
+          const ageDays = Number(row.ageDaysInput);
+          const grams = parseWeightInputToGrams(row.weightInput, effectiveWeightUnit);
+          if (!Number.isFinite(ageDays) || ageDays < 0 || grams <= 0) return null;
+          const liveNum = Number(row.liveCountInput);
+          const liveCount =
+            Number.isFinite(liveNum) && liveNum > 0
+              ? Math.round(liveNum)
+              : Math.max(1, Number(outLive) || 0);
+          const totalWeightGrams =
+            row.entryMode === 'avg' ? Math.round(grams * liveCount) : grams;
+          const avgWeightGrams =
+            row.entryMode === 'avg' ? grams : Math.round(totalWeightGrams / Math.max(1, liveCount));
+          const roundedAge = Math.round(ageDays);
+          return {
+            id: row.id,
+            ageDays: roundedAge,
+            ...(outBirthIso ? { dateIso: addDaysIso(outBirthIso, roundedAge) } : {}),
+            label: row.label.trim() || `${roundedAge}-Day Weigh-In`,
+            liveCount,
+            totalWeightGrams,
+            avgWeightGrams,
+          };
+        })
+        .filter((x): x is LitterWeightMilestone => x !== null);
       const ok = await onUpdateOutcome(editingRecord, {
         status: outStatus,
         actualBirthDateIso:
@@ -591,6 +671,7 @@ export function BreedingScreen({
         ultrasoundResult: outUltrasoundResult,
         ultrasoundFetalCount: Math.max(0, Math.round(Number(outUltrasoundFetalCount) || 0)),
         ultrasoundProjectedDueIso: outUltrasoundProjectedDueIso,
+        litterWeightMilestones: normalizedOutMilestones,
         notes: outNotes,
         registerJuniorCount: regCount,
         offspringDrafts:
@@ -1300,6 +1381,16 @@ export function BreedingScreen({
         onLoadPairingInLogger={handleLoadPairingFromMatrix}
       />
 
+      {/* Comparative Rate of Gain, Target Curve & Litter Survival Lab */}
+      <GrowthAndSurvivalLab
+        activeData={activeData}
+        settings={settings}
+        preselectedAnimalIds={preselectedGrowthAnimalIds}
+        onConsumePreselectedAnimalIds={onConsumePreselectedGrowthAnimalIds}
+        onSaveTargetWeightCurve={onSaveTargetWeightCurve}
+        onOpenBreedingOutcome={openOutcomeModal}
+      />
+
       {/* Species Breeding & Litter History Ledger */}
       <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1784,6 +1875,197 @@ export function BreedingScreen({
                     onChange={(e) => setOutFeeInput(e.target.value)}
                     className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
                   />
+                </div>
+              )}
+            </div>
+
+            {/* Litter Weight-Gain Milestones (3-week, 6-week, 8-week / Weaning) */}
+            <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-semibold text-[var(--barn-ink)]">
+                  Litter Weight-Gain Milestones ({weightInputMeta.shortUnit})
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    { age: 21, label: '3-Week (21d)' },
+                    { age: 42, label: '6-Week (42d)' },
+                    { age: 56, label: '8-Week Weaning' },
+                  ].map((preset) => (
+                    <button
+                      key={preset.age}
+                      type="button"
+                      onClick={() =>
+                        setOutMilestones((prev) => [
+                          ...prev,
+                          {
+                            id: `lwm-${preset.age}-${Date.now()}`,
+                            ageDaysInput: String(preset.age),
+                            label: preset.label,
+                            liveCountInput: outLive || '1',
+                            weightInput: '',
+                            entryMode: 'total',
+                          },
+                        ])
+                      }
+                      className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] hover:bg-[var(--barn-subtle)]"
+                    >
+                      +{preset.age}d
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOutMilestones((prev) => [
+                        ...prev,
+                        {
+                          id: `lwm-custom-${Date.now()}`,
+                          ageDaysInput: '',
+                          label: 'Custom Check',
+                          liveCountInput: outLive || '1',
+                          weightInput: '',
+                          entryMode: 'total',
+                        },
+                      ])
+                    }
+                    className="min-h-[28px] px-2 py-0.5 rounded-md border border-[var(--barn-sage)]/60 bg-[var(--barn-sage-tint)] text-[11px] font-medium inline-flex items-center gap-0.5"
+                  >
+                    <Plus className="w-3 h-3" aria-hidden="true" />
+                    Custom
+                  </button>
+                </div>
+              </div>
+
+              {outMilestones.length === 0 ? (
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Track litter totals at 21d, 42d, or 56d weaning to chart maternal milking &amp;
+                  sire growth curves across seasons.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {outMilestones.map((row, idx) => {
+                    const parsedGrams = parseWeightInputToGrams(
+                      row.weightInput,
+                      effectiveWeightUnit
+                    );
+                    const countNum = Math.max(1, Number(row.liveCountInput) || Number(outLive) || 1);
+                    const avgGrams =
+                      parsedGrams > 0
+                        ? row.entryMode === 'avg'
+                          ? parsedGrams
+                          : Math.round(parsedGrams / countNum)
+                        : 0;
+                    return (
+                      <div
+                        key={row.id}
+                        className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1.5"
+                      >
+                        <div className="grid grid-cols-12 gap-1.5 items-center">
+                          <input
+                            type="number"
+                            min={0}
+                            max={365}
+                            placeholder="Days"
+                            aria-label={`Milestone ${idx + 1} age in days`}
+                            value={row.ageDaysInput}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutMilestones((prev) =>
+                                prev.map((m) =>
+                                  m.id === row.id ? { ...m, ageDaysInput: val } : m
+                                )
+                              );
+                            }}
+                            className="col-span-2 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Label"
+                            aria-label={`Milestone ${idx + 1} label`}
+                            value={row.label}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutMilestones((prev) =>
+                                prev.map((m) => (m.id === row.id ? { ...m, label: val } : m))
+                              );
+                            }}
+                            className="col-span-4 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            placeholder="Count"
+                            aria-label={`Milestone ${idx + 1} live offspring weighed`}
+                            value={row.liveCountInput}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutMilestones((prev) =>
+                                prev.map((m) =>
+                                  m.id === row.id ? { ...m, liveCountInput: val } : m
+                                )
+                              );
+                            }}
+                            className="col-span-2 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder={weightInputMeta.shortUnit}
+                            aria-label={`Milestone ${idx + 1} weight in ${weightInputMeta.shortUnit}`}
+                            value={row.weightInput}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOutMilestones((prev) =>
+                                prev.map((m) =>
+                                  m.id === row.id ? { ...m, weightInput: val } : m
+                                )
+                              );
+                            }}
+                            className="col-span-3 min-h-[34px] px-2 py-1 rounded-md bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono tabular-nums"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOutMilestones((prev) => prev.filter((m) => m.id !== row.id))
+                            }
+                            aria-label={`Remove milestone ${idx + 1}`}
+                            className="col-span-1 min-h-[34px] flex items-center justify-center rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-danger)]"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--barn-muted)]">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOutMilestones((prev) =>
+                                  prev.map((m) =>
+                                    m.id === row.id
+                                      ? {
+                                          ...m,
+                                          entryMode: m.entryMode === 'total' ? 'avg' : 'total',
+                                        }
+                                      : m
+                                  )
+                                )
+                              }
+                              className="underline hover:text-[var(--barn-ink)]"
+                            >
+                              Input: {row.entryMode === 'total' ? 'Total Litter' : 'Avg per Offspring'}
+                            </button>
+                          </div>
+                          {avgGrams > 0 && (
+                            <span className="font-mono tabular-nums">
+                              Avg/{speciesProfile.offspringLabel}:{' '}
+                              {formatWeight(avgGrams, effectiveWeightUnit)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

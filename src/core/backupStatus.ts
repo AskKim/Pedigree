@@ -98,6 +98,8 @@ export function getLatestSnapshotTimestamp(snapshot: BarnDatabaseSnapshot): stri
   checkItems(snapshot.tasks);
   checkItems(snapshot.careLogs);
   checkItems(snapshot.shows);
+  checkItems(snapshot.feedBatches);
+  checkItems(snapshot.feedAllocations);
   return latest;
 }
 
@@ -113,6 +115,8 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
   const hasRealTasks = snapshot.tasks.some((t) => !isSampleTestingId(t.id));
   const hasRealLogs = snapshot.careLogs.some((l) => !isSampleTestingId(l.id));
   const hasRealShows = snapshot.shows.some((s) => !isSampleTestingId(s.id));
+  const hasRealFeedBatches = (snapshot.feedBatches ?? []).some((f) => !isSampleTestingId(f.id));
+  const hasRealFeedAllocs = (snapshot.feedAllocations ?? []).some((a) => !isSampleTestingId(a.id));
   const hasCustomSpecies = snapshot.speciesProfiles.some(
     (sp) => !PREDEFINED_SPECIES_LOWER.has(sp.name.trim().toLowerCase())
   );
@@ -128,6 +132,8 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
     hasRealTasks ||
     hasRealLogs ||
     hasRealShows ||
+    hasRealFeedBatches ||
+    hasRealFeedAllocs ||
     hasCustomSpecies ||
     hasSpeciesMemo
   );

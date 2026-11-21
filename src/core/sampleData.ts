@@ -23,6 +23,8 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  FeedAllocation,
+  FeedBatch,
   isSameSpecies,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
@@ -409,12 +411,32 @@ export function countSpeciesTestingRecords(
   const shows = snapshot.shows.filter(
     (s) => isSameSpecies(s.species, speciesName) && isSampleTestingId(s.id)
   ).length;
+  const seedFeedBatchIds = new Set(
+    (snapshot.feedBatches ?? [])
+      .filter((f) => isSameSpecies(f.species, speciesName) && isSampleTestingId(f.id))
+      .map((f) => f.id)
+  );
+  const feedAllocations = (snapshot.feedAllocations ?? []).filter(
+    (fa) =>
+      isSameSpecies(fa.species, speciesName) &&
+      (isSampleTestingId(fa.id) || seedFeedBatchIds.has(fa.feedBatchId))
+  ).length;
 
-  return seedAnimalIds.size + seedBreedingIds.size + photos + cages + tasks + careLogs + shows;
+  return (
+    seedAnimalIds.size +
+    seedBreedingIds.size +
+    photos +
+    cages +
+    tasks +
+    careLogs +
+    shows +
+    seedFeedBatchIds.size +
+    feedAllocations
+  );
 }
 
 /**
- * Counts all records (animals, photos, cages, breedings, tasks, careLogs, shows) scoped to `speciesName`.
+ * Counts all records (animals, photos, cages, breedings, tasks, careLogs, shows, feedBatches, feedAllocations) scoped to `speciesName`.
  */
 export function countAllSpeciesRecords(
   snapshot: BarnDatabaseSnapshot,
@@ -429,8 +451,24 @@ export function countAllSpeciesRecords(
   const tasks = snapshot.tasks.filter((t) => isSameSpecies(t.species, speciesName)).length;
   const careLogs = snapshot.careLogs.filter((l) => isSameSpecies(l.species, speciesName)).length;
   const shows = snapshot.shows.filter((s) => isSameSpecies(s.species, speciesName)).length;
+  const feedBatches = (snapshot.feedBatches ?? []).filter((f) =>
+    isSameSpecies(f.species, speciesName)
+  ).length;
+  const feedAllocations = (snapshot.feedAllocations ?? []).filter((fa) =>
+    isSameSpecies(fa.species, speciesName)
+  ).length;
 
-  return animals + photos + cages + breedings + tasks + careLogs + shows;
+  return (
+    animals +
+    photos +
+    cages +
+    breedings +
+    tasks +
+    careLogs +
+    shows +
+    feedBatches +
+    feedAllocations
+  );
 }
 
 /**
@@ -551,6 +589,24 @@ export function purgeSpeciesTestingDataPure(
       return { ...s, enteredAnimalIds: filteredIds, updatedAt: ts };
     });
 
+  const removedFeedBatchIds = new Set<string>();
+  const nextFeedBatches = (snapshot.feedBatches ?? []).filter((f) => {
+    const remove = isSameSpecies(f.species, speciesName) && isSampleTestingId(f.id);
+    if (remove) {
+      removedFeedBatchIds.add(f.id);
+      removedTotalRecords++;
+    }
+    return !remove;
+  });
+
+  const nextFeedAllocations = (snapshot.feedAllocations ?? []).filter((fa) => {
+    const remove =
+      isSameSpecies(fa.species, speciesName) &&
+      (isSampleTestingId(fa.id) || removedFeedBatchIds.has(fa.feedBatchId));
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -561,6 +617,8 @@ export function purgeSpeciesTestingDataPure(
       tasks: nextTasks,
       careLogs: nextCareLogs,
       shows: nextShows,
+      feedBatches: nextFeedBatches,
+      feedAllocations: nextFeedAllocations,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -671,6 +729,24 @@ export function purgeSpeciesNonTestingDataPure(
       return { ...s, enteredAnimalIds: filteredIds, updatedAt: ts };
     });
 
+  const removedFeedBatchIds = new Set<string>();
+  const nextFeedBatches = (snapshot.feedBatches ?? []).filter((f) => {
+    const remove = isSameSpecies(f.species, speciesName) && !isSampleTestingId(f.id);
+    if (remove) {
+      removedFeedBatchIds.add(f.id);
+      removedTotalRecords++;
+    }
+    return !remove;
+  });
+
+  const nextFeedAllocations = (snapshot.feedAllocations ?? []).filter((fa) => {
+    const remove =
+      isSameSpecies(fa.species, speciesName) &&
+      (!isSampleTestingId(fa.id) || removedFeedBatchIds.has(fa.feedBatchId));
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -681,6 +757,8 @@ export function purgeSpeciesNonTestingDataPure(
       tasks: nextTasks,
       careLogs: nextCareLogs,
       shows: nextShows,
+      feedBatches: nextFeedBatches,
+      feedAllocations: nextFeedAllocations,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -761,6 +839,22 @@ export function purgeAllSpeciesRecordsPure(
     return true;
   });
 
+  const nextFeedBatches = (snapshot.feedBatches ?? []).filter((f) => {
+    if (isSameSpecies(f.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextFeedAllocations = (snapshot.feedAllocations ?? []).filter((fa) => {
+    if (isSameSpecies(fa.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -771,6 +865,8 @@ export function purgeAllSpeciesRecordsPure(
       tasks: nextTasks,
       careLogs: nextCareLogs,
       shows: nextShows,
+      feedBatches: nextFeedBatches,
+      feedAllocations: nextFeedAllocations,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -786,6 +882,8 @@ export interface SpeciesSeedBundle {
   tasks: BarnTask[];
   careLogs: CareLog[];
   shows: ShowEvent[];
+  feedBatches: FeedBatch[];
+  feedAllocations: FeedAllocation[];
 }
 
 /**
@@ -1306,6 +1404,49 @@ export function buildSampleDataForSpecies(
     },
   ];
 
+  const feedBatchId = seedId(slug, 'feed-1');
+  const feedBatches: FeedBatch[] = [
+    {
+      id: feedBatchId,
+      species: spec.species,
+      brand: 'Purina Animal Nutrition',
+      productName: `${spec.species} Complete Ration 16%`,
+      lotNumber: `4291A-${codePrefix}01`,
+      millCode: 'PLT-429',
+      manufactureDateIso: addDaysIso(today, -18),
+      purchaseDateIso: addDaysIso(today, -10),
+      bagCount: 4,
+      bagWeightValue: 50,
+      bagWeightUnit: 'lbs',
+      totalQuantity: 200,
+      remainingQuantity: 150,
+      lowStockThreshold: 50,
+      totalCostCents: 9200,
+      supplierName: 'Valley Farm & Feed Co-op',
+      proteinPercent: 16,
+      notes: 'Stored in airtight galvanized feed bin; sewn tag lot recorded.',
+      createdAt: ts,
+      updatedAt: ts,
+    },
+  ];
+
+  const feedAllocations: FeedAllocation[] = [
+    {
+      id: seedId(slug, 'feed-alloc-1'),
+      species: spec.species,
+      feedBatchId,
+      targetType: 'cage',
+      targetId: cages[0]?.id || '',
+      targetLabel: cages[0]?.label || `${spec.cagePrefix}-1`,
+      dateIso: addDaysIso(today, -2),
+      quantity: 50,
+      unit: 'lbs',
+      notes: 'Opened fresh bag for breeding stock hopper.',
+      createdAt: ts,
+      updatedAt: ts,
+    },
+  ];
+
   return {
     speciesProfile,
     animals,
@@ -1314,6 +1455,8 @@ export function buildSampleDataForSpecies(
     tasks,
     careLogs,
     shows,
+    feedBatches,
+    feedAllocations,
   };
 }
 
@@ -1343,6 +1486,7 @@ export function buildFullPredefinedSampleSnapshot(
     dismissedTaskGroupKeys: existingSettings?.dismissedTaskGroupKeys ?? {},
     dismissedMemoAlertSignatures: existingSettings?.dismissedMemoAlertSignatures ?? {},
     includePhotoOnPedigree: existingSettings?.includePhotoOnPedigree ?? false,
+    feedTagPurgeWindowDays: existingSettings?.feedTagPurgeWindowDays ?? 60,
     updatedAt: ts,
   };
 
@@ -1353,6 +1497,8 @@ export function buildFullPredefinedSampleSnapshot(
   const tasks: BarnTask[] = [];
   const careLogs: CareLog[] = [];
   const shows: ShowEvent[] = [];
+  const feedBatches: FeedBatch[] = [];
+  const feedAllocations: FeedAllocation[] = [];
 
   PREDEFINED_SPECIES_PRESETS.forEach((preset, idx) => {
     const bundle = buildSampleDataForSpecies(preset.name, undefined, referenceTodayIso);
@@ -1364,6 +1510,8 @@ export function buildFullPredefinedSampleSnapshot(
       tasks.push(...bundle.tasks);
       careLogs.push(...bundle.careLogs);
       shows.push(...bundle.shows);
+      feedBatches.push(...bundle.feedBatches);
+      feedAllocations.push(...bundle.feedAllocations);
     }
   });
 
@@ -1377,5 +1525,7 @@ export function buildFullPredefinedSampleSnapshot(
     tasks,
     careLogs,
     shows,
+    feedBatches,
+    feedAllocations,
   };
 }

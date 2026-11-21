@@ -26,15 +26,21 @@ import {
   CageLocation,
   CareLog,
   DEFAULT_CALENDAR_SYNC_SETTINGS,
+  FeedAllocation,
+  FeedAllocationTargetType,
+  FeedBatch,
   normalizeAnimalStatus,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeCurrencyCode,
+  normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
   normalizeIgnoredConflicts,
+  normalizeLitterWeightMilestones,
   normalizeOwnershipType,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
+  normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
   normalizeWeightUnit,
   nowIsoUtc,
@@ -82,7 +88,7 @@ const IDB_PRIMARY_KEY = 'pedigree_master.sqlite';
 const IDB_FALLBACK_SNAPSHOT_KEY = 'pedigree_fallback_json';
 export const IDB_WRITE_EPOCH_KEY = 'pedigree_write_epoch';
 export const DB_WRITE_LOCK_NAME = 'community_pedigree_db_write_v1';
-const SQLITE_SCHEMA_VERSION = 2;
+const SQLITE_SCHEMA_VERSION = 3;
 
 type SqlJsInitConfig = NonNullable<Parameters<typeof initSqlJs>[0]> & {
   useOldExtensionFunctions: boolean;
@@ -140,6 +146,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     example_breeds_json TEXT NOT NULL,
     milestones_json TEXT NOT NULL,
     breed_overrides_json TEXT NOT NULL DEFAULT '[]',
+    target_weight_curve_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -253,6 +260,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     ultrasound_result TEXT NOT NULL DEFAULT '',
     ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0,
     ultrasound_projected_due_iso TEXT NOT NULL DEFAULT '',
+    litter_weight_milestones_json TEXT NOT NULL DEFAULT '[]',
     notes TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -311,6 +319,61 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS feed_batches (
+    id TEXT PRIMARY KEY NOT NULL,
+    species TEXT NOT NULL,
+    brand TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL,
+    lot_number TEXT NOT NULL DEFAULT '',
+    mill_code TEXT NOT NULL DEFAULT '',
+    manufacture_date_iso TEXT NOT NULL DEFAULT '',
+    purchase_date_iso TEXT NOT NULL,
+    bag_count REAL NOT NULL DEFAULT 0,
+    bag_weight_value REAL NOT NULL DEFAULT 0,
+    bag_weight_unit TEXT NOT NULL DEFAULT 'lbs',
+    total_quantity REAL NOT NULL DEFAULT 0,
+    remaining_quantity REAL NOT NULL DEFAULT 0,
+    low_stock_threshold REAL NOT NULL DEFAULT 0,
+    total_cost_cents INTEGER NOT NULL DEFAULT 0,
+    supplier_name TEXT NOT NULL DEFAULT '',
+    protein_percent REAL NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    tag_photo_data_url TEXT NOT NULL DEFAULT '',
+    tag_photo_thumbnail_data_url TEXT NOT NULL DEFAULT '',
+    tag_photo_mime_type TEXT NOT NULL DEFAULT '',
+    tag_photo_bytes INTEGER NOT NULL DEFAULT 0,
+    tag_photo_captured_date_iso TEXT NOT NULL DEFAULT '',
+    tag_photo_purged_at_iso TEXT NOT NULL DEFAULT '',
+    tag_photo_bytes_reclaimed INTEGER NOT NULL DEFAULT 0,
+    ocr_raw_text TEXT NOT NULL DEFAULT '',
+    ocr_confidence REAL NOT NULL DEFAULT 0,
+    ocr_manual_override INTEGER NOT NULL DEFAULT 0,
+    recall_flagged INTEGER NOT NULL DEFAULT 0,
+    recall_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_batches_species ON feed_batches(species);
+  CREATE INDEX IF NOT EXISTS idx_feed_batches_lot ON feed_batches(lot_number);
+
+  CREATE TABLE IF NOT EXISTS feed_allocations (
+    id TEXT PRIMARY KEY NOT NULL,
+    species TEXT NOT NULL,
+    feed_batch_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL DEFAULT '',
+    target_label TEXT NOT NULL DEFAULT '',
+    date_iso TEXT NOT NULL,
+    quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'lbs',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_allocations_batch ON feed_allocations(feed_batch_id);
 `;
 
 const IDB_OPEN_TIMEOUT_MS = 8000;
@@ -505,6 +568,7 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE species_profiles ADD COLUMN memo_updated_at TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE species_profiles ADD COLUMN maturity_days INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE species_profiles ADD COLUMN breed_overrides_json TEXT NOT NULL DEFAULT '[]';",
+    "ALTER TABLE species_profiles ADD COLUMN target_weight_curve_json TEXT NOT NULL DEFAULT '[]';",
     'ALTER TABLE animals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;',
     'ALTER TABLE animals ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE animals ADD COLUMN ignored_conflicts_json TEXT NOT NULL DEFAULT '[]';",
@@ -528,6 +592,7 @@ function applySchemaMigrations(db: Database): void {
     "ALTER TABLE breedings ADD COLUMN ultrasound_result TEXT NOT NULL DEFAULT '';",
     'ALTER TABLE breedings ADD COLUMN ultrasound_fetal_count INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE breedings ADD COLUMN ultrasound_projected_due_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE breedings ADD COLUMN litter_weight_milestones_json TEXT NOT NULL DEFAULT '[]';",
     "ALTER TABLE care_logs ADD COLUMN medication_name TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE care_logs ADD COLUMN dosage TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE care_logs ADD COLUMN administration_route TEXT NOT NULL DEFAULT '';",
@@ -1165,6 +1230,10 @@ export class WebSqliteAdapter implements StorageAdapter {
               ? extraSettings.backupReminderSnoozedUntilMs
               : undefined,
           autoOffloadRetiredToOpfs: Boolean(extraSettings.autoOffloadRetiredToOpfs),
+          feedTagPurgeWindowDays: normalizeFeedPurgeWindowDays(
+            extraSettings.feedTagPurgeWindowDays,
+            60
+          ),
           updatedAt: String(sRow.updated_at || getAdjustedNowIsoUtc()),
         }
       : {
@@ -1187,6 +1256,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           includePhotoOnPedigree: false,
           calendarSync: { ...DEFAULT_CALENDAR_SYNC_SETTINGS },
           autoOffloadRetiredToOpfs: false,
+          feedTagPurgeWindowDays: 60,
           updatedAt: getAdjustedNowIsoUtc(),
         };
 
@@ -1236,6 +1306,15 @@ export class WebSqliteAdapter implements StorageAdapter {
               r.breed_overrides_json || '[]',
               [],
               `species_profiles(${String(r.name)}).breed_overrides_json`
+            )
+          )
+        ),
+        targetWeightCurve: normalizeTargetWeightCurve(
+          safeArray(
+            this.safeParseJson(
+              r.target_weight_curve_json || '[]',
+              [],
+              `species_profiles(${String(r.name)}).target_weight_curve_json`
             )
           )
         ),
@@ -1333,6 +1412,15 @@ export class WebSqliteAdapter implements StorageAdapter {
       ultrasoundResult: normalizeUltrasoundResult(r.ultrasound_result),
       ultrasoundFetalCount: finiteNonNeg(r.ultrasound_fetal_count, 0),
       ultrasoundProjectedDueIso: String(r.ultrasound_projected_due_iso || ''),
+      litterWeightMilestones: normalizeLitterWeightMilestones(
+        safeArray(
+          this.safeParseJson(
+            r.litter_weight_milestones_json || '[]',
+            [],
+            `breedings(${String(r.id)}).litter_weight_milestones_json`
+          )
+        )
+      ),
       notes: String(r.notes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
@@ -1415,6 +1503,102 @@ export class WebSqliteAdapter implements StorageAdapter {
       };
     });
 
+    const safeTableQuery = (tableName: string, sql: string): Record<string, any>[] => {
+      try {
+        const existsStmt = db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"
+        );
+        let exists = false;
+        try {
+          existsStmt.bind([tableName]);
+          exists = existsStmt.step();
+        } finally {
+          existsStmt.free();
+        }
+        return exists ? runQuery(sql) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const feedBatches: FeedBatch[] = safeTableQuery(
+      'feed_batches',
+      'SELECT * FROM feed_batches ORDER BY purchase_date_iso DESC, created_at DESC'
+    ).map((r) => {
+      const totalCostRaw = finiteNonNeg(r.total_cost_cents, 0);
+      const proteinRaw = finiteNonNeg(r.protein_percent, 0);
+      const tagPhotoDataUrl = r.tag_photo_data_url
+        ? sanitizeSafeRasterImageDataUrl(String(r.tag_photo_data_url)) || undefined
+        : undefined;
+      const tagPhotoThumbnailDataUrl = r.tag_photo_thumbnail_data_url
+        ? sanitizeSafeRasterImageDataUrl(String(r.tag_photo_thumbnail_data_url)) || tagPhotoDataUrl
+        : tagPhotoDataUrl;
+      const tagPhotoBytes = finiteNonNeg(r.tag_photo_bytes, 0);
+      const tagPhotoBytesReclaimed = finiteNonNeg(r.tag_photo_bytes_reclaimed, 0);
+      const ocrConf = finiteNonNeg(r.ocr_confidence, 0);
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        brand: String(r.brand || ''),
+        productName: String(r.product_name),
+        lotNumber: String(r.lot_number || ''),
+        millCode: String(r.mill_code || ''),
+        manufactureDateIso: String(r.manufacture_date_iso || ''),
+        purchaseDateIso: String(r.purchase_date_iso),
+        bagCount: finiteNonNeg(r.bag_count, 0),
+        bagWeightValue: finiteNonNeg(r.bag_weight_value, 0),
+        bagWeightUnit: String(r.bag_weight_unit || 'lbs'),
+        totalQuantity: finiteNonNeg(r.total_quantity, 0),
+        remainingQuantity: finiteNonNeg(r.remaining_quantity, 0),
+        lowStockThreshold: finiteNonNeg(r.low_stock_threshold, 0),
+        ...(totalCostRaw > 0 ? { totalCostCents: Math.round(totalCostRaw) } : {}),
+        supplierName: String(r.supplier_name || ''),
+        ...(proteinRaw > 0 ? { proteinPercent: proteinRaw } : {}),
+        notes: String(r.notes || ''),
+        ...(tagPhotoDataUrl ? { tagPhotoDataUrl } : {}),
+        ...(tagPhotoThumbnailDataUrl ? { tagPhotoThumbnailDataUrl } : {}),
+        ...(r.tag_photo_mime_type ? { tagPhotoMimeType: String(r.tag_photo_mime_type) } : {}),
+        ...(tagPhotoBytes > 0 ? { tagPhotoBytes } : {}),
+        ...(r.tag_photo_captured_date_iso
+          ? { tagPhotoCapturedDateIso: String(r.tag_photo_captured_date_iso) }
+          : {}),
+        ...(r.tag_photo_purged_at_iso
+          ? { tagPhotoPurgedAtIso: String(r.tag_photo_purged_at_iso) }
+          : {}),
+        ...(tagPhotoBytesReclaimed > 0 ? { tagPhotoBytesReclaimed } : {}),
+        ...(r.ocr_raw_text ? { ocrRawText: String(r.ocr_raw_text) } : {}),
+        ...(ocrConf > 0 ? { ocrConfidence: ocrConf } : {}),
+        ...(Number(r.ocr_manual_override) === 1 ? { ocrManualOverride: true } : {}),
+        ...(Number(r.recall_flagged) === 1 ? { recallFlagged: true } : {}),
+        ...(r.recall_note ? { recallNote: String(r.recall_note) } : {}),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
+
+    const feedAllocations: FeedAllocation[] = safeTableQuery(
+      'feed_allocations',
+      'SELECT * FROM feed_allocations ORDER BY date_iso DESC, created_at DESC'
+    ).map((r) => {
+      const tType = String(r.target_type || 'general');
+      const targetType: FeedAllocationTargetType =
+        tType === 'cage' || tType === 'litter' || tType === 'animal' ? tType : 'general';
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        feedBatchId: String(r.feed_batch_id),
+        targetType,
+        targetId: String(r.target_id || ''),
+        targetLabel: String(r.target_label || ''),
+        dateIso: String(r.date_iso),
+        quantity: finiteNonNeg(r.quantity, 0),
+        unit: String(r.unit || 'lbs'),
+        notes: String(r.notes || ''),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
+
     if (sanitizedNumericCount > 0) {
       logDiagnosticEvent({
         level: 'warn',
@@ -1433,6 +1617,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       tasks,
       careLogs,
       shows,
+      feedBatches,
+      feedAllocations,
     };
   }
 
@@ -1806,6 +1992,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       this.db.run('DELETE FROM barn_tasks;');
       this.db.run('DELETE FROM care_logs;');
       this.db.run('DELETE FROM shows;');
+      this.db.run('DELETE FROM feed_batches;');
+      this.db.run('DELETE FROM feed_allocations;');
 
       this.upsertSettingsRow(snapshot.settings);
       for (const sp of snapshot.speciesProfiles) this.upsertSpeciesRow(sp);
@@ -1821,6 +2009,8 @@ export class WebSqliteAdapter implements StorageAdapter {
       for (const t of snapshot.tasks) this.upsertTaskRow(t);
       for (const l of snapshot.careLogs) this.upsertCareLogRow(l);
       for (const s of snapshot.shows) this.upsertShowRow(s);
+      for (const fb of snapshot.feedBatches ?? []) this.upsertFeedBatchRow(fb);
+      for (const fa of snapshot.feedAllocations ?? []) this.upsertFeedAllocationRow(fa);
 
       this.db.run('COMMIT;');
     } catch (e) {
@@ -1851,6 +2041,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       lastBackupMeta: s.lastBackupMeta ?? undefined,
       backupReminderSnoozedUntilMs: s.backupReminderSnoozedUntilMs ?? undefined,
       autoOffloadRetiredToOpfs: Boolean(s.autoOffloadRetiredToOpfs),
+      feedTagPurgeWindowDays: normalizeFeedPurgeWindowDays(s.feedTagPurgeWindowDays, 60),
     });
     this.db?.run(
       `INSERT OR REPLACE INTO barn_settings
@@ -1877,8 +2068,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertSpeciesRow(sp: SpeciesProfile): void {
     this.db?.run(
       `INSERT OR REPLACE INTO species_profiles
-       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, breed_overrides_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, sort_order, default_animal_prefix, preferred_unit, memo_text, memo_updated_at, gestation_days, rebreed_days_after_birth, wean_days_after_birth, maturity_days, birth_event_label, male_label, female_label, offspring_label, example_breeds_json, milestones_json, breed_overrides_json, target_weight_curve_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sp.id,
         sp.name,
@@ -1898,6 +2089,7 @@ export class WebSqliteAdapter implements StorageAdapter {
         JSON.stringify(sp.exampleBreeds),
         JSON.stringify(sp.milestones),
         JSON.stringify(normalizeBreedScheduleOverrides(sp.breedOverrides)),
+        JSON.stringify(normalizeTargetWeightCurve(sp.targetWeightCurve)),
         sp.createdAt,
         sp.updatedAt,
       ]
@@ -2036,8 +2228,8 @@ export class WebSqliteAdapter implements StorageAdapter {
   private upsertBreedingRow(b: BreedingRecord): void {
     this.db?.run(
       `INSERT OR REPLACE INTO breedings
-       (id, species, sire_id, dam_id, sire_name, dam_name, bred_date_iso, expected_due_date_iso, actual_birth_date_iso, projected_coi_percent, live_count, stillborn_count, fostered_count, weaned_count, offspring_created, status, service_fee_cents, service_fee_direction, ultrasound_date_iso, ultrasound_result, ultrasound_fetal_count, ultrasound_projected_due_iso, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, species, sire_id, dam_id, sire_name, dam_name, bred_date_iso, expected_due_date_iso, actual_birth_date_iso, projected_coi_percent, live_count, stillborn_count, fostered_count, weaned_count, offspring_created, status, service_fee_cents, service_fee_direction, ultrasound_date_iso, ultrasound_result, ultrasound_fetal_count, ultrasound_projected_due_iso, litter_weight_milestones_json, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         b.id,
         b.species,
@@ -2063,6 +2255,7 @@ export class WebSqliteAdapter implements StorageAdapter {
           ? Math.round(b.ultrasoundFetalCount)
           : 0,
         b.ultrasoundProjectedDueIso || '',
+        JSON.stringify(normalizeLitterWeightMilestones(b.litterWeightMilestones)),
         b.notes,
         b.createdAt,
         b.updatedAt,
@@ -2145,6 +2338,76 @@ export class WebSqliteAdapter implements StorageAdapter {
         s.notes,
         s.createdAt,
         s.updatedAt,
+      ]
+    );
+  }
+
+  private upsertFeedBatchRow(f: FeedBatch): void {
+    const safePhoto = f.tagPhotoDataUrl
+      ? sanitizeSafeRasterImageDataUrl(f.tagPhotoDataUrl) || ''
+      : '';
+    const safeThumb = f.tagPhotoThumbnailDataUrl
+      ? sanitizeSafeRasterImageDataUrl(f.tagPhotoThumbnailDataUrl) || safePhoto
+      : safePhoto;
+    this.db?.run(
+      `INSERT OR REPLACE INTO feed_batches
+       (id, species, brand, product_name, lot_number, mill_code, manufacture_date_iso, purchase_date_iso, bag_count, bag_weight_value, bag_weight_unit, total_quantity, remaining_quantity, low_stock_threshold, total_cost_cents, supplier_name, protein_percent, notes, tag_photo_data_url, tag_photo_thumbnail_data_url, tag_photo_mime_type, tag_photo_bytes, tag_photo_captured_date_iso, tag_photo_purged_at_iso, tag_photo_bytes_reclaimed, ocr_raw_text, ocr_confidence, ocr_manual_override, recall_flagged, recall_note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        f.id,
+        f.species,
+        f.brand || '',
+        f.productName,
+        f.lotNumber || '',
+        f.millCode || '',
+        f.manufactureDateIso || '',
+        f.purchaseDateIso,
+        Number.isFinite(Number(f.bagCount)) && Number(f.bagCount) >= 0 ? Number(f.bagCount) : 0,
+        Number.isFinite(Number(f.bagWeightValue)) && Number(f.bagWeightValue) >= 0 ? Number(f.bagWeightValue) : 0,
+        f.bagWeightUnit || 'lbs',
+        Number.isFinite(Number(f.totalQuantity)) && Number(f.totalQuantity) >= 0 ? Number(f.totalQuantity) : 0,
+        Number.isFinite(Number(f.remainingQuantity)) && Number(f.remainingQuantity) >= 0 ? Number(f.remainingQuantity) : 0,
+        Number.isFinite(Number(f.lowStockThreshold)) && Number(f.lowStockThreshold) >= 0 ? Number(f.lowStockThreshold) : 0,
+        f.totalCostCents && f.totalCostCents > 0 ? Math.round(f.totalCostCents) : 0,
+        f.supplierName || '',
+        f.proteinPercent && f.proteinPercent > 0 ? Number(f.proteinPercent) : 0,
+        f.notes || '',
+        safePhoto,
+        safeThumb,
+        f.tagPhotoMimeType || '',
+        f.tagPhotoBytes && f.tagPhotoBytes > 0 ? Math.round(f.tagPhotoBytes) : 0,
+        f.tagPhotoCapturedDateIso || '',
+        f.tagPhotoPurgedAtIso || '',
+        f.tagPhotoBytesReclaimed && f.tagPhotoBytesReclaimed > 0 ? Math.round(f.tagPhotoBytesReclaimed) : 0,
+        f.ocrRawText || '',
+        f.ocrConfidence && f.ocrConfidence > 0 ? Number(f.ocrConfidence) : 0,
+        f.ocrManualOverride ? 1 : 0,
+        f.recallFlagged ? 1 : 0,
+        f.recallNote || '',
+        f.createdAt,
+        f.updatedAt,
+      ]
+    );
+  }
+
+  private upsertFeedAllocationRow(fa: FeedAllocation): void {
+    this.db?.run(
+      `INSERT OR REPLACE INTO feed_allocations
+       (id, species, feed_batch_id, target_type, target_id, target_label, date_iso, quantity, unit, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        fa.id,
+        fa.species,
+        fa.feedBatchId,
+        fa.targetType,
+        fa.targetId || '',
+        fa.targetLabel || '',
+        fa.dateIso,
+        Number.isFinite(Number(fa.quantity)) && Number(fa.quantity) >= 0 ? Number(fa.quantity) : 0,
+        fa.unit || 'lbs',
+        fa.notes || '',
+        fa.createdAt,
+        fa.updatedAt,
       ]
     );
   }
@@ -2557,6 +2820,90 @@ export class WebSqliteAdapter implements StorageAdapter {
         this.db.run('DELETE FROM shows WHERE id = ?', [id]);
       } else if (this.fallbackSnapshot) {
         this.fallbackSnapshot.shows = this.fallbackSnapshot.shows.filter((s) => s.id !== id);
+      }
+    });
+  }
+
+  async saveFeedBatch(batch: FeedBatch): Promise<void> {
+    await this.withLockedWrite('saveFeedBatch', () => {
+      if (this.db) {
+        this.upsertFeedBatchRow(batch);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.feedBatches ?? [];
+        const idx = list.findIndex((f) => f.id === batch.id);
+        if (idx >= 0) list[idx] = batch;
+        else list.push(batch);
+        this.fallbackSnapshot.feedBatches = list;
+      }
+    });
+  }
+
+  async saveFeedBatchesBatch(batches: FeedBatch[]): Promise<void> {
+    if (batches.length === 0) return;
+    await this.withLockedWrite('saveFeedBatchesBatch', () => {
+      if (this.db) {
+        this.db.run('BEGIN TRANSACTION;');
+        try {
+          for (const b of batches) this.upsertFeedBatchRow(b);
+          this.db.run('COMMIT;');
+        } catch (e) {
+          try {
+            this.db.run('ROLLBACK;');
+          } catch {
+            // Ignore rollback error
+          }
+          throw e;
+        }
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.feedBatches ?? [];
+        for (const b of batches) {
+          const idx = list.findIndex((x) => x.id === b.id);
+          if (idx >= 0) list[idx] = b;
+          else list.push(b);
+        }
+        this.fallbackSnapshot.feedBatches = list;
+      }
+    });
+  }
+
+  async deleteFeedBatch(id: string): Promise<void> {
+    await this.withLockedWrite('deleteFeedBatch', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM feed_batches WHERE id = ?', [id]);
+        this.db.run('DELETE FROM feed_allocations WHERE feed_batch_id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.feedBatches = (this.fallbackSnapshot.feedBatches ?? []).filter(
+          (f) => f.id !== id
+        );
+        this.fallbackSnapshot.feedAllocations = (this.fallbackSnapshot.feedAllocations ?? []).filter(
+          (fa) => fa.feedBatchId !== id
+        );
+      }
+    });
+  }
+
+  async saveFeedAllocation(allocation: FeedAllocation): Promise<void> {
+    await this.withLockedWrite('saveFeedAllocation', () => {
+      if (this.db) {
+        this.upsertFeedAllocationRow(allocation);
+      } else if (this.fallbackSnapshot) {
+        const list = this.fallbackSnapshot.feedAllocations ?? [];
+        const idx = list.findIndex((a) => a.id === allocation.id);
+        if (idx >= 0) list[idx] = allocation;
+        else list.push(allocation);
+        this.fallbackSnapshot.feedAllocations = list;
+      }
+    });
+  }
+
+  async deleteFeedAllocation(id: string): Promise<void> {
+    await this.withLockedWrite('deleteFeedAllocation', () => {
+      if (this.db) {
+        this.db.run('DELETE FROM feed_allocations WHERE id = ?', [id]);
+      } else if (this.fallbackSnapshot) {
+        this.fallbackSnapshot.feedAllocations = (this.fallbackSnapshot.feedAllocations ?? []).filter(
+          (fa) => fa.id !== id
+        );
       }
     });
   }

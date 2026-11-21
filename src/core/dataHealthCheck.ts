@@ -23,6 +23,8 @@ import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
   BarnSettings,
+  FeedAllocation,
+  FeedBatch,
   isSameSpecies,
   nowIsoUtc,
   resolveSpeciesProfile,
@@ -106,6 +108,12 @@ function collectUsedSpeciesNames(snapshot: BarnDatabaseSnapshot): string[] {
   }
   for (const p of Array.isArray(snapshot.animalPhotos) ? snapshot.animalPhotos : []) {
     if (isPlainObject(p)) add(p.species);
+  }
+  for (const f of Array.isArray(snapshot.feedBatches) ? snapshot.feedBatches : []) {
+    if (isPlainObject(f)) add(f.species);
+  }
+  for (const fa of Array.isArray(snapshot.feedAllocations) ? snapshot.feedAllocations : []) {
+    if (isPlainObject(fa)) add(fa.species);
   }
 
   return Array.from(seen.values());
@@ -628,12 +636,49 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
     nextSettings = { ...nextSettings, updatedAt: ts };
   }
 
+  // 6. Sanitize FeedBatch & FeedAllocation numeric fields without deleting user ledger records
+  const workingFeedBatches: FeedBatch[] = (Array.isArray(snapshot.feedBatches) ? snapshot.feedBatches : [])
+    .filter((f): f is FeedBatch => isPlainObject(f) && typeof f.id === 'string' && f.id.trim().length > 0)
+    .map((f) => {
+      const next = { ...f };
+      let changed = false;
+      for (const key of ['bagCount', 'bagWeightValue', 'totalQuantity', 'remainingQuantity', 'lowStockThreshold'] as const) {
+        const val = Number(next[key]);
+        if (!Number.isFinite(val) || val < 0) {
+          next[key] = 0;
+          changed = true;
+        }
+      }
+      if (next.totalCostCents !== undefined && (!Number.isFinite(Number(next.totalCostCents)) || Number(next.totalCostCents) < 0)) {
+        next.totalCostCents = 0;
+        changed = true;
+      }
+      if (changed) {
+        next.updatedAt = ts;
+        repairsApplied.push(`Normalized negative/invalid numeric quantity on feed batch "${next.productName || next.lotNumber || next.id}".`);
+      }
+      return next;
+    });
+
+  const workingFeedAllocations: FeedAllocation[] = (Array.isArray(snapshot.feedAllocations) ? snapshot.feedAllocations : [])
+    .filter((fa): fa is FeedAllocation => isPlainObject(fa) && typeof fa.id === 'string' && fa.id.trim().length > 0)
+    .map((fa) => {
+      const val = Number(fa.quantity);
+      if (!Number.isFinite(val) || val < 0) {
+        repairsApplied.push(`Reset negative/invalid feed allocation quantity for "${fa.targetLabel || fa.id}" to 0.`);
+        return { ...fa, quantity: 0, updatedAt: ts };
+      }
+      return { ...fa };
+    });
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     settings: nextSettings,
     speciesProfiles: dedupedSpecies,
     animals: workingAnimals,
     animalPhotos: workingPhotos,
+    feedBatches: workingFeedBatches,
+    feedAllocations: workingFeedAllocations,
   };
 
   const reportAfter = analyzeBarnDataHealth(nextSnapshot);

@@ -32,6 +32,7 @@ import {
   Search,
   ShieldAlert,
   Trash2,
+  TrendingUp,
   X,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -167,6 +168,7 @@ interface HerdScreenProps {
   onDownloadArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
   onDeleteArchivedHerdBundle?: (archiveKey: string) => Promise<void>;
   onOpenBarnBench?: () => void;
+  onCompareGrowthForAnimals?: (animalIds: string[]) => void;
   onUpdateSettings?: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
 }
 
@@ -224,6 +226,7 @@ export function HerdScreen({
   onDownloadArchivedHerdBundle,
   onDeleteArchivedHerdBundle,
   onOpenBarnBench,
+  onCompareGrowthForAnimals,
   onUpdateSettings,
 }: HerdScreenProps) {
   const {
@@ -1776,15 +1779,27 @@ export function HerdScreen({
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  aria-expanded={showLogForm}
-                  onClick={() => setShowLogForm((v) => !v)}
-                  className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
-                >
-                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                  Log Weight / Care
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {onCompareGrowthForAnimals && (
+                    <button
+                      type="button"
+                      onClick={() => onCompareGrowthForAnimals([activeAnimal.id])}
+                      className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                    >
+                      <TrendingUp className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Growth Chart
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-expanded={showLogForm}
+                    onClick={() => setShowLogForm((v) => !v)}
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    Log Weight / Care
+                  </button>
+                </div>
               </div>
 
               {weightPoints.length >= 2 && (
@@ -2298,6 +2313,17 @@ export function HerdScreen({
                     <Printer className="w-3.5 h-3.5" aria-hidden="true" />
                     Batch Print ({checkedIds.length})
                   </button>
+
+                  {onCompareGrowthForAnimals && (
+                    <button
+                      type="button"
+                      onClick={() => onCompareGrowthForAnimals(checkedIds)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <TrendingUp className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Compare Rate of Gain ({checkedIds.length})
+                    </button>
+                  )}
 
                   <button
                     type="button"

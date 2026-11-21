@@ -79,6 +79,10 @@ const PedigreeScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/PedigreeScreen')['PedigreeScreen']>
 >(() => import('./components/PedigreeScreen'), 'PedigreeScreen', 'Pedigree Explorer');
 
+const FeedLedgerScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/FeedLedgerScreen')['FeedLedgerScreen']>
+>(() => import('./components/FeedLedgerScreen'), 'FeedLedgerScreen', 'Feed Ledger');
+
 const ReportsScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/ReportsScreen')['ReportsScreen']>
 >(() => import('./components/ReportsScreen'), 'ReportsScreen', 'Reports');
@@ -126,6 +130,7 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   bench: 'Barn Bench',
   breeding: 'Breeding Lab',
   pedigree: 'Pedigree Explorer',
+  feed: 'Feed Ledger',
   reports: 'Reports',
   memo: 'Species Memo',
   importExport: 'Import / Export Hub',
@@ -398,6 +403,7 @@ export default function App() {
         k: { route: 'bench', label: 'Barn Bench' },
         b: { route: 'breeding', label: 'Breeding' },
         p: { route: 'pedigree', label: 'Pedigree' },
+        f: { route: 'feed', label: 'Feed Ledger' },
         o: { route: 'reports', label: 'Reports' },
         i: { route: 'importExport', label: 'Import / Export Hub' },
         s: { route: 'settings', label: 'Settings' },
@@ -1387,6 +1393,7 @@ export default function App() {
             onDownloadArchivedHerdBundle={store.downloadArchivedHerdBundle}
             onDeleteArchivedHerdBundle={store.deleteArchivedHerdBundle}
             onOpenBarnBench={() => setRoute('bench')}
+            onCompareGrowthForAnimals={store.openGrowthCompareForAnimals}
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
@@ -1418,6 +1425,9 @@ export default function App() {
             onDeleteBreeding={(id) => {
               void store.deleteBreeding(id);
             }}
+            preselectedGrowthAnimalIds={store.preselectedGrowthAnimalIds}
+            onConsumePreselectedGrowthAnimalIds={() => store.setPreselectedGrowthAnimalIds(null)}
+            onSaveTargetWeightCurve={store.updateSpeciesTargetWeightCurve}
           />
         )}
 
@@ -1452,6 +1462,27 @@ export default function App() {
             onCheckPedigreeBranchesHaveAncestors={store.checkPedigreeBranchesHaveAncestors}
             onUpdateBreederLogo={(dataUrl) => {
               void store.updateSettings({ breederLogoDataUrl: dataUrl }, { silent: true });
+            }}
+          />
+        )}
+
+        {route === 'feed' && (
+          <FeedLedgerScreen
+            snapshot={snapshot}
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onBackToHub={() => setRoute('dashboard')}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
+            onSaveFeedBatch={store.saveFeedBatch}
+            onDeleteFeedBatch={store.deleteFeedBatch}
+            onLogFeedAllocation={store.logFeedAllocation}
+            onDeleteFeedAllocation={store.deleteFeedAllocation}
+            onRunBiosecurityPurge={store.runFeedTagBiosecurityAutoPurge}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
             }}
           />
         )}
@@ -1644,6 +1675,7 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">K</kbd> Bench ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">F</kbd> Feed ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">I</kbd> Import/Export ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
@@ -1801,6 +1833,7 @@ export default function App() {
                 { key: 'K', label: 'Barn Bench', desc: 'Fast sequential cage-row entry for weights, BCS, trims & moves' },
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
+                { key: 'F', label: 'Feed & Lot Ledger', desc: 'Feed purchases, tag OCR lot indexing & biosecurity purge' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
                 { key: 'I', label: 'Import / Export Hub', desc: 'System backups, native restores, sync & external exporters' },
                 { key: 'S', label: 'Settings', desc: 'Barn preferences, calendar sync, appearance & diagnostics' },

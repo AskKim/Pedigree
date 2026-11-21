@@ -396,7 +396,7 @@ describe('reportGenerators (Phase 3)', () => {
     const rabbitProfile = snapshot.speciesProfiles[0];
     const catalog = buildReportCatalogForSpecies(rabbitProfile);
 
-    expect(catalog).toHaveLength(22);
+    expect(catalog).toHaveLength(23);
 
     for (const entry of catalog) {
       const rep = generateSpeciesReport(snapshot, 'Rabbit', entry.id, {
@@ -726,5 +726,74 @@ describe('reportGenerators (Phase 3)', () => {
     expect(badRow?.cells.days).toBe('—');
     expect(badRow?.cells.adg).toBe('—');
     expect(String(badRow?.cells.startWeight)).toContain('(2026-02-31)');
+  });
+
+  it('builds Litter Survival & Parent Performance Report with Male/Female role switching', () => {
+    const base = buildMultiSpeciesTestSnapshot();
+    const snap: BarnDatabaseSnapshot = {
+      ...base,
+      breedings: [
+        ...base.breedings,
+        {
+          id: 'br-r-survival-1',
+          species: 'Rabbit',
+          sireId: 'r-buck-outcross',
+          damId: 'r-doe-outcross',
+          sireName: 'Bramble',
+          damName: 'Saffron',
+          bredDateIso: '2026-06-01',
+          expectedDueDateIso: '2026-07-02',
+          actualBirthDateIso: '2026-07-02',
+          projectedCoiPercent: 0,
+          liveCount: 8,
+          stillbornCount: 2,
+          fosteredCount: 0,
+          weanedCount: 7,
+          offspringCreated: false,
+          status: 'Weaned',
+          litterWeightMilestones: [
+            {
+              id: 'ms-21d',
+              ageDays: 21,
+              label: '3-Week',
+              liveCount: 7,
+              totalWeightGrams: 3500,
+              avgWeightGrams: 500,
+            },
+            {
+              id: 'ms-56d',
+              ageDays: 56,
+              label: '8-Week',
+              liveCount: 7,
+              totalWeightGrams: 13300,
+              avgWeightGrams: 1900,
+            },
+          ],
+          notes: '',
+          createdAt: TS,
+          updatedAt: TS,
+        },
+      ],
+    };
+
+    const femaleReport = generateSpeciesReport(snap, 'Rabbit', 'litter-survival-performance-report', {
+      filter: 'Female',
+    });
+    expect(femaleReport.columns[0].label).toBe('Female');
+    const saffronRow = femaleReport.rows.find((r) => r.cells.parent === 'Saffron');
+    expect(saffronRow).toBeDefined();
+    expect(saffronRow?.cells.liveBorn).toBe('8');
+    expect(saffronRow?.cells.stillborn).toBe('2');
+    expect(saffronRow?.cells.liveBirthPct).toBe('80.0%');
+    expect(saffronRow?.cells.weanSurvivalPct).toBe('87.5%');
+    expect(saffronRow?.highlightTone).toBe('success');
+
+    const maleReport = generateSpeciesReport(snap, 'Rabbit', 'litter-survival-performance-report', {
+      filter: 'Male',
+    });
+    expect(maleReport.columns[0].label).toBe('Male');
+    const brambleRow = maleReport.rows.find((r) => r.cells.parent === 'Bramble');
+    expect(brambleRow).toBeDefined();
+    expect(brambleRow?.cells.weaned).toBe('7');
   });
 });

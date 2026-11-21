@@ -149,6 +149,8 @@ function makeTestSnapshot(): BarnDatabaseSnapshot {
     tasks: [],
     careLogs: [],
     shows: [],
+    feedBatches: [],
+    feedAllocations: [],
   };
 }
 

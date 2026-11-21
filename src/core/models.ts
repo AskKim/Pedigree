@@ -207,12 +207,13 @@ export interface ClearedCarrierRecord {
   recordedAt?: string;
 }
 
-export type SpeciesHubBlockId = 'tasks' | 'breedings' | 'cages' | 'shows';
+export type SpeciesHubBlockId = 'tasks' | 'breedings' | 'cages' | 'feed' | 'shows';
 
 export const DEFAULT_SPECIES_HUB_BLOCK_ORDER: SpeciesHubBlockId[] = [
   'tasks',
   'breedings',
   'cages',
+  'feed',
   'shows',
 ];
 
@@ -385,6 +386,7 @@ export interface BarnSettings {
   breederLogoDataUrl?: string;
   calendarSync?: CalendarSyncSettings;
   autoOffloadRetiredToOpfs?: boolean;
+  feedTagPurgeWindowDays?: FeedPurgeWindowDays;
   lastBackupMeta?: {
     exportedAtIso: string;
     format: 'zip' | 'sqlite' | 'json';
@@ -490,6 +492,35 @@ export function normalizeBreedScheduleOverrides(raw: unknown): BreedScheduleOver
   return Array.from(byBreedKey.values()).sort((a, b) => a.breed.localeCompare(b.breed));
 }
 
+export interface TargetWeightPoint {
+  ageDays: number;
+  weightGrams: number;
+  label?: string;
+}
+
+export function normalizeTargetWeightCurve(raw: unknown): TargetWeightPoint[] {
+  if (!Array.isArray(raw)) return [];
+  const byAge = new Map<number, TargetWeightPoint>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const ageNum = Number(obj.ageDays);
+    const weightNum = Number(obj.weightGrams);
+    if (!Number.isFinite(ageNum) || ageNum < 0 || !Number.isFinite(weightNum) || weightNum <= 0) {
+      continue;
+    }
+    const ageDays = Math.min(2000, Math.round(ageNum));
+    const weightGrams = Math.round(weightNum);
+    const label = typeof obj.label === 'string' ? obj.label.trim().slice(0, 60) : '';
+    byAge.set(ageDays, {
+      ageDays,
+      weightGrams,
+      ...(label ? { label } : {}),
+    });
+  }
+  return Array.from(byAge.values()).sort((a, b) => a.ageDays - b.ageDays);
+}
+
 /**
  * Livestock species biological schedule, sex/offspring terminology, and Master Task List templates.
  */
@@ -512,6 +543,7 @@ export interface SpeciesProfile {
   exampleBreeds: string[];
   milestones: SpeciesMilestoneTemplate[];
   breedOverrides?: BreedScheduleOverride[];
+  targetWeightCurve?: TargetWeightPoint[];
   _rev?: number;
   createdAt: string;
   updatedAt: string;
@@ -620,6 +652,70 @@ export interface CageLocation {
   updatedAt: string;
 }
 
+export interface LitterWeightMilestone {
+  id: string;
+  ageDays: number;
+  dateIso?: string;
+  label: string;
+  liveCount?: number;
+  totalWeightGrams: number;
+  avgWeightGrams?: number;
+  notes?: string;
+}
+
+export function normalizeLitterWeightMilestones(raw: unknown): LitterWeightMilestone[] {
+  if (!Array.isArray(raw)) return [];
+  const seenIds = new Set<string>();
+  const out: LitterWeightMilestone[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const ageNum = Number(obj.ageDays);
+    if (!Number.isFinite(ageNum) || ageNum < 0) continue;
+    const ageDays = Math.min(1000, Math.round(ageNum));
+    const totalNum = Number(obj.totalWeightGrams);
+    const avgNum = Number(obj.avgWeightGrams);
+    const liveNum = Number(obj.liveCount);
+    const liveCount =
+      Number.isFinite(liveNum) && liveNum >= 0 ? Math.min(50, Math.round(liveNum)) : undefined;
+    let totalWeightGrams =
+      Number.isFinite(totalNum) && totalNum > 0 ? Math.round(totalNum) : 0;
+    let avgWeightGrams =
+      Number.isFinite(avgNum) && avgNum > 0 ? Math.round(avgNum) : undefined;
+    if (totalWeightGrams <= 0 && avgWeightGrams && liveCount && liveCount > 0) {
+      totalWeightGrams = Math.round(avgWeightGrams * liveCount);
+    }
+    if (avgWeightGrams === undefined && totalWeightGrams > 0 && liveCount && liveCount > 0) {
+      avgWeightGrams = Math.round(totalWeightGrams / liveCount);
+    }
+    if (totalWeightGrams <= 0 && !avgWeightGrams && liveCount === undefined) continue;
+    const rawId = typeof obj.id === 'string' && obj.id.trim() ? obj.id.trim().slice(0, 80) : `lwm-${ageDays}-${i + 1}`;
+    const id = seenIds.has(rawId) ? `${rawId}-${i + 1}` : rawId;
+    seenIds.add(id);
+    const dateIso =
+      typeof obj.dateIso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.dateIso.trim())
+        ? obj.dateIso.trim()
+        : undefined;
+    const label =
+      typeof obj.label === 'string' && obj.label.trim()
+        ? obj.label.trim().slice(0, 80)
+        : `${ageDays}-Day Check`;
+    const notes = typeof obj.notes === 'string' && obj.notes.trim() ? obj.notes.trim().slice(0, 300) : undefined;
+    out.push({
+      id,
+      ageDays,
+      ...(dateIso ? { dateIso } : {}),
+      label,
+      ...(liveCount !== undefined ? { liveCount } : {}),
+      totalWeightGrams,
+      ...(avgWeightGrams !== undefined ? { avgWeightGrams } : {}),
+      ...(notes ? { notes } : {}),
+    });
+  }
+  return out.sort((a, b) => a.ageDays - b.ageDays);
+}
+
 /**
  * Breeding pairing and kindling/birth litter record.
  */
@@ -646,6 +742,7 @@ export interface BreedingRecord {
   ultrasoundResult?: UltrasoundResult;
   ultrasoundFetalCount?: number;
   ultrasoundProjectedDueIso?: string;
+  litterWeightMilestones?: LitterWeightMilestone[];
   notes: string;
   _rev?: number;
   createdAt: string;
@@ -785,6 +882,89 @@ export interface AnimalPhoto {
   updatedAt: string;
 }
 
+export type FeedPurgeWindowDays = 30 | 60 | 90 | 0;
+
+export const FEED_PURGE_WINDOW_OPTIONS: ReadonlyArray<{
+  days: FeedPurgeWindowDays;
+  label: string;
+  description: string;
+}> = [
+  { days: 30, label: '30 Days', description: 'Aggressive space savings after lot indexing' },
+  { days: 60, label: '60 Days (Recommended)', description: 'Balanced biosecurity retention window' },
+  { days: 90, label: '90 Days', description: 'Extended quarter-year tag photo retention' },
+  { days: 0, label: 'Manual Purge Only', description: 'Keep tag photos until manually purged' },
+];
+
+export function normalizeFeedPurgeWindowDays(
+  raw: unknown,
+  fallback: FeedPurgeWindowDays = 60
+): FeedPurgeWindowDays {
+  const n = Number(raw);
+  if (n === 30 || n === 60 || n === 90 || n === 0) return n;
+  return fallback;
+}
+
+export type FeedAllocationTargetType = 'cage' | 'litter' | 'animal' | 'general';
+
+/**
+ * Purchased feed lot / batch record with active inventory, indexed mill lot number,
+ * and biosecurity tag photo lifecycle (auto-purged after 30/60/90 days once lot is indexed).
+ */
+export interface FeedBatch {
+  id: string;
+  species: string;
+  brand: string;
+  productName: string;
+  lotNumber: string;
+  millCode: string;
+  manufactureDateIso: string; // YYYY-MM-DD or ""
+  purchaseDateIso: string; // YYYY-MM-DD
+  bagCount: number;
+  bagWeightValue: number;
+  bagWeightUnit: string; // 'lbs' | 'kg' | 'bales' | 'bags' | etc.
+  totalQuantity: number;
+  remainingQuantity: number;
+  lowStockThreshold: number;
+  totalCostCents?: number;
+  supplierName: string;
+  proteinPercent?: number;
+  notes: string;
+  tagPhotoDataUrl?: string;
+  tagPhotoThumbnailDataUrl?: string;
+  tagPhotoMimeType?: string;
+  tagPhotoBytes?: number;
+  tagPhotoCapturedDateIso?: string; // YYYY-MM-DD
+  tagPhotoPurgedAtIso?: string; // ISO UTC when raw/heavy image was purged
+  tagPhotoBytesReclaimed?: number;
+  ocrRawText?: string;
+  ocrConfidence?: number;
+  ocrManualOverride?: boolean;
+  recallFlagged?: boolean;
+  recallNote?: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Feed intake / allocation entry linked directly to a cage/pen, litter (breeding), animal, or barn group.
+ */
+export interface FeedAllocation {
+  id: string;
+  species: string;
+  feedBatchId: string;
+  targetType: FeedAllocationTargetType;
+  targetId: string;
+  targetLabel: string;
+  dateIso: string; // YYYY-MM-DD
+  quantity: number;
+  unit: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Complete in-memory snapshot of the unencrypted local database.
  */
@@ -798,6 +978,8 @@ export interface BarnDatabaseSnapshot {
   tasks: BarnTask[];
   careLogs: CareLog[];
   shows: ShowEvent[];
+  feedBatches: FeedBatch[];
+  feedAllocations: FeedAllocation[];
 }
 
 export const ANIMAL_STATUSES: AnimalStatus[] = [

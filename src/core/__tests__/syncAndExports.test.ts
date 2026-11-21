@@ -575,4 +575,66 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(cardHtml).not.toContain('<script>alert(1)</script>');
     expect(cardHtml).toContain('Daisy &lt;script&gt;alert(1)&lt;/script&gt;');
   });
+
+  it('preserves SpeciesProfile.targetWeightCurve and BreedingRecord.litterWeightMilestones across JSON backup & merge', () => {
+    const profileWithCurve = {
+      ...makeSpeciesProfile('Rabbit'),
+      targetWeightCurve: [
+        { ageDays: 21, weightGrams: 540, label: '3w Goal' },
+        { ageDays: 56, weightGrams: 2041, label: '8w Wean Goal' },
+      ],
+      updatedAt: '2026-06-15T12:00:00.000Z',
+    };
+    const snap = makeEmptySnapshot({
+      speciesProfiles: [profileWithCurve, makeSpeciesProfile('Sheep')],
+      breedings: [
+        {
+          id: 'b-curve-1',
+          species: 'Rabbit',
+          sireId: 's1',
+          damId: 'd1',
+          sireName: 'Buck A',
+          damName: 'Doe B',
+          bredDateIso: '2026-05-01',
+          expectedDueDateIso: '2026-06-01',
+          actualBirthDateIso: '2026-06-01',
+          projectedCoiPercent: 0,
+          liveCount: 6,
+          stillbornCount: 0,
+          fosteredCount: 0,
+          weanedCount: 6,
+          offspringCreated: false,
+          status: 'Weaned',
+          litterWeightMilestones: [
+            {
+              id: 'lwm-21',
+              ageDays: 21,
+              label: '3-Week Check',
+              liveCount: 6,
+              totalWeightGrams: 3180,
+              avgWeightGrams: 530,
+            },
+          ],
+          notes: '',
+          createdAt: '2026-06-01T12:00:00.000Z',
+          updatedAt: '2026-06-22T12:00:00.000Z',
+        },
+      ],
+    });
+
+    const parsed = parseBarnBackupJson(exportBarnBackupJson(snap), makeSettings());
+    const parsedRabbit = parsed.speciesProfiles.find((s) => s.name === 'Rabbit');
+    expect(parsedRabbit?.targetWeightCurve).toEqual([
+      { ageDays: 21, weightGrams: 540, label: '3w Goal' },
+      { ageDays: 56, weightGrams: 2041, label: '8w Wean Goal' },
+    ]);
+    expect(parsed.breedings[0].litterWeightMilestones).toHaveLength(1);
+    expect(parsed.breedings[0].litterWeightMilestones?.[0].avgWeightGrams).toBe(530);
+
+    const localOld = makeEmptySnapshot();
+    const merged = mergeBarnSnapshots(localOld, parsed);
+    const mergedRabbit = merged.snapshot.speciesProfiles.find((s) => s.name === 'Rabbit');
+    expect(mergedRabbit?.targetWeightCurve).toHaveLength(2);
+    expect(merged.snapshot.breedings[0].litterWeightMilestones?.[0].totalWeightGrams).toBe(3180);
+  });
 });

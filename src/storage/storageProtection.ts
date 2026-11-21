@@ -39,6 +39,10 @@ function estimateSnapshotByteSize(snapshot: BarnDatabaseSnapshot): number {
   bytes += (snapshot.tasks?.length || 0) * 240;
   bytes += (snapshot.careLogs?.length || 0) * 300;
   bytes += (snapshot.shows?.length || 0) * 280;
+  bytes += (snapshot.feedAllocations?.length || 0) * 220;
+  for (const fb of snapshot.feedBatches ?? []) {
+    bytes += 360 + (fb.tagPhotoDataUrl?.length || 0) + (fb.tagPhotoThumbnailDataUrl?.length || 0);
+  }
   for (const photo of snapshot.animalPhotos ?? []) {
     const estimatedDataUrlBytes =
       photo.dataUrl?.length || (photo.storedBytes ? Math.ceil(photo.storedBytes * 1.37) : 0);

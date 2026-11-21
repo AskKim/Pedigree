@@ -54,16 +54,23 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  FeedAllocation,
+  FeedBatch,
+  FeedPurgeWindowDays,
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  LitterWeightMilestone,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
   normalizeDefaultPedigreeGenerations,
+  normalizeFeedPurgeWindowDays,
   normalizeIgnoredConflicts,
+  normalizeLitterWeightMilestones,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeSpeciesHubBlockOrder,
+  normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
   PedigreeGenerationDepth,
   PREDEFINED_SPECIES_PRESETS,
@@ -72,8 +79,16 @@ import {
   ShowEvent,
   SpeciesHubBlockId,
   SpeciesProfile,
+  TargetWeightPoint,
+  todayDateIso,
   UltrasoundResult,
 } from '../core/models';
+import {
+  applyFeedAllocationToBatch,
+  findPurgeEligibleFeedTagPhotos,
+  purgeExpiredFeedTagPhotosPure,
+  reverseFeedAllocationFromBatch,
+} from '../core/feedInventory';
 import {
   buildIcsCalendarForTasks,
   buildTaskAppDeepLink,
@@ -278,6 +293,7 @@ export type WorkspaceRoute =
   | 'bench'
   | 'breeding'
   | 'pedigree'
+  | 'feed'
   | 'reports'
   | 'memo'
   | 'importExport'
@@ -317,6 +333,8 @@ export interface ActiveSpeciesData {
   tasks: BarnTask[];
   careLogs: CareLog[];
   shows: ShowEvent[];
+  feedBatches: FeedBatch[];
+  feedAllocations: FeedAllocation[];
   testingRecordCount: number;
   nonTestingRecordCount: number;
   totalRecordCount: number;
@@ -359,6 +377,7 @@ export function useBarnStore() {
   const [selectedAnimalId, setSelectedAnimalId] = useState<string | null>(null);
   const [pedigreeAnimalId, setPedigreeAnimalId] = useState<string | null>(null);
   const [pedigreeGenerations, setPedigreeGenerations] = useState<PedigreeGenerationDepth>(3);
+  const [preselectedGrowthAnimalIds, setPreselectedGrowthAnimalIds] = useState<string[] | null>(null);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
   const [highlightedCageId, setHighlightedCageId] = useState<string | null>(null);
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
@@ -1076,6 +1095,20 @@ export function useBarnStore() {
       .filter((s) => isSameSpecies(s.species, speciesProfile.name))
       .sort((a, b) => a.eventDateIso.localeCompare(b.eventDateIso));
 
+    const feedBatches = (snapshot.feedBatches ?? [])
+      .filter((b) => isSameSpecies(b.species, speciesProfile.name))
+      .sort((a, b) =>
+        (b.purchaseDateIso || '').localeCompare(a.purchaseDateIso || '') ||
+        b.createdAt.localeCompare(a.createdAt)
+      );
+
+    const feedAllocations = (snapshot.feedAllocations ?? [])
+      .filter((al) => isSameSpecies(al.species, speciesProfile.name))
+      .sort((a, b) =>
+        (b.dateIso || '').localeCompare(a.dateIso || '') ||
+        b.createdAt.localeCompare(a.createdAt)
+      );
+
     const testingRecordCount = countSpeciesTestingRecords(snapshot, speciesProfile.name);
     const nonTestingRecordCount = countSpeciesNonTestingRecords(snapshot, speciesProfile.name);
     const totalRecordCount = countAllSpeciesRecords(snapshot, speciesProfile.name);
@@ -1094,6 +1127,8 @@ export function useBarnStore() {
       tasks,
       careLogs,
       shows,
+      feedBatches,
+      feedAllocations,
       testingRecordCount,
       nonTestingRecordCount,
       totalRecordCount,
@@ -1855,6 +1890,9 @@ export function useBarnStore() {
               memoText: sanitizeSpeciesMemo(profile.memoText ?? existing.memoText ?? ''),
               memoUpdatedAt: profile.memoUpdatedAt ?? existing.memoUpdatedAt ?? '',
               breedOverrides: normalizeBreedScheduleOverrides(profile.breedOverrides),
+              targetWeightCurve: normalizeTargetWeightCurve(
+                profile.targetWeightCurve ?? existing.targetWeightCurve
+              ),
               _rev: rev,
               createdAt: profile.createdAt || existing.createdAt || ts,
               updatedAt: ts,
@@ -1963,6 +2001,7 @@ export function useBarnStore() {
               memoText: sanitizeSpeciesMemo(profile.memoText ?? ''),
               memoUpdatedAt: profile.memoUpdatedAt ?? '',
               breedOverrides: normalizeBreedScheduleOverrides(profile.breedOverrides),
+              targetWeightCurve: normalizeTargetWeightCurve(profile.targetWeightCurve),
               _rev: rev,
               createdAt: profile.createdAt || ts,
               updatedAt: ts,
@@ -1991,6 +2030,58 @@ export function useBarnStore() {
     },
     [
       activeSpeciesName,
+      deviceId,
+      enqueueStoreMutation,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const updateSpeciesTargetWeightCurve = useCallback(
+    async (speciesId: string, curve: TargetWeightPoint[]): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const existing = currentSnapshot?.speciesProfiles.find((sp) => sp.id === speciesId);
+        if (!existing) return false;
+        const ts = getAdjustedNowIsoUtc();
+        const rev = nextEntityRev(existing.id, existing._rev);
+        const cleanCurve = normalizeTargetWeightCurve(curve);
+        const updated: SpeciesProfile = {
+          ...existing,
+          targetWeightCurve: cleanCurve,
+          _rev: rev,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveSpeciesProfile(updated);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'species',
+              previous: existing,
+              next: updated,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(
+            cleanCurve.length > 0
+              ? `Saved ${cleanCurve.length} target weight goal point${cleanCurve.length === 1 ? '' : 's'} for ${existing.name}.`
+              : `Cleared target weight curve for ${existing.name}.`
+          );
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`update ${existing.name} target weight curve`, err);
+          return false;
+        }
+      });
+    },
+    [
       deviceId,
       enqueueStoreMutation,
       nextEntityRev,
@@ -3384,6 +3475,7 @@ export function useBarnStore() {
         ultrasoundResult?: UltrasoundResult;
         ultrasoundFetalCount?: number;
         ultrasoundProjectedDueIso?: string;
+        litterWeightMilestones?: LitterWeightMilestone[];
         notes: string;
         registerJuniorCount: number;
         offspringDrafts?: Array<Pick<LitterOffspringDraft, 'name' | 'tattoo' | 'sex'>>;
@@ -3501,6 +3593,10 @@ export function useBarnStore() {
             patch.ultrasoundProjectedDueIso !== undefined
               ? patch.ultrasoundProjectedDueIso
               : existing.ultrasoundProjectedDueIso || '',
+          litterWeightMilestones:
+            patch.litterWeightMilestones !== undefined
+              ? normalizeLitterWeightMilestones(patch.litterWeightMilestones)
+              : normalizeLitterWeightMilestones(existing.litterWeightMilestones),
           notes: patch.notes,
           _rev: breedingRev,
           updatedAt: ts,
@@ -4724,6 +4820,445 @@ export function useBarnStore() {
     [enqueueStoreMutation, deviceId, nextEntityRev, recordOutboxOps, reloadFromAdapter, notify, reportPersistenceFailure]
   );
 
+  const saveFeedBatch = useCallback(
+    async (
+      batchDraft: Omit<FeedBatch, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const latestSnapshot = snapshotRef.current ?? snapshot;
+        const ts = getAdjustedNowIsoUtc();
+        const prev = batchDraft.id
+          ? (latestSnapshot?.feedBatches ?? []).find((b) => b.id === batchDraft.id)
+          : undefined;
+        const batchId = batchDraft.id || generateUuid();
+        const rev = nextEntityRev(batchId, prev?._rev);
+        const batch: FeedBatch = {
+          ...batchDraft,
+          id: batchId,
+          brand: batchDraft.brand.trim(),
+          productName: batchDraft.productName.trim(),
+          lotNumber: batchDraft.lotNumber.trim(),
+          millCode: (batchDraft.millCode || '').trim(),
+          manufactureDateIso: (batchDraft.manufactureDateIso || '').trim(),
+          purchaseDateIso: batchDraft.purchaseDateIso || todayDateIso(),
+          bagCount: Math.max(0, Number(batchDraft.bagCount) || 0),
+          bagWeightValue: Math.max(0, Number(batchDraft.bagWeightValue) || 0),
+          bagWeightUnit: (batchDraft.bagWeightUnit || '').trim() || 'lbs',
+          totalQuantity: Math.max(0, Number(batchDraft.totalQuantity) || 0),
+          remainingQuantity: Math.max(0, Number(batchDraft.remainingQuantity) || 0),
+          lowStockThreshold: Math.max(0, Number(batchDraft.lowStockThreshold) || 0),
+          supplierName: (batchDraft.supplierName || '').trim(),
+          notes: (batchDraft.notes || '').trim(),
+          _rev: rev,
+          createdAt: prev?.createdAt || ts,
+          updatedAt: ts,
+        };
+        try {
+          await adapterRef.current!.saveFeedBatch(batch);
+          await recordOutboxOps(
+            diffEntityFieldsToOperations({
+              entityType: 'feedBatch',
+              previous: prev,
+              next: batch,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: rev,
+            })
+          );
+          await reloadFromAdapter();
+          notify(
+            batch.lotNumber
+              ? `Saved feed batch ${batch.brand || batch.productName} (Lot ${batch.lotNumber}).`
+              : `Saved feed batch ${batch.brand || batch.productName}.`
+          );
+          return true;
+        } catch (err) {
+          reportPersistenceFailure(`save feed batch ${batch.brand || batch.productName}`, err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteFeedBatch = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.feedBatches ?? []).find((b) => b.id === id);
+        const linkedAllocations = (currentSnapshot?.feedAllocations ?? []).filter(
+          (al) => al.feedBatchId === id
+        );
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteFeedBatch(id);
+          const ops: SyncOperation[] = [
+            createOutboxOperation({
+              entityType: 'feedBatch',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target?._rev),
+            }),
+          ];
+          for (const al of linkedAllocations) {
+            await adapterRef.current!.deleteFeedAllocation(al.id);
+            ops.push(
+              createOutboxOperation({
+                entityType: 'feedAllocation',
+                entityUuid: al.id,
+                deviceId,
+                logicalCounter: allocateNextLogicalCounter(),
+                fieldName: '__delete__',
+                newValue: true,
+                timestamp: ts,
+                recordRev: nextEntityRev(al.id, al._rev),
+              })
+            );
+          }
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify('Feed batch and linked allocations removed.');
+        } catch (err) {
+          reportPersistenceFailure('delete feed batch', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const logFeedAllocation = useCallback(
+    async (
+      allocationDraft: Omit<FeedAllocation, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
+      options?: { syncLinkedCageFeed?: boolean }
+    ): Promise<boolean> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current ?? snapshot;
+        if (!currentSnapshot) return false;
+        const batch = (currentSnapshot.feedBatches ?? []).find(
+          (b) => b.id === allocationDraft.feedBatchId
+        );
+        if (!batch) {
+          notify('Selected feed batch no longer exists.');
+          return false;
+        }
+        const ts = getAdjustedNowIsoUtc();
+        const allocId = allocationDraft.id || generateUuid();
+        const prevAlloc = allocationDraft.id
+          ? (currentSnapshot.feedAllocations ?? []).find((a) => a.id === allocationDraft.id)
+          : undefined;
+        const allocRev = nextEntityRev(allocId, prevAlloc?._rev);
+        const allocation: FeedAllocation = {
+          ...allocationDraft,
+          id: allocId,
+          quantity: Math.max(0, Number(allocationDraft.quantity) || 0),
+          unit: (allocationDraft.unit || '').trim() || batch.bagWeightUnit || 'lbs',
+          dateIso: allocationDraft.dateIso || todayDateIso(),
+          targetLabel: (allocationDraft.targetLabel || '').trim() || 'General Barn',
+          notes: (allocationDraft.notes || '').trim(),
+          _rev: allocRev,
+          createdAt: prevAlloc?.createdAt || ts,
+          updatedAt: ts,
+        };
+
+        try {
+          const ops: SyncOperation[] = [];
+          await adapterRef.current!.saveFeedAllocation(allocation);
+          ops.push(
+            ...diffEntityFieldsToOperations({
+              entityType: 'feedAllocation',
+              previous: prevAlloc,
+              next: allocation,
+              deviceId,
+              nextCounter: allocateNextLogicalCounter,
+              timestamp: ts,
+              recordRev: allocRev,
+            })
+          );
+
+          if (!prevAlloc && allocation.quantity > 0) {
+            const batchRev = nextEntityRev(batch.id, batch._rev);
+            const updatedBatch: FeedBatch = {
+              ...applyFeedAllocationToBatch(batch, allocation.quantity, ts),
+              _rev: batchRev,
+            };
+            await adapterRef.current!.saveFeedBatch(updatedBatch);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'feedBatch',
+                previous: batch,
+                next: updatedBatch,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: batchRev,
+              })
+            );
+          }
+
+          if (
+            options?.syncLinkedCageFeed &&
+            allocation.targetType === 'cage' &&
+            allocation.targetId
+          ) {
+            const targetCage = currentSnapshot.cages.find((c) => c.id === allocation.targetId);
+            if (targetCage) {
+              const cageRev = nextEntityRev(targetCage.id, targetCage._rev);
+              const lotSummary = batch.lotNumber
+                ? `${batch.brand || batch.productName} (Lot ${batch.lotNumber})`
+                : `${batch.brand} ${batch.productName}`.trim();
+              const nextCageStock =
+                Math.round(
+                  ((Number(targetCage.feedStockRemaining) || 0) + allocation.quantity) * 100
+                ) / 100;
+              const updatedCage: CageLocation = {
+                ...targetCage,
+                feedLotName: lotSummary,
+                feedStockRemaining: nextCageStock,
+                feedStockUnit: allocation.unit,
+                _rev: cageRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveCage(updatedCage);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'cage',
+                  previous: targetCage,
+                  next: updatedCage,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: cageRev,
+                })
+              );
+            }
+          }
+
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify(`Logged ${allocation.quantity} ${allocation.unit} feed allocation to ${allocation.targetLabel}.`);
+          return true;
+        } catch (err) {
+          reportPersistenceFailure('log feed allocation', err);
+          return false;
+        }
+      });
+    },
+    [
+      snapshot,
+      deviceId,
+      nextEntityRev,
+      enqueueStoreMutation,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const deleteFeedAllocation = useCallback(
+    async (id: string) => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        const target = (currentSnapshot?.feedAllocations ?? []).find((a) => a.id === id);
+        if (!target) return;
+        const ts = getAdjustedNowIsoUtc();
+        try {
+          await adapterRef.current!.deleteFeedAllocation(id);
+          const ops: SyncOperation[] = [
+            createOutboxOperation({
+              entityType: 'feedAllocation',
+              entityUuid: id,
+              deviceId,
+              logicalCounter: allocateNextLogicalCounter(),
+              fieldName: '__delete__',
+              newValue: true,
+              timestamp: ts,
+              recordRev: nextEntityRev(id, target._rev),
+            }),
+          ];
+
+          const batch = (currentSnapshot?.feedBatches ?? []).find(
+            (b) => b.id === target.feedBatchId
+          );
+          if (batch && target.quantity > 0) {
+            const batchRev = nextEntityRev(batch.id, batch._rev);
+            const restoredBatch: FeedBatch = {
+              ...reverseFeedAllocationFromBatch(batch, target.quantity, ts),
+              _rev: batchRev,
+            };
+            await adapterRef.current!.saveFeedBatch(restoredBatch);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'feedBatch',
+                previous: batch,
+                next: restoredBatch,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: batchRev,
+              })
+            );
+          }
+
+          await recordOutboxOps(ops);
+          await reloadFromAdapter();
+          notify('Feed allocation removed and batch stock restored.');
+        } catch (err) {
+          reportPersistenceFailure('delete feed allocation', err);
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const runFeedTagBiosecurityAutoPurge = useCallback(
+    async (options?: {
+      windowDays?: FeedPurgeWindowDays;
+      silent?: boolean;
+      todayIso?: string;
+    }): Promise<{ purgedCount: number; reclaimedBytes: number }> => {
+      return enqueueStoreMutation(async () => {
+        const currentSnapshot = snapshotRef.current;
+        if (!currentSnapshot) return { purgedCount: 0, reclaimedBytes: 0 };
+        const effectiveWindow = normalizeFeedPurgeWindowDays(
+          options?.windowDays ?? currentSnapshot.settings.feedTagPurgeWindowDays
+        );
+        if (effectiveWindow === 0) {
+          if (!options?.silent) {
+            notify('Biosecurity auto-purge is set to Manual Only (0 days).');
+          }
+          return { purgedCount: 0, reclaimedBytes: 0 };
+        }
+        const ts = getAdjustedNowIsoUtc();
+        const result = purgeExpiredFeedTagPhotosPure(
+          currentSnapshot.feedBatches ?? [],
+          effectiveWindow,
+          {
+            todayIso: options?.todayIso ?? todayDateIso(),
+            nowIso: ts,
+          }
+        );
+        if (result.purgedCount === 0) {
+          if (!options?.silent) {
+            notify(
+              `No indexed feed tag photos older than ${effectiveWindow} days needed purging.`
+            );
+          }
+          return { purgedCount: 0, reclaimedBytes: 0 };
+        }
+        try {
+          const prevById = new Map((currentSnapshot.feedBatches ?? []).map((b) => [b.id, b]));
+          const changedBatches: FeedBatch[] = [];
+          const ops: SyncOperation[] = [];
+          for (const nextBatch of result.nextBatches) {
+            const prev = prevById.get(nextBatch.id);
+            if (!prev || prev.tagPhotoPurgedAtIso === nextBatch.tagPhotoPurgedAtIso) continue;
+            const rev = nextEntityRev(nextBatch.id, prev._rev);
+            const bumped: FeedBatch = {
+              ...nextBatch,
+              _rev: rev,
+            };
+            changedBatches.push(bumped);
+            ops.push(
+              ...diffEntityFieldsToOperations({
+                entityType: 'feedBatch',
+                previous: prev,
+                next: bumped,
+                deviceId,
+                nextCounter: allocateNextLogicalCounter,
+                timestamp: ts,
+                recordRev: rev,
+              })
+            );
+          }
+          if (changedBatches.length > 0) {
+            await adapterRef.current!.saveFeedBatchesBatch(changedBatches);
+            await recordOutboxOps(ops);
+            await reloadFromAdapter();
+          }
+          if (!options?.silent) {
+            notify(
+              `Biosecurity purge reclaimed ${formatByteSizePure(result.reclaimedBytes)} across ${result.purgedCount} indexed feed tag photo${result.purgedCount === 1 ? '' : 's'} (lot numbers kept intact).`
+            );
+          }
+          return { purgedCount: result.purgedCount, reclaimedBytes: result.reclaimedBytes };
+        } catch (err) {
+          reportPersistenceFailure('purge expired feed tag photos', err);
+          return { purgedCount: 0, reclaimedBytes: 0 };
+        }
+      });
+    },
+    [
+      enqueueStoreMutation,
+      deviceId,
+      nextEntityRev,
+      recordOutboxOps,
+      reloadFromAdapter,
+      notify,
+      reportPersistenceFailure,
+    ]
+  );
+
+  const feedAutoPurgeRanRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (isLoading || !hasSnapshotReady || wipedRecoveryDetected || feedAutoPurgeRanRef.current) {
+      return;
+    }
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot) return;
+    const windowDays = normalizeFeedPurgeWindowDays(currentSnapshot.settings.feedTagPurgeWindowDays);
+    if (windowDays <= 0) {
+      feedAutoPurgeRanRef.current = true;
+      return;
+    }
+    const eligible = findPurgeEligibleFeedTagPhotos(
+      currentSnapshot.feedBatches ?? [],
+      windowDays,
+      todayDateIso()
+    );
+    if (eligible.length === 0) {
+      feedAutoPurgeRanRef.current = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (feedAutoPurgeRanRef.current) return;
+      feedAutoPurgeRanRef.current = true;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void runFeedTagBiosecurityAutoPurge({ silent: true, windowDays });
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [isLoading, hasSnapshotReady, wipedRecoveryDetected, runFeedTagBiosecurityAutoPurge]);
+
   const seedSpeciesSampleData = useCallback(
     async (speciesName: string) => {
       return enqueueStoreMutation(async () => {
@@ -4951,6 +5486,8 @@ export function useBarnStore() {
           tasks: [],
           careLogs: [],
           shows: [],
+          feedBatches: [],
+          feedAllocations: [],
         };
         await adapterRef.current!.replaceSnapshot(empty);
         photoCacheRef.current.clear();
@@ -5900,6 +6437,8 @@ export function useBarnStore() {
             tasks: preview.tasks,
             careLogs: preview.careLogs,
             shows: preview.shows,
+            feedBatches: [],
+            feedAllocations: [],
           };
           const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
           const importedIds = new Set(resolvedAnimals.map((a) => a.id));
@@ -6404,7 +6943,14 @@ export function useBarnStore() {
     dismissSpeciesMemoAlert,
     togglePinSpeciesLanding,
     saveSpeciesProfile,
+    updateSpeciesTargetWeightCurve,
     saveSpeciesMemo,
+    preselectedGrowthAnimalIds,
+    setPreselectedGrowthAnimalIds,
+    openGrowthCompareForAnimals: (animalIds: string[]) => {
+      setPreselectedGrowthAnimalIds(animalIds.length > 0 ? animalIds : null);
+      setRoute('breeding');
+    },
     reorderSpeciesCards,
     moveSpeciesCard,
     reorderSpeciesHubBlocks,
@@ -6460,6 +7006,11 @@ export function useBarnStore() {
     deleteCareLog,
     saveShow,
     deleteShow,
+    saveFeedBatch,
+    deleteFeedBatch,
+    logFeedAllocation,
+    deleteFeedAllocation,
+    runFeedTagBiosecurityAutoPurge,
     seedSpeciesSampleData,
     seedAllPredefinedSpecies,
     deleteSpeciesTestingData,

@@ -90,6 +90,8 @@ export function makeEmptySnapshot(overrides: Partial<BarnDatabaseSnapshot> = {})
     tasks: [],
     careLogs: [],
     shows: [],
+    feedBatches: [],
+    feedAllocations: [],
     ...overrides,
   };
 }

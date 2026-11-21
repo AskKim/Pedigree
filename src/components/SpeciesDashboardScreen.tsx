@@ -33,12 +33,14 @@ import {
   List,
   Loader2,
   Maximize2,
+  Package,
   Pin,
   Plus,
   QrCode,
   RefreshCw,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
   Square,
   StickyNote,
@@ -70,6 +72,10 @@ import {
 import { formatSystemTaskTitle } from '../core/calendarExport';
 import { buildFacilityBoardModel } from '../core/facilityBoard';
 import {
+  evaluateFeedInventorySummary,
+  isFeedBatchLowStock,
+} from '../core/feedInventory';
+import {
   Animal,
   BarnDatabaseSnapshot,
   BarnSettings,
@@ -80,6 +86,7 @@ import {
   formatReadableDate,
   HOUSING_UNIT_TYPES,
   HousingUnitType,
+  normalizeFeedPurgeWindowDays,
   normalizeSpeciesHubBlockOrder,
   SHOW_AWARD_OPTIONS,
   SHOW_SANCTIONS,
@@ -238,6 +245,8 @@ export function SpeciesDashboardScreen({
     cages,
     careLogs,
     shows,
+    feedBatches,
+    feedAllocations,
     herdById,
     conflictedAnimalCount,
     activeConflictAnimalCount,
@@ -247,6 +256,17 @@ export function SpeciesDashboardScreen({
   const today = todayDateIso();
   const baseId = useId();
   const showSummaryGrid = settings.showHomeSummaryGrid !== false;
+  const feedSummary = useMemo(
+    () =>
+      evaluateFeedInventorySummary({
+        batches: feedBatches,
+        allocations: feedAllocations,
+        speciesName: speciesProfile.name,
+        purgeWindowDays: normalizeFeedPurgeWindowDays(settings.feedTagPurgeWindowDays),
+        todayIso: today,
+      }),
+    [feedBatches, feedAllocations, speciesProfile.name, settings.feedTagPurgeWindowDays, today]
+  );
 
   const [taskFilter, setTaskFilter] = useState<'open' | 'completed'>('open');
   const [showNewTaskForm, setShowNewTaskForm] = useState(false);
@@ -1355,6 +1375,30 @@ export function SpeciesDashboardScreen({
 
             <button
               type="button"
+              onClick={() => onNavigate('feed')}
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
+            >
+              <span className="inline-flex items-center gap-2.5 min-w-0">
+                <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
+                  <Package className="w-4 h-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                    Feed &amp; Lot Ledger
+                  </span>
+                  <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
+                    {feedSummary.activeBatches} active lot{feedSummary.activeBatches === 1 ? '' : 's'}
+                    {feedSummary.recallFlaggedBatches.length > 0
+                      ? ` · ${feedSummary.recallFlaggedBatches.length} flagged`
+                      : ''}
+                  </span>
+                </span>
+              </span>
+              <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
               onClick={openBinderPreview}
               className="bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 max-w-full transition-colors"
             >
@@ -1396,6 +1440,27 @@ export function SpeciesDashboardScreen({
               </span>
             </span>
             <ArrowRight className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('feed')}
+            className="w-full sm:w-auto max-w-full bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:border-[var(--barn-sage)] hover:bg-[var(--barn-subtle)] rounded-xl px-4 py-2.5 text-left inline-flex items-center justify-between gap-3 transition-colors"
+          >
+            <span className="inline-flex items-center gap-2.5 min-w-0">
+              <span className="w-7 h-7 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-sage)] inline-flex items-center justify-center shrink-0">
+                <Package className="w-4 h-4" aria-hidden="true" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-xs font-bold text-[var(--barn-ink)] leading-tight">
+                  Feed &amp; Lot Ledger
+                </span>
+                <span className="block text-[11px] text-[var(--barn-muted)] leading-tight font-mono tabular-nums">
+                  {feedSummary.activeBatches} active lot{feedSummary.activeBatches === 1 ? '' : 's'}
+                </span>
+              </span>
+            </span>
+            <ArrowRight className="w-4 h-4 text-[var(--barn-muted)] shrink-0" aria-hidden="true" />
           </button>
 
           <button
@@ -1602,6 +1667,7 @@ export function SpeciesDashboardScreen({
               tasks: `${speciesProfile.name} Master Task List`,
               breedings: `Upcoming ${speciesProfile.birthEventLabel}s & Active Pairings`,
               cages: `${speciesProfile.name} Cages & Pens`,
+              feed: `${speciesProfile.name} Feed & Lot Ledger`,
               shows: 'Shows & Events',
             };
 
@@ -2581,6 +2647,8 @@ export function SpeciesDashboardScreen({
                       onAssignAnimalToCage={onAssignAnimalToCage}
                       onSaveTask={onSaveTask}
                       onPrintCageCardsForAnimals={handlePrintCageCardsForAnimals}
+                      feedBatches={feedBatches}
+                      onOpenFeedLedger={() => onNavigate('feed')}
                     />
                   ) : cages.length === 0 ? (
                     <p className="text-sm text-[var(--barn-muted)]">No locations added yet.</p>
@@ -3091,7 +3159,133 @@ export function SpeciesDashboardScreen({
                 )}
               </section>
             );
-          })}
+          }
+
+          if (blockId === 'feed') {
+            return (
+              <section key={blockId} {...dragProps} className={cardClass}>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex items-start gap-1.5 min-w-0">
+                    <span
+                      title="Drag block to reorder"
+                      className="text-[var(--barn-muted)] cursor-grab active:cursor-grabbing hidden sm:inline-flex mt-1 shrink-0"
+                      aria-hidden="true"
+                    >
+                      <GripVertical className="w-4 h-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h2 className="font-display text-lg font-semibold truncate">
+                          Feed Inventory &amp; Lot Ledger ({feedBatches.length})
+                        </h2>
+                        <span className="text-[11px] font-mono text-[var(--barn-muted)] tabular-nums shrink-0">
+                          #{index + 1}
+                        </span>
+                      </div>
+                      <p className="text-xs text-[var(--barn-muted)]">
+                        Mill lot OCR stamps, intake allocations &amp; 30/60/90d tag biosecurity purge
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 max-w-full">
+                    {renderReorderControls()}
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('feed')}
+                      className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Package className="w-3.5 h-3.5" aria-hidden="true" />
+                      Open Feed Ledger
+                    </button>
+                  </div>
+                </div>
+
+                {feedSummary.recallFlaggedBatches.length > 0 && (
+                  <div className="rounded-xl border border-[var(--barn-danger)] bg-[var(--barn-terracotta-tint)] px-3 py-2 text-xs text-[var(--barn-ink)] flex items-center justify-between gap-2">
+                    <span className="font-semibold">
+                      {feedSummary.recallFlaggedBatches.length} lot(s) flagged for recall check
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('feed')}
+                      className="text-xs font-semibold underline text-[var(--barn-danger)] shrink-0"
+                    >
+                      Trace Lots
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] p-3 text-xs">
+                  <div>
+                    <div className="text-[10.5px] text-[var(--barn-muted)]">Active Stock</div>
+                    <div className="font-mono font-semibold tabular-nums truncate">
+                      {feedSummary.totalsByUnit.length > 0
+                        ? feedSummary.totalsByUnit.map((t) => `${t.remaining} ${t.unit}`).join(' · ')
+                        : '0 lbs'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10.5px] text-[var(--barn-muted)]">Indexed Lots</div>
+                    <div className="font-mono font-semibold tabular-nums">
+                      {feedSummary.lotsIndexedCount} / {feedSummary.totalBatches}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10.5px] text-[var(--barn-muted)]">Tag Photos</div>
+                    <div className="font-mono font-semibold tabular-nums inline-flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      {feedSummary.retainedTagPhotosCount} kept
+                    </div>
+                  </div>
+                </div>
+
+                {feedBatches.length === 0 ? (
+                  <p className="text-xs text-[var(--barn-muted)]">
+                    No {speciesProfile.name} feed batches logged yet. Scan a sewn bag tag or record a
+                    purchase to track mill lots and cage intake.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl bg-[var(--barn-canvas)]">
+                    {feedBatches.slice(0, 3).map((b) => {
+                      const low = isFeedBatchLowStock(b);
+                      return (
+                        <div
+                          key={b.id}
+                          className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[var(--barn-ink)] truncate">
+                              {[b.brand, b.productName].filter(Boolean).join(' · ')}
+                            </div>
+                            <div className="text-[11px] font-mono text-[var(--barn-muted)] truncate">
+                              {b.lotNumber ? `Lot ${b.lotNumber}` : 'No lot indexed'} ·{' '}
+                              {formatReadableDate(b.purchaseDateIso)}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div
+                              className={`font-mono tabular-nums font-semibold ${
+                                b.recallFlagged
+                                  ? 'text-[var(--barn-danger)]'
+                                  : low
+                                    ? 'text-[var(--barn-terracotta)]'
+                                    : 'text-[var(--barn-ink)]'
+                              }`}
+                            >
+                              {b.remainingQuantity} {b.bagWeightUnit}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          }
+
+          return null;
+        })}
         </div>
       </div>
 
@@ -3119,6 +3313,11 @@ export function SpeciesDashboardScreen({
           onAssignAnimalToCage={onAssignAnimalToCage}
           onSaveTask={onSaveTask}
           onPrintCageCardsForAnimals={handlePrintCageCardsForAnimals}
+          feedBatches={feedBatches}
+          onOpenFeedLedger={() => {
+            setShowFullFacilityBoard(false);
+            onNavigate('feed');
+          }}
         />
       )}
 

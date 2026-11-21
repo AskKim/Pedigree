@@ -24,6 +24,8 @@ import {
   BreedingRecord,
   CageLocation,
   CareLog,
+  FeedAllocation,
+  FeedBatch,
   generateUuid,
   normalizeBreedScheduleOverrides,
   nowIsoUtc,
@@ -48,7 +50,9 @@ export type SyncEntityType =
   | 'cage'
   | 'species'
   | 'settings'
-  | 'photo';
+  | 'photo'
+  | 'feedBatch'
+  | 'feedAllocation';
 
 export interface SyncOperation {
   op_id: string;
@@ -311,6 +315,8 @@ export function diffSnapshotsToSyncOperations(params: {
   diffCollection('task', params.previous.tasks, params.next.tasks);
   diffCollection('careLog', params.previous.careLogs, params.next.careLogs);
   diffCollection('show', params.previous.shows, params.next.shows);
+  diffCollection('feedBatch', params.previous.feedBatches ?? [], params.next.feedBatches ?? []);
+  diffCollection('feedAllocation', params.previous.feedAllocations ?? [], params.next.feedAllocations ?? []);
 
   if (params.includeSettings) {
     ops.push(
@@ -361,6 +367,14 @@ function labelForEntity(
   if (type === 'species') {
     const s = snapshot.speciesProfiles.find((x) => x.id === uuid);
     return s ? s.name : uuid;
+  }
+  if (type === 'feedBatch') {
+    const f = (snapshot.feedBatches ?? []).find((x) => x.id === uuid);
+    return f ? `${f.brand ? `${f.brand} ` : ''}${f.productName}${f.lotNumber ? ` (Lot ${f.lotNumber})` : ''}` : uuid;
+  }
+  if (type === 'feedAllocation') {
+    const fa = (snapshot.feedAllocations ?? []).find((x) => x.id === uuid);
+    return fa ? `${fa.targetLabel || fa.targetType} (${fa.quantity} ${fa.unit})` : uuid;
   }
   if (type === 'settings') return 'Barn Settings';
   return uuid;
@@ -420,6 +434,8 @@ export function mergeDeltaOperations(
   const tasks = getCollectionMap<BarnTask>(localSnapshot.tasks);
   const careLogs = getCollectionMap<CareLog>(localSnapshot.careLogs);
   const shows = getCollectionMap<ShowEvent>(localSnapshot.shows);
+  const feedBatches = getCollectionMap<FeedBatch>(localSnapshot.feedBatches ?? []);
+  const feedAllocations = getCollectionMap<FeedAllocation>(localSnapshot.feedAllocations ?? []);
   const speciesProfiles = getCollectionMap<SpeciesProfile>(localSnapshot.speciesProfiles);
   let settings: BarnSettings = { ...localSnapshot.settings };
 
@@ -576,6 +592,12 @@ export function mergeDeltaOperations(
       case 'show':
         applyToMap(shows);
         break;
+      case 'feedBatch':
+        applyToMap(feedBatches);
+        break;
+      case 'feedAllocation':
+        applyToMap(feedAllocations);
+        break;
       case 'species':
         applyToMap(speciesProfiles);
         break;
@@ -615,6 +637,8 @@ export function mergeDeltaOperations(
       tasks: Array.from(tasks.values()),
       careLogs: Array.from(careLogs.values()),
       shows: Array.from(shows.values()),
+      feedBatches: Array.from(feedBatches.values()),
+      feedAllocations: Array.from(feedAllocations.values()),
     },
     mergedOperations: allOpsSorted,
     newConflicts,

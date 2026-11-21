@@ -127,6 +127,14 @@ export function buildReportCatalogForSpecies(
       iconKey: 'breeding',
     },
     {
+      id: 'litter-survival-performance-report',
+      title: 'Litter Survival & Parent Performance Report',
+      category: 'Breeding',
+      description: `Live-birth survival, weaning survival, and 3w/6w/8w weight-gain milestones per ${spLower} female & male`,
+      scopeLabel,
+      iconKey: 'breeding',
+    },
+    {
       id: 'medicine-report',
       title: 'Medicine & Treatment Report',
       category: 'Health',
