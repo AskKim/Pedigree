@@ -3369,11 +3369,20 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
         filePath: 'src/components/HerdScreen.tsx',
         requiredSubstrings: [
           'generatePetBirthCertificateHtml',
+          'WoolHarvestPanel',
+          'isWoolModuleEnabledForSpecies',
+        ],
+        rationale:
+          'HerdScreen must provide Pet-Sale Birth Certificate previews and gate lazy Wool / Fiber + IAGARB scoring cleanly per species.',
+      },
+      {
+        filePath: 'src/components/WoolHarvestPanel.tsx',
+        requiredSubstrings: [
           'onSaveWoolHarvest',
           'IAGARB_JUDGING_POSITIONS',
         ],
         rationale:
-          'HerdScreen must provide Pet-Sale Birth Certificate previews and Wool / Fiber + IAGARB scoring.',
+          'Lazy-loaded WoolHarvestPanel must provide Wool / Fiber harvest logging and 7-position IAGARB scoring.',
       },
       {
         filePath: 'src/components/BreedingScreen.tsx',
@@ -3395,6 +3404,149 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `WoolHarvest` and `IagarbScorecard` models in `src/core/models.ts` and `wool_harvests` SQLite v6 schema in `src/storage/webSqliteAdapter.ts`.',
       'Restore pure modules `src/core/woolFiber.ts`, `src/core/alternativeCertificates.ts`, and `src/core/showDocuments.ts` with their unit tests.',
       'Keep `family_portrait` & `iagarb_angora` rendering in `pedigreePrintStyles.ts`, `syncAndExports.ts`, and `pdfExporter.ts`, plus UI wiring in `HerdScreen.tsx`, `PedigreeScreen.tsx`, `BreedingScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `App.tsx`.',
+    ],
+  },
+  {
+    id: 'IMP-049',
+    title: 'Founder Loss / Heritability Analytics & Interactive Barn Scheduler Gantt with LAN P2P Reconciliation',
+    category: 'species-ux',
+    source: 'session',
+    summary:
+      'Adds pure TS path-summed founder & ancestor genetic contribution analysis (0.5^depth), Lacy Effective Number of Founders (fe), species Founder-Loss & Bottleneck tracking (Active Core / Endangered / Lost), and mid-parent/single-parent OLS heritability (h²) + birth-year cohort trends embedded in Pedigree Explorer & Breeding Lab (`FounderAndHeritabilityPanel.tsx`), alongside an interactive drag-and-drop Barn Scheduler Gantt timeline (`barnScheduler.ts`, `BarnSchedulerGantt.tsx`, `BarnTask.startDateIso` in SQLite) with smart priority escalation for time-critical chores and serverless WebRTC LAN DataChannel + shared-folder + manual delta P2P outbox reconciliation (`p2pSyncProtocol.ts`, `p2pLanChannel.ts`).',
+    userIntent:
+      'Add heritability coefficient trends and founder-loss / ancestor genetic contribution analytics in Breeding Lab & Pedigree Explorer, plus an interactive drag-and-drop Barn Scheduler Gantt timeline with smart priority escalation paired with local P2P/LAN outbox reconciliation.',
+    files: [
+      'src/core/models.ts',
+      'src/core/inputSanitization.ts',
+      'src/core/pedigreeAnalytics.ts',
+      'src/core/barnScheduler.ts',
+      'src/core/p2pSyncProtocol.ts',
+      'src/storage/p2pLanChannel.ts',
+      'src/storage/webSqliteAdapter.ts',
+      'src/hooks/useBarnStore.ts',
+      'src/components/FounderAndHeritabilityPanel.tsx',
+      'src/components/BarnSchedulerGantt.tsx',
+      'src/components/PedigreeScreen.tsx',
+      'src/components/BreedingScreen.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/App.tsx',
+      'src/core/__tests__/pedigreeAnalytics.test.ts',
+      'src/core/__tests__/barnScheduler.test.ts',
+      'src/core/__tests__/p2pSyncProtocol.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/core/models.ts',
+        requiredSubstrings: ['startDateIso?: string'],
+        rationale: 'BarnTask must carry optional startDateIso for multi-day Gantt bar spans.',
+      },
+      {
+        filePath: 'src/core/pedigreeAnalytics.ts',
+        requiredSubstrings: [
+          'analyzeAnimalFounderContributions',
+          'analyzePairingFounderShift',
+          'analyzeSpeciesFounderLoss',
+          'analyzeSpeciesHeritabilityTrends',
+        ],
+        rationale:
+          'Pure TS founder genetic contribution, effective founder fe, founder-loss ledger, and heritability h² analytics must stay zero-DOM.',
+      },
+      {
+        filePath: 'src/core/barnScheduler.ts',
+        requiredSubstrings: [
+          'evaluateTaskPriorityEscalation',
+          'buildPriorityEscalationUpdates',
+          'shiftTaskDatesByDays',
+          'resizeTaskStartDateByDays',
+          'buildBarnGanttTimeline',
+        ],
+        rationale:
+          'Pure TS smart priority escalation, UTC date shifting/resizing, and Gantt timeline builders must stay zero-DOM.',
+      },
+      {
+        filePath: 'src/core/p2pSyncProtocol.ts',
+        requiredSubstrings: [
+          'createP2pDeltaWireMessage',
+          'parseP2pWireOrDeltaPayload',
+          'summarizeTaskReconciliation',
+          'encodeP2pSignalToken',
+          'decodeP2pSignalToken',
+        ],
+        rationale:
+          'Pure TS LAN P2P wire framing, CP-LAN1 signaling tokens, and task reconciliation summaries must stay zero-DOM and Buffer-free.',
+      },
+      {
+        filePath: 'src/storage/p2pLanChannel.ts',
+        requiredSubstrings: ['createLanP2pSession', 'reconcileWithPickedSyncFolder'],
+        rationale:
+          'Serverless LAN WebRTC DataChannel transport and shared-folder reconciliation must stay isolated in storage/.',
+      },
+      {
+        filePath: 'src/storage/webSqliteAdapter.ts',
+        requiredSubstrings: ['start_date_iso'],
+        rationale: 'SQLite tasks table must persist and hydrate start_date_iso across restarts.',
+      },
+      {
+        filePath: 'src/hooks/useBarnStore.ts',
+        requiredSubstrings: [
+          'rescheduleTaskDates',
+          'applySmartTaskEscalations',
+          'reconcileOutboxOperations',
+        ],
+        rationale:
+          'Store must expose serialized Gantt rescheduling, smart escalation batching, and P2P outbox reconciliation with _rev bumping.',
+      },
+      {
+        filePath: 'src/components/FounderAndHeritabilityPanel.tsx',
+        requiredSubstrings: [
+          'FounderAndHeritabilityPanel',
+          'analyzeSpeciesFounderLoss',
+          'analyzeSpeciesHeritabilityTrends',
+        ],
+        rationale:
+          'FounderAndHeritabilityPanel must visualize founder shares, founder loss, and h² cohort trends.',
+      },
+      {
+        filePath: 'src/components/BarnSchedulerGantt.tsx',
+        requiredSubstrings: [
+          'BarnSchedulerGantt',
+          'buildBarnGanttTimeline',
+          'createLanP2pSession',
+        ],
+        rationale:
+          'BarnSchedulerGantt must provide drag-and-drop Gantt rescheduling, escalation controls, and LAN P2P reconciliation.',
+      },
+      {
+        filePath: 'src/components/PedigreeScreen.tsx',
+        requiredSubstrings: ['FounderAndHeritabilityPanel'],
+        rationale: 'Pedigree Explorer must embed Founder & Heritability Analytics.',
+      },
+      {
+        filePath: 'src/components/BreedingScreen.tsx',
+        requiredSubstrings: ['FounderAndHeritabilityPanel'],
+        rationale: 'Breeding Lab must embed Heritability Trends, Pairing Founder Shift & Founder Loss.',
+      },
+      {
+        filePath: 'src/components/SpeciesDashboardScreen.tsx',
+        requiredSubstrings: ['BarnSchedulerGantt', 'evaluateTaskPriorityEscalation'],
+        rationale:
+          'Species Dashboard Master Task List must expose the Checklist | Gantt switcher and smart escalation count.',
+      },
+      {
+        filePath: 'src/App.tsx',
+        requiredSubstrings: [
+          'rescheduleTaskDates',
+          'applySmartTaskEscalations',
+          'reconcileOutboxOperations',
+        ],
+        rationale:
+          'App root must wire scheduler and P2P outbox reconciliation handlers into SpeciesDashboardScreen.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `startDateIso?: string` on `BarnTask` in `src/core/models.ts`, allowlist it in `src/core/inputSanitization.ts`, and preserve `start_date_iso` SQLite migration/persistence in `src/storage/webSqliteAdapter.ts`.',
+      'Restore pure modules `src/core/pedigreeAnalytics.ts`, `src/core/barnScheduler.ts`, and `src/core/p2pSyncProtocol.ts` with their unit tests (`pedigreeAnalytics.test.ts`, `barnScheduler.test.ts`, `p2pSyncProtocol.test.ts`).',
+      'Keep `src/storage/p2pLanChannel.ts`, store actions in `src/hooks/useBarnStore.ts`, `FounderAndHeritabilityPanel.tsx`, `BarnSchedulerGantt.tsx`, and host mounts in `PedigreeScreen.tsx`, `BreedingScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `App.tsx`.',
     ],
   },
 ];

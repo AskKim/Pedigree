@@ -1347,6 +1347,16 @@ export default function App() {
             onOpenSettings={() => setRoute('settings')}
             onOpenImportExportHub={openImportExportHub}
             onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
+            deviceId={store.deviceId}
+            syncOperations={store.syncOperations}
+            syncConflicts={store.syncConflicts}
+            backupSyncStatus={store.backupSyncStatus}
+            onRescheduleTask={store.rescheduleTaskDates}
+            onApplySmartEscalations={store.applySmartTaskEscalations}
+            onReconcileOutboxOps={store.reconcileOutboxOperations}
+            onResolveSyncConflict={store.resolveSyncConflict}
+            onDismissSyncConflict={store.dismissSyncConflict}
+            onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
           />
         )}
 

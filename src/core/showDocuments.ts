@@ -15,6 +15,7 @@ import { escapeSafeHtml } from './inputSanitization';
 import {
   Animal,
   BarnSettings,
+  computeDaysBetweenDateIso,
   formatReadableDate,
   formatSexForSpecies,
   nowIsoUtc,
@@ -22,7 +23,6 @@ import {
   ShowEvent,
   SpeciesProfile,
 } from './models';
-import { computeDaysBetweenDateIso } from './woolFiber';
 
 export type ShowEntryDivision = 'Open' | 'Youth';
 export type RemarkCardLayoutMode = '4up' | '1up';

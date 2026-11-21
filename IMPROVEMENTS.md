@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (48)
+## Logged Improvements (49)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -1019,4 +1019,31 @@ npm run lint && npm run build
 2. Restore pure modules `src/core/woolFiber.ts`, `src/core/alternativeCertificates.ts`, and `src/core/showDocuments.ts` with their unit tests.
 3. Keep `family_portrait` & `iagarb_angora` rendering in `pedigreePrintStyles.ts`, `syncAndExports.ts`, and `pdfExporter.ts`, plus UI wiring in `HerdScreen.tsx`, `PedigreeScreen.tsx`, `BreedingScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `App.tsx`.
 
+### IMP-049: Founder Loss / Heritability Analytics & Interactive Barn Scheduler Gantt with LAN P2P Reconciliation
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Add heritability coefficient trends and founder-loss / ancestor genetic contribution analytics in Breeding Lab & Pedigree Explorer, plus an interactive drag-and-drop Barn Scheduler Gantt timeline with smart priority escalation paired with local P2P/LAN outbox reconciliation.
+- **Summary:** Adds pure TS path-summed founder & ancestor genetic contribution analysis (0.5^depth), Lacy Effective Number of Founders (fe), species Founder-Loss & Bottleneck tracking (Active Core / Endangered / Lost), and mid-parent/single-parent OLS heritability (h²) + birth-year cohort trends embedded in Pedigree Explorer & Breeding Lab (`FounderAndHeritabilityPanel.tsx`), alongside an interactive drag-and-drop Barn Scheduler Gantt timeline (`barnScheduler.ts`, `BarnSchedulerGantt.tsx`, `BarnTask.startDateIso` in SQLite) with smart priority escalation for time-critical chores and serverless WebRTC LAN DataChannel + shared-folder + manual delta P2P outbox reconciliation (`p2pSyncProtocol.ts`, `p2pLanChannel.ts`).
+- **Tracked Files:** `src/core/models.ts`, `src/core/inputSanitization.ts`, `src/core/pedigreeAnalytics.ts`, `src/core/barnScheduler.ts`, `src/core/p2pSyncProtocol.ts`, `src/storage/p2pLanChannel.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/components/FounderAndHeritabilityPanel.tsx`, `src/components/BarnSchedulerGantt.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/BreedingScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/App.tsx`, `src/core/__tests__/pedigreeAnalytics.test.ts`, `src/core/__tests__/barnScheduler.test.ts`, `src/core/__tests__/p2pSyncProtocol.test.ts`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `startDateIso?: string` — *BarnTask must carry optional startDateIso for multi-day Gantt bar spans.*
+- `src/core/pedigreeAnalytics.ts` must contain `analyzeAnimalFounderContributions`, `analyzePairingFounderShift`, `analyzeSpeciesFounderLoss`, `analyzeSpeciesHeritabilityTrends` — *Pure TS founder genetic contribution, effective founder fe, founder-loss ledger, and heritability h² analytics must stay zero-DOM.*
+- `src/core/barnScheduler.ts` must contain `evaluateTaskPriorityEscalation`, `buildPriorityEscalationUpdates`, `shiftTaskDatesByDays`, `resizeTaskStartDateByDays`, `buildBarnGanttTimeline` — *Pure TS smart priority escalation, UTC date shifting/resizing, and Gantt timeline builders must stay zero-DOM.*
+- `src/core/p2pSyncProtocol.ts` must contain `createP2pDeltaWireMessage`, `parseP2pWireOrDeltaPayload`, `summarizeTaskReconciliation`, `encodeP2pSignalToken`, `decodeP2pSignalToken` — *Pure TS LAN P2P wire framing, CP-LAN1 signaling tokens, and task reconciliation summaries must stay zero-DOM and Buffer-free.*
+- `src/storage/p2pLanChannel.ts` must contain `createLanP2pSession`, `reconcileWithPickedSyncFolder` — *Serverless LAN WebRTC DataChannel transport and shared-folder reconciliation must stay isolated in storage/.*
+- `src/storage/webSqliteAdapter.ts` must contain `start_date_iso` — *SQLite tasks table must persist and hydrate start_date_iso across restarts.*
+- `src/hooks/useBarnStore.ts` must contain `rescheduleTaskDates`, `applySmartTaskEscalations`, `reconcileOutboxOperations` — *Store must expose serialized Gantt rescheduling, smart escalation batching, and P2P outbox reconciliation with _rev bumping.*
+- `src/components/FounderAndHeritabilityPanel.tsx` must contain `FounderAndHeritabilityPanel`, `analyzeSpeciesFounderLoss`, `analyzeSpeciesHeritabilityTrends` — *FounderAndHeritabilityPanel must visualize founder shares, founder loss, and h² cohort trends.*
+- `src/components/BarnSchedulerGantt.tsx` must contain `BarnSchedulerGantt`, `buildBarnGanttTimeline`, `createLanP2pSession` — *BarnSchedulerGantt must provide drag-and-drop Gantt rescheduling, escalation controls, and LAN P2P reconciliation.*
+- `src/components/PedigreeScreen.tsx` must contain `FounderAndHeritabilityPanel` — *Pedigree Explorer must embed Founder & Heritability Analytics.*
+- `src/components/BreedingScreen.tsx` must contain `FounderAndHeritabilityPanel` — *Breeding Lab must embed Heritability Trends, Pairing Founder Shift & Founder Loss.*
+- `src/components/SpeciesDashboardScreen.tsx` must contain `BarnSchedulerGantt`, `evaluateTaskPriorityEscalation` — *Species Dashboard Master Task List must expose the Checklist | Gantt switcher and smart escalation count.*
+- `src/App.tsx` must contain `rescheduleTaskDates`, `applySmartTaskEscalations`, `reconcileOutboxOperations` — *App root must wire scheduler and P2P outbox reconciliation handlers into SpeciesDashboardScreen.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `startDateIso?: string` on `BarnTask` in `src/core/models.ts`, allowlist it in `src/core/inputSanitization.ts`, and preserve `start_date_iso` SQLite migration/persistence in `src/storage/webSqliteAdapter.ts`.
+2. Restore pure modules `src/core/pedigreeAnalytics.ts`, `src/core/barnScheduler.ts`, and `src/core/p2pSyncProtocol.ts` with their unit tests (`pedigreeAnalytics.test.ts`, `barnScheduler.test.ts`, `p2pSyncProtocol.test.ts`).
+3. Keep `src/storage/p2pLanChannel.ts`, store actions in `src/hooks/useBarnStore.ts`, `FounderAndHeritabilityPanel.tsx`, `BarnSchedulerGantt.tsx`, and host mounts in `PedigreeScreen.tsx`, `BreedingScreen.tsx`, `SpeciesDashboardScreen.tsx`, and `App.tsx`.
 

@@ -23,13 +23,19 @@ import {
   Animal,
   BarnDatabaseSnapshot,
   BiologicalSex,
+  IagarbScorecard,
   isAnimalArchived,
   isSameSpecies,
+  isWoolApplicableSpecies,
   normalizeAnimalStatus,
+  normalizeWoolHarvestMethod,
   nowIsoUtc,
   PREDEFINED_SPECIES_PRESETS,
   resolveSpeciesProfile,
   SpeciesProfile,
+  todayDateIso,
+  WoolHarvest,
+  WoolHarvestMethod,
 } from '../models';
 import {
   extractVirtualEntries,
@@ -121,6 +127,205 @@ function htmlFragmentToLines(fragment: string): string[] {
     .filter(Boolean);
 }
 
+interface ParsedWoolCue {
+  primeGrams: number;
+  gradeGrams: number;
+  totalGrams: number;
+  intervalDays?: number;
+  harvestDateIso?: string;
+  harvestMethod?: WoolHarvestMethod;
+  stapleLengthMm?: number;
+  rate90dGrams?: number;
+  iagarbScore?: IagarbScorecard;
+  notes?: string;
+}
+
+function roundTenth(val: number): number {
+  return Math.round(val * 10) / 10;
+}
+
+function parseWoolMassGrams(raw: string | undefined): number {
+  const s = (raw || '').trim();
+  if (!s) return 0;
+  if (/\b(?:kg|kilogram|lb|lbs|pound|pounds|oz|ounce|ounces)\b|#/.test(s.toLowerCase())) {
+    const parsed = parseFlexibleWeightToGrams(s);
+    return parsed > 0 ? Math.min(100_000, roundTenth(parsed)) : 0;
+  }
+  const numMatch = s.match(/-?\d+(?:\.\d+)?/);
+  if (!numMatch) return 0;
+  const val = Number(numMatch[0]);
+  if (!Number.isFinite(val) || val <= 0) return 0;
+  return Math.min(100_000, roundTenth(val));
+}
+
+function clampIagarbPts(raw: unknown, max: number): number {
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.round(Math.min(max, num) * 10) / 10;
+}
+
+function allocateProportionalIagarbPositions(
+  rawTotal: number,
+  evaluatorName = '',
+  evaluationDateIso = ''
+): IagarbScorecard | undefined {
+  const clamped = Math.round(Math.min(100, Math.max(0, rawTotal)) * 10) / 10;
+  if (!Number.isFinite(clamped) || clamped <= 0) return undefined;
+  const ratio = clamped / 100;
+  const caps = [20, 20, 15, 15, 15, 10, 5] as const;
+  const vals = caps.map((cap) => Math.min(cap, Math.round(cap * ratio * 10) / 10));
+  let diff = Math.round((clamped - vals.reduce((a, b) => a + b, 0)) * 10) / 10;
+  for (let i = 0; i < caps.length && Math.abs(diff) >= 0.05; i++) {
+    const step = diff > 0 ? Math.min(diff, roundTenth(caps[i] - vals[i])) : Math.max(diff, -vals[i]);
+    vals[i] = roundTenth(vals[i] + step);
+    diff = roundTenth(diff - step);
+  }
+  const totalPts = roundTenth(vals.reduce((a, b) => a + b, 0));
+  if (totalPts <= 0) return undefined;
+  return {
+    weightPts: vals[0],
+    bodyTypePts: vals[1],
+    densityLengthPts: vals[2],
+    uniformityPts: vals[3],
+    texturePts: vals[4],
+    furnishingsPts: vals[5],
+    conditionPts: vals[6],
+    totalPts,
+    evaluatorName: sanitizeSingleLineText(evaluatorName, 120),
+    evaluationDateIso: /^\d{4}-\d{2}-\d{2}$/.test(evaluationDateIso) ? evaluationDateIso : '',
+  };
+}
+
+function normalizeImportedIagarbScore(raw: unknown): IagarbScorecard | undefined {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  if (typeof raw === 'number') {
+    return allocateProportionalIagarbPositions(raw);
+  }
+  if (typeof raw === 'string') {
+    const match = raw.match(/(\d+(?:\.\d+)?)(?:\s*\/\s*100|\s*pts?)?/i);
+    if (!match) return undefined;
+    return allocateProportionalIagarbPositions(Number(match[1]));
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const weightPts = clampIagarbPts(obj.weightPts, 20);
+  const bodyTypePts = clampIagarbPts(obj.bodyTypePts, 20);
+  const densityLengthPts = clampIagarbPts(obj.densityLengthPts, 15);
+  const uniformityPts = clampIagarbPts(obj.uniformityPts, 15);
+  const texturePts = clampIagarbPts(obj.texturePts, 15);
+  const furnishingsPts = clampIagarbPts(obj.furnishingsPts, 10);
+  const conditionPts = clampIagarbPts(obj.conditionPts, 5);
+  const breakdownSum = roundTenth(
+    weightPts + bodyTypePts + densityLengthPts + uniformityPts + texturePts + furnishingsPts + conditionPts
+  );
+  const evalName = sanitizeSingleLineText(obj.evaluatorName || '', 120);
+  const rawDate = typeof obj.evaluationDateIso === 'string' ? obj.evaluationDateIso.trim() : '';
+  const evalDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : '';
+  if (breakdownSum > 0) {
+    return {
+      weightPts,
+      bodyTypePts,
+      densityLengthPts,
+      uniformityPts,
+      texturePts,
+      furnishingsPts,
+      conditionPts,
+      totalPts: Math.min(100, breakdownSum),
+      evaluatorName: evalName,
+      evaluationDateIso: evalDate,
+    };
+  }
+  if (typeof obj.totalPts === 'number' && obj.totalPts > 0) {
+    return allocateProportionalIagarbPositions(obj.totalPts, evalName, evalDate);
+  }
+  return undefined;
+}
+
+function mergeParsedWoolCues(base: ParsedWoolCue | undefined, extra: ParsedWoolCue | undefined): ParsedWoolCue | undefined {
+  if (!base) return extra;
+  if (!extra) return base;
+  return {
+    primeGrams: Math.max(base.primeGrams, extra.primeGrams),
+    gradeGrams: Math.max(base.gradeGrams, extra.gradeGrams),
+    totalGrams: Math.max(base.totalGrams, extra.totalGrams),
+    intervalDays: extra.intervalDays ?? base.intervalDays,
+    harvestDateIso: extra.harvestDateIso || base.harvestDateIso,
+    harvestMethod: extra.harvestMethod ?? base.harvestMethod,
+    stapleLengthMm: extra.stapleLengthMm ?? base.stapleLengthMm,
+    rate90dGrams: extra.rate90dGrams ?? base.rate90dGrams,
+    iagarbScore: extra.iagarbScore || base.iagarbScore,
+    notes: [base.notes, extra.notes].filter(Boolean).join(' · ') || undefined,
+  };
+}
+
+function parseIagarbPanelFromHtml(html: string): ParsedWoolCue | undefined {
+  if (!/class\s*=\s*["'][^"']*iagarb-panel/i.test(html) && !/IAGARB German Angora/i.test(html)) {
+    return undefined;
+  }
+  let primeGrams = 0;
+  let gradeGrams = 0;
+  let totalGrams = 0;
+  let rate90dGrams: number | undefined;
+  let totalPtsFromStat = 0;
+
+  const statRegex =
+    /<strong>\s*(Logged Harvests|Prime Fiber|Grade Fiber|Total Yield|90-Day Rate|Total IAGARB Score)\s*:\s*<\/strong>\s*([^<]+)/gi;
+  let statMatch: RegExpExecArray | null;
+  while ((statMatch = statRegex.exec(html)) !== null) {
+    const label = statMatch[1].toLowerCase();
+    const valText = decodeHtmlEntities(statMatch[2]).trim();
+    if (label === 'prime fiber') primeGrams = parseWoolMassGrams(valText);
+    else if (label === 'grade fiber') gradeGrams = parseWoolMassGrams(valText);
+    else if (label === 'total yield') totalGrams = parseWoolMassGrams(valText);
+    else if (label === '90-day rate') {
+      const rate = parseWoolMassGrams(valText);
+      if (rate > 0) rate90dGrams = rate;
+    } else if (label === 'total iagarb score') {
+      const scoreMatch = valText.match(/(\d+(?:\.\d+)?)\s*(?:\/\s*100|\s*pts?)?/i);
+      if (scoreMatch) totalPtsFromStat = Number(scoreMatch[1]) || 0;
+    }
+  }
+
+  const posMap: Record<string, number> = {};
+  const posRegex =
+    /<div\b[^>]*class\s*=\s*["'][^"']*iag-lbl[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div\b[^>]*class\s*=\s*["'][^"']*iag-val[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
+  let posMatch: RegExpExecArray | null;
+  while ((posMatch = posRegex.exec(html)) !== null) {
+    const lbl = decodeHtmlEntities(posMatch[1].replace(/<[^>]+>/g, '')).trim().toLowerCase();
+    const valStr = decodeHtmlEntities(posMatch[2].replace(/<[^>]+>/g, '')).trim();
+    const numMatch = valStr.match(/^(\d+(?:\.\d+)?)\s*\//);
+    if (!numMatch) continue;
+    const pts = Number(numMatch[1]);
+    if (!Number.isFinite(pts) || pts <= 0) continue;
+    if (lbl === 'weight') posMap.weightPts = pts;
+    else if (lbl === 'body type') posMap.bodyTypePts = pts;
+    else if (lbl.includes('density')) posMap.densityLengthPts = pts;
+    else if (lbl.includes('uniformity')) posMap.uniformityPts = pts;
+    else if (lbl.includes('texture')) posMap.texturePts = pts;
+    else if (lbl.includes('furnishing')) posMap.furnishingsPts = pts;
+    else if (lbl === 'condition') posMap.conditionPts = pts;
+  }
+
+  const iagarbScore =
+    Object.keys(posMap).length > 0
+      ? normalizeImportedIagarbScore(posMap)
+      : totalPtsFromStat > 0
+      ? allocateProportionalIagarbPositions(totalPtsFromStat)
+      : undefined;
+
+  if (primeGrams === 0 && gradeGrams === 0 && totalGrams === 0 && !iagarbScore) {
+    return undefined;
+  }
+
+  return {
+    primeGrams,
+    gradeGrams,
+    totalGrams: totalGrams || roundTenth(primeGrams + gradeGrams),
+    rate90dGrams,
+    iagarbScore,
+  };
+}
+
 interface ParsedCellMeta {
   name: string;
   tattoo: string;
@@ -134,6 +339,7 @@ interface ParsedCellMeta {
   genotypeRaw: string;
   sex: BiologicalSex;
   notes: string;
+  woolCue?: ParsedWoolCue;
   isUnknown: boolean;
 }
 
@@ -183,16 +389,122 @@ function parseAncestorTextLines(
   let sex: BiologicalSex = defaultSex;
   const extraParts: string[] = [];
 
+  let woolPrime = 0;
+  let woolGrade = 0;
+  let woolTotal = 0;
+  let wool90dRate: number | undefined;
+  let woolIntervalDays: number | undefined;
+  let woolStapleMm: number | undefined;
+  let woolIagarbTotal = 0;
+  let sawWoolData = false;
+
   for (let i = 0; i < lines.length; i++) {
-    const tokens = lines[i].split(/\s*[·|•;]\s*/).map((t) => t.trim()).filter(Boolean);
+    const rawLine = lines[i].trim();
+    // Skip generated .iagarb-panel lines when parsing body text around HTM pedigrees
+    if (
+      /^(?:iagarb german angora wool|logged harvests\s*:|prime fiber\s*:|grade fiber\s*:|total yield\s*:|90-day rate\s*:|total iagarb score\s*:|body type$|wool density & length$|wool uniformity$|wool texture$|furnishings$|condition$|weight$|\d+(?:\.\d+)?\s*\/\s*(?:5|10|15|20|100)|—\s*\/\s*(?:5|10|15|20))/i.test(
+        rawLine
+      )
+    ) {
+      continue;
+    }
+
+    const tokens = rawLine.split(/\s*[·|•;]\s*/).map((t) => t.trim()).filter(Boolean);
     for (let tIdx = 0; tIdx < tokens.length; tIdx++) {
       const tok = tokens[tIdx];
-      if (i === 0 && tIdx === 0 && !/^(?:id|ear|tattoo|dob|born|reg|gc|legs|wt|weight)\s*:/i.test(tok)) {
+      if (
+        i === 0 &&
+        tIdx === 0 &&
+        !/^(?:id|ear|tattoo|dob|born|reg|gc|legs|wt|weight|wool|fleece|iagarb)\s*:/i.test(tok)
+      ) {
         name = tok.replace(/^(?:name|animal)\s*:\s*/i, '').trim();
         continue;
       }
 
-      const idMatch = tok.match(/^(?:id|ear(?:\s*tag|\s*#)?|tattoo|tat\.?)\s*:?\s*(.+)$/i);
+      const nameMatch = tok.match(/^(?:name|animal\s*name)\s*:\s*(.+)$/i);
+      if (nameMatch) {
+        name = sanitizeSingleLineText(nameMatch[1], 140);
+        continue;
+      }
+
+      // Wool / fiber yield lines generated by formatWoolWeightSummary or external wool sheets
+      const woolSummaryMatch = tok.match(
+        /^(\d+(?:\.\d+)?)\s*g?\s*(?:wool|fleece|total)\b(?:\s*\(([^)]*)\)?)?$/i
+      );
+      if (woolSummaryMatch) {
+        sawWoolData = true;
+        woolTotal = Math.max(woolTotal, parseWoolMassGrams(`${woolSummaryMatch[1]}g`));
+        const parenBody = woolSummaryMatch[2] || '';
+        const pMatch = parenBody.match(/(\d+(?:\.\d+)?)\s*g?\s*prime/i);
+        const gMatch = parenBody.match(/(\d+(?:\.\d+)?)\s*g?\s*grade/i);
+        if (pMatch) woolPrime = Math.max(woolPrime, parseWoolMassGrams(`${pMatch[1]}g`));
+        if (gMatch) woolGrade = Math.max(woolGrade, parseWoolMassGrams(`${gMatch[1]}g`));
+        continue;
+      }
+
+      const woolPrefixMatch = tok.match(/^(?:wool(?:\s*\/\s*fiber)?|fleece)\s*:\s*(.+)$/i);
+      if (woolPrefixMatch) {
+        sawWoolData = true;
+        const val = woolPrefixMatch[1];
+        const totMatch = val.match(/(\d+(?:\.\d+)?)\s*g?\s*(?:wool|fleece|total)\b/i);
+        const pMatch = val.match(/(\d+(?:\.\d+)?)\s*g?\s*prime/i);
+        const gMatch = val.match(/(\d+(?:\.\d+)?)\s*g?\s*grade/i);
+        if (totMatch) woolTotal = Math.max(woolTotal, parseWoolMassGrams(`${totMatch[1]}g`));
+        if (pMatch) woolPrime = Math.max(woolPrime, parseWoolMassGrams(`${pMatch[1]}g`));
+        if (gMatch) woolGrade = Math.max(woolGrade, parseWoolMassGrams(`${gMatch[1]}g`));
+        if (!totMatch && !pMatch && !gMatch) {
+          woolTotal = Math.max(woolTotal, parseWoolMassGrams(val));
+        }
+        continue;
+      }
+
+      const primePiece = tok.match(/^(\d+(?:\.\d+)?)\s*g?\s*prime\b/i);
+      if (primePiece) {
+        sawWoolData = true;
+        woolPrime = Math.max(woolPrime, parseWoolMassGrams(`${primePiece[1]}g`));
+        continue;
+      }
+
+      const gradePiece = tok.match(/^(\d+(?:\.\d+)?)\s*g?\s*grade\)?$/i);
+      if (gradePiece) {
+        sawWoolData = true;
+        woolGrade = Math.max(woolGrade, parseWoolMassGrams(`${gradePiece[1]}g`));
+        continue;
+      }
+
+      if (/^\d+\s*harvests?\)?$/i.test(tok)) {
+        continue;
+      }
+
+      const rate90Match = tok.match(/^(\d+(?:\.\d+)?)\s*g\s*\/\s*(\d+)\s*d(?:ays?)?$/i);
+      if (rate90Match) {
+        sawWoolData = true;
+        wool90dRate = parseWoolMassGrams(`${rate90Match[1]}g`);
+        woolIntervalDays = Number(rate90Match[2]) || undefined;
+        continue;
+      }
+
+      const iagarbTokMatch = tok.match(
+        /^iagarb(?:\s+score)?\s*:?\s*(\d+(?:\.\d+)?)(?:\s*\/\s*100|\s*pts?)?$/i
+      );
+      if (iagarbTokMatch) {
+        sawWoolData = true;
+        woolIagarbTotal = Math.max(woolIagarbTotal, Number(iagarbTokMatch[1]) || 0);
+        continue;
+      }
+
+      const stapleTokMatch = tok.match(
+        /^(?:staple(?:\s*length)?\s*:?\s*(\d+(?:\.\d+)?)\s*mm?|(\d+(?:\.\d+)?)\s*mm\s*staple)$/i
+      );
+      if (stapleTokMatch) {
+        sawWoolData = true;
+        woolStapleMm = Number(stapleTokMatch[1] || stapleTokMatch[2]) || undefined;
+        continue;
+      }
+
+      const idMatch = tok.match(
+        /^(?:id|ear(?:\s*tag|\s*#)?|tattoo(?:\s*\/\s*id)?|tat\.?)\s*:?\s*(.+)$/i
+      );
       if (idMatch && !tattoo) {
         tattoo = sanitizeSingleLineText(idMatch[1], 60);
         continue;
@@ -286,6 +598,22 @@ function parseAncestorTextLines(
     tattoo = parenTag[2].trim();
   }
 
+  const iagarbFromTok =
+    woolIagarbTotal > 0 ? allocateProportionalIagarbPositions(woolIagarbTotal) : undefined;
+  const effectiveTotal = woolTotal || roundTenth(woolPrime + woolGrade);
+  const woolCue: ParsedWoolCue | undefined =
+    sawWoolData && (effectiveTotal > 0 || woolPrime > 0 || woolGrade > 0 || iagarbFromTok || wool90dRate)
+      ? {
+          primeGrams: woolPrime,
+          gradeGrams: woolGrade,
+          totalGrams: effectiveTotal || wool90dRate || 0,
+          intervalDays: woolIntervalDays,
+          stapleLengthMm: woolStapleMm,
+          rate90dGrams: wool90dRate,
+          iagarbScore: iagarbFromTok,
+        }
+      : undefined;
+
   return {
     name: sanitizeSingleLineText(name || tattoo || 'Imported Ancestor', 140),
     tattoo,
@@ -299,6 +627,7 @@ function parseAncestorTextLines(
     genotypeRaw,
     sex,
     notes: extraParts.length > 0 && joined.length <= 300 ? '' : sanitizePlainText(extraParts.join(' · '), 500),
+    ...(woolCue ? { woolCue } : {}),
     isUnknown: false,
   };
 }
@@ -412,13 +741,16 @@ function parseEvansHtmlEntry(
     seedHint: string,
     defaultBreed?: string
   ) => Animal,
-  linkParent: (child: Animal, role: 'sire' | 'dam', parent: Animal) => void
+  linkParent: (child: Animal, role: 'sire' | 'dam', parent: Animal) => void,
+  onWoolCue?: (animal: Animal, cue: ParsedWoolCue, seedHint: string) => void
 ): { animalsImported: number; ancestorLinks: number } {
   const html = entry.textContent || '';
   if (!html.trim()) return { animalsImported: 0, ancestorLinks: 0 };
 
   let animalsImported = 0;
   let ancestorLinks = 0;
+
+  const panelWoolCue = parseIagarbPanelFromHtml(html);
 
   // Extract subject header lines outside pedigree table
   const withoutTables = html.replace(/<table\b[\s\S]*?<\/table>/gi, '\n');
@@ -461,7 +793,11 @@ function parseEvansHtmlEntry(
   if (!treeTable) {
     // No multi-row pedigree table, but if subject block has usable fields, import subject alone
     if (!subjectMeta.isUnknown && subjectMeta.name) {
-      createAnimalRecord(subjectMeta, `${entry.entryPath}-subject`);
+      const subjectOnly = createAnimalRecord(subjectMeta, `${entry.entryPath}-subject`);
+      const mergedSubCue = mergeParsedWoolCues(subjectMeta.woolCue, panelWoolCue);
+      if (mergedSubCue && onWoolCue) {
+        onWoolCue(subjectOnly, mergedSubCue, `${entry.entryPath}-subject`);
+      }
       animalsImported++;
     }
     return { animalsImported, ancestorLinks };
@@ -542,6 +878,13 @@ function parseEvansHtmlEntry(
     animalsImported++;
   }
 
+  if (subjectAnimal && onWoolCue) {
+    const mergedSubjectCue = mergeParsedWoolCues(subjectMeta.woolCue, panelWoolCue);
+    if (mergedSubjectCue) {
+      onWoolCue(subjectAnimal, mergedSubjectCue, `${entry.entryPath}-subject`);
+    }
+  }
+
   const startGenCol = hasSubjectCol ? 1 : 0;
   for (let col = startGenCol; col < maxCols; col++) {
     const genDepth = col - startGenCol + 1;
@@ -557,11 +900,15 @@ function parseEvansHtmlEntry(
       const meta = parseAncestorTextLines(slot.cell.textLines, defaultSex);
       if (meta.isUnknown || !meta.name) continue;
 
+      const ancSeed = `${entry.entryPath}-g${genDepth}-s${slotIndex}`;
       const ancAnimal = createAnimalRecord(
         meta,
-        `${entry.entryPath}-g${genDepth}-s${slotIndex}`,
+        ancSeed,
         subjectAnimal?.breed || ''
       );
+      if (meta.woolCue && onWoolCue) {
+        onWoolCue(ancAnimal, meta.woolCue, ancSeed);
+      }
       cellAnimals.set(`${r}:${col}`, ancAnimal);
       animalsImported++;
     }
@@ -768,10 +1115,69 @@ export const UniversalPedigreeImporter: PlatformImporter = {
     const matchedExistingByAnimalId = new Map<string, PreexistingAnimalMatch>();
     const animalLookup = new Map<string, string>();
     const resolvedRealAnimalIds = new Set<string>();
+    const woolHarvestsById = new Map<string, WoolHarvest>();
+    const woolDedupeKeys = new Set<string>();
+    const fallbackHarvestDate = todayDateIso();
     const csvTables: CsvTableMappingSummary[] = [];
     const unresolvedParentLinks: UnresolvedParentLink[] = [];
     let parentLinksResolved = 0;
     let placeholderAncestorsCreated = 0;
+
+    const recordCapturedWoolHarvest = (
+      species: string,
+      animalId: string,
+      cue: ParsedWoolCue,
+      seedHint: string
+    ) => {
+      // Capture wool data silently in DB only for fiber-producing species (e.g., Rabbit, Sheep)
+      // even when the UI display toggle is disabled; skip non-wool species cleanly.
+      if (!isWoolApplicableSpecies(species) || !animalId) return;
+      const prime = cue.primeGrams > 0 ? roundTenth(cue.primeGrams) : 0;
+      const grade = cue.gradeGrams > 0 ? roundTenth(cue.gradeGrams) : 0;
+      const effectivePrime =
+        prime === 0 && grade === 0 && cue.totalGrams > 0 ? roundTenth(cue.totalGrams) : prime;
+      const total = roundTenth(effectivePrime + grade);
+      const score = cue.iagarbScore;
+      if (total <= 0 && !score && !cue.stapleLengthMm) return;
+
+      const dateIso =
+        cue.harvestDateIso && /^\d{4}-\d{2}-\d{2}$/.test(cue.harvestDateIso)
+          ? cue.harvestDateIso
+          : fallbackHarvestDate;
+      const dedupeKey = `${animalId}::${dateIso}::${effectivePrime}::${grade}::${score?.totalPts ?? 0}`;
+      if (woolDedupeKeys.has(dedupeKey)) return;
+      woolDedupeKeys.add(dedupeKey);
+
+      const id = deterministicEntityId(
+        'wh',
+        species,
+        `${animalId}-${dateIso}-${effectivePrime}-${grade}-${seedHint}`
+      );
+      const interval =
+        cue.intervalDays && Number.isFinite(cue.intervalDays) && cue.intervalDays > 0
+          ? Math.min(1000, Math.round(cue.intervalDays))
+          : undefined;
+      const staple =
+        cue.stapleLengthMm && Number.isFinite(cue.stapleLengthMm) && cue.stapleLengthMm > 0
+          ? roundTenth(Math.min(500, cue.stapleLengthMm))
+          : undefined;
+
+      woolHarvestsById.set(id, {
+        id,
+        species,
+        animalId,
+        harvestDateIso: dateIso,
+        ...(interval ? { shearingIntervalDays: interval } : {}),
+        primeWeightGrams: effectivePrime,
+        gradeWeightGrams: grade,
+        harvestMethod: cue.harvestMethod ?? 'Shear',
+        ...(staple ? { stapleLengthMm: staple } : {}),
+        ...(score ? { iagarbScore: score } : {}),
+        notes: sanitizePlainText(cue.notes || 'Captured from pedigree import', 1000),
+        createdAt: ts,
+        updatedAt: ts,
+      });
+    };
 
     interface PendingCsvParentRow {
       entryPath: string;
@@ -993,7 +1399,8 @@ export const UniversalPedigreeImporter: PlatformImporter = {
           sp.name,
           (meta, seedHint, defaultBreed) =>
             resolveOrInsertAnimal(sp.name, meta, seedHint, defaultBreed),
-          linkParentSafe
+          linkParentSafe,
+          (animal, cue, seedHint) => recordCapturedWoolHarvest(sp.name, animal.id, cue, seedHint)
         );
         diagnostics.push({
           archiveName: entry.archiveName,
@@ -1017,6 +1424,7 @@ export const UniversalPedigreeImporter: PlatformImporter = {
         try {
           const parsed = JSON.parse(trimmed);
           const sp = ensureSpecies(undefined, trimmed, entry.baseName);
+          const jsonAnimalIdRemap = new Map<string, string>();
 
           const ingestTreeNode = (
             node: unknown,
@@ -1070,6 +1478,76 @@ export const UniversalPedigreeImporter: PlatformImporter = {
               },
               seed
             );
+            if (typeof obj.id === 'string' && obj.id.trim()) {
+              jsonAnimalIdRemap.set(obj.id.trim(), animal.id);
+            }
+
+            // Capture optional nested/inline wool/fleece fields on JSON pedigree nodes
+            if (isWoolApplicableSpecies(nodeSpecies)) {
+              if (Array.isArray(obj.woolHarvests)) {
+                obj.woolHarvests.forEach((rawWh, whIdx) => {
+                  if (!rawWh || typeof rawWh !== 'object' || Array.isArray(rawWh)) return;
+                  const wObj = rawWh as Record<string, unknown>;
+                  const pGrams = parseWoolMassGrams(
+                    String(wObj.primeWeightGrams ?? wObj.primeGrams ?? wObj.prime ?? '')
+                  );
+                  const gGrams = parseWoolMassGrams(
+                    String(wObj.gradeWeightGrams ?? wObj.gradeGrams ?? wObj.grade ?? '')
+                  );
+                  const tGrams = parseWoolMassGrams(
+                    String(wObj.totalWeightGrams ?? wObj.totalGrams ?? wObj.weight ?? '')
+                  );
+                  recordCapturedWoolHarvest(
+                    nodeSpecies,
+                    animal.id,
+                    {
+                      primeGrams: pGrams,
+                      gradeGrams: gGrams,
+                      totalGrams: tGrams || roundTenth(pGrams + gGrams),
+                      intervalDays: Number(wObj.shearingIntervalDays ?? wObj.intervalDays) || undefined,
+                      harvestDateIso: normalizeFlexibleDateIso(
+                        String(wObj.harvestDateIso ?? wObj.harvestDate ?? wObj.date ?? '')
+                      ),
+                      harvestMethod: normalizeWoolHarvestMethod(wObj.harvestMethod, 'Shear'),
+                      stapleLengthMm: Number(wObj.stapleLengthMm ?? wObj.stapleLength) || undefined,
+                      iagarbScore: normalizeImportedIagarbScore(wObj.iagarbScore ?? wObj.iagarb),
+                      notes: sanitizePlainText(wObj.notes ?? '', 500),
+                    },
+                    `${seed}-wh-${whIdx}`
+                  );
+                });
+              } else {
+                const pGrams = parseWoolMassGrams(
+                  String(obj.woolPrimeGrams ?? obj.primeWoolGrams ?? '')
+                );
+                const gGrams = parseWoolMassGrams(
+                  String(obj.woolGradeGrams ?? obj.gradeWoolGrams ?? '')
+                );
+                const tGrams = parseWoolMassGrams(
+                  String(obj.woolTotalGrams ?? obj.woolGrams ?? obj.wool ?? obj.fleece ?? '')
+                );
+                const inlineIagarb = normalizeImportedIagarbScore(obj.iagarbScore ?? obj.iagarb);
+                if (pGrams > 0 || gGrams > 0 || tGrams > 0 || inlineIagarb) {
+                  recordCapturedWoolHarvest(
+                    nodeSpecies,
+                    animal.id,
+                    {
+                      primeGrams: pGrams,
+                      gradeGrams: gGrams,
+                      totalGrams: tGrams || roundTenth(pGrams + gGrams),
+                      intervalDays: Number(obj.shearingIntervalDays) || undefined,
+                      harvestDateIso: normalizeFlexibleDateIso(
+                        String(obj.woolHarvestDateIso ?? obj.shearDate ?? '')
+                      ),
+                      harvestMethod: normalizeWoolHarvestMethod(obj.woolHarvestMethod, 'Shear'),
+                      stapleLengthMm: Number(obj.woolStapleLengthMm ?? obj.stapleLengthMm) || undefined,
+                      iagarbScore: inlineIagarb,
+                    },
+                    `${seed}-inline`
+                  );
+                }
+              }
+            }
 
             if (obj.sire && typeof obj.sire === 'object') {
               const sireNode = ingestTreeNode(obj.sire, 'Male', depth + 1, `${seed}-s`);
@@ -1082,10 +1560,14 @@ export const UniversalPedigreeImporter: PlatformImporter = {
             return animal;
           };
 
+          const rootObj =
+            !Array.isArray(parsed) && parsed && typeof parsed === 'object'
+              ? (parsed as Record<string, unknown>)
+              : null;
           const rootNodes: unknown[] = Array.isArray(parsed)
             ? parsed
-            : Array.isArray((parsed as Record<string, unknown>).animals)
-            ? ((parsed as Record<string, unknown>).animals as unknown[])
+            : Array.isArray(rootObj?.animals)
+            ? (rootObj.animals as unknown[])
             : [parsed];
 
           let jsonCount = 0;
@@ -1094,6 +1576,48 @@ export const UniversalPedigreeImporter: PlatformImporter = {
               jsonCount++;
             }
           });
+
+          if (rootObj && Array.isArray(rootObj.woolHarvests)) {
+            rootObj.woolHarvests.forEach((rawWh, whIdx) => {
+              if (!rawWh || typeof rawWh !== 'object' || Array.isArray(rawWh)) return;
+              const wObj = rawWh as Record<string, unknown>;
+              const rawAnimalId = typeof wObj.animalId === 'string' ? wObj.animalId.trim() : '';
+              if (!rawAnimalId) return;
+              const mappedAnimalId = jsonAnimalIdRemap.get(rawAnimalId) || rawAnimalId;
+              const matchedAnimal = animalsById.get(mappedAnimalId);
+              const whSpecies =
+                typeof wObj.species === 'string' && wObj.species.trim()
+                  ? wObj.species.trim()
+                  : matchedAnimal?.species || sp.name;
+              const pGrams = parseWoolMassGrams(
+                String(wObj.primeWeightGrams ?? wObj.primeGrams ?? '')
+              );
+              const gGrams = parseWoolMassGrams(
+                String(wObj.gradeWeightGrams ?? wObj.gradeGrams ?? '')
+              );
+              const tGrams = parseWoolMassGrams(
+                String(wObj.totalWeightGrams ?? wObj.totalGrams ?? '')
+              );
+              recordCapturedWoolHarvest(
+                whSpecies,
+                mappedAnimalId,
+                {
+                  primeGrams: pGrams,
+                  gradeGrams: gGrams,
+                  totalGrams: tGrams || roundTenth(pGrams + gGrams),
+                  intervalDays: Number(wObj.shearingIntervalDays) || undefined,
+                  harvestDateIso: normalizeFlexibleDateIso(
+                    String(wObj.harvestDateIso ?? wObj.harvestDate ?? '')
+                  ),
+                  harvestMethod: normalizeWoolHarvestMethod(wObj.harvestMethod, 'Shear'),
+                  stapleLengthMm: Number(wObj.stapleLengthMm) || undefined,
+                  iagarbScore: normalizeImportedIagarbScore(wObj.iagarbScore),
+                  notes: sanitizePlainText(wObj.notes ?? '', 500),
+                },
+                `${entry.entryPath}-rootwh-${whIdx}`
+              );
+            });
+          }
           diagnostics.push({
             archiveName: entry.archiveName,
             entryPath: entry.entryPath,
@@ -1200,6 +1724,36 @@ export const UniversalPedigreeImporter: PlatformImporter = {
             '',
             true
           );
+
+          if (isWoolApplicableSpecies(sp.name)) {
+            const woolPrime = parseWoolMassGrams(pickField(row, 'woolPrimeGrams'));
+            const woolGrade = parseWoolMassGrams(pickField(row, 'woolGradeGrams'));
+            const woolTotal = parseWoolMassGrams(pickField(row, 'woolTotalGrams'));
+            const woolDate = normalizeFlexibleDateIso(pickField(row, 'woolHarvestDateIso'));
+            const woolInterval = Number(pickField(row, 'woolShearingIntervalDays')) || undefined;
+            const woolMethodRaw = pickField(row, 'woolHarvestMethod');
+            const woolStaple = Number(pickField(row, 'woolStapleLengthMm')) || undefined;
+            const woolIagarb = normalizeImportedIagarbScore(pickField(row, 'woolIagarbScore'));
+            if (woolPrime > 0 || woolGrade > 0 || woolTotal > 0 || woolIagarb || woolStaple) {
+              recordCapturedWoolHarvest(
+                sp.name,
+                subject.id,
+                {
+                  primeGrams: woolPrime,
+                  gradeGrams: woolGrade,
+                  totalGrams: woolTotal || roundTenth(woolPrime + woolGrade),
+                  intervalDays: woolInterval,
+                  harvestDateIso: woolDate,
+                  harvestMethod: woolMethodRaw
+                    ? normalizeWoolHarvestMethod(woolMethodRaw, 'Shear')
+                    : 'Shear',
+                  stapleLengthMm: woolStaple,
+                  iagarbScore: woolIagarb,
+                },
+                `${entry.entryPath}-r${rIdx}`
+              );
+            }
+          }
 
           pendingCsvParentRows.push({
             entryPath: entry.entryPath,
@@ -1389,10 +1943,15 @@ export const UniversalPedigreeImporter: PlatformImporter = {
       }
     }
 
+    const woolHarvests = Array.from(woolHarvestsById.values());
+
     const reportLines: string[] = [
       `Importer: ${this.name}`,
       `Files (${archiveNames.length}): ${archiveNames.join(', ')}`,
       `Animals & Ancestors Parsed: ${animalsById.size} (${parentLinksResolved} parent links resolved)`,
+      ...(woolHarvests.length > 0
+        ? [`Wool / Fiber Records Captured: ${woolHarvests.length}`]
+        : []),
       ...diagnostics.map(
         (d) =>
           `- [${d.classification}] ${d.entryPath} (${d.rowCount} items) | Matched: ${d.matchedColumns.join(', ')}`
@@ -1425,6 +1984,7 @@ export const UniversalPedigreeImporter: PlatformImporter = {
       tasks: [],
       careLogs: [],
       shows: [],
+      woolHarvests,
       csvTables,
       unresolvedParentLinks,
       schemaDiagnosticReport: reportLines.join('\n'),
