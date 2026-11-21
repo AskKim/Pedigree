@@ -2416,3 +2416,284 @@ export function simulatePairingGenetics(
     lethalOrHealthAlerts,
   };
 }
+
+export interface SingleGenotypeCarrierNote {
+  locus: string;
+  locusName: string;
+  allele: string;
+  pair: string;
+  description: string;
+}
+
+export interface SingleGenotypeEvaluation {
+  speciesName: string;
+  isCustomSpeciesFallback: boolean;
+  rawInput: string;
+  normalizedGenotype: string;
+  pairs: GenotypeAllelePair[];
+  predictedVariety: string;
+  hasInsufficientLoci: boolean;
+  hasUnknownAlleles: boolean;
+  unverifiedCoreLoci: string[];
+  recessiveCarriers: SingleGenotypeCarrierNote[];
+  healthAlerts: BreedingGeneticAlert[];
+}
+
+function evaluateSingleAnimalHealthAlerts(
+  spec: SpeciesGeneticsSpec,
+  lociMap: Record<string, string>
+): BreedingGeneticAlert[] {
+  const alerts: BreedingGeneticAlert[] = [];
+  if (spec.speciesKey === 'rabbit') {
+    if (lociMap['En'] === 'EnEn') {
+      alerts.push({
+        severity: 'danger',
+        locus: 'En',
+        title: 'Homozygous Charlie (EnEn) — Megacolon Risk',
+        detail:
+          'EnEn Charlie rabbits are predisposed to megacolon digestive syndrome; crossing EnEn × enen produces 100% Broken (Enen) offspring.',
+      });
+    }
+    if (lociMap['E'] === 'ee' && (!lociMap['W'] || lociMap['W'].includes('_'))) {
+      alerts.push({
+        severity: 'info',
+        locus: 'W',
+        title: 'Wide-Band (W/w) Unverified',
+        detail:
+          'Leaving Wide-Band as __ or W_ does not assume ww; verify ww via pedigree or test breeding.',
+      });
+    }
+  } else if (spec.speciesKey === 'cat') {
+    const w = lociMap['W'] || '';
+    if (w.startsWith('W') && !w.startsWith('Ws')) {
+      alerts.push({
+        severity: 'warning',
+        locus: 'W',
+        title: 'Dominant White (W) Sensory Screening Note',
+        detail:
+          'Dominant White cats (especially blue-eyed) carry elevated congenital deafness screening needs (BAER testing recommended).',
+      });
+    }
+  } else if (spec.speciesKey === 'dog') {
+    if (lociMap['M'] === 'MM') {
+      alerts.push({
+        severity: 'danger',
+        locus: 'M',
+        title: 'Homozygous Double Merle (MM) — Deafness / Eye Risk',
+        detail:
+          'MM Double Merle dogs carry high risk of congenital deafness and microphthalmia / ocular defects.',
+      });
+    }
+  } else if (spec.speciesKey === 'guinea_pig') {
+    if (lociMap['Rn'] === 'RnRn') {
+      alerts.push({
+        severity: 'danger',
+        locus: 'Rn',
+        title: 'Homozygous Lethal White (RnRn)',
+        detail:
+          'RnRn Lethal White cavies suffer severe congenital eye, ear, and dental defects.',
+      });
+    }
+  } else if (spec.speciesKey === 'chinchilla') {
+    if (lociMap['Wh'] === 'WhWh') {
+      alerts.push({
+        severity: 'danger',
+        locus: 'Wh',
+        title: 'Homozygous Wilson White Lethal Factor (WhWh)',
+        detail: 'WhWh is an embryonic lethal combination in chinchillas.',
+      });
+    }
+    if (lociMap['TO'] === 'TOTO') {
+      alerts.push({
+        severity: 'danger',
+        locus: 'TO',
+        title: 'Homozygous Black Velvet / TOV Lethal Factor (TOTO)',
+        detail: 'TOTO is an embryonic lethal combination in chinchillas.',
+      });
+    }
+  } else if (spec.speciesKey === 'ferret') {
+    const pa = lociMap['Pa'] || '';
+    const bl = lociMap['Bl'] || '';
+    if ((pa && !pa.includes('papa') && !pa.includes('__')) || (bl && !bl.includes('blbl') && !bl.includes('__'))) {
+      alerts.push({
+        severity: 'warning',
+        title: 'Waardenburg Syndrome / Deafness Marker (Blaze / Panda)',
+        detail:
+          'Blaze (Bl) and Panda (Pa) white-pattern alleles correlate with elevated neural-crest Waardenburg deafness risk.',
+      });
+    }
+  }
+  return alerts;
+}
+
+/**
+ * Evaluates a single hypothetical shorthand genotype string for the Coat Explorer Sandbox.
+ * - Zero DOM dependencies and zero persistence side effects.
+ * - Custom species (`getGeneticsSpecForSpecies(sp) === null`) isolate strictly to plain-text fallback.
+ */
+export function evaluateSingleGenotypeSandbox(
+  rawGenotype: string,
+  speciesName?: string,
+  sex?: BiologicalSex
+): SingleGenotypeEvaluation {
+  const cleanRaw = (rawGenotype || '').trim();
+  const spec = getGeneticsSpecForSpecies(speciesName);
+
+  if (!spec) {
+    return {
+      speciesName: (speciesName || '').trim() || 'Custom Species',
+      isCustomSpeciesFallback: true,
+      rawInput: cleanRaw,
+      normalizedGenotype: cleanRaw,
+      pairs: [],
+      predictedVariety: '',
+      hasInsufficientLoci: false,
+      hasUnknownAlleles: false,
+      unverifiedCoreLoci: [],
+      recessiveCarriers: [],
+      healthAlerts: [],
+    };
+  }
+
+  const parsedPairs = parseGenotypeString(cleanRaw, spec.displayName);
+  const byLocus = new Map<string, GenotypeAllelePair>();
+  for (const rawPair of parsedPairs) {
+    const locusDef = spec.loci.find((l) => l.locus === rawPair.locus);
+    const cleanA1 = rawPair.allele1 || '_';
+    const cleanA2 =
+      locusDef?.inheritanceMode === 'x_linked' && sex === 'Male'
+        ? 'Y'
+        : rawPair.allele2 || '_';
+    const norm = normalizePairWithSpec(locusDef, cleanA1, cleanA2);
+    byLocus.set(rawPair.locus, {
+      locus: rawPair.locus,
+      allele1: norm.allele1,
+      allele2: norm.allele2,
+    });
+  }
+
+  const normalizedPairs = Array.from(byLocus.values());
+  const normalizedGenotype = formatGenotypeArray(normalizedPairs);
+
+  const hasAnyKnownAllele = normalizedPairs.some((p) => {
+    const locusDef = spec.loci.find((l) => l.locus === p.locus);
+    const isXMale = locusDef?.inheritanceMode === 'x_linked' && sex === 'Male';
+    return p.allele1 !== '_' || (!isXMale && p.allele2 !== '_' && p.allele2 !== 'Y');
+  });
+
+  if (!hasAnyKnownAllele) {
+    return {
+      speciesName: spec.displayName,
+      isCustomSpeciesFallback: false,
+      rawInput: cleanRaw,
+      normalizedGenotype,
+      pairs: normalizedPairs,
+      predictedVariety: 'Insufficient Loci (Select alleles or load a variety preset)',
+      hasInsufficientLoci: true,
+      hasUnknownAlleles: true,
+      unverifiedCoreLoci: [...spec.corePhenotypeLoci],
+      recessiveCarriers: [],
+      healthAlerts: [],
+    };
+  }
+
+  const lociMap: Record<string, string> = {};
+  for (const [locus, pair] of byLocus.entries()) {
+    lociMap[locus] = `${pair.allele1}${pair.allele2}`;
+  }
+
+  const unverifiedCoreLoci: string[] = [];
+  for (const coreLocus of spec.corePhenotypeLoci) {
+    const locusDef = spec.loci.find((l) => l.locus === coreLocus);
+    const pair = byLocus.get(coreLocus);
+    const isXMale = locusDef?.inheritanceMode === 'x_linked' && sex === 'Male';
+    if (!pair || pair.allele1 === '_' || (!isXMale && pair.allele2 === '_')) {
+      unverifiedCoreLoci.push(coreLocus);
+    }
+  }
+
+  const hasUnknownAnyPair = normalizedPairs.some((p) => {
+    const locusDef = spec.loci.find((l) => l.locus === p.locus);
+    const isXMale = locusDef?.inheritanceMode === 'x_linked' && sex === 'Male';
+    return p.allele1 === '_' || (!isXMale && p.allele2 === '_');
+  });
+
+  const recessiveCarriers: SingleGenotypeCarrierNote[] = [];
+  for (const locusDef of spec.loci) {
+    const pair = byLocus.get(locusDef.locus);
+    if (!pair) continue;
+    if (locusDef.inheritanceMode === 'x_linked' && (sex === 'Male' || pair.allele2 === 'Y')) {
+      continue;
+    }
+    if (
+      pair.allele1 !== '_' &&
+      pair.allele2 !== '_' &&
+      pair.allele2 !== 'Y' &&
+      pair.allele1 !== pair.allele2
+    ) {
+      recessiveCarriers.push({
+        locus: locusDef.locus,
+        locusName: locusDef.name,
+        allele: pair.allele2,
+        pair: `${pair.allele1}${pair.allele2}`,
+        description: locusDef.description,
+      });
+    }
+  }
+
+  return {
+    speciesName: spec.displayName,
+    isCustomSpeciesFallback: false,
+    rawInput: cleanRaw,
+    normalizedGenotype,
+    pairs: normalizedPairs,
+    predictedVariety: spec.classifyPhenotype(lociMap, sex),
+    hasInsufficientLoci: false,
+    hasUnknownAlleles: unverifiedCoreLoci.length > 0 || hasUnknownAnyPair,
+    unverifiedCoreLoci,
+    recessiveCarriers,
+    healthAlerts: evaluateSingleAnimalHealthAlerts(spec, lociMap),
+  };
+}
+
+/**
+ * Builds an ephemeral, non-persisted `Animal` shell for hypothetical What-If Punnett crosses
+ * in the Breeding Lab Coat Explorer Sandbox without writing temporary records to storage.
+ */
+export function buildSandboxHypotheticalAnimal(params: {
+  id: string;
+  name: string;
+  speciesName: string;
+  sex: BiologicalSex;
+  genotypeRaw: string;
+}): Animal {
+  const cleanRaw = (params.genotypeRaw || '').trim();
+  return {
+    id: params.id,
+    tattoo: '',
+    name: params.name,
+    species: params.speciesName,
+    breed: '',
+    variety: '',
+    sex: params.sex,
+    status: 'Active',
+    archived: false,
+    needsAttention: false,
+    birthDateIso: '',
+    weightGrams: 0,
+    genotype: parseGenotypeString(cleanRaw, params.speciesName),
+    genotypeRaw: cleanRaw,
+    registrationNumber: '',
+    grandChampionNumber: '',
+    legsCount: 0,
+    cageLocation: '',
+    breederName: '',
+    ownerName: '',
+    sireId: '',
+    damId: '',
+    notes: '',
+    createdAt: '',
+    updatedAt: '',
+  };
+}
+

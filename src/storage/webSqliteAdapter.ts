@@ -45,6 +45,10 @@ import { buildFullPredefinedSampleSnapshot } from '../core/sampleData';
 import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
 import { getTierStoragePolicy } from '../core/deviceCapability';
 import { buildEmptyShellSnapshot } from '../core/backupVault';
+import {
+  mergeEnteredAnimalIdsWithResults,
+  normalizeShowResults,
+} from '../core/showResults';
 import { sanitizeSpeciesMemo } from '../core/speciesMemo';
 import { isMemoryLikeError, logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
@@ -302,6 +306,7 @@ export const PEDIGREE_SQLITE_SCHEMA = `
     event_date_iso TEXT NOT NULL,
     entry_deadline_iso TEXT NOT NULL,
     entered_animal_ids_json TEXT NOT NULL,
+    results_json TEXT NOT NULL DEFAULT '[]',
     notes TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -544,6 +549,7 @@ function applySchemaMigrations(db: Database): void {
     'ALTER TABLE cages ADD COLUMN maintenance_interval_days INTEGER NOT NULL DEFAULT 0;',
     "ALTER TABLE cages ADD COLUMN maintenance_task_label TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE cages ADD COLUMN last_maintenance_date_iso TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE shows ADD COLUMN results_json TEXT NOT NULL DEFAULT '[]';",
   ];
   for (const stmt of alterStatements) {
     try {
@@ -1377,25 +1383,37 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     const shows: ShowEvent[] = runQuery(
       'SELECT * FROM shows ORDER BY event_date_iso ASC'
-    ).map((r) => ({
-      id: String(r.id),
-      species: String(r.species),
-      name: String(r.name),
-      location: String(r.location),
-      sanctioningBody: String(r.sanctioning_body),
-      eventDateIso: String(r.event_date_iso),
-      entryDeadlineIso: String(r.entry_deadline_iso),
-      enteredAnimalIds: safeArray<string>(
+    ).map((r) => {
+      const parsedEnteredIds = safeArray<string>(
         this.safeParseJson<string[]>(
           r.entered_animal_ids_json || '[]',
           [],
           `shows(${String(r.name || r.id)}).entered_animal_ids_json`
         )
-      ),
-      notes: String(r.notes),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+      );
+      const parsedResults = normalizeShowResults(
+        this.safeParseJson<unknown[]>(
+          r.results_json || '[]',
+          [],
+          `shows(${String(r.name || r.id)}).results_json`
+        ),
+        { dropEmpty: false }
+      );
+      return {
+        id: String(r.id),
+        species: String(r.species),
+        name: String(r.name),
+        location: String(r.location),
+        sanctioningBody: String(r.sanctioning_body),
+        eventDateIso: String(r.event_date_iso),
+        entryDeadlineIso: String(r.entry_deadline_iso),
+        enteredAnimalIds: mergeEnteredAnimalIdsWithResults(parsedEnteredIds, parsedResults),
+        results: parsedResults.length > 0 ? parsedResults : undefined,
+        notes: String(r.notes),
+        createdAt: String(r.created_at),
+        updatedAt: String(r.updated_at),
+      };
+    });
 
     if (sanitizedNumericCount > 0) {
       logDiagnosticEvent({
@@ -2108,10 +2126,12 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   private upsertShowRow(s: ShowEvent): void {
+    const cleanResults = normalizeShowResults(s.results ?? [], { dropEmpty: false });
+    const syncedEnteredIds = mergeEnteredAnimalIdsWithResults(s.enteredAnimalIds ?? [], cleanResults);
     this.db?.run(
       `INSERT OR REPLACE INTO shows
-       (id, species, name, location, sanctioning_body, event_date_iso, entry_deadline_iso, entered_animal_ids_json, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, species, name, location, sanctioning_body, event_date_iso, entry_deadline_iso, entered_animal_ids_json, results_json, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id,
         s.species,
@@ -2120,7 +2140,8 @@ export class WebSqliteAdapter implements StorageAdapter {
         s.sanctioningBody,
         s.eventDateIso,
         s.entryDeadlineIso,
-        JSON.stringify(s.enteredAnimalIds),
+        JSON.stringify(syncedEnteredIds),
+        JSON.stringify(cleanResults),
         s.notes,
         s.createdAt,
         s.updatedAt,

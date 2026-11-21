@@ -36,6 +36,7 @@ import {
   PedigreeSlot,
 } from './pedigreeCalculator';
 import { hexToPdfRgb, resolvePedigreePrintTheme } from './pedigreePrintStyles';
+import { computeAnimalShowSummary } from './showResults';
 import type { PedigreePrintOrientation, PedigreePrintOptions } from './syncAndExports';
 
 export interface PdfRasterImage {
@@ -276,7 +277,20 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
   }
   if (subject.registrationNumber) subjectFields.push(`Reg #: ${subject.registrationNumber}`);
   if (subject.grandChampionNumber) subjectFields.push(`GC #: ${subject.grandChampionNumber}`);
-  if (subject.legsCount > 0) subjectFields.push(`Legs: ${subject.legsCount}`);
+  const subjShow = computeAnimalShowSummary(
+    subject,
+    printOptions?.shows ?? [],
+    printOptions?.careLogs ?? []
+  );
+  if (subjShow.effectiveLegs > 0 || subjShow.showsEntered > 0) {
+    subjectFields.push(`Legs / GC: ${subjShow.gcProgress.shortLabel}`);
+  }
+  if (subjShow.awardsSummaryText) {
+    subjectFields.push(`Show Wins: ${subjShow.awardsSummaryText}`);
+  }
+  if (subjShow.totalPoints > 0) {
+    subjectFields.push(`Show Points: ${subjShow.totalPoints}`);
+  }
   if (subject.rufusLevel) subjectFields.push(`Rufus: ${subject.rufusLevel}`);
   if (showGenotypes && subjectGeno) subjectFields.push(`Genotype: ${subjectGeno}`);
   if (subjectCarriers) subjectFields.push(`Carriers: ${subjectCarriers}`);
@@ -711,10 +725,16 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
           });
         }
 
+        const ancShowSummary =
+          (printOptions?.shows?.length || 0) > 0 || (printOptions?.careLogs?.length || 0) > 0
+            ? computeAnimalShowSummary(animal, printOptions?.shows ?? [], printOptions?.careLogs ?? [])
+            : null;
+        const ancLegs = ancShowSummary ? ancShowSummary.effectiveLegs : animal.legsCount;
         const regParts = [
           animal.registrationNumber ? `Reg: ${animal.registrationNumber}` : '',
           animal.grandChampionNumber ? `GC: ${animal.grandChampionNumber}` : '',
-          animal.legsCount > 0 ? `Legs: ${animal.legsCount}` : '',
+          ancLegs > 0 ? `Legs: ${ancLegs}` : '',
+          ancShowSummary?.awardsSummaryText ? ancShowSummary.awardsSummaryText : '',
         ].filter(Boolean);
         if (!compactMode && regParts.length > 0 && cellH >= 36) {
           const regWrapped = wrapPdfLines(regParts.join(' | '), innerCellW, metaSize, 1);

@@ -20,7 +20,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (40)
+## Logged Improvements (42)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -841,3 +841,47 @@ npm run lint && npm run build
 2. Restore `src/core/pedigreePrintStyles.ts`, `src/core/shareablePedigreeCard.ts`, multi-page 7–8G sheets in `src/core/pdfExporter.ts`, and `shareable-pedigree-card` in `src/core/exporters/registry.ts`.
 3. Preserve 7/8-gen toggles, style preset selectors, and `pedigreeDocMode` wiring across `webSqliteAdapter.ts`, `useBarnStore.ts`, `PrintPreviewModal.tsx`, `PedigreeScreen.tsx`, `HerdScreen.tsx`, and `ImportExportHubScreen.tsx`.
 
+### IMP-041: Structured Show Placements, Wins, Judge Notes & E-Leg Vault
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Capture structured show results, judge feedback, legs, and E-Leg certificate photos per entered animal so GC progress and show wins automatically enrich pedigrees, Barn Binder, and breeder reports.
+- **Summary:** Expands ShowEvent entries with per-animal class placements, sanctionable awards (BOB, BOS, BIS, GCH, BOV, BOSV, RIS), judge names and notes, earned legs/points, E-Leg certificate numbers, and compressed raster E-Leg photo attachments (showResults.ts), synchronizing Animal.legsCount deltas and feeding Grand Championship progress and show honors into Male/Female reports, Barn Binder, Evans .HTM, Shareable Cards, Offline PDF pedigrees, and Herd/Pedigree/Species screens.
+- **Tracked Files:** `src/core/models.ts`, `src/core/showResults.ts`, `src/core/__tests__/showResults.test.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/core/reportGenerators.ts`, `src/core/barnBinder.ts`, `src/core/syncAndExports.ts`, `src/core/pdfExporter.ts`, `src/core/shareablePedigreeCard.ts`, `src/core/exporters/registry.ts`, `src/core/speciesMigration.ts`, `src/core/syncOutbox.ts`, `src/components/SpeciesDashboardScreen.tsx`, `src/components/PedigreeScreen.tsx`, `src/components/HerdScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/models.ts` must contain `ShowAwardCode`, `SHOW_AWARD_OPTIONS`, `ShowELegAttachment`, `ShowAnimalResult` — *Canonical show award codes, E-Leg attachment types, and ShowEvent.results schema must stay intact.*
+- `src/core/showResults.ts` must contain `normalizeShowResults`, `sanitizeShowELegAttachment`, `computeShowLegDeltas`, `computeAnimalShowSummary` — *Pure TS show results normalization, XSS-safe E-Leg attachment sanitization, leg delta reconciliation, and GC progress calculation must remain zero-DOM.*
+- `src/storage/webSqliteAdapter.ts` must contain `results_json`, `normalizeShowResults` — *SQLite shows table and idempotent schema migration must persist and normalize results_json.*
+- `src/hooks/useBarnStore.ts` must contain `normalizeShowResults`, `computeShowLegDeltas` — *Store show save/delete mutations must normalize results and reconcile Animal.legsCount deltas atomically.*
+- `src/core/reportGenerators.ts` must contain `computeAnimalShowSummary`, `gcProgress`, `showWins`, `showPoints` — *Male/Female reports must aggregate show wins, points, combined legs, and Grand Champion progress automatically.*
+- `src/core/barnBinder.ts` must contain `computeAnimalShowSummary`, `Show Legs / GC Progress` — *Barn Binder must include structured show placements, judge notes, E-Leg cert numbers, and E-Leg photo thumbnails.*
+- `src/core/syncAndExports.ts` must contain `computeAnimalShowSummary`, `gcProgress.shortLabel` — *Evans .HTM pedigrees and JSON backups must carry structured ShowEvent.results and display show honors.*
+- `src/core/pdfExporter.ts` must contain `computeAnimalShowSummary`, `gcProgress.shortLabel` — *Offline PDF 1.4 pedigrees must render show legs/GC status, awards, points, and ancestor honors.*
+- `src/core/shareablePedigreeCard.ts` must contain `computeAnimalShowSummary`, `awardsSummaryText` — *Shareable pedigree cards must badge show legs, GC eligibility, awards, and points.*
+- `src/components/SpeciesDashboardScreen.tsx` must contain `ShowAnimalResult`, `SHOW_AWARD_OPTIONS`, `eLegLightboxRef`, `showSubmitLock` — *Species Hub must expose the accessible Show & Results Editor Modal, multi-award toggles, E-Leg photo vault uploader, and lightbox viewer.*
+- `src/components/PedigreeScreen.tsx` must contain `computeAnimalShowSummary`, `subjectShowSummary` — *PedigreeScreen must surface show honors and forward shows/careLogs to all pedigree exports.*
+- `src/components/HerdScreen.tsx` must contain `computeAnimalShowSummary`, `activeAnimalShowSummary`, `eLegLightboxRef` — *HerdScreen profile must display GC progress bar, show history, E-Leg vault lightbox, and forward shows/careLogs to formal prints.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep ShowAwardCode, SHOW_AWARD_OPTIONS, ShowELegAttachment, ShowAnimalResult, and ShowEvent.results in `src/core/models.ts` plus `src/core/showResults.ts` and `src/core/__tests__/showResults.test.ts`.
+2. Preserve `results_json` persistence/migration in `src/storage/webSqliteAdapter.ts`, leg delta reconciliation in `src/hooks/useBarnStore.ts`, and species migration/outbox handling in `speciesMigration.ts` / `syncOutbox.ts`.
+3. Keep `computeAnimalShowSummary` integrations across `reportGenerators.ts`, `barnBinder.ts`, `syncAndExports.ts`, `pdfExporter.ts`, `shareablePedigreeCard.ts`, `exporters/registry.ts`, `SpeciesDashboardScreen.tsx`, `PedigreeScreen.tsx`, and `HerdScreen.tsx`.
+
+### IMP-042: Genetic Variety / Coat Explorer Sandbox (What-If Playground in Breeding Lab)
+
+- **Category:** Species & Herd UX (`species-ux`)
+- **Origin:** Session Improvement
+- **User Goal:** Let breeders experiment with hypothetical loci combinations and What-If crosses inside Breeding Lab and see predicted coat varieties, hidden carriers, and alerts without creating temporary animal records first.
+- **Summary:** Adds pure TS single-genotype phenotype, hidden recessive carrier, and single-animal health/lethal alert evaluation (`evaluateSingleGenotypeSandbox`, `buildSandboxHypotheticalAnimal` in `geneticsEngine.ts`) plus the ephemeral interactive `CoatExplorerSandbox` playground inside `BreedingScreen` supporting Single Genotype and What-If Pairing Cross modes, variety presets with optional modifier checks, read-only herd/logger seeding, and interactive locus allele editing without creating temporary animal records.
+- **Tracked Files:** `src/core/geneticsEngine.ts`, `src/core/__tests__/geneticsEngine.test.ts`, `src/components/CoatExplorerSandbox.tsx`, `src/components/BreedingScreen.tsx`
+
+**Automated Invariants Checked:**
+- `src/core/geneticsEngine.ts` must contain `SingleGenotypeEvaluation`, `evaluateSingleGenotypeSandbox`, `buildSandboxHypotheticalAnimal` — *Pure TS Coat Explorer Sandbox evaluator and hypothetical animal shell builder must remain zero-DOM and custom-species isolated.*
+- `src/components/CoatExplorerSandbox.tsx` must contain `CoatExplorerSandbox`, `evaluateSingleGenotypeSandbox`, `buildSandboxHypotheticalAnimal`, `ColorGeneticsNotice` — *Breeding Lab Coat Explorer Sandbox UI must remain strictly ephemeral (no persistence writes) with What-If Single & Cross modes and ColorGeneticsNotice.*
+- `src/components/BreedingScreen.tsx` must contain `<CoatExplorerSandbox` — *BreedingScreen must mount CoatExplorerSandbox inside Breeding Lab.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `SingleGenotypeEvaluation`, `evaluateSingleGenotypeSandbox`, and `buildSandboxHypotheticalAnimal` in `src/core/geneticsEngine.ts` with tests in `src/core/__tests__/geneticsEngine.test.ts`.
+2. Restore `src/components/CoatExplorerSandbox.tsx` with Single Genotype & What-If Cross modes, variety presets, locus selectors, and `ColorGeneticsNotice`.
+3. Mount `<CoatExplorerSandbox />` inside `src/components/BreedingScreen.tsx`.

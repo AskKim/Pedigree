@@ -73,6 +73,11 @@ import {
   resolvePedigreePrintTheme,
 } from './pedigreePrintStyles';
 import { buildAnimalProfileDeepLink, renderQrSvg } from './qrCode';
+import {
+  computeAnimalShowSummary,
+  mergeEnteredAnimalIdsWithResults,
+  normalizeShowResults,
+} from './showResults';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
   escapeSafeHtml,
@@ -1016,6 +1021,7 @@ export function parseBarnBackupJson(
             .filter(Boolean)
         : [];
       const firstEntered = enteredIds[0];
+      const cleanResults = normalizeShowResults(s.results, { dropEmpty: false });
       return {
         id: safeId(s.id),
         species:
@@ -1031,7 +1037,8 @@ export function parseBarnBackupJson(
         entryDeadlineIso:
           (typeof s.entryDeadlineIso === 'string' && s.entryDeadlineIso) ||
           millisToDateIso(finiteNonNeg(s.entryDeadlineMillis, 0)),
-        enteredAnimalIds: enteredIds,
+        enteredAnimalIds: mergeEnteredAnimalIdsWithResults(enteredIds, cleanResults),
+        results: cleanResults.length > 0 ? cleanResults : undefined,
         notes: sanitizePlainText(s.notes || '', 20_000),
         createdAt: typeof s.createdAt === 'string' && s.createdAt ? s.createdAt : ts,
         updatedAt: typeof s.updatedAt === 'string' && s.updatedAt ? s.updatedAt : ts,
@@ -1132,6 +1139,9 @@ export interface PedigreePrintOptions {
   borderStyle?: PedigreeBorderStyleId;
   /** Pedigree header & density layout preset. */
   layoutPreset?: PedigreeLayoutPresetId;
+  /** Optional species shows & careLogs so pedigree certificates auto-surface show honors & GC progress. */
+  shows?: ShowEvent[];
+  careLogs?: CareLog[];
 }
 
 /**
@@ -1220,10 +1230,16 @@ export function generateEvansHtmPedigree(
         : '',
     ].filter(Boolean);
 
+    const ancShowSummary =
+      (printOptions?.shows?.length || 0) > 0 || (printOptions?.careLogs?.length || 0) > 0
+        ? computeAnimalShowSummary(a, printOptions?.shows ?? [], printOptions?.careLogs ?? [])
+        : null;
+    const ancLegs = ancShowSummary ? ancShowSummary.effectiveLegs : a.legsCount;
     const regParts = [
       a.registrationNumber ? `Reg: ${escapeHtml(a.registrationNumber)}` : '',
       a.grandChampionNumber ? `GC: ${escapeHtml(a.grandChampionNumber)}` : '',
-      a.legsCount > 0 ? `Legs: ${a.legsCount}` : '',
+      ancLegs > 0 ? `Legs: ${ancLegs}` : '',
+      ancShowSummary?.awardsSummaryText ? escapeHtml(ancShowSummary.awardsSummaryText) : '',
     ].filter(Boolean);
 
     if (isTinyLeaf) {
@@ -1373,7 +1389,25 @@ export function generateEvansHtmPedigree(
         ${showWeights ? `<div><strong>Weight:</strong> ${escapeHtml(formatPedigreeWeight(subject.weightGrams, effectiveWeightUnit, arbaLbsOzDotNotation))}</div>` : ''}
         ${subject.registrationNumber ? `<div><strong>Reg #:</strong> ${escapeHtml(subject.registrationNumber)}</div>` : ''}
         ${subject.grandChampionNumber ? `<div><strong>GC #:</strong> ${escapeHtml(subject.grandChampionNumber)}</div>` : ''}
-        ${subject.legsCount > 0 ? `<div><strong>Legs:</strong> ${subject.legsCount}</div>` : ''}
+        ${(() => {
+          const subjShow = computeAnimalShowSummary(
+            subject,
+            printOptions?.shows ?? [],
+            printOptions?.careLogs ?? []
+          );
+          const legDisplay = subjShow.effectiveLegs;
+          const parts: string[] = [];
+          if (legDisplay > 0 || subjShow.showsEntered > 0) {
+            parts.push(`<div><strong>Legs / GC:</strong> ${escapeHtml(subjShow.gcProgress.shortLabel)}</div>`);
+          }
+          if (subjShow.awardsSummaryText) {
+            parts.push(`<div><strong>Show Wins:</strong> ${escapeHtml(subjShow.awardsSummaryText)}</div>`);
+          }
+          if (subjShow.totalPoints > 0) {
+            parts.push(`<div><strong>Show Points:</strong> ${subjShow.totalPoints}</div>`);
+          }
+          return parts.join('\n        ');
+        })()}
         ${subject.rufusLevel ? `<div><strong>Rufus Intensity:</strong> ${escapeHtml(subject.rufusLevel)}</div>` : ''}
         ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
         ${subjectCarriers ? `<div><strong>Carrier Disclosures:</strong> ${escapeHtml(subjectCarriers)}</div>` : ''}

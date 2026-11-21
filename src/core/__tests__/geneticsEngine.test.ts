@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildPresetGenotypeWithConfirmations,
+  buildSandboxHypotheticalAnimal,
+  evaluateSingleGenotypeSandbox,
   formatGenotypeArray,
   getGeneticsSpecForSpecies,
   getSpeciesVarietyPresets,
@@ -535,6 +537,62 @@ describe('geneticsEngine — genotype parsing, allele inference & Punnett simula
     expect(sim.uncertainLociNotes.some((n) => n.includes('(W)') && n.includes('Partial Doe'))).toBe(
       true
     );
+  });
+
+  it('evaluates single hypothetical genotypes, hidden carriers, health alerts, and What-If crosses for Coat Explorer Sandbox', () => {
+    const emptyEval = evaluateSingleGenotypeSandbox('__ __', 'Rabbit');
+    expect(emptyEval.hasInsufficientLoci).toBe(true);
+    expect(emptyEval.recessiveCarriers).toHaveLength(0);
+
+    const lilacEval = evaluateSingleGenotypeSandbox('aa bb CC dd EE', 'Rabbit');
+    expect(lilacEval.hasInsufficientLoci).toBe(false);
+    expect(lilacEval.predictedVariety).toBe('Lilac');
+    expect(lilacEval.recessiveCarriers).toHaveLength(0);
+
+    const chestnutCarrierEval = evaluateSingleGenotypeSandbox('Aa Bb Cc Dd Ee WW EnEn', 'Rabbit');
+    expect(chestnutCarrierEval.predictedVariety).toBe('Charlie Chestnut Agouti');
+    expect(chestnutCarrierEval.recessiveCarriers.map((c) => `${c.locus}:${c.allele}`)).toEqual([
+      'A:a',
+      'B:b',
+      'C:c',
+      'D:d',
+      'E:e',
+    ]);
+    expect(chestnutCarrierEval.healthAlerts.some((a) => a.locus === 'En' && a.severity === 'danger')).toBe(
+      true
+    );
+
+    const catMaleOrange = evaluateSingleGenotypeSandbox('aa BB CC DD OY ww ii', 'Cat', 'Male');
+    expect(catMaleOrange.predictedVariety).toContain('Red / Orange Tabby');
+    expect(catMaleOrange.unverifiedCoreLoci).toHaveLength(0);
+
+    const dogDoubleMerle = evaluateSingleGenotypeSandbox('ayat kyky EE BB DD MM SS II', 'Dog');
+    expect(dogDoubleMerle.predictedVariety).toContain('Double Merle');
+    expect(dogDoubleMerle.healthAlerts.some((a) => a.locus === 'M' && a.severity === 'danger')).toBe(
+      true
+    );
+
+    const customEval = evaluateSingleGenotypeSandbox('M+m Li+li', 'Heritage Duck');
+    expect(customEval.isCustomSpeciesFallback).toBe(true);
+    expect(customEval.predictedVariety).toBe('');
+
+    const hypoSire = buildSandboxHypotheticalAnimal({
+      id: '__sandbox_sire__',
+      name: 'Hypo Buck',
+      speciesName: 'Rabbit',
+      sex: 'Male',
+      genotypeRaw: 'Aa BB CC DD ee ww enen',
+    });
+    const hypoDam = buildSandboxHypotheticalAnimal({
+      id: '__sandbox_dam__',
+      name: 'Hypo Doe',
+      speciesName: 'Rabbit',
+      sex: 'Female',
+      genotypeRaw: 'Aa BB CC DD ee ww Enen',
+    });
+    const hypoSim = simulatePairingGenetics(hypoSire, hypoDam, 'Rabbit');
+    expect(hypoSim.predictedPhenotypes.some((p) => p.label.includes('Tortoise'))).toBe(true);
+    expect(hypoSim.predictedPhenotypes.some((p) => p.label.includes('Broken'))).toBe(true);
   });
 });
 

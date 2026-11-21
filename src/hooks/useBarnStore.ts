@@ -101,6 +101,11 @@ import {
 } from '../core/pedigreeCalculator';
 import { parseAppDeepLinkParams } from '../core/qrCode';
 import {
+  computeShowLegDeltas,
+  mergeEnteredAnimalIdsWithResults,
+  normalizeShowResults,
+} from '../core/showResults';
+import {
   buildFullPredefinedSampleSnapshot,
   buildSampleDataForSpecies,
   countAllSpeciesRecords,
@@ -278,7 +283,8 @@ export type WorkspaceRoute =
   | 'importExport'
   | 'settings'
   | 'techyStuff'
-  | 'prompts';
+  | 'prompts'
+  | 'suggestions';
 
 export type BreedingTaskCheckoffAction =
   | { kind: 'palpated_positive' }
@@ -4579,27 +4585,63 @@ export function useBarnStore() {
           : undefined;
         const showId = draft.id || generateUuid();
         const rev = nextEntityRev(showId, prev?._rev);
+        const cleanResults = normalizeShowResults(draft.results ?? [], { dropEmpty: true });
+        const syncedEnteredIds = mergeEnteredAnimalIdsWithResults(
+          draft.enteredAnimalIds ?? [],
+          cleanResults
+        );
         const show: ShowEvent = {
           ...draft,
           id: showId,
           name: draft.name.trim(),
+          enteredAnimalIds: syncedEnteredIds,
+          results: cleanResults.length > 0 ? cleanResults : undefined,
           _rev: rev,
           createdAt: prev?.createdAt || ts,
           updatedAt: ts,
         };
         try {
           await adapterRef.current!.saveShow(show);
-          await recordOutboxOps(
-            diffEntityFieldsToOperations({
-              entityType: 'show',
-              previous: prev,
-              next: show,
-              deviceId,
-              nextCounter: allocateNextLogicalCounter,
-              timestamp: ts,
-              recordRev: rev,
-            })
-          );
+          const ops: SyncOperation[] = diffEntityFieldsToOperations({
+            entityType: 'show',
+            previous: prev,
+            next: show,
+            deviceId,
+            nextCounter: allocateNextLogicalCounter,
+            timestamp: ts,
+            recordRev: rev,
+          });
+
+          const legDeltas = computeShowLegDeltas(prev?.results, show.results);
+          if (legDeltas.size > 0 && currentSnapshot) {
+            for (const [animalId, delta] of legDeltas.entries()) {
+              const animal = currentSnapshot.animals.find((a) => a.id === animalId);
+              if (!animal) continue;
+              const nextLegs = Math.max(0, (animal.legsCount || 0) + delta);
+              if (nextLegs === animal.legsCount) continue;
+              const animalRev = nextEntityRev(animal.id, animal._rev);
+              const nextAnimal: Animal = {
+                ...animal,
+                legsCount: nextLegs,
+                _rev: animalRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveAnimal(nextAnimal);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'animal',
+                  previous: animal,
+                  next: nextAnimal,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: animalRev,
+                })
+              );
+            }
+          }
+
+          await recordOutboxOps(ops);
           await reloadFromAdapter();
           notify(`Show "${show.name}" saved.`);
           return true;
@@ -4629,7 +4671,7 @@ export function useBarnStore() {
         const ts = getAdjustedNowIsoUtc();
         try {
           await adapterRef.current!.deleteShow(id);
-          await recordOutboxOps([
+          const ops: SyncOperation[] = [
             createOutboxOperation({
               entityType: 'show',
               entityUuid: id,
@@ -4640,7 +4682,38 @@ export function useBarnStore() {
               timestamp: ts,
               recordRev: nextEntityRev(id, target?._rev),
             }),
-          ]);
+          ];
+
+          const legDeltas = computeShowLegDeltas(target?.results, undefined);
+          if (legDeltas.size > 0 && currentSnapshot) {
+            for (const [animalId, delta] of legDeltas.entries()) {
+              const animal = currentSnapshot.animals.find((a) => a.id === animalId);
+              if (!animal) continue;
+              const nextLegs = Math.max(0, (animal.legsCount || 0) + delta);
+              if (nextLegs === animal.legsCount) continue;
+              const animalRev = nextEntityRev(animal.id, animal._rev);
+              const nextAnimal: Animal = {
+                ...animal,
+                legsCount: nextLegs,
+                _rev: animalRev,
+                updatedAt: ts,
+              };
+              await adapterRef.current!.saveAnimal(nextAnimal);
+              ops.push(
+                ...diffEntityFieldsToOperations({
+                  entityType: 'animal',
+                  previous: animal,
+                  next: nextAnimal,
+                  deviceId,
+                  nextCounter: allocateNextLogicalCounter,
+                  timestamp: ts,
+                  recordRev: animalRev,
+                })
+              );
+            }
+          }
+
+          await recordOutboxOps(ops);
           await reloadFromAdapter();
           notify('Show removed.');
         } catch (err) {

@@ -512,13 +512,18 @@ export function migrateAnimalsToSpecies(
 
     const fullSpeciesShow = isFullSpeciesFromSource(s.species);
     const movedEntered = s.enteredAnimalIds.filter((id) => actuallyMovingIds.has(id));
-    if (movedEntered.length === 0 && !fullSpeciesShow) return s;
+    const movedResults = (s.results ?? []).filter((r) => actuallyMovingIds.has(r.animalId));
+    if (movedEntered.length === 0 && movedResults.length === 0 && !fullSpeciesShow) return s;
 
     const remainingEntered = s.enteredAnimalIds.filter((id) => !actuallyMovingIds.has(id));
+    const remainingResults = (s.results ?? []).filter((r) => !actuallyMovingIds.has(r.animalId));
     const sourceHasRemainingAnimals = nextAnimals.some((a) => isSameSpecies(a.species, s.species));
     showsUpdated++;
 
-    if (fullSpeciesShow || (remainingEntered.length === 0 && !sourceHasRemainingAnimals)) {
+    if (
+      fullSpeciesShow ||
+      (remainingEntered.length === 0 && remainingResults.length === 0 && !sourceHasRemainingAnimals)
+    ) {
       return { ...s, species: targetName, _rev: bumpRecordRevision(s), updatedAt: ts };
     }
 
@@ -527,6 +532,7 @@ export function migrateAnimalsToSpecies(
       id: generateUuid(),
       species: targetName,
       enteredAnimalIds: movedEntered,
+      results: movedResults.length > 0 ? movedResults : undefined,
       _rev: 1,
       createdAt: ts,
       updatedAt: ts,
@@ -534,6 +540,7 @@ export function migrateAnimalsToSpecies(
     return {
       ...s,
       enteredAnimalIds: remainingEntered,
+      results: remainingResults.length > 0 ? remainingResults : undefined,
       _rev: bumpRecordRevision(s),
       updatedAt: ts,
     };

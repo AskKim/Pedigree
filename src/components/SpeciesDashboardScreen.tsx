@@ -18,8 +18,10 @@ import {
   ArrowRightLeft,
   ArrowUp,
   ArrowUpToLine,
+  Award,
   BookOpen,
   CalendarPlus,
+  Camera,
   Check,
   CheckSquare,
   ClipboardCheck,
@@ -44,7 +46,8 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import {
   AnimalWithdrawalEvaluation,
@@ -78,7 +81,11 @@ import {
   HOUSING_UNIT_TYPES,
   HousingUnitType,
   normalizeSpeciesHubBlockOrder,
+  SHOW_AWARD_OPTIONS,
   SHOW_SANCTIONS,
+  ShowAnimalResult,
+  ShowAwardCode,
+  ShowELegAttachment,
   ShowEvent,
   SpeciesHubBlockId,
   SpeciesProfile,
@@ -88,6 +95,12 @@ import {
   TaskPriority,
   todayDateIso,
 } from '../core/models';
+import {
+  MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT,
+  mergeEnteredAnimalIdsWithResults,
+  normalizeShowResults,
+} from '../core/showResults';
+import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { countSpeciesNonTestingRecords } from '../core/sampleData';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
@@ -138,7 +151,9 @@ interface SpeciesDashboardScreenProps {
   ) => Promise<boolean | void> | void;
   onDeleteCage: (id: string) => void;
   onAssignAnimalToCage?: (animalId: string, nextCageLabel: string) => Promise<boolean | void> | void;
-  onSaveShow: (draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'>) => Promise<boolean | void> | void;
+  onSaveShow: (
+    draft: Omit<ShowEvent, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => Promise<boolean | void> | void;
   onDeleteShow: (id: string) => void;
   onSeedSpeciesSample: (speciesName: string) => void;
   onTogglePinSpecies: (speciesName: string) => void;
@@ -251,7 +266,8 @@ export function SpeciesDashboardScreen({
     }
   }, [highlightedTaskId, tasks, taskFilter]);
   const [showNewCageForm, setShowNewCageForm] = useState(false);
-  const [showNewShowForm, setShowNewShowForm] = useState(false);
+  const [showEditorOpen, setShowEditorOpen] = useState(false);
+  const [editingShowId, setEditingShowId] = useState<string | null>(null);
 
   // Species Settings section modals / 2-step confirmations
   const [showSpeciesConfigModal, setShowSpeciesConfigModal] = useState(false);
@@ -379,22 +395,97 @@ export function SpeciesDashboardScreen({
     return `${window.location.origin}${window.location.pathname}`;
   }, []);
 
-  // Show form state
+  // Show & Results modal state
   const [showName, setShowName] = useState('');
   const [showLocation, setShowLocation] = useState('');
   const [showSanction, setShowSanction] = useState(SHOW_SANCTIONS[0]);
   const [showDateIso, setShowDateIso] = useState('');
   const [showDeadlineIso, setShowDeadlineIso] = useState('');
+  const [showNotes, setShowNotes] = useState('');
   const [showAnimalIds, setShowAnimalIds] = useState<string[]>([]);
+  const [showResultsByAnimalId, setShowResultsByAnimalId] = useState<
+    Record<string, ShowAnimalResult>
+  >({});
+  const [showIncludeArchivedEntries, setShowIncludeArchivedEntries] = useState(false);
+  const [showPhotoBusyAnimalId, setShowPhotoBusyAnimalId] = useState<string | null>(null);
+  const [showPhotoError, setShowPhotoError] = useState<string | null>(null);
+  const [eLegLightbox, setELegLightbox] = useState<{
+    imageUrl: string;
+    title: string;
+    subtitle?: string;
+  } | null>(null);
   const [pendingShowWithdrawalWarning, setPendingShowWithdrawalWarning] =
     useState<ShowWithdrawalConflictEvaluation | null>(null);
 
+  const closeShowEditor = useCallback(() => {
+    setPendingShowWithdrawalWarning(null);
+    setShowPhotoError(null);
+    setShowEditorOpen(false);
+  }, []);
+
+  const showEditorDialogRef = useAccessibleDialog({
+    isOpen: showEditorOpen,
+    onClose: closeShowEditor,
+    closeOnEscape: !eLegLightbox,
+  });
+
+  const closeELegLightbox = useCallback(() => setELegLightbox(null), []);
+  const eLegLightboxRef = useAccessibleDialog({
+    isOpen: Boolean(eLegLightbox),
+    onClose: closeELegLightbox,
+  });
+
+  const openNewShowEditor = () => {
+    setEditingShowId(null);
+    setShowName('');
+    setShowLocation('');
+    setShowSanction(SHOW_SANCTIONS[0]);
+    setShowDateIso(today);
+    setShowDeadlineIso('');
+    setShowNotes('');
+    setShowAnimalIds([]);
+    setShowResultsByAnimalId({});
+    setShowIncludeArchivedEntries(false);
+    setShowPhotoError(null);
+    setPendingShowWithdrawalWarning(null);
+    setShowEditorOpen(true);
+  };
+
+  const openEditShowEditor = (show: ShowEvent) => {
+    setEditingShowId(show.id);
+    setShowName(show.name);
+    setShowLocation(show.location || '');
+    setShowSanction(show.sanctioningBody || SHOW_SANCTIONS[0]);
+    setShowDateIso(show.eventDateIso || today);
+    setShowDeadlineIso(show.entryDeadlineIso || '');
+    setShowNotes(show.notes || '');
+    const normalizedResults = normalizeShowResults(show.results ?? [], { dropEmpty: false });
+    const resultMap: Record<string, ShowAnimalResult> = {};
+    for (const r of normalizedResults) {
+      resultMap[r.animalId] = r;
+    }
+    const mergedIds = mergeEnteredAnimalIdsWithResults(
+      show.enteredAnimalIds ?? [],
+      normalizedResults
+    );
+    const hasArchived = mergedIds.some((id) => {
+      const a = herdById.get(id);
+      return a ? !activeData.activeAnimals.some((act) => act.id === a.id) : false;
+    });
+    setShowAnimalIds(mergedIds);
+    setShowResultsByAnimalId(resultMap);
+    setShowIncludeArchivedEntries(hasArchived);
+    setShowPhotoError(null);
+    setPendingShowWithdrawalWarning(null);
+    setShowEditorOpen(true);
+  };
+
   const showDateWithdrawalByAnimalId = useMemo<Map<string, AnimalWithdrawalEvaluation>>(
     () =>
-      showNewShowForm && showDateIso
+      showEditorOpen && showDateIso
         ? buildWithdrawalByAnimalMap(careLogs, { todayIso: showDateIso })
         : EMPTY_WITHDRAWAL_MAP,
-    [showNewShowForm, showDateIso, careLogs]
+    [showEditorOpen, showDateIso, careLogs]
   );
 
   const taskSubmitLock = useAsyncSubmitLock({ postSettleCooldownMs: 250 });
@@ -704,26 +795,117 @@ export function SpeciesDashboardScreen({
     });
   };
 
+  const updateAnimalShowResult = (
+    animalId: string,
+    updater: (prev: ShowAnimalResult) => ShowAnimalResult
+  ) => {
+    setShowResultsByAnimalId((prev) => {
+      const base: ShowAnimalResult = prev[animalId] ?? {
+        animalId,
+        classPlacement: '',
+        awards: [],
+        judgeName: '',
+        judgeNotes: '',
+        legsEarned: 0,
+        pointsEarned: undefined,
+        legCertificateNumber: '',
+        eLegAttachments: [],
+      };
+      return {
+        ...prev,
+        [animalId]: updater(base),
+      };
+    });
+  };
+
+  const toggleAnimalShowAward = (animalId: string, award: ShowAwardCode) => {
+    updateAnimalShowResult(animalId, (prev) => {
+      const hasAward = prev.awards.includes(award);
+      return {
+        ...prev,
+        awards: hasAward
+          ? prev.awards.filter((code) => code !== award)
+          : [...prev.awards, award],
+      };
+    });
+  };
+
+  const handleUploadELegFiles = async (animalId: string, files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const existingCount = showResultsByAnimalId[animalId]?.eLegAttachments.length ?? 0;
+    const remainingSlots = Math.max(0, MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT - existingCount);
+    if (remainingSlots <= 0) {
+      setShowPhotoError(
+        `Maximum ${MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT} e-leg certificates per animal per show reached.`
+      );
+      return;
+    }
+
+    setShowPhotoBusyAnimalId(animalId);
+    setShowPhotoError(null);
+    const addedAttachments: ShowELegAttachment[] = [];
+    try {
+      const selected = Array.from(files).slice(0, remainingSlots);
+      for (const file of selected) {
+        const optimized = await optimizeImageFile(file, settings.imageOptimizationPreset);
+        addedAttachments.push({
+          id: `eleg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          fileName: optimized.originalFileName || file.name || 'e-leg-certificate',
+          mimeType: optimized.mimeType,
+          width: optimized.width,
+          height: optimized.height,
+          storedBytes: optimized.storedBytes,
+          thumbnailDataUrl: optimized.thumbnailDataUrl,
+          dataUrl: optimized.dataUrl,
+          addedAtIso: new Date().toISOString(),
+        });
+      }
+      if (addedAttachments.length > 0) {
+        updateAnimalShowResult(animalId, (prev) => ({
+          ...prev,
+          eLegAttachments: [
+            ...prev.eLegAttachments,
+            ...addedAttachments,
+          ].slice(0, MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT),
+        }));
+      }
+    } catch (err) {
+      setShowPhotoError(err instanceof Error ? err.message : 'Unable to process certificate image.');
+    } finally {
+      setShowPhotoBusyAnimalId(null);
+    }
+  };
+
   const executeSaveShow = async () => {
     if (!showName.trim() || !showDateIso) return;
     setPendingShowWithdrawalWarning(null);
     await showSubmitLock.runLocked(async () => {
+      const enteredIds = showAnimalIds.slice(0, 50);
+      const rawResults = enteredIds
+        .map((id) => showResultsByAnimalId[id])
+        .filter((r): r is ShowAnimalResult => Boolean(r));
+      const cleanResults = normalizeShowResults(rawResults, { dropEmpty: true });
       const saved = await onSaveShow({
+        ...(editingShowId ? { id: editingShowId } : {}),
         species: speciesProfile.name,
         name: showName.trim(),
         location: showLocation.trim(),
         sanctioningBody: showSanction,
         eventDateIso: showDateIso,
         entryDeadlineIso: showDeadlineIso,
-        enteredAnimalIds: showAnimalIds.slice(0, 25),
-        notes: '',
+        enteredAnimalIds: enteredIds,
+        results: cleanResults.length > 0 ? cleanResults : undefined,
+        notes: showNotes.trim(),
       });
       if (saved !== false) {
+        setEditingShowId(null);
         setShowName('');
         setShowLocation('');
+        setShowNotes('');
         setShowAnimalIds([]);
+        setShowResultsByAnimalId({});
         setPendingShowWithdrawalWarning(null);
-        setShowNewShowForm(false);
+        setShowEditorOpen(false);
       }
     });
   };
@@ -731,8 +913,11 @@ export function SpeciesDashboardScreen({
   const submitShow = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showName.trim() || !showDateIso) return;
+    const enteredAnimals = showAnimalIds
+      .map((id) => herdById.get(id))
+      .filter((a): a is Animal => Boolean(a));
     const conflictEval = evaluateShowWithdrawalConflicts(
-      activeData.activeAnimals,
+      enteredAnimals,
       showAnimalIds,
       careLogs,
       showDateIso,
@@ -2717,11 +2902,8 @@ export function SpeciesDashboardScreen({
                     {renderReorderControls()}
                     <button
                       type="button"
-                      aria-expanded={showNewShowForm}
-                      onClick={() => {
-                        setPendingShowWithdrawalWarning(null);
-                        setShowNewShowForm((v) => !v);
-                      }}
+                      aria-expanded={showEditorOpen}
+                      onClick={openNewShowEditor}
                       className="min-h-[38px] max-w-full px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1"
                     >
                       <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -2730,214 +2912,176 @@ export function SpeciesDashboardScreen({
                   </div>
                 </div>
 
-                {showNewShowForm && (
-                  <form
-                    onSubmit={submitShow}
-                    className="border-t border-b border-[var(--barn-border)] py-3 space-y-2.5 text-xs"
-                  >
-                    <input
-                      type="text"
-                      required
-                      aria-label="Show name"
-                      placeholder="Show Name *"
-                      value={showName}
-                      onChange={(e) => setShowName(e.target.value)}
-                      className="w-full min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        aria-label="Show location"
-                        placeholder="Location"
-                        value={showLocation}
-                        onChange={(e) => setShowLocation(e.target.value)}
-                        className="min-h-[38px] px-2.5 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
-                      />
-                      <select
-                        aria-label="Sanctioning body"
-                        value={showSanction}
-                        onChange={(e) => setShowSanction(e.target.value)}
-                        className="min-h-[38px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
-                      >
-                        {SHOW_SANCTIONS.map((s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label
-                          htmlFor={`${baseId}-show-date`}
-                          className="block text-[var(--barn-muted)] mb-0.5"
-                        >
-                          Event Date *
-                        </label>
-                        <input
-                          id={`${baseId}-show-date`}
-                          type="date"
-                          required
-                          value={showDateIso}
-                          onChange={(e) => {
-                            setShowDateIso(e.target.value);
-                            setPendingShowWithdrawalWarning(null);
-                          }}
-                          className="w-full min-h-[38px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor={`${baseId}-show-deadline`}
-                          className="block text-[var(--barn-muted)] mb-0.5"
-                        >
-                          Entry Deadline
-                        </label>
-                        <input
-                          id={`${baseId}-show-deadline`}
-                          type="date"
-                          value={showDeadlineIso}
-                          onChange={(e) => setShowDeadlineIso(e.target.value)}
-                          className="w-full min-h-[38px] px-2 py-1 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono"
-                        />
-                      </div>
-                    </div>
-                    {activeData.activeAnimals.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="block text-[var(--barn-muted)]">Select Show String:</span>
-                        <div className="max-h-28 overflow-y-auto space-y-1 border border-[var(--barn-border)] rounded-lg p-2 bg-[var(--barn-canvas)]">
-                          {activeData.activeAnimals.map((a) => {
-                            const checked = showAnimalIds.includes(a.id);
-                            const wEval = showDateWithdrawalByAnimalId.get(a.id);
-                            return (
-                              <label key={a.id} className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => {
-                                    setPendingShowWithdrawalWarning(null);
-                                    setShowAnimalIds((prev) =>
-                                      checked ? prev.filter((id) => id !== a.id) : [...prev, a.id]
-                                    );
-                                  }}
-                                />
-                                <span className="min-w-0 truncate">
-                                  {a.name} ({a.tattoo})
-                                  {wEval?.isActive && (
-                                    <span className="text-[11px] font-medium text-[var(--barn-terracotta)] ml-1.5 font-mono">
-                                      · Withdrawal clears {formatReadableDate(wEval.clearDateIso)}
-                                    </span>
-                                  )}
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    {pendingShowWithdrawalWarning?.hasConflict && (
-                      <div
-                        role="alert"
-                        className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-xs"
-                      >
-                        <div className="flex items-start gap-2">
-                          <ShieldAlert
-                            className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
-                            aria-hidden="true"
-                          />
-                          <div className="space-y-1 min-w-0">
-                            <div className="font-semibold text-[var(--barn-ink)]">
-                              Medication Withdrawal Overlaps Show Date ({formatReadableDate(pendingShowWithdrawalWarning.showDateIso)})
-                            </div>
-                            <p className="text-[var(--barn-muted)]">
-                              {pendingShowWithdrawalWarning.conflicts
-                                .map(
-                                  (c) =>
-                                    `${c.animal.name} (${c.evaluation.medicationSummary}, clears ${formatReadableDate(c.evaluation.clearDateIso)})`
-                                )
-                                .join(' · ')}
-                              . Confirm show rules / health fitness before saving.
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            disabled={showSubmitLock.isSubmitting}
-                            onClick={() => setPendingShowWithdrawalWarning(null)}
-                            className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-50"
-                          >
-                            Adjust Selection
-                          </button>
-                          <button
-                            type="button"
-                            disabled={showSubmitLock.isSubmitting}
-                            onClick={() => void executeSaveShow()}
-                            className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-65"
-                          >
-                            {showSubmitLock.isSubmitting ? 'Saving...' : 'Save Show Anyway'}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        disabled={showSubmitLock.isSubmitting}
-                        onClick={() => {
-                          setPendingShowWithdrawalWarning(null);
-                          setShowNewShowForm(false);
-                        }}
-                        className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={showSubmitLock.isSubmitting}
-                        aria-busy={showSubmitLock.isSubmitting}
-                        className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
-                      >
-                        {showSubmitLock.isSubmitting && (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                        )}
-                        {showSubmitLock.isSubmitting ? 'Saving...' : 'Save Show'}
-                      </button>
-                    </div>
-                  </form>
-                )}
-
                 {shows.length === 0 ? (
-                  <p className="text-sm text-[var(--barn-muted)]">No shows scheduled.</p>
+                  <p className="text-sm text-[var(--barn-muted)]">
+                    No shows scheduled. Click &ldquo;Add Show&rdquo; to track entries, placements,
+                    awards, judge notes, and E-Leg certificates.
+                  </p>
                 ) : (
                   <div className="divide-y divide-[var(--barn-border)]">
                     {shows.map((s) => {
-                      const enteredNames = s.enteredAnimalIds
-                        .map((id) => herdById.get(id))
-                        .filter(Boolean)
-                        .map((a) => `${a!.name} (${a!.tattoo})`);
+                      const mergedIds = mergeEnteredAnimalIdsWithResults(
+                        s.enteredAnimalIds ?? [],
+                        s.results
+                      );
+                      const resultsByAnimal = new Map(
+                        (s.results ?? []).map((r) => [r.animalId, r])
+                      );
+                      const totalLegsInShow = (s.results ?? []).reduce(
+                        (acc, r) => acc + (r.legsEarned || 0),
+                        0
+                      );
+                      const totalELegsInShow = (s.results ?? []).reduce(
+                        (acc, r) => acc + (r.eLegAttachments?.length || 0),
+                        0
+                      );
+
                       return (
-                        <div key={s.id} className="py-3 first:pt-1 last:pb-1 space-y-1">
+                        <div key={s.id} className="py-3.5 first:pt-1 last:pb-1 space-y-2">
                           <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="text-sm font-medium">{s.name}</div>
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-sm font-semibold">{s.name}</span>
+                                {totalLegsInShow > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded-md bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] font-mono text-[10px] font-semibold">
+                                    {totalLegsInShow} Leg{totalLegsInShow === 1 ? '' : 's'}
+                                  </span>
+                                )}
+                                {totalELegsInShow > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded-md border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[var(--barn-ink)] font-mono text-[10px]">
+                                    {totalELegsInShow} E-Leg Vault
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-xs text-[var(--barn-muted)]">
                                 {s.sanctioningBody} · {formatReadableDate(s.eventDateIso)}
                                 {s.location ? ` · ${s.location}` : ''}
+                                {s.entryDeadlineIso
+                                  ? ` · Deadline ${formatReadableDate(s.entryDeadlineIso)}`
+                                  : ''}
                               </div>
+                              {s.notes && (
+                                <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
+                                  {s.notes}
+                                </p>
+                              )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => onDeleteShow(s.id)}
-                              aria-label={`Remove ${s.name}`}
-                              className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => openEditShowEditor(s)}
+                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Results</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onDeleteShow(s.id)}
+                                aria-label={`Remove ${s.name}`}
+                                className="min-h-[34px] min-w-[34px] rounded-lg text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
-                          {enteredNames.length > 0 && (
-                            <div className="text-xs text-[var(--barn-muted)]">
-                              Entered ({enteredNames.length}): {enteredNames.join(', ')}
+
+                          {mergedIds.length > 0 && (
+                            <div className="space-y-1.5 pt-0.5">
+                              {mergedIds.map((animalId) => {
+                                const animal = herdById.get(animalId);
+                                const res = resultsByAnimal.get(animalId);
+                                if (!animal && !res) return null;
+                                return (
+                                  <div
+                                    key={animalId}
+                                    className="px-2.5 py-2 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs space-y-1"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => onOpenAnimal(animalId)}
+                                        className="font-semibold text-[var(--barn-ink)] hover:text-[var(--barn-sage)] underline text-left"
+                                      >
+                                        {animal
+                                          ? `${animal.name}${animal.tattoo ? ` (${animal.tattoo})` : ''}`
+                                          : 'Unknown Animal'}
+                                      </button>
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        {res?.classPlacement && (
+                                          <span className="px-1.5 py-0.5 rounded bg-[var(--barn-surface)] border border-[var(--barn-border)] font-medium text-[10.5px]">
+                                            {res.classPlacement}
+                                          </span>
+                                        )}
+                                        {res?.awards.map((code) => (
+                                          <span
+                                            key={code}
+                                            className="px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] font-mono font-semibold text-[10px]"
+                                          >
+                                            {code}
+                                          </span>
+                                        ))}
+                                        {(res?.legsEarned ?? 0) > 0 && (
+                                          <span className="px-1.5 py-0.5 rounded bg-[var(--barn-terracotta-tint)] text-[var(--barn-terracotta)] font-mono font-semibold text-[10px]">
+                                            +{res!.legsEarned} Leg{res!.legsEarned === 1 ? '' : 's'}
+                                          </span>
+                                        )}
+                                        {(res?.pointsEarned ?? 0) > 0 && (
+                                          <span className="font-mono text-[10.5px] text-[var(--barn-muted)]">
+                                            {res!.pointsEarned} pts
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {(res?.judgeName || res?.judgeNotes || res?.legCertificateNumber) && (
+                                      <div className="text-[11px] text-[var(--barn-muted)]">
+                                        {res.judgeName ? `Judge: ${res.judgeName}` : ''}
+                                        {res.judgeName && res.legCertificateNumber ? ' · ' : ''}
+                                        {res.legCertificateNumber
+                                          ? `Cert #${res.legCertificateNumber}`
+                                          : ''}
+                                        {(res.judgeName || res.legCertificateNumber) && res.judgeNotes
+                                          ? ' — '
+                                          : ''}
+                                        {res.judgeNotes}
+                                      </div>
+                                    )}
+                                    {(res?.eLegAttachments?.length ?? 0) > 0 && (
+                                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                        {res!.eLegAttachments.map((att) => (
+                                          <button
+                                            key={att.id}
+                                            type="button"
+                                            onClick={() =>
+                                              setELegLightbox({
+                                                imageUrl: att.dataUrl || att.thumbnailDataUrl,
+                                                title: `${animal?.name || 'Animal'} — ${s.name}`,
+                                                subtitle: [
+                                                  att.caption || att.fileName,
+                                                  res?.legCertificateNumber
+                                                    ? `Cert #${res.legCertificateNumber}`
+                                                    : '',
+                                                  formatReadableDate(s.eventDateIso),
+                                                ]
+                                                  .filter(Boolean)
+                                                  .join(' · '),
+                                              })
+                                            }
+                                            className="group relative w-11 h-11 rounded-lg overflow-hidden border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:border-[var(--barn-sage)]"
+                                            title={att.caption || att.fileName}
+                                          >
+                                            <img
+                                              src={att.thumbnailDataUrl || att.dataUrl}
+                                              alt={att.caption || att.fileName}
+                                              className="w-full h-full object-cover"
+                                            />
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -3007,6 +3151,650 @@ export function SpeciesDashboardScreen({
           }
           onClose={() => setCageQrPrintState(null)}
         />
+      )}
+
+      {/* Structured Show, Placements, Awards, Judge Notes & E-Leg Vault Editor Modal */}
+      {showEditorOpen && (
+        <div
+          ref={showEditorDialogRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingShowId ? 'Edit Show & Results' : 'Add Show & Results'}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !showSubmitLock.isSubmitting) {
+              closeShowEditor();
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+        >
+          <form
+            onSubmit={submitShow}
+            className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-3xl max-h-[92dvh] flex flex-col overflow-hidden shadow-xl"
+          >
+            <div className="px-5 py-4 border-b border-[var(--barn-border)] flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-lg font-semibold flex items-center gap-2">
+                  <Award className="w-5 h-5 text-[var(--barn-sage)]" aria-hidden="true" />
+                  <span>
+                    {editingShowId
+                      ? `Edit Show & Results — ${speciesProfile.name}`
+                      : `Log ${speciesProfile.name} Show, Results & E-Legs`}
+                  </span>
+                </h3>
+                <p className="text-xs text-[var(--barn-muted)]">
+                  Record class placements, BOB/BOS/BIS/GCH awards, judge notes, earned legs/points,
+                  and compressed E-Leg certificates.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={showSubmitLock.isSubmitting}
+                onClick={closeShowEditor}
+                aria-label="Close show editor"
+                className="min-h-[36px] min-w-[36px] rounded-lg text-[var(--barn-muted)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor={`${baseId}-modal-show-name`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    Show Name *
+                  </label>
+                  <input
+                    id={`${baseId}-modal-show-name`}
+                    type="text"
+                    required
+                    placeholder="e.g. Heartland Fall Classic Double Open"
+                    value={showName}
+                    onChange={(e) => setShowName(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-modal-show-location`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    Location / Fairgrounds
+                  </label>
+                  <input
+                    id={`${baseId}-modal-show-location`}
+                    type="text"
+                    placeholder="City, State"
+                    value={showLocation}
+                    onChange={(e) => setShowLocation(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-modal-show-sanction`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    Sanctioning Body
+                  </label>
+                  <select
+                    id={`${baseId}-modal-show-sanction`}
+                    value={showSanction}
+                    onChange={(e) => setShowSanction(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                  >
+                    {SHOW_SANCTIONS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-modal-show-date`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    Event Date *
+                  </label>
+                  <input
+                    id={`${baseId}-modal-show-date`}
+                    type="date"
+                    required
+                    value={showDateIso}
+                    onChange={(e) => {
+                      setShowDateIso(e.target.value);
+                      setPendingShowWithdrawalWarning(null);
+                    }}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-modal-show-deadline`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    Entry Deadline
+                  </label>
+                  <input
+                    id={`${baseId}-modal-show-deadline`}
+                    type="date"
+                    value={showDeadlineIso}
+                    onChange={(e) => setShowDeadlineIso(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] font-mono"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor={`${baseId}-modal-show-notes`}
+                    className="block text-[var(--barn-muted)] font-medium mb-1"
+                  >
+                    General Show Notes
+                  </label>
+                  <input
+                    id={`${baseId}-modal-show-notes`}
+                    type="text"
+                    placeholder="Coop numbers, travel logistics, or secretary contacts"
+                    value={showNotes}
+                    onChange={(e) => setShowNotes(e.target.value)}
+                    className="w-full min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)]"
+                  />
+                </div>
+              </div>
+
+              {/* Show String Selector */}
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--barn-ink)]">
+                    Show String ({showAnimalIds.length} entered)
+                  </span>
+                  {animals.length > activeData.activeAnimals.length && (
+                    <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--barn-muted)] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showIncludeArchivedEntries}
+                        onChange={(e) => setShowIncludeArchivedEntries(e.target.checked)}
+                      />
+                      <span>Include Sold / Deceased / Archived stock</span>
+                    </label>
+                  )}
+                </div>
+                {(showIncludeArchivedEntries ? animals : activeData.activeAnimals).length === 0 ? (
+                  <p className="text-[var(--barn-muted)]">
+                    No {speciesProfile.name.toLowerCase()} animals recorded yet.
+                  </p>
+                ) : (
+                  <div className="max-h-36 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 border border-[var(--barn-border)] rounded-xl p-2.5 bg-[var(--barn-canvas)]">
+                    {(showIncludeArchivedEntries ? animals : activeData.activeAnimals).map((a) => {
+                      const checked = showAnimalIds.includes(a.id);
+                      const wEval = showDateWithdrawalByAnimalId.get(a.id);
+                      return (
+                        <label
+                          key={a.id}
+                          className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-[var(--barn-subtle)] cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setPendingShowWithdrawalWarning(null);
+                              setShowAnimalIds((prev) =>
+                                checked ? prev.filter((id) => id !== a.id) : [...prev, a.id]
+                              );
+                            }}
+                          />
+                          <span className="min-w-0 truncate">
+                            <span className="font-medium">{a.name}</span>
+                            {a.tattoo ? ` (${a.tattoo})` : ''}
+                            {wEval?.isActive && (
+                              <span className="text-[10.5px] font-medium text-[var(--barn-terracotta)] ml-1 font-mono">
+                                · Hold {formatReadableDate(wEval.clearDateIso)}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {showPhotoError && (
+                <div
+                  role="alert"
+                  className="p-2.5 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] text-[var(--barn-danger)] font-medium"
+                >
+                  {showPhotoError}
+                </div>
+              )}
+
+              {/* Per-Animal Structured Placements, Awards, Judge Notes & E-Leg Vault */}
+              {showAnimalIds.length > 0 && (
+                <div className="space-y-3 pt-1">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Entered Animal Placements, Awards &amp; E-Leg Vault
+                  </div>
+                  {showAnimalIds.map((animalId) => {
+                    const animal = herdById.get(animalId);
+                    const res: ShowAnimalResult = showResultsByAnimalId[animalId] ?? {
+                      animalId,
+                      classPlacement: '',
+                      awards: [],
+                      judgeName: '',
+                      judgeNotes: '',
+                      legsEarned: 0,
+                      pointsEarned: undefined,
+                      legCertificateNumber: '',
+                      eLegAttachments: [],
+                    };
+                    const isUploading = showPhotoBusyAnimalId === animalId;
+                    const wEval = showDateWithdrawalByAnimalId.get(animalId);
+
+                    return (
+                      <div
+                        key={animalId}
+                        className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="font-semibold text-sm text-[var(--barn-ink)]">
+                              {animal ? `${animal.name} (${animal.tattoo || 'No ID'})` : animalId}
+                            </span>
+                            {animal && (
+                              <span className="text-[11px] text-[var(--barn-muted)] ml-2">
+                                {animal.variety || animal.breed} · Current legs: {animal.legsCount}
+                              </span>
+                            )}
+                            {wEval?.isActive && (
+                              <span className="text-[11px] font-semibold text-[var(--barn-terracotta)] ml-2">
+                                Withdrawal Hold ({wEval.medicationSummary})
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowAnimalIds((prev) => prev.filter((id) => id !== animalId))
+                            }
+                            className="text-[11px] text-[var(--barn-muted)] hover:text-[var(--barn-danger)] underline"
+                          >
+                            Remove from Show
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            aria-label={`Class placement for ${animal?.name || animalId}`}
+                            placeholder="Class Placement (e.g. 1st Sr. Buck of 8)"
+                            value={res.classPlacement}
+                            onChange={(e) =>
+                              updateAnimalShowResult(animalId, (p) => ({
+                                ...p,
+                                classPlacement: e.target.value,
+                              }))
+                            }
+                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                          />
+                          <input
+                            type="text"
+                            aria-label={`Judge name for ${animal?.name || animalId}`}
+                            placeholder="Judge Name"
+                            value={res.judgeName || ''}
+                            onChange={(e) =>
+                              updateAnimalShowResult(animalId, (p) => ({
+                                ...p,
+                                judgeName: e.target.value,
+                              }))
+                            }
+                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] text-[var(--barn-muted)] mr-1">Awards:</span>
+                          {SHOW_AWARD_OPTIONS.map((opt) => {
+                            const selected = res.awards.includes(opt.code);
+                            return (
+                              <button
+                                key={opt.code}
+                                type="button"
+                                aria-pressed={selected}
+                                title={opt.label}
+                                onClick={() => toggleAnimalShowAward(animalId, opt.code)}
+                                className={`min-h-[28px] px-2 py-0.5 rounded-lg border font-mono text-[11px] font-semibold transition-colors ${
+                                  selected
+                                    ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] border-transparent'
+                                    : 'bg-[var(--barn-surface)] border-[var(--barn-border)] text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                                }`}
+                              >
+                                {opt.code}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label
+                              htmlFor={`${baseId}-legs-${animalId}`}
+                              className="block text-[10.5px] text-[var(--barn-muted)] mb-0.5"
+                            >
+                              Legs Earned
+                            </label>
+                            <input
+                              id={`${baseId}-legs-${animalId}`}
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={res.legsEarned}
+                              onChange={(e) =>
+                                updateAnimalShowResult(animalId, (p) => ({
+                                  ...p,
+                                  legsEarned: Math.max(
+                                    0,
+                                    Math.min(20, Math.round(Number(e.target.value) || 0))
+                                  ),
+                                }))
+                              }
+                              className="w-full min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                            />
+                          </div>
+                          <div>
+                            <label
+                              htmlFor={`${baseId}-pts-${animalId}`}
+                              className="block text-[10.5px] text-[var(--barn-muted)] mb-0.5"
+                            >
+                              Show Points
+                            </label>
+                            <input
+                              id={`${baseId}-pts-${animalId}`}
+                              type="number"
+                              min={0}
+                              step="0.5"
+                              placeholder="0"
+                              value={res.pointsEarned ?? ''}
+                              onChange={(e) => {
+                                const v = Number(e.target.value);
+                                updateAnimalShowResult(animalId, (p) => ({
+                                  ...p,
+                                  pointsEarned:
+                                    e.target.value && Number.isFinite(v) && v > 0
+                                      ? Math.round(v * 100) / 100
+                                      : undefined,
+                                }));
+                              }}
+                              className="w-full min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono tabular-nums"
+                            />
+                          </div>
+                          <div>
+                            <label
+                              htmlFor={`${baseId}-cert-${animalId}`}
+                              className="block text-[10.5px] text-[var(--barn-muted)] mb-0.5"
+                            >
+                              E-Leg Cert #
+                            </label>
+                            <input
+                              id={`${baseId}-cert-${animalId}`}
+                              type="text"
+                              placeholder="e.g. E-48219"
+                              value={res.legCertificateNumber || ''}
+                              onChange={(e) =>
+                                updateAnimalShowResult(animalId, (p) => ({
+                                  ...p,
+                                  legCertificateNumber: e.target.value,
+                                }))
+                              }
+                              className="w-full min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] font-mono"
+                            />
+                          </div>
+                        </div>
+
+                        <textarea
+                          rows={2}
+                          aria-label={`Judge remarks for ${animal?.name || animalId}`}
+                          placeholder="Judge remarks (type, fur/fleece, hindquarters, condition...)"
+                          value={res.judgeNotes}
+                          onChange={(e) =>
+                            updateAnimalShowResult(animalId, (p) => ({
+                              ...p,
+                              judgeNotes: e.target.value,
+                            }))
+                          }
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]"
+                        />
+
+                        {/* E-Leg Certificate Photo Vault */}
+                        <div className="pt-1 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] font-medium text-[var(--barn-muted)]">
+                              E-Leg Certificate Vault ({res.eLegAttachments.length}/
+                              {MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT})
+                            </span>
+                            <label className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold inline-flex items-center gap-1.5 cursor-pointer">
+                              {isUploading ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Camera className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                              )}
+                              <span>
+                                {isUploading ? 'Compressing...' : 'Attach E-Leg Photo'}
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                disabled={
+                                  isUploading ||
+                                  res.eLegAttachments.length >= MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT
+                                }
+                                onChange={(e) => {
+                                  const files = e.target.files;
+                                  void handleUploadELegFiles(animalId, files);
+                                  e.target.value = '';
+                                }}
+                                className="sr-only"
+                              />
+                            </label>
+                          </div>
+
+                          {res.eLegAttachments.length > 0 && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {res.eLegAttachments.map((att) => (
+                                <div
+                                  key={att.id}
+                                  className="p-2 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] flex items-center gap-2"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setELegLightbox({
+                                        imageUrl: att.dataUrl || att.thumbnailDataUrl,
+                                        title: `${animal?.name || 'Animal'} — ${showName || 'Show E-Leg'}`,
+                                        subtitle: att.caption || att.fileName,
+                                      })
+                                    }
+                                    className="w-12 h-12 rounded-md overflow-hidden border border-[var(--barn-border)] shrink-0"
+                                    title="View full E-Leg certificate"
+                                  >
+                                    <img
+                                      src={att.thumbnailDataUrl || att.dataUrl}
+                                      alt={att.caption || att.fileName}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </button>
+                                  <div className="min-w-0 flex-1 space-y-1">
+                                    <input
+                                      type="text"
+                                      aria-label={`Caption for ${att.fileName}`}
+                                      placeholder="Caption / Remark card note"
+                                      value={att.caption || ''}
+                                      onChange={(e) =>
+                                        updateAnimalShowResult(animalId, (p) => ({
+                                          ...p,
+                                          eLegAttachments: p.eLegAttachments.map((item) =>
+                                            item.id === att.id
+                                              ? { ...item, caption: e.target.value }
+                                              : item
+                                          ),
+                                        }))
+                                      }
+                                      className="w-full min-h-[28px] px-2 py-0.5 rounded bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[11px]"
+                                    />
+                                    <div className="text-[10px] text-[var(--barn-muted)] font-mono truncate">
+                                      {att.width}×{att.height} ·{' '}
+                                      {Math.max(1, Math.round(att.storedBytes / 1024))} KB
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${att.fileName}`}
+                                    onClick={() =>
+                                      updateAnimalShowResult(animalId, (p) => ({
+                                        ...p,
+                                        eLegAttachments: p.eLegAttachments.filter(
+                                          (item) => item.id !== att.id
+                                        ),
+                                      }))
+                                    }
+                                    className="min-h-[30px] min-w-[30px] rounded-md text-[var(--barn-muted)] hover:text-[var(--barn-danger)] hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {pendingShowWithdrawalWarning?.hasConflict && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] space-y-2 text-xs"
+                >
+                  <div className="flex items-start gap-2">
+                    <ShieldAlert
+                      className="w-4 h-4 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="space-y-1 min-w-0">
+                      <div className="font-semibold text-[var(--barn-ink)]">
+                        Medication Withdrawal Overlaps Show Date (
+                        {formatReadableDate(pendingShowWithdrawalWarning.showDateIso)})
+                      </div>
+                      <p className="text-[var(--barn-muted)]">
+                        {pendingShowWithdrawalWarning.conflicts
+                          .map(
+                            (c) =>
+                              `${c.animal.name} (${c.evaluation.medicationSummary}, clears ${formatReadableDate(
+                                c.evaluation.clearDateIso
+                              )})`
+                          )
+                          .join(' · ')}
+                        . Confirm show rules / health fitness before saving.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={showSubmitLock.isSubmitting}
+                      onClick={() => setPendingShowWithdrawalWarning(null)}
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-50"
+                    >
+                      Adjust Selection
+                    </button>
+                    <button
+                      type="button"
+                      disabled={showSubmitLock.isSubmitting}
+                      onClick={() => void executeSaveShow()}
+                      className="min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-65"
+                    >
+                      {showSubmitLock.isSubmitting ? 'Saving...' : 'Save Show Anyway'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-[var(--barn-border)] bg-[var(--barn-canvas)]/60 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={showSubmitLock.isSubmitting}
+                onClick={closeShowEditor}
+                className="min-h-[38px] px-4 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={showSubmitLock.isSubmitting || Boolean(showPhotoBusyAnimalId)}
+                aria-busy={showSubmitLock.isSubmitting}
+                className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-65"
+              >
+                {showSubmitLock.isSubmitting && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                )}
+                {showSubmitLock.isSubmitting
+                  ? 'Saving...'
+                  : editingShowId
+                    ? 'Save Show & Results'
+                    : 'Save Show'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* E-Leg Certificate Full-Screen Lightbox */}
+      {eLegLightbox && (
+        <div
+          ref={eLegLightboxRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={eLegLightbox.title}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeELegLightbox();
+          }}
+          className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl">
+            <div className="px-4 py-3 border-b border-[var(--barn-border)] flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold truncate">{eLegLightbox.title}</div>
+                {eLegLightbox.subtitle && (
+                  <div className="text-xs text-[var(--barn-muted)] truncate">
+                    {eLegLightbox.subtitle}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={closeELegLightbox}
+                aria-label="Close certificate preview"
+                className="min-h-[36px] min-w-[36px] rounded-lg hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 bg-black/15 flex items-center justify-center max-h-[76dvh]">
+              <img
+                src={eLegLightbox.imageUrl}
+                alt={eLegLightbox.title}
+                className="max-h-[70dvh] w-auto object-contain rounded-lg"
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -48,6 +48,10 @@ import {
   getPedigreeCompletenessSummary,
   PedigreeSlot,
 } from './pedigreeCalculator';
+import {
+  computeAnimalShowSummary,
+  mergeEnteredAnimalIdsWithResults,
+} from './showResults';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
   escapeSafeHtml,
@@ -722,7 +726,8 @@ export function generateSpeciesBarnBinderHtml(
 
   const showsByAnimal = new Map<string, ShowEvent[]>();
   for (const sh of speciesShows) {
-    for (const aid of sh.enteredAnimalIds || []) {
+    const ids = mergeEnteredAnimalIdsWithResults(sh.enteredAnimalIds || [], sh.results);
+    for (const aid of ids) {
       const arr = showsByAnimal.get(aid) || [];
       arr.push(sh);
       showsByAnimal.set(aid, arr);
@@ -1001,6 +1006,7 @@ export function generateSpeciesBarnBinderHtml(
       const animalCarriers = getAnimalCarrierDisclosures(animal);
       const lineageAnalysis = analyzeAnimalCarrierLineage(animal, herdById);
       const showLegLogs = animalCareLogs.filter((l) => l.type === 'Show / Leg' || l.showLegEarned);
+      const animalShowSummary = computeAnimalShowSummary(animal, animalShows, animalCareLogs);
 
       // Sheet 1: Pedigree
       const sheet1Html = renderPedigreeTableHtml(
@@ -1050,7 +1056,7 @@ export function generateSpeciesBarnBinderHtml(
               <div><dt>${escapeHtml(idLabels.fieldLabel)}</dt><dd class="mono">${escapeHtml(animal.tattoo || 'Unmarked')}</dd></div>
               <div><dt>Registration Number</dt><dd class="mono">${escapeHtml(animal.registrationNumber || 'Unregistered')}</dd></div>
               <div><dt>Grand Champion (GC) #</dt><dd class="mono">${escapeHtml(animal.grandChampionNumber || 'None')}</dd></div>
-              <div><dt>Show Legs Recorded</dt><dd class="mono">${Math.max(animal.legsCount || 0, showLegLogs.length)}</dd></div>
+              <div><dt>Show Legs / GC Progress</dt><dd class="mono">${escapeHtml(animalShowSummary.gcProgress.statusLabel)}</dd></div>
               <div><dt>Species &amp; Breed</dt><dd>${escapeHtml(sp.name)} &mdash; ${escapeHtml(animal.breed || 'Unspecified')}</dd></div>
               <div><dt>Variety / Color</dt><dd>${escapeHtml(animal.variety || 'Unspecified')}</dd></div>
               <div><dt>Biological Sex</dt><dd>${escapeHtml(formatSexForSpecies(animal.sex, sp))}</dd></div>
@@ -1298,18 +1304,19 @@ export function generateSpeciesBarnBinderHtml(
                 </div>
                 <div class="sheet-meta-right">
                   <div><strong>Reg #:</strong> <span class="mono">${escapeHtml(animal.registrationNumber || 'Unregistered')}</span></div>
-                  <div><strong>GC #:</strong> <span class="mono">${escapeHtml(animal.grandChampionNumber || '—')}</span> &middot; <strong>Legs:</strong> <span class="mono">${Math.max(animal.legsCount || 0, showLegLogs.length)}</span></div>
+                  <div><strong>GC #:</strong> <span class="mono">${escapeHtml(animal.grandChampionNumber || '—')}</span> &middot; <strong>Legs:</strong> <span class="mono">${animalShowSummary.effectiveLegs}</span></div>
                 </div>
               </div>
 
               ${
                 options.includeShowsAndKinship
                   ? `<div class="sub-card">
-                      <div class="sub-card-title">Show Winnings, Show Legs &amp; Event Entries</div>
+                      <div class="sub-card-title">Show Winnings, Show Legs &amp; E-Leg Vault</div>
                       <div class="reg-summary-bar">
                         <span><strong>Registration #:</strong> <span class="mono">${escapeHtml(animal.registrationNumber || 'Unregistered')}</span></span>
-                        <span><strong>Grand Champion #:</strong> <span class="mono">${escapeHtml(animal.grandChampionNumber || 'None')}</span></span>
-                        <span><strong>Total Show Legs:</strong> <span class="mono">${Math.max(animal.legsCount || 0, showLegLogs.length)}</span></span>
+                        <span><strong>GC Progress:</strong> <span class="mono">${escapeHtml(animalShowSummary.gcProgress.statusLabel)}</span></span>
+                        ${animalShowSummary.awardsSummaryText ? `<span><strong>Awards:</strong> <span class="mono">${escapeHtml(animalShowSummary.awardsSummaryText)}</span></span>` : ''}
+                        ${animalShowSummary.totalPoints > 0 ? `<span><strong>Points:</strong> <span class="mono">${animalShowSummary.totalPoints}</span></span>` : ''}
                       </div>
                       ${
                         showLegLogs.length === 0 && animalShows.length === 0
@@ -1318,37 +1325,72 @@ export function generateSpeciesBarnBinderHtml(
                               <thead>
                                 <tr>
                                   <th>Date</th>
-                                  <th>Source</th>
-                                  <th>Show / Award Title</th>
-                                  <th>Sanction / Location</th>
-                                  <th>Notes &amp; Placements</th>
+                                  <th>Show / Event</th>
+                                  <th>Placement &amp; Awards</th>
+                                  <th>Legs / Pts</th>
+                                  <th>Judge &amp; Notes</th>
                                 </tr>
                               </thead>
                               <tbody>
+                                ${animalShows
+                                  .map((sh) => {
+                                    const res = (sh.results ?? []).find((r) => r.animalId === animal.id);
+                                    const placementParts = [
+                                      res?.classPlacement ? escapeHtml(res.classPlacement) : '',
+                                      res && res.awards.length > 0 ? `<strong>${escapeHtml(res.awards.join(', '))}</strong>` : '',
+                                    ].filter(Boolean);
+                                    const legsPtsParts = [
+                                      res && res.legsEarned > 0 ? `${res.legsEarned} Leg${res.legsEarned === 1 ? '' : 's'}` : '',
+                                      res?.pointsEarned && res.pointsEarned > 0 ? `${res.pointsEarned} pts` : '',
+                                      res?.legCertificateNumber ? `Cert #${res.legCertificateNumber}` : '',
+                                    ].filter(Boolean);
+                                    const judgeNoteParts = [
+                                      res?.judgeName ? `Judge: ${escapeHtml(res.judgeName)}` : '',
+                                      res?.judgeNotes ? escapeMultilineHtml(res.judgeNotes) : '',
+                                      !res?.judgeNotes && sh.notes ? escapeMultilineHtml(sh.notes) : '',
+                                    ].filter(Boolean);
+                                    return `<tr>
+                                      <td class="mono">${escapeHtml(formatReadableDate(sh.eventDateIso))}</td>
+                                      <td><strong>${escapeHtml(sh.name)}</strong><div class="muted small">${escapeHtml([sh.sanctioningBody, sh.location].filter(Boolean).join(' · ') || '—')}</div></td>
+                                      <td>${placementParts.length > 0 ? placementParts.join(' &middot; ') : 'Entered on roster'}</td>
+                                      <td class="mono">${legsPtsParts.length > 0 ? escapeHtml(legsPtsParts.join(' · ')) : '—'}</td>
+                                      <td>${judgeNoteParts.length > 0 ? judgeNoteParts.join('<br />') : '—'}</td>
+                                    </tr>`;
+                                  })
+                                  .join('')}
                                 ${showLegLogs
                                   .map(
                                     (l) => `<tr>
                                       <td class="mono">${escapeHtml(formatReadableDate(l.dateIso))}</td>
-                                      <td>Show / Leg Log</td>
-                                      <td><strong>${escapeHtml(l.title || 'Show Placement')}</strong>${l.showLegEarned ? ' (Leg Earned)' : ''}</td>
-                                      <td>Recorded Award</td>
+                                      <td><strong>${escapeHtml(l.title || 'Show / Leg Log')}</strong><div class="muted small">Care Log Entry</div></td>
+                                      <td>${l.showLegEarned ? '<strong>Leg Earned</strong>' : 'Show Log'}</td>
+                                      <td class="mono">${l.showLegEarned ? '1 Leg' : '—'}</td>
                                       <td>${l.notes ? escapeMultilineHtml(l.notes) : '—'}</td>
-                                    </tr>`
-                                  )
-                                  .join('')}
-                                ${animalShows
-                                  .map(
-                                    (sh) => `<tr>
-                                      <td class="mono">${escapeHtml(formatReadableDate(sh.eventDateIso))}</td>
-                                      <td>Entered Show</td>
-                                      <td><strong>${escapeHtml(sh.name)}</strong></td>
-                                      <td>${escapeHtml([sh.sanctioningBody, sh.location].filter(Boolean).join(' · ') || '—')}</td>
-                                      <td>${sh.notes ? escapeMultilineHtml(sh.notes) : 'Entered on roster'}</td>
                                     </tr>`
                                   )
                                   .join('')}
                               </tbody>
                             </table>`
+                      }
+                      ${
+                        animalShowSummary.eLegAttachments.length > 0
+                          ? options.includePhotos
+                            ? `<div class="photo-grid" style="margin-top:8px;">
+                                ${animalShowSummary.eLegAttachments
+                                  .map((att, idx) => {
+                                    const safeUrl = sanitizeSafeRasterImageDataUrl(att.dataUrl || att.thumbnailDataUrl);
+                                    return `<figure class="photo-card">
+                                      ${safeUrl ? `<img src="${safeUrl}" alt="${escapeHtml(att.caption || `${animal.name} E-Leg ${idx + 1}`)}" />` : ''}
+                                      <figcaption>
+                                        <div class="photo-label">E-Leg #${idx + 1} &middot; ${escapeHtml(att.showName)} (${escapeHtml(formatReadableDate(att.eventDateIso))})</div>
+                                        <div class="photo-caption">${att.legCertificateNumber ? `Cert #${escapeHtml(att.legCertificateNumber)} &middot; ` : ''}${att.caption ? escapeHtml(att.caption) : escapeHtml(att.fileName)}</div>
+                                      </figcaption>
+                                    </figure>`;
+                                  })
+                                  .join('')}
+                              </div>`
+                            : `<p class="empty-msg" style="margin-top:6px;">${animalShowSummary.eLegAttachments.length} E-Leg certificate photo(s) attached (image rendering disabled by preview setting).</p>`
+                          : ''
                       }
                     </div>`
                   : ''

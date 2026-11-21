@@ -36,6 +36,7 @@ import {
 } from './pedigreeCalculator';
 import { resolvePedigreePrintTheme } from './pedigreePrintStyles';
 import { buildAnimalProfileDeepLink, renderQrSvg } from './qrCode';
+import { computeAnimalShowSummary } from './showResults';
 import type { PedigreePrintOptions } from './syncAndExports';
 
 export interface ShareablePedigreeCardOptions extends PedigreePrintOptions {
@@ -134,10 +135,16 @@ export function generateShareablePedigreeCardHtml(
         ? escapeSafeHtml(formatPedigreeWeight(a.weightGrams, effectiveWeightUnit, arbaLbsOzDotNotation))
         : '',
     ].filter(Boolean);
+    const ancShow =
+      (options?.shows?.length || 0) > 0 || (options?.careLogs?.length || 0) > 0
+        ? computeAnimalShowSummary(a, options?.shows ?? [], options?.careLogs ?? [])
+        : null;
+    const ancLegs = ancShow ? ancShow.effectiveLegs : a.legsCount;
     const honors = [
       a.registrationNumber ? `Reg ${escapeSafeHtml(a.registrationNumber)}` : '',
       a.grandChampionNumber ? `GC ${escapeSafeHtml(a.grandChampionNumber)}` : '',
-      a.legsCount > 0 ? `${a.legsCount} Leg${a.legsCount === 1 ? '' : 's'}` : '',
+      ancLegs > 0 ? `${ancLegs} Leg${ancLegs === 1 ? '' : 's'}` : '',
+      ancShow?.awardsSummaryText ? escapeSafeHtml(ancShow.awardsSummaryText) : '',
     ].filter(Boolean);
 
     return `<div class="node ${isSire ? 'sire' : 'dam'}">
@@ -189,11 +196,33 @@ export function generateShareablePedigreeCardHtml(
   if (subject.registrationNumber) {
     badges.push(`<span class="badge accent">Reg: ${escapeSafeHtml(subject.registrationNumber)}</span>`);
   }
+  const subjShow = computeAnimalShowSummary(
+    subject,
+    options?.shows ?? [],
+    options?.careLogs ?? []
+  );
   if (subject.grandChampionNumber) {
     badges.push(`<span class="badge accent">GC: ${escapeSafeHtml(subject.grandChampionNumber)}</span>`);
   }
-  if (subject.legsCount > 0) {
-    badges.push(`<span class="badge accent">${subject.legsCount} Leg${subject.legsCount === 1 ? '' : 's'}</span>`);
+  if (subjShow.effectiveLegs > 0) {
+    badges.push(
+      `<span class="badge accent">${subjShow.effectiveLegs} ${subjShow.effectiveLegs === 1 ? 'Leg' : 'Legs'}</span>`
+    );
+  }
+  if (subjShow.gcProgress.isEligible) {
+    badges.push('<span class="badge accent">GC Eligible</span>');
+  } else if (
+    subjShow.showsEntered > 0 &&
+    subjShow.effectiveLegs === 0 &&
+    !subjShow.gcProgress.isGrandChampion
+  ) {
+    badges.push(`<span class="badge accent">0/${subjShow.gcProgress.legsTarget} legs</span>`);
+  }
+  if (subjShow.awardsSummaryText) {
+    badges.push(`<span class="badge accent">${escapeSafeHtml(subjShow.awardsSummaryText)}</span>`);
+  }
+  if (subjShow.totalPoints > 0) {
+    badges.push(`<span class="badge accent">${subjShow.totalPoints} pts</span>`);
   }
 
   return `<!DOCTYPE html>

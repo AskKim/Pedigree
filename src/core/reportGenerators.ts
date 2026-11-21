@@ -36,6 +36,7 @@ import {
   normalizeOwnershipType,
   pluralizeSpeciesLabel,
   resolveSpeciesWeightUnit,
+  ShowEvent,
   SpeciesProfile,
   todayDateIso,
   WeightUnit,
@@ -45,6 +46,7 @@ import {
   createSpeciesCoiEvaluator,
 } from './pedigreeCalculator';
 import { buildReportCatalogForSpecies, ReportCatalogEntrySpec } from './reportCatalog';
+import { computeAnimalShowSummary } from './showResults';
 
 export type ReportAudienceFilter =
   | 'All'
@@ -269,6 +271,7 @@ interface ReportContext {
   animalById: Map<string, Animal>;
   speciesBreedings: BreedingRecord[];
   speciesCareLogs: CareLog[];
+  speciesShows: ShowEvent[];
   herdMap: Map<string, Animal>;
 }
 
@@ -339,6 +342,10 @@ export function generateSpeciesReport(
     return animalById.has(l.animalId);
   });
 
+  const speciesShows = (snapshot.shows ?? []).filter((s) =>
+    isSameSpecies(s.species, speciesProfile.name)
+  );
+
   const herdMap = buildSpeciesHerdMap(speciesAnimals, speciesProfile.name);
 
   const ctx: ReportContext = {
@@ -359,6 +366,7 @@ export function generateSpeciesReport(
     animalById,
     speciesBreedings,
     speciesCareLogs,
+    speciesShows,
     herdMap,
   };
 
@@ -1727,18 +1735,29 @@ function buildReportBody(ctx: ReportContext): ReportBody {
 
       let activeOwned = 0;
       let totalLegs = 0;
+      let gcOrEligibleCount = 0;
+      let totalShowPoints = 0;
 
       const rows: ReportRow[] = males.map((m) => {
         if (isAnimalActive(m) && normalizeOwnershipType(m.ownershipType, 'Owned') === 'Owned') {
           activeOwned += 1;
         }
-        totalLegs += m.legsCount || 0;
+        const showSummary = computeAnimalShowSummary(m, ctx.speciesShows, speciesCareLogs);
+        totalLegs += showSummary.effectiveLegs;
+        totalShowPoints += showSummary.totalPoints;
+        if (showSummary.gcProgress.isGrandChampion || showSummary.gcProgress.isEligible) {
+          gcOrEligibleCount += 1;
+        }
         const siredBreedings = speciesBreedings.filter((b) => b.sireId === m.id);
         const siredOffspring = siredBreedings.reduce((sum, b) => sum + (b.liveCount || 0), 0);
 
         return {
           id: m.id,
           animalId: m.id,
+          highlightTone:
+            showSummary.gcProgress.isGrandChampion || showSummary.gcProgress.isEligible
+              ? 'success'
+              : 'normal',
           cells: {
             idTag: m.tattoo || 'Unmarked',
             name: m.name,
@@ -1748,7 +1767,10 @@ function buildReportBody(ctx: ReportContext): ReportBody {
             weight: formatWeight(m.weightGrams, weightUnit),
             breedings: siredBreedings.length,
             liveOffspring: siredOffspring,
-            legs: m.legsCount || 0,
+            legs: showSummary.effectiveLegs,
+            showWins: showSummary.awardsSummaryText || '—',
+            showPoints: showSummary.totalPoints > 0 ? showSummary.totalPoints : 0,
+            gcProgress: showSummary.gcProgress.shortLabel,
             regNo: m.registrationNumber || '—',
             gcNo: m.grandChampionNumber || '—',
             status: m.status,
@@ -1767,6 +1789,9 @@ function buildReportBody(ctx: ReportContext): ReportBody {
           { key: 'breedings', label: 'Breedings', align: 'right' },
           { key: 'liveOffspring', label: `Live ${offspringPlural}`, align: 'right' },
           { key: 'legs', label: 'Show Legs', align: 'right' },
+          { key: 'showWins', label: 'Show Wins' },
+          { key: 'showPoints', label: 'Points', align: 'right' },
+          { key: 'gcProgress', label: 'GC Progress' },
           { key: 'regNo', label: 'Reg #' },
           { key: 'gcNo', label: 'GC #' },
           { key: 'status', label: 'Status' },
@@ -1776,6 +1801,14 @@ function buildReportBody(ctx: ReportContext): ReportBody {
           { label: `Total ${speciesProfile.name} Males`, value: String(rows.length) },
           { label: 'Active Owned Males', value: String(activeOwned) },
           { label: 'Combined Show Legs', value: String(totalLegs) },
+          {
+            label: 'GC / Eligible Males',
+            value: String(gcOrEligibleCount),
+            tone: gcOrEligibleCount > 0 ? 'positive' : 'neutral',
+          },
+          ...(totalShowPoints > 0
+            ? [{ label: 'Total Show Points', value: String(Math.round(totalShowPoints * 100) / 100) }]
+            : []),
         ],
       };
     }
@@ -1794,10 +1827,17 @@ function buildReportBody(ctx: ReportContext): ReportBody {
 
       let activeOwned = 0;
       let totalWeaned = 0;
+      let totalLegs = 0;
+      let gcOrEligibleCount = 0;
 
       const rows: ReportRow[] = females.map((f) => {
         if (isAnimalActive(f) && normalizeOwnershipType(f.ownershipType, 'Owned') === 'Owned') {
           activeOwned += 1;
+        }
+        const showSummary = computeAnimalShowSummary(f, ctx.speciesShows, speciesCareLogs);
+        totalLegs += showSummary.effectiveLegs;
+        if (showSummary.gcProgress.isGrandChampion || showSummary.gcProgress.isEligible) {
+          gcOrEligibleCount += 1;
         }
         const damBreedings = speciesBreedings.filter((b) => b.damId === f.id);
         const birthCount = damBreedings.filter(
@@ -1810,6 +1850,10 @@ function buildReportBody(ctx: ReportContext): ReportBody {
         return {
           id: f.id,
           animalId: f.id,
+          highlightTone:
+            showSummary.gcProgress.isGrandChampion || showSummary.gcProgress.isEligible
+              ? 'success'
+              : 'normal',
           cells: {
             idTag: f.tattoo || 'Unmarked',
             name: f.name,
@@ -1821,8 +1865,12 @@ function buildReportBody(ctx: ReportContext): ReportBody {
             births: birthCount,
             liveOffspring,
             weaned: weanedOffspring,
-            legs: f.legsCount || 0,
+            legs: showSummary.effectiveLegs,
+            showWins: showSummary.awardsSummaryText || '—',
+            showPoints: showSummary.totalPoints > 0 ? showSummary.totalPoints : 0,
+            gcProgress: showSummary.gcProgress.shortLabel,
             regNo: f.registrationNumber || '—',
+            gcNo: f.grandChampionNumber || '—',
             status: f.status,
           },
         };
@@ -1841,7 +1889,11 @@ function buildReportBody(ctx: ReportContext): ReportBody {
           { key: 'liveOffspring', label: `Live ${offspringPlural}`, align: 'right' },
           { key: 'weaned', label: 'Weaned', align: 'right' },
           { key: 'legs', label: 'Show Legs', align: 'right' },
+          { key: 'showWins', label: 'Show Wins' },
+          { key: 'showPoints', label: 'Points', align: 'right' },
+          { key: 'gcProgress', label: 'GC Progress' },
           { key: 'regNo', label: 'Reg #' },
+          { key: 'gcNo', label: 'GC #' },
           { key: 'status', label: 'Status' },
         ],
         rows,
@@ -1849,6 +1901,12 @@ function buildReportBody(ctx: ReportContext): ReportBody {
           { label: `Total ${speciesProfile.name} Females`, value: String(rows.length) },
           { label: 'Active Owned Females', value: String(activeOwned) },
           { label: `Total ${offspringPlural} Weaned`, value: String(totalWeaned) },
+          { label: 'Combined Show Legs', value: String(totalLegs) },
+          {
+            label: 'GC / Eligible Females',
+            value: String(gcOrEligibleCount),
+            tone: gcOrEligibleCount > 0 ? 'positive' : 'neutral',
+          },
         ],
       };
     }

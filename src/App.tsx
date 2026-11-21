@@ -103,6 +103,14 @@ const PromptsDirectoryScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/PromptsDirectoryScreen')['PromptsDirectoryScreen']>
 >(() => import('./components/PromptsDirectoryScreen'), 'PromptsDirectoryScreen', 'Prompts Directory');
 
+const SuggestionsBacklogScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/SuggestionsBacklogScreen')['SuggestionsBacklogScreen']>
+>(
+  () => import('./components/SuggestionsBacklogScreen'),
+  'SuggestionsBacklogScreen',
+  'Suggestion Backlog'
+);
+
 const CalendarSyncConfirmModal = lazyNamedRoute<
   ComponentProps<typeof import('./components/CalendarIntegrationModals')['CalendarSyncConfirmModal']>
 >(
@@ -124,6 +132,7 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   settings: 'Settings',
   techyStuff: 'The Techy Stuff',
   prompts: 'Prompts Directory',
+  suggestions: 'Suggestion Backlog',
 };
 
 export default function App() {
@@ -1139,7 +1148,8 @@ export default function App() {
           route !== 'settings' &&
           route !== 'importExport' &&
           route !== 'techyStuff' &&
-          route !== 'prompts' && (
+          route !== 'prompts' &&
+          route !== 'suggestions' && (
           <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <label
@@ -1570,6 +1580,7 @@ export default function App() {
               onBackToSettings={() => setRoute('settings')}
               onOpenImportExportHub={openImportExportHub}
               onOpenPromptsDirectory={() => setRoute('prompts')}
+              onOpenSuggestionsBacklog={() => setRoute('suggestions')}
               onRefreshStorageStatus={store.refreshStorageStatus}
               onRequestPersistentStorage={store.triggerPersistentStorageRequest}
               onPurgeOpfsTmp={store.purgeOpfsTempWorkspace}
@@ -1607,6 +1618,14 @@ export default function App() {
             <PromptsDirectoryScreen onBackToTechyStuff={() => setRoute('techyStuff')} />
           </TechyStuffErrorBoundary>
         )}
+        {route === 'suggestions' && (
+          <TechyStuffErrorBoundary
+            onExitToSettings={() => setRoute('settings')}
+            onExitToHome={() => setRoute('home')}
+          >
+            <SuggestionsBacklogScreen onBackToTechyStuff={() => setRoute('techyStuff')} />
+          </TechyStuffErrorBoundary>
+        )}
             </Suspense>
           </RouteErrorBoundary>
         )}
@@ -1615,7 +1634,8 @@ export default function App() {
         {route !== 'settings' &&
           route !== 'importExport' &&
           route !== 'techyStuff' &&
-          route !== 'prompts' && (
+          route !== 'prompts' &&
+          route !== 'suggestions' && (
           <footer className="hidden md:flex items-center justify-between gap-4 pt-3 pb-1 border-t border-[var(--barn-border)]/60 text-[11px] text-[var(--barn-muted)]">
             <span>
               Shortcuts: <kbd className="font-mono font-semibold text-[var(--barn-ink)]">H</kbd> Home ·{' '}

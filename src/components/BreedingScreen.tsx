@@ -53,6 +53,7 @@ import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
+import { CoatExplorerSandbox } from './CoatExplorerSandbox';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
 import { PairingComparisonMatrix } from './PairingComparisonMatrix';
 import { SearchableParentPicker } from './SearchableParentPicker';
@@ -1278,6 +1279,15 @@ export function BreedingScreen({
           })()}
         </section>
       </div>
+
+      {/* Genetic Variety / Coat Explorer Sandbox */}
+      <CoatExplorerSandbox
+        speciesProfile={speciesProfile}
+        males={males}
+        females={females}
+        activeSire={selectedSire}
+        activeDam={selectedDam}
+      />
 
       {/* Side-by-Side Multi-Candidate Pairing Comparison Matrix */}
       <PairingComparisonMatrix

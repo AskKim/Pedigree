@@ -699,8 +699,50 @@ export interface CareLog {
   updatedAt: string;
 }
 
+export type ShowAwardCode = 'BOB' | 'BOS' | 'BIS' | 'GCH' | 'BOV' | 'BOSV' | 'RIS';
+
+export const SHOW_AWARD_OPTIONS: ReadonlyArray<{
+  code: ShowAwardCode;
+  label: string;
+  shortLabel: string;
+}> = [
+  { code: 'BOB', label: 'Best of Breed (BOB)', shortLabel: 'BOB' },
+  { code: 'BOS', label: 'Best of Opposite Sex (BOS)', shortLabel: 'BOS' },
+  { code: 'BIS', label: 'Best in Show (BIS)', shortLabel: 'BIS' },
+  { code: 'GCH', label: 'Grand Champion (GCH)', shortLabel: 'GCH' },
+  { code: 'BOV', label: 'Best of Variety (BOV)', shortLabel: 'BOV' },
+  { code: 'BOSV', label: 'Best Opposite Variety (BOSV)', shortLabel: 'BOSV' },
+  { code: 'RIS', label: 'Reserve in Show (RIS)', shortLabel: 'RIS' },
+];
+
+export interface ShowELegAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  storedBytes: number;
+  thumbnailDataUrl: string;
+  dataUrl: string;
+  caption?: string;
+  addedAtIso: string;
+}
+
+export interface ShowAnimalResult {
+  animalId: string;
+  classPlacement: string;
+  awards: ShowAwardCode[];
+  judgeName?: string;
+  judgeNotes: string;
+  legsEarned: number;
+  pointsEarned?: number;
+  legCertificateNumber?: string;
+  eLegAttachments: ShowELegAttachment[];
+}
+
 /**
- * Livestock or ARBA show event with entered animal roster, scoped to a `species`.
+ * Livestock or ARBA show event with entered animal roster and structured placements/wins/e-leg vault,
+ * scoped to a `species`.
  */
 export interface ShowEvent {
   id: string;
@@ -711,6 +753,7 @@ export interface ShowEvent {
   eventDateIso: string; // YYYY-MM-DD
   entryDeadlineIso: string; // YYYY-MM-DD or ""
   enteredAnimalIds: string[];
+  results?: ShowAnimalResult[];
   notes: string;
   _rev?: number;
   createdAt: string;

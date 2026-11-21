@@ -25,6 +25,7 @@ import {
   Database,
   Download,
   HardDrive,
+  Lightbulb,
   Lock,
   RefreshCw,
   RotateCcw,
@@ -97,6 +98,7 @@ export interface TechyStuffScreenProps {
   onBackToSettings: () => void;
   onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
   onOpenPromptsDirectory?: () => void;
+  onOpenSuggestionsBacklog?: () => void;
   onRefreshStorageStatus: () => Promise<StorageProtectionStatus>;
   onRequestPersistentStorage: () => Promise<StorageProtectionStatus> | void;
   onPurgeOpfsTmp: () => Promise<{ filesRemoved: number; bytesFreed: number }>;
@@ -150,6 +152,7 @@ export function TechyStuffScreen({
   onBackToSettings,
   onOpenImportExportHub,
   onOpenPromptsDirectory,
+  onOpenSuggestionsBacklog,
   onRefreshStorageStatus,
   onRequestPersistentStorage,
   onPurgeOpfsTmp,
@@ -444,6 +447,16 @@ export function TechyStuffScreen({
               <span>Prompt Directory (/prompts)</span>
             </button>
           )}
+          {onOpenSuggestionsBacklog && (
+            <button
+              type="button"
+              onClick={onOpenSuggestionsBacklog}
+              className="min-h-[44px] sm:min-h-[38px] max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] hover:opacity-90 text-[var(--barn-ink)] text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+            >
+              <Lightbulb className="w-3.5 h-3.5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              <span>Suggestion Backlog</span>
+            </button>
+          )}
           {onOpenImportExportHub && (
             <button
               type="button"
@@ -457,30 +470,62 @@ export function TechyStuffScreen({
         </div>
       </header>
 
-      {onOpenPromptsDirectory && (
-        <section
-          aria-label="Repository Prompts Directory Link"
-          className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
-        >
-          <div className="space-y-0.5 min-w-0 flex-1">
-            <h2 className="font-display text-base font-semibold text-[var(--barn-ink)] flex flex-wrap items-center gap-2 min-w-0">
-              <BookOpen className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-              <span>Repository Prompts Directory (/prompts/)</span>
-            </h2>
-            <p className="text-xs text-[var(--barn-muted)]">
-              Browse active and archived system/workflow prompts in root{' '}
-              <code className="font-mono text-[var(--barn-ink)]">/prompts/</code>, inspect
-              confirmation-lock flags, and force-refresh to detect newly added prompt scripts.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenPromptsDirectory}
-            className="min-h-[40px] w-full sm:w-auto max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] hover:opacity-90 text-xs font-semibold text-[var(--barn-ink)] text-center sm:shrink-0"
-          >
-            Open Prompts Directory &rarr;
-          </button>
-        </section>
+      {(onOpenPromptsDirectory || onOpenSuggestionsBacklog) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {onOpenPromptsDirectory && (
+            <section
+              aria-label="Repository Prompts Directory Link"
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+            >
+              <div className="space-y-0.5 min-w-0 flex-1">
+                <h2 className="font-display text-base font-semibold text-[var(--barn-ink)] flex flex-wrap items-center gap-2 min-w-0">
+                  <BookOpen className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  <span>Repository Prompts Directory (/prompts/)</span>
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)]">
+                  Browse active and archived system/workflow prompts in root{' '}
+                  <code className="font-mono text-[var(--barn-ink)]">/prompts/</code>, inspect
+                  confirmation-lock flags, and force-refresh to detect newly added prompt scripts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenPromptsDirectory}
+                className="min-h-[44px] sm:min-h-[40px] w-full sm:w-auto max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] hover:opacity-90 text-xs font-semibold text-[var(--barn-ink)] text-center sm:shrink-0"
+              >
+                Open Prompts Directory &rarr;
+              </button>
+            </section>
+          )}
+
+          {onOpenSuggestionsBacklog && (
+            <section
+              aria-label="Suggestion Backlog and Idea Capture Link"
+              className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+            >
+              <div className="space-y-0.5 min-w-0 flex-1">
+                <h2 className="font-display text-base font-semibold text-[var(--barn-ink)] flex flex-wrap items-center gap-2 min-w-0">
+                  <Lightbulb className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  <span>Suggestion Backlog &amp; Idea Capture</span>
+                </h2>
+                <p className="text-xs text-[var(--barn-muted)]">
+                  View the prioritized roadmap in{' '}
+                  <code className="font-mono text-[var(--barn-ink)]">
+                    /docs/plans/suggestions-backlog.md
+                  </code>{' '}
+                  and capture new sanitized ideas offline for future export.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenSuggestionsBacklog}
+                className="min-h-[44px] sm:min-h-[40px] w-full sm:w-auto max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)] hover:opacity-90 text-xs font-semibold text-[var(--barn-ink)] text-center sm:shrink-0"
+              >
+                Open Suggestion Backlog &rarr;
+              </button>
+            </section>
+          )}
+        </div>
       )}
 
       {/* PERMANENT & NON-CLOSEABLE: Copy of Tier / Memory Hierarchy Guidelines */}

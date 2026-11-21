@@ -30,6 +30,7 @@ import {
   ShowEvent,
   SpeciesProfile,
 } from './models';
+import { normalizeShowResults, mergeEnteredAnimalIdsWithResults } from './showResults';
 import { sanitizeSpeciesMemo } from './speciesMemo';
 import {
   isValidSyncOperation,
@@ -515,6 +516,14 @@ export function mergeDeltaOperations(
               clone.thumbnailDataUrl = '';
             }
           }
+          if (op.entity_type === 'show') {
+            const cleanResults = normalizeShowResults(clone.results, { dropEmpty: false });
+            clone.results = cleanResults.length > 0 ? cleanResults : undefined;
+            clone.enteredAnimalIds = mergeEnteredAnimalIdsWithResults(
+              Array.isArray(clone.enteredAnimalIds) ? (clone.enteredAnimalIds as string[]) : [],
+              cleanResults
+            );
+          }
           map.set(op.entity_uuid, clone as unknown as T);
         }
         return;
@@ -533,6 +542,9 @@ export function mergeDeltaOperations(
           const safeUrl = sanitizeSafeRasterImageDataUrl(nextVal);
           if (!safeUrl) return;
           nextVal = safeUrl;
+        } else if (op.entity_type === 'show' && op.field_name === 'results') {
+          const cleanResults = normalizeShowResults(nextVal, { dropEmpty: false });
+          nextVal = cleanResults.length > 0 ? cleanResults : undefined;
         }
         (target as Record<string, unknown>)[op.field_name] = nextVal;
         target.updatedAt = op.timestamp;

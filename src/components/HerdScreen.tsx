@@ -19,6 +19,7 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowRightLeft,
+  Award,
   CheckCircle2,
   ClipboardCheck,
   Edit3,
@@ -33,7 +34,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 import {
@@ -97,6 +99,7 @@ import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
 } from '../core/shareablePedigreeCard';
+import { computeAnimalShowSummary } from '../core/showResults';
 import {
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
@@ -234,6 +237,7 @@ export function HerdScreen({
     coiByAnimalId,
     cages,
     careLogs,
+    shows,
   } = activeData;
 
   const effectiveWeightUnit = resolveSpeciesWeightUnit(speciesProfile, settings);
@@ -585,6 +589,22 @@ export function HerdScreen({
     [activeAnimal, withdrawalByAnimalId]
   );
 
+  const activeAnimalShowSummary = useMemo(
+    () => (activeAnimal ? computeAnimalShowSummary(activeAnimal, shows, careLogs) : null),
+    [activeAnimal, shows, careLogs]
+  );
+
+  const [eLegLightbox, setELegLightbox] = useState<{
+    imageUrl: string;
+    title: string;
+    subtitle?: string;
+  } | null>(null);
+  const closeELegLightbox = useCallback(() => setELegLightbox(null), []);
+  const eLegLightboxRef = useAccessibleDialog({
+    isOpen: Boolean(eLegLightbox),
+    onClose: closeELegLightbox,
+  });
+
   const editingAnimalCareLogs = useMemo(
     () => (editingAnimal ? careLogs.filter((l) => l.animalId === editingAnimal.id) : []),
     [careLogs, editingAnimal]
@@ -783,7 +803,11 @@ export function HerdScreen({
         settings,
         settings.defaultGenerations,
         primaryPhoto,
-        pedigreePrintOptions
+        {
+          ...pedigreePrintOptions,
+          shows,
+          careLogs,
+        }
       ),
     });
   };
@@ -1317,10 +1341,15 @@ export function HerdScreen({
                 </div>
               </div>
               <div>
-                <div className="text-[var(--barn-muted)]">Show Legs</div>
+                <div className="text-[var(--barn-muted)]">Show Legs / GC</div>
                 <div className="font-mono text-sm font-semibold tabular-nums mt-0.5">
-                  {activeAnimal.legsCount}
+                  {activeAnimalShowSummary?.effectiveLegs ?? activeAnimal.legsCount}
                 </div>
+                {activeAnimalShowSummary && (
+                  <div className="text-[11px] font-mono text-[var(--barn-sage)] truncate">
+                    {activeAnimalShowSummary.gcProgress.shortLabel}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1413,6 +1442,164 @@ export function HerdScreen({
                 </div>
               )}
             </div>
+
+            {/* Show Honors, Grand Champion Progress & E-Leg Vault */}
+            {activeAnimalShowSummary &&
+              (activeAnimalShowSummary.showsEntered > 0 ||
+                activeAnimalShowSummary.effectiveLegs > 0 ||
+                Boolean(activeAnimal.grandChampionNumber) ||
+                activeAnimalShowSummary.eLegAttachments.length > 0) && (
+                <div className="space-y-3 border-b border-[var(--barn-border)] pb-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                      <Award className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                      <span>Show Honors, GC Progress &amp; E-Leg Vault</span>
+                    </h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-lg text-xs font-mono font-semibold ${
+                        activeAnimalShowSummary.gcProgress.isGrandChampion ||
+                        activeAnimalShowSummary.gcProgress.isEligible
+                          ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+                          : 'bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-[var(--barn-ink)]'
+                      }`}
+                    >
+                      {activeAnimalShowSummary.gcProgress.statusLabel}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 font-mono">
+                      <span>
+                        Shows: <strong>{activeAnimalShowSummary.showsEntered}</strong>
+                        {activeAnimalShowSummary.awardsSummaryText
+                          ? ` · Awards: ${activeAnimalShowSummary.awardsSummaryText}`
+                          : ''}
+                        {activeAnimalShowSummary.totalPoints > 0
+                          ? ` · Points: ${activeAnimalShowSummary.totalPoints}`
+                          : ''}
+                      </span>
+                      <span className="text-[var(--barn-muted)]">
+                        {activeAnimalShowSummary.gcProgress.progressPercent}% toward{' '}
+                        {activeAnimalShowSummary.gcProgress.legsTarget}-leg GC
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-[var(--barn-surface)] border border-[var(--barn-border)] overflow-hidden">
+                      <div
+                        className="h-full bg-[var(--barn-sage)] transition-all"
+                        style={{
+                          width: `${activeAnimalShowSummary.gcProgress.progressPercent}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {activeAnimalShowSummary.entries.length > 0 && (
+                    <div className="space-y-2 text-xs">
+                      {activeAnimalShowSummary.entries.map((entry) => (
+                        <div
+                          key={entry.showId}
+                          className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-semibold text-[var(--barn-ink)]">
+                              {entry.showName}{' '}
+                              <span className="font-normal text-[var(--barn-muted)]">
+                                · {entry.sanctioningBody} · {formatReadableDate(entry.eventDateIso)}
+                                {entry.location ? ` · ${entry.location}` : ''}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {entry.result?.classPlacement && (
+                                <span className="px-1.5 py-0.5 rounded bg-[var(--barn-surface)] border border-[var(--barn-border)] font-medium text-[10.5px]">
+                                  {entry.result.classPlacement}
+                                </span>
+                              )}
+                              {entry.result?.awards.map((code) => (
+                                <span
+                                  key={code}
+                                  className="px-1.5 py-0.5 rounded bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] font-mono font-semibold text-[10px]"
+                                >
+                                  {code}
+                                </span>
+                              ))}
+                              {(entry.result?.legsEarned ?? 0) > 0 && (
+                                <span className="px-1.5 py-0.5 rounded bg-[var(--barn-terracotta-tint)] text-[var(--barn-terracotta)] font-mono font-semibold text-[10px]">
+                                  +{entry.result!.legsEarned} Leg
+                                  {entry.result!.legsEarned === 1 ? '' : 's'}
+                                </span>
+                              )}
+                              {(entry.result?.pointsEarned ?? 0) > 0 && (
+                                <span className="font-mono text-[10.5px] text-[var(--barn-muted)]">
+                                  {entry.result!.pointsEarned} pts
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {(entry.result?.judgeName ||
+                            entry.result?.legCertificateNumber ||
+                            entry.result?.judgeNotes) && (
+                            <div className="text-[11px] text-[var(--barn-muted)]">
+                              {entry.result.judgeName ? `Judge: ${entry.result.judgeName}` : ''}
+                              {entry.result.judgeName && entry.result.legCertificateNumber
+                                ? ' · '
+                                : ''}
+                              {entry.result.legCertificateNumber
+                                ? `Cert #${entry.result.legCertificateNumber}`
+                                : ''}
+                              {(entry.result.judgeName || entry.result.legCertificateNumber) &&
+                              entry.result.judgeNotes
+                                ? ' — '
+                                : ''}
+                              {entry.result.judgeNotes}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeAnimalShowSummary.eLegAttachments.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-[var(--barn-muted)]">
+                        E-Leg Certificate Vault ({activeAnimalShowSummary.eLegAttachments.length})
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {activeAnimalShowSummary.eLegAttachments.map((att) => (
+                          <button
+                            key={att.id}
+                            type="button"
+                            onClick={() =>
+                              setELegLightbox({
+                                imageUrl: att.dataUrl || att.thumbnailDataUrl,
+                                title: `${activeAnimal.name} — ${att.showName}`,
+                                subtitle: [
+                                  att.caption || att.fileName,
+                                  att.legCertificateNumber
+                                    ? `Cert #${att.legCertificateNumber}`
+                                    : '',
+                                  formatReadableDate(att.eventDateIso),
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · '),
+                              })
+                            }
+                            className="group w-20 rounded-xl overflow-hidden border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:border-[var(--barn-sage)] text-left"
+                          >
+                            <img
+                              src={att.thumbnailDataUrl || att.dataUrl}
+                              alt={att.caption || att.fileName}
+                              className="w-full h-16 object-cover"
+                            />
+                            <div className="px-1.5 py-1 text-[10px] truncate text-[var(--barn-muted)]">
+                              {att.caption || att.showName}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
             {/* Coat Color Genotype, Carrier Disclosures & Allele Inference Panel */}
             {(activeAnimal.genotypeRaw ||
@@ -2594,6 +2781,8 @@ export function HerdScreen({
                       resolvedPedigreePhoto,
                       {
                         ...pedigreePrintOptions,
+                        shows,
+                        careLogs,
                         appBaseUrl,
                         includeQrCode: Boolean(appBaseUrl),
                       }
@@ -2605,7 +2794,11 @@ export function HerdScreen({
                       settings,
                       settings.defaultGenerations,
                       resolvedPedigreePhoto,
-                      pedigreePrintOptions
+                      {
+                        ...pedigreePrintOptions,
+                        shows,
+                        careLogs,
+                      }
                     )
                 : previewDoc.cageCardSubject
                   ? generateThermalCageCardHtml(
@@ -2655,7 +2848,11 @@ export function HerdScreen({
                       speciesProfiles,
                       settings,
                       generations: settings.defaultGenerations,
-                      printOptions: pedigreePrintOptions,
+                      printOptions: {
+                        ...pedigreePrintOptions,
+                        shows,
+                        careLogs,
+                      },
                       primaryPhotoDataUrl: resolvedPedigreePhoto,
                       pdfFilename: `${previewDoc.filename.replace(/\.html?$/i, '')}.pdf`,
                     })
@@ -2700,6 +2897,49 @@ export function HerdScreen({
             setBatchPhotoHydrating(false);
           }}
         />
+      )}
+
+      {/* E-Leg Certificate Full-Screen Lightbox */}
+      {eLegLightbox && (
+        <div
+          ref={eLegLightboxRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={eLegLightbox.title}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeELegLightbox();
+          }}
+          className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl">
+            <div className="px-4 py-3 border-b border-[var(--barn-border)] flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold truncate">{eLegLightbox.title}</div>
+                {eLegLightbox.subtitle && (
+                  <div className="text-xs text-[var(--barn-muted)] truncate">
+                    {eLegLightbox.subtitle}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={closeELegLightbox}
+                aria-label="Close certificate preview"
+                className="min-h-[36px] min-w-[36px] rounded-lg hover:bg-[var(--barn-subtle)] flex items-center justify-center shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 bg-black/15 flex items-center justify-center max-h-[76dvh]">
+              <img
+                src={eLegLightbox.imageUrl}
+                alt={eLegLightbox.title}
+                className="max-h-[70dvh] w-auto object-contain rounded-lg"
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

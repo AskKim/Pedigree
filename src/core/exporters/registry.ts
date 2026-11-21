@@ -159,7 +159,11 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
         depth,
         snapshot.settings.includePhotoOnPedigree !== false
           ? primaryPhoto?.dataUrl || primaryPhoto?.thumbnailDataUrl
-          : undefined
+          : undefined,
+        {
+          shows: snapshot.shows,
+          careLogs: snapshot.careLogs,
+        }
       );
 
       const slug = sanitizeFileSlug(subject.tattoo || subject.name, 'animal');
@@ -228,6 +232,8 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
           ? primaryPhoto?.dataUrl || primaryPhoto?.thumbnailDataUrl
           : undefined,
         {
+          shows: snapshot.shows,
+          careLogs: snapshot.careLogs,
           appBaseUrl,
           includeQrCode: Boolean(appBaseUrl),
         }

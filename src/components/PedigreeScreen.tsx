@@ -58,6 +58,7 @@ import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
 } from '../core/shareablePedigreeCard';
+import { computeAnimalShowSummary } from '../core/showResults';
 import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
@@ -128,6 +129,8 @@ export function PedigreeScreen({
     conflictsByAnimalId,
     coiByAnimalId,
     cages,
+    shows,
+    careLogs,
   } = activeData;
 
   const [zoom, setZoom] = useState<number>(1);
@@ -193,6 +196,10 @@ export function PedigreeScreen({
   }, [selectedSubjectId, herdById, animals]);
 
   const subjectPrimaryPhoto = subject ? primaryPhotoByAnimalId.get(subject.id) : undefined;
+  const subjectShowSummary = useMemo(
+    () => (subject ? computeAnimalShowSummary(subject, shows, careLogs) : null),
+    [subject, shows, careLogs]
+  );
 
   useEffect(() => {
     if (
@@ -1106,6 +1113,27 @@ export function PedigreeScreen({
                         </div>
                       );
                     })()}
+                    {subjectShowSummary &&
+                      (subjectShowSummary.effectiveLegs > 0 ||
+                        subjectShowSummary.showsEntered > 0 ||
+                        Boolean(subjectShowSummary.awardsSummaryText) ||
+                        subjectShowSummary.totalPoints > 0 ||
+                        subjectShowSummary.eLegAttachments.length > 0) && (
+                        <div className="text-[11px] font-mono text-[var(--barn-sage)] font-medium">
+                          Show Honors: {subjectShowSummary.gcProgress.shortLabel}
+                          {subjectShowSummary.awardsSummaryText
+                            ? ` · ${subjectShowSummary.awardsSummaryText}`
+                            : ''}
+                          {subjectShowSummary.totalPoints > 0
+                            ? ` · ${subjectShowSummary.totalPoints} pts`
+                            : ''}
+                          {subjectShowSummary.eLegAttachments.length > 0
+                            ? ` · ${subjectShowSummary.eLegAttachments.length} E-Leg${
+                                subjectShowSummary.eLegAttachments.length === 1 ? '' : 's'
+                              }`
+                            : ''}
+                        </div>
+                      )}
                   </>
                 );
               })()}
@@ -2092,6 +2120,11 @@ export function PedigreeScreen({
             ? `${window.location.origin}${window.location.pathname}`
             : undefined;
         const isShareableCard = pedigreeDocMode === 'shareable_card';
+        const effectivePrintOptions: PedigreePrintOptions = {
+          ...pedigreePrintOptions,
+          shows,
+          careLogs,
+        };
         return (
           <PrintPreviewModal
             title={
@@ -2114,7 +2147,7 @@ export function PedigreeScreen({
                     generations,
                     resolvedSubjectPhotoForPrint,
                     {
-                      ...pedigreePrintOptions,
+                      ...effectivePrintOptions,
                       appBaseUrl,
                       includeQrCode: Boolean(appBaseUrl),
                     }
@@ -2126,7 +2159,7 @@ export function PedigreeScreen({
                     settings,
                     generations,
                     resolvedSubjectPhotoForPrint,
-                    pedigreePrintOptions
+                    effectivePrintOptions
                   )
             }
             includePrimaryPhoto={settings.includePhotoOnPedigree}
@@ -2147,7 +2180,7 @@ export function PedigreeScreen({
                       speciesProfiles,
                       settings,
                       generations,
-                      printOptions: pedigreePrintOptions,
+                      printOptions: effectivePrintOptions,
                       primaryPhotoDataUrl: resolvedSubjectPhotoForPrint,
                       pdfFilename: `pedigree-${subject.tattoo || subject.id}-${generations}gen.pdf`,
                     })
