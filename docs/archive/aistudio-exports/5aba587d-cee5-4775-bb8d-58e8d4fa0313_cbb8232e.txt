@@ -1,0 +1,144 @@
+====================================================================
+
+Community Pedigree — Crash & Diagnostic Support Report
+
+====================================================================
+
+Generated UTC:      2026-11-18T16:35:34.062Z
+
+Active Session:     sess-mwmcdb5q-dflc1
+
+Platform / Screen:  384x575 @2.8125x · 8 cores · 4GB RAM
+
+Browser User-Agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36
+
+Retention Window:   7 days (Verbose: ON)
+
+JS Heap Memory:     42.63 MB / 953.67 MB (4.5%)
+
+Browser Storage:    466.3 KB / 10240.46 MB
+
+Total Log Entries:  30 (Errors/Fatal: 1, Memory Warnings: 2, React Crashes: 0)
+
+Log Time Span:      2026-11-18T16:18:56.439Z -> 2026-11-18T16:35:07.199Z
+
+--------------------------------------------------------------------
+
+App State:          Barn="Copper Creek Barn" · Theme=dark · Default=Rabbit (3-Gen)
+
+Totals:             11 species · 1988 animals · 0 photos (0 B) · 11 breedings · 39 open chores
+
+Species Counts:     Rabbit: 161 | Goat: 161 | Sheep: 192 | Swine / Pig: 192 | Cattle: 161 | Guinea Pig: 192 | Chinchilla: 161 | Ferret: 192 | Alpaca: 192 | Dog: 192 | Cat: 192
+
+====================================================================
+
+
+
+[2026-11-18T16:35:07.199Z] [DEBUG] [memory] [route=settings] | heap=4.5% (42.63 MB)
+  Message: Periodic memory & storage snapshot (4.5% heap, 0% storage)
+  Details: {"usedHeapBytes":44700000,"totalHeapBytes":60300000,"heapLimitBytes":1000000000,"heapPercent":4.5,"deviceMemoryGb":4,"storageUsageBytes":475949,"storageQuotaBytes":10737894189,"storagePct":0}
+
+[2026-11-18T16:34:48.898Z] [INFO] [storage] [route=home] | heap=4.5% (42.63 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:34:37.423Z] [INFO] [lifecycle] [route=home] | heap=4.5% (42.63 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:34:37.168Z] [INFO] [lifecycle] [route=boot] | heap=4.5% (42.63 MB)
+  Message: App diagnostic session started (sess-mwmcdb5q-dflc1)
+
+[2026-11-18T16:33:12.619Z] [DEBUG] [memory] [route=settings] | heap=10.3% (98.23 MB)
+  Message: Periodic memory & storage snapshot (10.3% heap, 0% storage)
+  Details: {"usedHeapBytes":103000000,"totalHeapBytes":116000000,"heapLimitBytes":1000000000,"heapPercent":10.3,"deviceMemoryGb":4,"storageUsageBytes":475910,"storageQuotaBytes":10737894150,"storagePct":0}
+
+[2026-11-18T16:32:44.790Z] [INFO] [storage] [route=home] | heap=10.3% (98.23 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:32:42.906Z] [INFO] [lifecycle] [route=home] | heap=10.3% (98.23 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:32:42.612Z] [INFO] [lifecycle] [route=boot] | heap=10.3% (98.23 MB)
+  Message: App diagnostic session started (sess-mwmcaurx-3fulk)
+
+[2026-11-18T16:30:22.481Z] [DEBUG] [memory] [route=home] | heap=6.8% (64.85 MB)
+  Message: Periodic memory & storage snapshot (6.8% heap, 0% storage)
+  Details: {"usedHeapBytes":68000000,"totalHeapBytes":81400000,"heapLimitBytes":1000000000,"heapPercent":6.8,"deviceMemoryGb":4,"storageUsageBytes":478665,"storageQuotaBytes":10737896905,"storagePct":0}
+
+[2026-11-18T16:29:58.531Z] [ERROR] [console] [route=home] | heap=6.8% (64.85 MB)
+  Message: [vite] failed to connect to websocket.
+your current setup:
+  (browser) ais-dev-7q6omgdqndmqoa73lwbelk-407478725460.us-east1.run.app/ <--[HTTP]--> localhost:3000/ (server)
+  (browser) ais-dev-7q6omgdqndmqoa73lwbelk-407478725460.us-east1.run.app:/ <--[WebSocket (failing)]--> localhost:3000/ (server)
+C… [truncated]
+
+[2026-11-18T16:29:54.261Z] [INFO] [storage] [route=home] | heap=6.8% (64.85 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:29:52.478Z] [INFO] [lifecycle] [route=home] | heap=6.8% (64.85 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:29:52.217Z] [INFO] [lifecycle] [route=boot] | heap=6.8% (64.85 MB)
+  Message: App diagnostic session started (sess-mwmc77az-uun1l)
+
+[2026-11-18T16:29:52.213Z] [WARN] [memory] [route=boot] | heap=6.8% (64.85 MB)
+  Message: Previous session (sess-mwmc32si-cu0lt) terminated unexpectedly without clean pagehide (last active 2026-11-18T16:29:41.842Z, route "home", JS heap 6.8%). Possible mobile OS tab kill / out-of-memory reload.
+  Details: {"previousSessionId":"sess-mwmc32si-cu0lt","lastRoute":"home","lastHeapPercent":6.8,"lastHeapBytes":68000000,"downtimeMs":10370}
+
+[2026-11-18T16:27:10.515Z] [DEBUG] [memory] [route=home] | heap=6.8% (64.85 MB)
+  Message: Periodic memory & storage snapshot (6.8% heap, 0% storage)
+  Details: {"usedHeapBytes":68000000,"totalHeapBytes":81400000,"heapLimitBytes":1000000000,"heapPercent":6.8,"deviceMemoryGb":4,"storageUsageBytes":473856,"storageQuotaBytes":10737892096,"storagePct":0}
+
+[2026-11-18T16:26:42.126Z] [INFO] [storage] [route=home] | heap=6.8% (64.85 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:26:39.808Z] [INFO] [lifecycle] [route=home] | heap=6.8% (64.85 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:26:39.733Z] [INFO] [lifecycle] [route=boot] | heap=6.8% (64.85 MB)
+  Message: App diagnostic session started (sess-mwmc32si-cu0lt)
+
+[2026-11-18T16:25:00.522Z] [DEBUG] [memory] [route=home] | heap=6.8% (64.85 MB)
+  Message: Periodic memory & storage snapshot (6.8% heap, 0% storage)
+  Details: {"usedHeapBytes":68000000,"totalHeapBytes":81400000,"heapLimitBytes":1000000000,"heapPercent":6.8,"deviceMemoryGb":4,"storageUsageBytes":468676,"storageQuotaBytes":10737886916,"storagePct":0}
+
+[2026-11-18T16:24:34.033Z] [INFO] [storage] [route=home] | heap=6.8% (64.85 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:24:30.906Z] [INFO] [lifecycle] [route=home] | heap=6.8% (64.85 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:24:29.677Z] [INFO] [lifecycle] [route=boot] | heap=6.8% (64.85 MB)
+  Message: App diagnostic session started (sess-mwmc0adk-41fy3)
+
+[2026-11-18T16:24:29.661Z] [WARN] [memory] [route=boot] | heap=6.8% (64.85 MB)
+  Message: Previous session (sess-mwmbv4ce-qhvdz) terminated unexpectedly without clean pagehide (last active 2026-11-18T16:20:28.866Z, route "home", JS heap 23.9%). Possible mobile OS tab kill / out-of-memory reload.
+  Details: {"previousSessionId":"sess-mwmbv4ce-qhvdz","lastRoute":"home","lastHeapPercent":23.9,"lastHeapBytes":239000000,"downtimeMs":240794}
+
+[2026-11-18T16:20:29.705Z] [INFO] [storage] [route=home] | heap=23.9% (227.93 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:20:28.877Z] [INFO] [lifecycle] [route=home] | heap=23.9% (227.93 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000,"wasmSupported":true,"opfsSupported":true,"directoryPickerSupported":true,"isOutdatedBrowser":false}
+
+[2026-11-18T16:20:28.514Z] [INFO] [lifecycle] [route=boot] | heap=23.9% (227.93 MB)
+  Message: App diagnostic session started (sess-mwmbv4ce-qhvdz)
+
+[2026-11-18T16:19:26.456Z] [DEBUG] [memory] [route=home] | heap=23.9% (227.93 MB)
+  Message: Periodic memory & storage snapshot (23.9% heap, 0% storage)
+  Details: {"usedHeapBytes":239000000,"totalHeapBytes":254000000,"heapLimitBytes":1000000000,"heapPercent":23.9,"deviceMemoryGb":4,"storageUsageBytes":466775,"storageQuotaBytes":10737885015,"storagePct":0}
+
+[2026-11-18T16:18:58.168Z] [INFO] [storage] [route=home] | heap=23.9% (227.93 MB)
+  Message: Database initialized (Local SQLite (WASM + IndexedDB): 1988 animals, 0 photos)
+
+[2026-11-18T16:18:56.757Z] [INFO] [lifecycle] [route=home] | heap=23.9% (227.93 MB)
+  Message: Device capability detected: Tier 3 · Mid-Tier Mobile (Phone · ~4 GB browser RAM · 8 CPU threads · 954 MB JS heap limit)
+  Details: {"tier":3,"formFactor":"phone","confidence":"measured","deviceMemoryGb":4,"hardwareConcurrency":8,"jsHeapLimitBytes":1000000000}
+
+[2026-11-18T16:18:56.439Z] [INFO] [lifecycle] [route=boot] | heap=23.9% (227.93 MB)
+  Message: App diagnostic session started (sess-mwmbt5ap-pwr0h)

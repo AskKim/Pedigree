@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3F2C"/>
+      <stop offset="100%" stop-color="#11261B"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E5B976"/>
+      <stop offset="100%" stop-color="#C28D42"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <g stroke="#FAF7F0" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Barn roof & timber frame -->
+    <path d="M96 232 L256 108 L416 232"/>
+    <path d="M132 204 V388 H380 V204"/>
+    <!-- Pedigree branching tree inside barn -->
+    <line x1="256" y1="348" x2="256" y2="288" stroke="url(#gold)" stroke-width="18"/>
+    <line x1="256" y1="288" x2="196" y2="236" stroke="url(#gold)" stroke-width="16"/>
+    <line x1="256" y1="288" x2="316" y2="236" stroke="url(#gold)" stroke-width="16"/>
+    <circle cx="256" cy="356" r="22" fill="#FAF7F0" stroke="none"/>
+    <circle cx="196" cy="232" r="20" fill="url(#gold)" stroke="none"/>
+    <circle cx="316" cy="232" r="20" fill="url(#gold)" stroke="none"/>
+  </g>
+</svg>

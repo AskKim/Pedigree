@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="pedigree_splash_bg">#1B231E</color>
+    <color name="pedigree_launcher_bg">#2D4A3E</color>
+    <color name="pedigree_launcher_fg">#F4F1EA</color>
+</resources>

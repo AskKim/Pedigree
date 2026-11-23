@@ -1,0 +1,61 @@
+name: Security & Dependency Hygiene Audit
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  push:
+    paths:
+      - "package.json"
+      - "bun.lock"
+      - "android-wrapper/app/build.gradle.kts"
+  pull_request:
+    paths:
+      - "package.json"
+      - "bun.lock"
+      - "android-wrapper/app/build.gradle.kts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Secrets, Wrapper Policy & Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify no sensitive keystores or .env secrets are tracked in Git
+        run: |
+          FORBIDDEN=$(git ls-files | grep -E '(^|/)\.env($|\.)|(\.jks|\.keystore|\.pem|\.p12)$' | grep -vE '(^|/)\.env\.example$' || true)
+          if [ -n "$FORBIDDEN" ]; then
+            echo "ERROR: Forbidden secret/keystore files are tracked in Git:" >&2
+            echo "$FORBIDDEN" >&2
+            exit 1
+          fi
+          echo "No tracked secret or keystore files found."
+
+      - name: Verify Android wrapper minimal-dependency policy
+        run: |
+          if grep -vE '^\s*(//|/\*|\*)' android-wrapper/app/build.gradle.kts android-wrapper/build.gradle.kts | grep -qiE 'com\.google\.firebase|com\.google\.android\.gms|capacitor|crashlytics|amplitude|mixpanel'; then
+            echo "ERROR: android-wrapper must remain free of Google Play Services, Firebase, Capacitor, and analytics SDKs." >&2
+            exit 1
+          fi
+          echo "Android wrapper minimal-dependency policy verified."
+
+      - name: Run npm security audit (advisory high/critical report)
+        run: |
+          if [ ! -f package-lock.json ]; then
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          fi
+          npm audit --audit-level=high || echo "::warning::npm audit reported high/critical advisories; review dependency updates."
