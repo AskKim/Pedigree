@@ -1,0 +1,87 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # IMPORTANT: GitHub Pages deployment STRICTLY REQUIRES Bun (oven-sh/setup-bun).
+      # Previous attempts switching this workflow from Bun to npm broke GitHub Pages builds.
+      # Do NOT replace Bun with npm/Node in this workflow.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: |
+          if [ -f bun.lock ] || [ -f bun.lockb ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+
+      - name: Run domain unit tests
+        run: bun run test
+
+      - name: Verify App Improvements Registry
+        run: bun run verify:improvements
+
+      - name: Run TypeScript typecheck (lint)
+        run: bun run lint
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build subpath-safe production bundle (Bun CLI --base)
+        env:
+          NODE_ENV: production
+        run: |
+          BASE_PATH="${{ steps.pages.outputs.base_path }}"
+          if [ -z "$BASE_PATH" ]; then
+            BASE_PATH="/"
+          fi
+          case "$BASE_PATH" in
+            */) ;;
+            *) BASE_PATH="${BASE_PATH}/" ;;
+          esac
+          bun run build --base="$BASE_PATH"
+          grep -q '"start_url":"./"' dist/manifest.webmanifest
+          grep -q '"scope":"./"' dist/manifest.webmanifest
+          grep -q '"id":"./"' dist/manifest.webmanifest
+          if [ "$BASE_PATH" != "/" ]; then
+            grep -q "${BASE_PATH}assets/" dist/index.html
+            grep -q "${BASE_PATH}manifest.webmanifest" dist/index.html
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

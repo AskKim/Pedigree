@@ -1,0 +1,648 @@
+name: Export Codebase to Markdown
+
+on:
+  workflow_dispatch:
+    inputs:
+      output_dir:
+        description: "Target folder inside the repository for the exported dated folder and ZIP archives"
+        required: false
+        default: "export"
+        type: string
+      max_part_kb:
+        description: "Max size per Markdown export part in KB (default 100; set 0 for a single unsplit file)"
+        required: false
+        default: "100"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: export-codebase-md-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  export-markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate 100 KB export files, convert each to Markdown, and package two flat ZIPs
+        id: generate
+        env:
+          REPO_FULL_NAME: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          OUTPUT_DIR: ${{ inputs.output_dir || 'export' }}
+          MAX_PART_KB: ${{ inputs.max_part_kb || '100' }}
+        run: |
+          STAMP_READABLE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          EXPORT_DATE=$(date -u +"%Y-%m-%d")
+          export STAMP_READABLE EXPORT_DATE
+
+          python3 - <<'EOF'
+          import glob
+          import hashlib
+          import os
+          import re
+          import shutil
+          import sys
+          import tempfile
+          import zipfile
+          from pathlib import Path
+
+          repo_full_name = os.environ.get("REPO_FULL_NAME", "repository")
+          raw_repo_name = (os.environ.get("REPO_NAME") or "").strip() or os.path.basename(os.path.abspath("."))
+          safe_repo_name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_repo_name).strip("-") or "repository"
+          raw_branch = os.environ.get("BRANCH_NAME", "unknown-branch")
+          commit_sha = os.environ.get("COMMIT_SHA", "unknown")
+          stamp_readable = os.environ.get("STAMP_READABLE", "Unknown UTC")
+          export_date = os.environ.get("EXPORT_DATE", "unknown-date")
+
+          raw_output_dir = (os.environ.get("OUTPUT_DIR") or "export").strip().strip("/")
+          if not raw_output_dir or ".." in Path(raw_output_dir).parts or os.path.isabs(raw_output_dir):
+              print(f"Invalid output_dir: {raw_output_dir!r}", file=sys.stderr)
+              sys.exit(1)
+
+          try:
+              max_part_kb = int(os.environ.get("MAX_PART_KB", "100"))
+          except ValueError:
+              print("Invalid max_part_kb; expected an integer.", file=sys.stderr)
+              sys.exit(1)
+          max_part_bytes = max_part_kb * 1024 if max_part_kb > 0 else 0
+
+          output_dir = Path(raw_output_dir)
+          output_dir_top = output_dir.parts[0]
+          bundle_folder_name = f"{safe_repo_name}-{export_date}"
+          bundle_dir = output_dir / bundle_folder_name
+          export_zip_path = bundle_dir / f"{safe_repo_name}-export-files-{export_date}.zip"
+          markdown_zip_path = bundle_dir / f"{safe_repo_name}-markdown-files-{export_date}.zip"
+
+          ignore_dirs = {
+              ".git",
+              "node_modules",
+              "venv",
+              ".venv",
+              "__pycache__",
+              "dist",
+              "build",
+              "coverage",
+              ".gradle",
+              "export",
+              output_dir_top,
+          }
+
+          ignore_files = {
+              ".DS_Store",
+              "package-lock.json",
+              "yarn.lock",
+              "pnpm-lock.yaml",
+              "bun.lock",
+              "bun.lockb",
+          }
+
+          ignore_extensions = {
+              ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".tiff",
+              ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
+              ".exe", ".dll", ".so", ".dylib", ".bin", ".wasm",
+              ".lock", ".lockb",
+              ".woff", ".woff2", ".ttf", ".otf", ".eot",
+              ".apk", ".aab", ".jar", ".jks", ".keystore",
+              ".mp3", ".mp4", ".wav", ".webm", ".mov",
+              ".db", ".sqlite", ".sqlite3",
+          }
+
+          lang_map = {
+              ".py": "python",
+              ".js": "javascript",
+              ".mjs": "javascript",
+              ".cjs": "javascript",
+              ".jsx": "jsx",
+              ".ts": "typescript",
+              ".tsx": "tsx",
+              ".html": "html",
+              ".css": "css",
+              ".scss": "scss",
+              ".json": "json",
+              ".yml": "yaml",
+              ".yaml": "yaml",
+              ".md": "markdown",
+              ".sh": "bash",
+              ".sql": "sql",
+              ".go": "go",
+              ".rs": "rust",
+              ".java": "java",
+              ".kt": "kotlin",
+              ".kts": "kotlin",
+              ".gradle": "groovy",
+              ".properties": "properties",
+              ".toml": "toml",
+              ".c": "c",
+              ".cpp": "cpp",
+              ".cs": "csharp",
+              ".php": "php",
+              ".rb": "ruby",
+              ".xml": "xml",
+              ".svg": "xml",
+              ".txt": "text",
+          }
+
+          def make_fence(text: str) -> str:
+              """Return a backtick fence strictly longer than any run in text."""
+              runs = re.findall(r"`+", text)
+              longest = max((len(run) for run in runs), default=0)
+              return "`" * max(3, longest + 1)
+
+          def write_file_atomic(path: Path, text: str) -> int:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              encoded = text.encode("utf-8")
+              tmp_path = path.with_suffix(path.suffix + ".tmp")
+              with open(tmp_path, "wb") as fh:
+                  fh.write(encoded)
+                  fh.flush()
+                  os.fsync(fh.fileno())
+              os.replace(tmp_path, path)
+              return len(encoded)
+
+          def build_section(heading: str, lang: str, body_text: str) -> tuple[str, int]:
+              fence = make_fence(body_text)
+              trailing_nl = "" if (not body_text or body_text.endswith("\n")) else "\n"
+              sec = f"{heading}\n\n{fence}{lang}\n{body_text}{trailing_nl}{fence}\n\n"
+              return sec, len(sec.encode("utf-8"))
+
+          def extract_top_level_headings(md_text: str) -> list[str]:
+              headings = []
+              open_fence_len = 0
+              for line in md_text.splitlines():
+                  if open_fence_len:
+                      if re.fullmatch(r"`{" + str(open_fence_len) + r",}", line):
+                          open_fence_len = 0
+                      continue
+                  fence_match = re.match(r"^(`{3,})[^`]*$", line)
+                  if fence_match:
+                      open_fence_len = len(fence_match.group(1))
+                      continue
+                  heading_match = re.fullmatch(r"## `([^`]+)`(?:\s+\[chunk \d+/\d+\])?", line)
+                  if heading_match:
+                      headings.append(line)
+              if open_fence_len:
+                  raise ValueError(f"Unclosed code fence ({open_fence_len} backticks) at end of file.")
+              return headings
+
+          def convert_export_file_to_markdown(source_path: Path, target_path: Path) -> dict:
+              """Convert an export file into a normalized standalone Markdown document with TOC & checksum."""
+              raw_bytes = source_path.read_bytes()
+              raw_text = raw_bytes.decode("utf-8", errors="replace")
+              normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+              source_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+              line_count = len(normalized.splitlines())
+
+              try:
+                  section_headings = extract_top_level_headings(normalized)
+              except ValueError:
+                  section_headings = []
+
+              toc_lines = []
+              if section_headings:
+                  toc_lines.append("## Table of Contents")
+                  toc_lines.append("")
+                  for i, heading in enumerate(section_headings, start=1):
+                      clean_label = heading.removeprefix("## ").strip()
+                      toc_lines.append(f"{i}. {clean_label}")
+                  toc_lines.append("")
+
+              sentinel = f"<!-- END OF CONVERTED MARKDOWN: {source_path.name} -->"
+              header = [
+                  f"# Converted Markdown: {source_path.name}",
+                  "",
+                  f"- **Repository:** `{repo_full_name}`",
+                  f"- **Bundle Folder:** `{bundle_folder_name}`",
+                  f"- **Source Export File:** `{source_path.name}`",
+                  f"- **Source Size:** {len(raw_bytes):,} bytes ({line_count:,} lines)",
+                  f"- **Source SHA-256:** `{source_sha256}`",
+                  f"- **Converted (UTC):** {stamp_readable}",
+                  "",
+                  *toc_lines,
+                  "---",
+                  "",
+              ]
+
+              trailing_nl = "" if (not normalized or normalized.endswith("\n")) else "\n"
+              converted_text = "\n".join(header) + normalized + trailing_nl + "\n" + sentinel + "\n"
+              written_bytes = write_file_atomic(target_path, converted_text)
+              return {
+                  "source": source_path.name,
+                  "target": target_path.name,
+                  "bytes": written_bytes,
+                  "sha256": hashlib.sha256(converted_text.encode("utf-8")).hexdigest(),
+                  "sentinel": sentinel,
+              }
+
+          def write_flat_zip(files_to_pack: list[Path], dest_zip: Path) -> int:
+              """Package files directly at the root of dest_zip with zero internal folders."""
+              dest_zip.parent.mkdir(parents=True, exist_ok=True)
+              tmp_zip = dest_zip.with_suffix(".zip.tmp")
+              expected_names = []
+              with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                  for file_path in sorted(files_to_pack, key=lambda p: p.name):
+                      arcname = file_path.name
+                      if "/" in arcname or "\\" in arcname:
+                          raise ValueError(f"Flat ZIP entry must not contain folders: {arcname}")
+                      zf.write(file_path, arcname=arcname)
+                      expected_names.append(arcname)
+              os.replace(tmp_zip, dest_zip)
+
+              with zipfile.ZipFile(dest_zip, "r") as zf:
+                  bad_member = zf.testzip()
+                  if bad_member is not None:
+                      raise RuntimeError(f"ZIP CRC verification failed on {dest_zip.name}: {bad_member}")
+                  actual_names = zf.namelist()
+                  if any("/" in name or "\\" in name for name in actual_names):
+                      raise RuntimeError(f"ZIP {dest_zip.name} must not contain internal folders.")
+                  if sorted(actual_names) != sorted(expected_names):
+                      raise RuntimeError(f"ZIP {dest_zip.name} contents mismatch.")
+              return dest_zip.stat().st_size
+
+          # Remove any legacy root-level combined exports from prior runs
+          removed_legacy = []
+          for legacy_path in sorted(glob.glob("*_combined_codebase_*.md")):
+              if os.path.isfile(legacy_path):
+                  os.remove(legacy_path)
+                  removed_legacy.append(legacy_path)
+
+          # Clean prior exported artifacts inside output_dir while strictly preserving .gitkeep
+          output_dir.mkdir(parents=True, exist_ok=True)
+          gitkeep_path = output_dir / ".gitkeep"
+          if not gitkeep_path.exists():
+              write_file_atomic(
+                  gitkeep_path,
+                  "# DO NOT DELETE — Keep this directory tracked in Git even when empty.\n",
+              )
+
+          for entry in sorted(output_dir.iterdir()):
+              if entry.name == ".gitkeep":
+                  continue
+              if entry.is_dir():
+                  shutil.rmtree(entry)
+              elif entry.is_file() and entry.suffix.lower() in {".md", ".zip"}:
+                  entry.unlink()
+
+          bundle_dir.mkdir(parents=True, exist_ok=True)
+
+          # Discover and read all eligible text files deterministically
+          records = []
+          chunk_records = []
+          skipped = []
+          header_budget = 2048
+
+          for root, dirs, files in os.walk("."):
+              dirs[:] = sorted(d for d in dirs if d not in ignore_dirs)
+              for filename in sorted(files):
+                  rel_path = Path(os.path.normpath(os.path.join(root, filename))).as_posix()
+                  if filename in ignore_files:
+                      skipped.append((rel_path, "ignored lock/system file"))
+                      continue
+
+                  ext = os.path.splitext(filename)[1].lower()
+                  if ext in ignore_extensions:
+                      skipped.append((rel_path, f"ignored binary/asset extension ({ext})"))
+                      continue
+
+                  try:
+                      raw_bytes = Path(rel_path).read_bytes()
+                  except OSError as exc:
+                      print(f"Failed to read {rel_path}: {exc}", file=sys.stderr)
+                      sys.exit(1)
+
+                  if b"\x00" in raw_bytes:
+                      skipped.append((rel_path, "binary content detected"))
+                      continue
+
+                  try:
+                      content = raw_bytes.decode("utf-8")
+                  except UnicodeDecodeError:
+                      skipped.append((rel_path, "non-UTF-8 binary/encoded content"))
+                      continue
+
+                  normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+                  line_count = normalized.count("\n") + (0 if normalized.endswith("\n") or not normalized else 1)
+                  lang = lang_map.get(ext, "")
+                  heading = f"## `{rel_path}`"
+                  section, section_bytes = build_section(heading, lang, normalized)
+
+                  records.append({
+                      "path": rel_path,
+                      "bytes": len(raw_bytes),
+                      "lines": line_count,
+                  })
+
+                  if max_part_bytes > 0 and section_bytes + header_budget > max_part_bytes:
+                      lines_list = normalized.splitlines(keepends=True)
+                      raw_chunks = []
+                      buf = []
+                      buf_bytes = 0
+                      overhead_allowance = 512 + header_budget
+                      max_payload_bytes = max(16 * 1024, max_part_bytes - overhead_allowance)
+                      for line in lines_list:
+                          line_b = len(line.encode("utf-8"))
+                          if buf and buf_bytes + line_b > max_payload_bytes:
+                              raw_chunks.append("".join(buf))
+                              buf = [line]
+                              buf_bytes = line_b
+                          else:
+                              buf.append(line)
+                              buf_bytes += line_b
+                      if buf:
+                          raw_chunks.append("".join(buf))
+                      if not raw_chunks:
+                          raw_chunks = [normalized]
+
+                      total_chunks = len(raw_chunks)
+                      for c_idx, chunk_text in enumerate(raw_chunks, start=1):
+                          chunk_heading = f"## `{rel_path}` [chunk {c_idx}/{total_chunks}]"
+                          c_sec, c_bytes = build_section(chunk_heading, lang, chunk_text)
+                          chunk_records.append({
+                              "path": rel_path,
+                              "heading": chunk_heading,
+                              "section": c_sec,
+                              "section_bytes": c_bytes,
+                          })
+                  else:
+                      chunk_records.append({
+                          "path": rel_path,
+                          "heading": heading,
+                          "section": section,
+                          "section_bytes": section_bytes,
+                      })
+
+          if not chunk_records:
+              print("No eligible text files found to export.", file=sys.stderr)
+              sys.exit(1)
+
+          # Partition chunks into size-bounded parts
+          parts = []
+          if max_part_bytes <= 0:
+              parts.append(chunk_records)
+          else:
+              current_part = []
+              current_size = 0
+              for rec in chunk_records:
+                  projected = current_size + rec["section_bytes"] + header_budget
+                  if current_part and projected > max_part_bytes:
+                      parts.append(current_part)
+                      current_part = [rec]
+                      current_size = rec["section_bytes"]
+                  else:
+                      current_part.append(rec)
+                      current_size += rec["section_bytes"]
+              if current_part:
+                  parts.append(current_part)
+
+          total_parts = len(parts)
+          part_width = max(2, len(str(total_parts)))
+
+          with tempfile.TemporaryDirectory() as tmp_root_str:
+              tmp_root = Path(tmp_root_str)
+              export_stage = tmp_root / "export_files"
+              md_stage = tmp_root / "markdown_files"
+              export_stage.mkdir(parents=True, exist_ok=True)
+              md_stage.mkdir(parents=True, exist_ok=True)
+
+              part_summaries = []
+              file_to_parts = {}
+
+              for idx, part_records in enumerate(parts, start=1):
+                  part_name = (
+                      f"{safe_repo_name}_combined_codebase.md"
+                      if total_parts == 1 and max_part_bytes <= 0
+                      else f"part-{idx:0{part_width}d}.md"
+                  )
+                  part_path = export_stage / part_name
+                  sentinel = f"<!-- END OF PART {idx:0{part_width}d} OF {total_parts:0{part_width}d} ({len(part_records)} sections) -->"
+
+                  header_lines = [
+                      f"# Codebase Export: {repo_full_name} (Part {idx} of {total_parts})",
+                      "",
+                      f"- **Branch:** `{raw_branch}`",
+                      f"- **Commit:** `{commit_sha}`",
+                      f"- **Generated (UTC):** {stamp_readable}",
+                      f"- **Sections in this part:** {len(part_records)} (`{part_records[0]['path']}` -> `{part_records[-1]['path']}`)",
+                      "- **Index:** [index.md](./index.md)",
+                      "",
+                      "---",
+                      "",
+                  ]
+                  body = "".join(rec["section"] for rec in part_records)
+                  full_text = "\n".join(header_lines) + body + sentinel + "\n"
+                  expected_sha256 = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+                  written_bytes = write_file_atomic(part_path, full_text)
+
+                  part_summaries.append({
+                      "index": idx,
+                      "name": part_name,
+                      "path": part_path,
+                      "section_count": len(part_records),
+                      "bytes": written_bytes,
+                      "sha256": expected_sha256,
+                      "first_file": part_records[0]["path"],
+                      "last_file": part_records[-1]["path"],
+                      "sentinel": sentinel,
+                      "expected_headings": [rec["heading"] for rec in part_records],
+                  })
+                  for rec in part_records:
+                      plist = file_to_parts.setdefault(rec["path"], [])
+                      if part_name not in plist:
+                          plist.append(part_name)
+
+              # Write master index.md inside export_stage
+              index_sentinel = "<!-- END OF CODEBASE EXPORT INDEX -->"
+              total_source_bytes = sum(rec["bytes"] for rec in records)
+              total_export_bytes = sum(p["bytes"] for p in part_summaries)
+
+              index_lines = [
+                  f"# Codebase Export Index: {repo_full_name}",
+                  "",
+                  f"- **Bundle Folder:** `{bundle_folder_name}`",
+                  f"- **Branch:** `{raw_branch}`",
+                  f"- **Commit:** `{commit_sha}`",
+                  f"- **Generated (UTC):** {stamp_readable}",
+                  f"- **Exported Files:** {len(records)} (0 truncated)",
+                  f"- **Skipped Binary/Ignored Files:** {len(skipped)}",
+                  f"- **Parts:** {total_parts} (target cap: {'unsplit' if max_part_bytes <= 0 else f'{max_part_kb} KB/part'})",
+                  f"- **Total Source Size:** {total_source_bytes:,} bytes ({total_source_bytes / 1024 / 1024:.2f} MB)",
+                  f"- **Total Export Size:** {total_export_bytes:,} bytes ({total_export_bytes / 1024 / 1024:.2f} MB)",
+                  "",
+                  "## Parts",
+                  "",
+                  "| Part | Sections | Size (KB) | Converted Markdown | First File | Last File |",
+                  "| --- | ---: | ---: | --- | --- | --- |",
+              ]
+              for p in part_summaries:
+                  converted_name = f"{Path(p['name']).stem}-converted.md"
+                  index_lines.append(
+                      f"| [{p['name']}](./{p['name']}) | {p['section_count']} | {p['bytes'] / 1024:.1f} | `{converted_name}` | `{p['first_file']}` | `{p['last_file']}` |"
+                  )
+
+              index_lines.extend([
+                  "",
+                  "## Exported Files",
+                  "",
+                  "| File | Part(s) | Lines | Bytes |",
+                  "| --- | --- | ---: | ---: |",
+              ])
+              for rec in records:
+                  pnames = file_to_parts[rec["path"]]
+                  plinks = ", ".join(f"[{pn}](./{pn})" for pn in pnames)
+                  index_lines.append(
+                      f"| `{rec['path']}` | {plinks} | {rec['lines']:,} | {rec['bytes']:,} |"
+                  )
+
+              if skipped:
+                  index_lines.extend([
+                      "",
+                      "## Skipped Files",
+                      "",
+                      "| File | Reason |",
+                      "| --- | --- |",
+                  ])
+                  for spath, reason in skipped:
+                      index_lines.append(f"| `{spath}` | {reason} |")
+
+              index_lines.extend(["", index_sentinel, ""])
+              index_path = export_stage / "index.md"
+              write_file_atomic(index_path, "\n".join(index_lines))
+
+              # Strict post-write completeness, fence balance & anti-truncation verification on export parts
+              verified_headings = []
+              for p in part_summaries:
+                  disk_bytes = p["path"].read_bytes()
+                  disk_sha256 = hashlib.sha256(disk_bytes).hexdigest()
+                  if disk_sha256 != p["sha256"]:
+                      print(f"Verification failed: SHA-256 mismatch on {p['path']} (possible truncation).", file=sys.stderr)
+                      sys.exit(1)
+                  disk_text = disk_bytes.decode("utf-8")
+                  if not disk_text.rstrip().endswith(p["sentinel"]):
+                      print(f"Verification failed: {p['path']} is missing end sentinel (possible truncation).", file=sys.stderr)
+                      sys.exit(1)
+                  try:
+                      found_headings = extract_top_level_headings(disk_text)
+                  except ValueError as exc:
+                      print(f"Verification failed in {p['path']}: {exc}", file=sys.stderr)
+                      sys.exit(1)
+                  if found_headings != p["expected_headings"]:
+                      print(
+                          f"Verification failed in {p['path']}: expected {len(p['expected_headings'])} headings, found {len(found_headings)}.",
+                          file=sys.stderr,
+                      )
+                      sys.exit(1)
+                  verified_headings.extend(found_headings)
+
+              expected_all_headings = [rec["heading"] for rec in chunk_records]
+              if verified_headings != expected_all_headings:
+                  print(
+                      f"Global verification failed: expected {len(expected_all_headings)} headings, verified {len(verified_headings)}.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+              index_disk = index_path.read_text(encoding="utf-8")
+              if not index_disk.rstrip().endswith(index_sentinel):
+                  print(f"Verification failed: {index_path} is missing end sentinel.", file=sys.stderr)
+                  sys.exit(1)
+
+              # Convert every resulting export file into a standalone Markdown creation
+              export_files = sorted(f for f in export_stage.iterdir() if f.is_file())
+              converted_files = []
+              for export_file in export_files:
+                  converted_name = f"{export_file.stem}-converted.md"
+                  converted_target = md_stage / converted_name
+                  conv_info = convert_export_file_to_markdown(export_file, converted_target)
+                  converted_text = converted_target.read_text(encoding="utf-8")
+                  if not converted_text.rstrip().endswith(conv_info["sentinel"]):
+                      print(f"Conversion verification failed: {converted_target} is missing end sentinel.", file=sys.stderr)
+                      sys.exit(1)
+                  converted_files.append(converted_target)
+
+              # Package into two flat ZIPs inside export/<repo>-<YYYY-MM-DD>/ (no internal folders inside either ZIP)
+              export_zip_bytes = write_flat_zip(export_files, export_zip_path)
+              markdown_zip_bytes = write_flat_zip(converted_files, markdown_zip_path)
+
+          print(
+              f"Verified complete export: {len(records)} source files -> {total_parts} part(s) "
+              f"({len(export_files)} export files in '{export_zip_path.as_posix()}' [{export_zip_bytes / 1024 / 1024:.2f} MB], "
+              f"{len(converted_files)} converted MD files in '{markdown_zip_path.as_posix()}' [{markdown_zip_bytes / 1024 / 1024:.2f} MB])."
+          )
+          if removed_legacy:
+              print(f"Removed legacy root exports: {', '.join(removed_legacy)}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as out_env:
+                  out_env.write(f"output_dir={raw_output_dir}\n")
+                  out_env.write(f"bundle_folder={bundle_folder_name}\n")
+                  out_env.write(f"bundle_dir={bundle_dir.as_posix()}\n")
+                  out_env.write(f"export_zip_path={export_zip_path.as_posix()}\n")
+                  out_env.write(f"markdown_zip_path={markdown_zip_path.as_posix()}\n")
+                  out_env.write(f"file_count={len(records)}\n")
+                  out_env.write(f"part_count={total_parts}\n")
+                  out_env.write(f"converted_count={len(converted_files)}\n")
+                  out_env.write(f"export_zip_mb={export_zip_bytes / 1024 / 1024:.2f}\n")
+                  out_env.write(f"markdown_zip_mb={markdown_zip_bytes / 1024 / 1024:.2f}\n")
+          EOF
+
+      - name: Upload export ZIP artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.generate.outputs.bundle_folder }}
+          path: |
+            ${{ steps.generate.outputs.export_zip_path }}
+            ${{ steps.generate.outputs.markdown_zip_path }}
+          if-no-files-found: error
+
+      - name: Commit and push dated export ZIPs to repository
+        env:
+          OUTPUT_DIR: ${{ steps.generate.outputs.output_dir }}
+          BUNDLE_DIR: ${{ steps.generate.outputs.bundle_dir }}
+          EXPORT_ZIP_PATH: ${{ steps.generate.outputs.export_zip_path }}
+          MARKDOWN_ZIP_PATH: ${{ steps.generate.outputs.markdown_zip_path }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          FILE_COUNT: ${{ steps.generate.outputs.file_count }}
+          PART_COUNT: ${{ steps.generate.outputs.part_count }}
+          CONVERTED_COUNT: ${{ steps.generate.outputs.converted_count }}
+          EXPORT_ZIP_MB: ${{ steps.generate.outputs.export_zip_mb }}
+          MARKDOWN_ZIP_MB: ${{ steps.generate.outputs.markdown_zip_mb }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- "$OUTPUT_DIR"
+          git ls-files -z '*_combined_codebase_*.md' | xargs -0 -r git rm -f --ignore-unmatch --
+
+          if git diff --cached --quiet; then
+            echo "Export ZIPs are already up to date; nothing to commit."
+          else
+            git commit -m "chore(export): update export & markdown ZIPs (${FILE_COUNT} files, ${PART_COUNT} parts) [skip ci]"
+            git push origin "HEAD:${BRANCH_NAME}"
+          fi
+
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "### Codebase Export & Markdown ZIPs Complete"
+              echo ""
+              echo "- **Dated Folder:** \`${BUNDLE_DIR}/\`"
+              echo "- **Export Files ZIP (flat):** \`${EXPORT_ZIP_PATH}\` (${EXPORT_ZIP_MB} MB)"
+              echo "- **Converted Markdown ZIP (flat):** \`${MARKDOWN_ZIP_PATH}\` (${MARKDOWN_ZIP_MB} MB)"
+              echo "- **Exported Source Files:** ${FILE_COUNT}"
+              echo "- **Parts (<= 100 KB target):** ${PART_COUNT}"
+              echo "- **Converted Markdown Files:** ${CONVERTED_COUNT}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,0 +1,6 @@
+{
+  "name": "Community Pedigree",
+  "description": "Community Pedigree Project (Package: pedigree) — React + Vite + TypeScript offline-first PWA. CRITICAL: Core PWA must always stay in React; android-wrapper/ is only a thin hybrid Kotlin WebView shell.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
