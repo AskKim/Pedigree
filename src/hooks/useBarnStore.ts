@@ -8319,7 +8319,7 @@ export function useBarnStore() {
       );
       const { formatTimestampedBackupSlug } = await import('../core/syncAndExports');
       const stampSlug = formatTimestampedBackupSlug();
-      const fileName = `community-pedigree-pre-upgrade-backup-${stampSlug}.json`;
+      const fileName = `pedigree-pre-upgrade-backup-${stampSlug}.json`;
       await downloadTextFile(fileName, jsonText, 'application/json');
       const mirroredNative = await mirrorSnapshotToNativeVaultIfWrapped(hydrated, 'pre_upgrade');
       if (isOpfsSupported()) {

@@ -991,7 +991,7 @@ export function parseDeltaFileJson(text: string): SyncOperation[] {
       ? parsed
       : null;
   if (!rawOps) {
-    throw new Error('Selected file is not a valid Community Pedigree delta log.');
+    throw new Error('Selected file is not a valid Pedigree delta log.');
   }
   if (rawOps.length > MAX_DELTA_OPERATIONS) {
     throw new Error(

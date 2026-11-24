@@ -15,7 +15,7 @@ describe('showDocuments — ARBA Show Entry Form & Remark Cards', () => {
   const rabbitProfile = makeSpeciesProfile('Rabbit');
   const settings = makeSettings({
     barnName: 'Hilltop Rabbitry',
-    breederName: 'Kim Breeder',
+    breederName: 'Breeder',
   });
 
   const animals = [

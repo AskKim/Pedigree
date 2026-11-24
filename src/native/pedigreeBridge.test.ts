@@ -1,5 +1,5 @@
 /**
- * Community Pedigree — Native Bridge Unit Tests
+ * Pedigree — Native Bridge Unit Tests
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
@@ -70,7 +70,7 @@ describe('PedigreeBridge', () => {
 
   describe('platform detection and browser fallbacks', () => {
     it('detects standard web browser when no native handler exists', () => {
-      setupMockDom('https://askkim.github.io');
+      setupMockDom('https://example.org');
       bridge = createPedigreeBridge();
 
       expect(bridge.getPlatform()).toBe('web');
@@ -80,7 +80,7 @@ describe('PedigreeBridge', () => {
     });
 
     it('resolves getNativeContainerInfo immediately to null in standard browser', async () => {
-      setupMockDom('https://askkim.github.io');
+      setupMockDom('https://example.org');
       bridge = createPedigreeBridge();
 
       const info = await bridge.getNativeContainerInfo(400);
@@ -88,7 +88,7 @@ describe('PedigreeBridge', () => {
     });
 
     it('falls back to window.print() in standard browser', () => {
-      const { win } = setupMockDom('https://askkim.github.io');
+      const { win } = setupMockDom('https://example.org');
       bridge = createPedigreeBridge();
 
       expect(bridge.requestPrint()).toBe(true);
@@ -96,7 +96,7 @@ describe('PedigreeBridge', () => {
     });
 
     it('falls back to Blob download for binary exports in standard browser', async () => {
-      const { createdAnchors } = setupMockDom('https://askkim.github.io');
+      const { createdAnchors } = setupMockDom('https://example.org');
       const createObjectURL = vi.fn(() => 'blob:mock-backup');
       const revokeObjectURL = vi.fn();
       vi.stubGlobal('URL', class extends URL {
@@ -124,7 +124,7 @@ describe('PedigreeBridge', () => {
     });
 
     it('revokes pending blob URLs and clears listeners on destroy()', async () => {
-      setupMockDom('https://askkim.github.io');
+      setupMockDom('https://example.org');
       const createObjectURL = vi.fn(() => 'blob:pending-cleanup');
       const revokeObjectURL = vi.fn();
       vi.stubGlobal('URL', class extends URL {
@@ -146,7 +146,7 @@ describe('PedigreeBridge', () => {
     });
 
     it('returns false for syncBackupSnapshotToNative in standard browser', async () => {
-      setupMockDom('https://askkim.github.io');
+      setupMockDom('https://example.org');
       bridge = createPedigreeBridge();
 
       const ok = await bridge.syncBackupSnapshotToNative({
@@ -161,11 +161,11 @@ describe('PedigreeBridge', () => {
 
   describe('openExternalUrl security validation', () => {
     it('permits https: and mailto: URLs and rejects unsafe schemes', () => {
-      const { win, createdAnchors } = setupMockDom('https://askkim.github.io');
+      const { win, createdAnchors } = setupMockDom('https://example.org');
       bridge = createPedigreeBridge();
 
-      expect(bridge.openExternalUrl('https://github.com/AskKim/Pedigree', 'repo')).toBe(true);
-      expect(createdAnchors[0].href).toBe('https://github.com/AskKim/Pedigree');
+      expect(bridge.openExternalUrl('https://github.com/pedigree/pedigree', 'repo')).toBe(true);
+      expect(createdAnchors[0].href).toBe('https://github.com/pedigree/pedigree');
       expect(createdAnchors[0].rel).toBe('noopener noreferrer');
 
       expect(bridge.openExternalUrl('mailto:support@example.org?subject=Diagnostics', 'support')).toBe(true);

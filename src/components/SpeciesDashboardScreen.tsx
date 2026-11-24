@@ -1390,7 +1390,7 @@ export function SpeciesDashboardScreen({
           binderArchivedCount={activeData.archivedAnimals.length}
           headerNotice={
             <p className="text-[11px] text-[var(--barn-muted)]">
-              White-paper ink-safe layout &middot; Unset species preferences automatically inherit global Barn Settings ({settings.barnName || 'Community Pedigree'}).
+              White-paper ink-safe layout &middot; Unset species preferences automatically inherit global Barn Settings ({settings.barnName || 'Pedigree'}).
             </p>
           }
           onClose={() => setShowBinderPreview(false)}

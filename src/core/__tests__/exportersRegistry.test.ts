@@ -89,7 +89,7 @@ describe('exporters/registry — extensible non-native format exporters', () => 
         ),
       },
       speciesName: 'Rabbit',
-      appBaseUrl: 'https://askkim.github.io/Pedigree/',
+      appBaseUrl: 'https://example.org/Pedigree/',
     });
     expect(populatedShowcase.filename.endsWith('.html')).toBe(true);
     expect(populatedShowcase.mimeType).toBe('text/html;charset=utf-8');

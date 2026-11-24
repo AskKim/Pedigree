@@ -479,7 +479,7 @@ export function buildPedigreePdfBytes(params: PedigreePdfExportParams): Uint8Arr
 
     // --- Header Band ---
     const headerHeight = isCompactLedger ? (hasLogo ? 32 : 26) : hasLogo ? 40 : 32;
-    const barnTitle = settings.barnName || 'Community Pedigree';
+    const barnTitle = settings.barnName || 'Pedigree';
     const pageSuffix = slice.totalPages > 1 ? ` | Page ${slice.pageNumber}/${slice.totalPages}` : '';
     const subLeft = `${
       theme.layoutPreset === 'iagarb_angora'

@@ -1893,7 +1893,7 @@ export function FeedLedgerScreen({
                   <option value="all">All Categories</option>
                   <option value="manufacturer">Manufacturers</option>
                   <option value="regulatory">Regulatory (FDA CVM)</option>
-                  <option value="community_watch">Community Watch</option>
+                  <option value="community_watch">Barn Watch</option>
                 </select>
 
                 <label className="inline-flex items-center gap-1.5 text-xs text-[var(--barn-muted)] cursor-pointer select-none px-2">

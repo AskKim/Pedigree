@@ -65,9 +65,9 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
   it('encodes short, medium, and long deep-link URLs with valid finder, timing, and dark-module geometry', () => {
     const payloads = [
       'https://barn.app/',
-      'https://askkim.org/pedigree/?route=herd&species=Rabbit&animalId=animal-12345678-abcd-ef01',
-      `https://askkim.org/pedigree/?route=herd&species=Holland%20Lop%20Rabbit&animalId=${'a'.repeat(160)}`,
-      `https://askkim.org/pedigree/?payload=${'z'.repeat(380)}`,
+      'https://example.org/pedigree/?route=herd&species=Rabbit&animalId=animal-12345678-abcd-ef01',
+      `https://example.org/pedigree/?route=herd&species=Holland%20Lop%20Rabbit&animalId=${'a'.repeat(160)}`,
+      `https://example.org/pedigree/?payload=${'z'.repeat(380)}`,
     ];
 
     for (const payload of payloads) {
@@ -104,13 +104,13 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
     }
 
     // Long payload (> 360 bytes) cleanly upgrades to V12–V14 EC-L fallback without throwing
-    const huge = encodeQrMatrix(`https://askkim.org/pedigree/?x=${'k'.repeat(400)}`);
+    const huge = encodeQrMatrix(`https://example.org/pedigree/?x=${'k'.repeat(400)}`);
     expect(huge.version).toBeGreaterThanOrEqual(11);
     expect(huge.ecLevel).toBe('L');
   });
 
   it('renders crisp single-path SVG with quiet zone and escaped aria-label', () => {
-    const svg = renderQrSvg('https://askkim.org/?route=herd&animalId=abc', {
+    const svg = renderQrSvg('https://example.org/?route=herd&animalId=abc', {
       sizePx: 96,
       quietZone: 4,
       ariaLabel: 'QR for <"Clover">',
@@ -124,16 +124,16 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
   });
 
   it('builds and parses animal profile and cage board deep links cleanly', () => {
-    expect(normalizeAppBaseUrl('https://askkim.org/pedigree/?old=1#hash')).toBe(
-      'https://askkim.org/pedigree/'
+    expect(normalizeAppBaseUrl('https://example.org/pedigree/?old=1#hash')).toBe(
+      'https://example.org/pedigree/'
     );
 
     const animalLink = buildAnimalProfileDeepLink(
-      'https://askkim.org/pedigree/',
+      'https://example.org/pedigree/',
       { id: 'an-42', species: 'Rabbit' }
     );
     expect(animalLink).toBe(
-      'https://askkim.org/pedigree/?route=herd&species=Rabbit&animalId=an-42'
+      'https://example.org/pedigree/?route=herd&species=Rabbit&animalId=an-42'
     );
 
     const parsedAnimal = parseAppDeepLinkParams(animalLink.slice(animalLink.indexOf('?')));
@@ -148,7 +148,7 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
     });
 
     const cageLink = buildCageBoardDeepLink(
-      'https://askkim.org/pedigree/',
+      'https://example.org/pedigree/',
       { id: 'cage-7', species: 'Goat' }
     );
     const parsedCage = parseAppDeepLinkParams(cageLink.slice(cageLink.indexOf('?')));
@@ -175,7 +175,7 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
 
     const htmlWithQr = generateThermalCageCardHtml(subject, allAnimals, [sp], settings, {
       includeQrCode: true,
-      appBaseUrl: 'https://askkim.org/pedigree/',
+      appBaseUrl: 'https://example.org/pedigree/',
     });
     expect(htmlWithQr).toContain('class="qr-box"');
     expect(htmlWithQr).toContain('<svg ');
@@ -183,7 +183,7 @@ describe('qrCode — ISO/IEC 18004 pure TS QR encoder, SVG renderer & deep links
 
     const htmlWithoutQr = generateThermalCageCardHtml(subject, allAnimals, [sp], settings, {
       includeQrCode: false,
-      appBaseUrl: 'https://askkim.org/pedigree/',
+      appBaseUrl: 'https://example.org/pedigree/',
     });
     expect(htmlWithoutQr).not.toContain('class="qr-box"');
     expect(htmlWithoutQr).not.toContain('<svg ');

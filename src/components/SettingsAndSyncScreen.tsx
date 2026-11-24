@@ -339,7 +339,7 @@ export function SettingsAndSyncScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const filename = `community-pedigree-full-backup-${stampSlug}.json`;
+        const filename = `pedigree-full-backup-${stampSlug}.json`;
         await downloadTextChunks(
           filename,
           generateBarnBackupJsonChunks(exportSnapshot),
@@ -1018,7 +1018,7 @@ export function SettingsAndSyncScreen({
                   {!googleAuthConnected ? (
                     <div className="space-y-1.5">
                       <div className="text-[11px] text-[var(--barn-muted)]">
-                        Direct Google account sign-in is disabled so Community Pedigree stays 100%
+                        Direct Google account sign-in is disabled so Pedigree stays 100%
                         cloud- and Firebase-free. Single chores open quick Google/Outlook Web event
                         links when online, and all chores export cleanly as offline .ICS files.
                       </div>

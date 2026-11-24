@@ -215,7 +215,7 @@ export function MileageTaxPanel({
     if (!printOpen) return '';
     return generateAnnualMileageTaxHtml({
       logs: mileageLogs,
-      barnName: settings.barnName || 'Community Pedigree Barn',
+      barnName: settings.barnName || 'Pedigree Barn',
       breederName: settings.breederName || '',
       speciesName: speciesProfile.name,
       yearLabel: yearFilter === 'all' ? 'All Years' : yearFilter,

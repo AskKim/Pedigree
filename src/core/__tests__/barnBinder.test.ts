@@ -68,7 +68,7 @@ describe('barnBinder — printable human-readable species binders & automatic ZI
     const snap = makeEmptySnapshot({
       settings: makeSettings({
         barnName: 'Cedar Ridge Barn',
-        breederName: 'Kimberly B.',
+        breederName: 'Breeder B.',
         preferredUnit: 'kg',
         defaultGenerations: 4,
       }),
@@ -82,7 +82,7 @@ describe('barnBinder — printable human-readable species binders & automatic ZI
 
     const html = generateSpeciesBarnBinderHtml(snap, 'Rabbit', defaults);
     expect(html).toContain('Cedar Ridge Barn');
-    expect(html).toContain('Kimberly B.');
+    expect(html).toContain('Breeder B.');
     expect(html).toContain('Kilograms (kg)');
     expect(html).toContain('inherited from Barn Settings');
     expect(html).toContain('4.50 kg');

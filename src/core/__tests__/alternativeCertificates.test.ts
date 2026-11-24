@@ -85,7 +85,7 @@ describe('alternativeCertificates — Pet-Sale Birth Cert & Breeding Certificate
       variety: 'Ruby-Eyed White',
       registrationNumber: 'REG-778',
       grandChampionNumber: 'GC-12',
-      ownerName: 'Kim Stud',
+      ownerName: 'Apex Stud',
     });
     const dam = makeAnimal('d1', {
       name: 'Snowflake',

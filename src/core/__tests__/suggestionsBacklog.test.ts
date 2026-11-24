@@ -132,7 +132,7 @@ describe('suggestionsBacklog — markdown parser, idea sanitization & exports', 
     expect(isValidCapturedIdeaEntry({ id: '', text: 'x', createdAtIso: '' })).toBe(false);
 
     const md = buildCapturedIdeasMarkdownExport(entries, '2026-11-20T16:30:00.000Z');
-    expect(md).toContain('# Community Pedigree — Pending Captured Ideas');
+    expect(md).toContain('# Pedigree — Pending Captured Ideas');
     expect(md).toContain('1. [2026-11-20T16:00:00.000Z] Add show carrier ledger &amp; print tag');
 
     const json = JSON.parse(buildCapturedIdeasJsonExport(entries, '2026-11-20T16:30:00.000Z'));

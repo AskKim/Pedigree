@@ -15,7 +15,7 @@ describe('batchPrint — multi-select cage cards, 4-up mini sheets, 4x6 photo ca
   const speciesProfiles = [makeSpeciesProfile('Rabbit'), makeSpeciesProfile('Sheep')];
   const settings = makeSettings({
     barnName: 'Oak Ridge Rabbitry',
-    breederName: 'Kimberly',
+    breederName: 'Breeder',
     defaultGenerations: 4,
   });
 
@@ -293,7 +293,7 @@ describe('batchPrint — multi-select cage cards, 4-up mini sheets, 4x6 photo ca
       speciesProfiles,
       settings,
       speciesName: 'Rabbit',
-      appBaseUrl: 'https://askkim.org/pedigree/',
+      appBaseUrl: 'https://example.org/pedigree/',
       options: {
         layout: 'cage_cards',
         includeQrCodes: true,
@@ -311,7 +311,7 @@ describe('batchPrint — multi-select cage cards, 4-up mini sheets, 4x6 photo ca
       speciesProfiles,
       settings,
       speciesName: 'Rabbit',
-      appBaseUrl: 'https://askkim.org/pedigree/',
+      appBaseUrl: 'https://example.org/pedigree/',
       options: {
         layout: 'cage_cards',
         includeQrCodes: false,

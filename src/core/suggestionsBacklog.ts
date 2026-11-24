@@ -89,7 +89,7 @@ function slugifySectionId(title: string, index: number): string {
 export function parseSuggestionsBacklogMarkdown(rawMarkdown: string): ParsedSuggestionsBacklog {
   if (typeof rawMarkdown !== 'string' || !rawMarkdown.trim()) {
     return {
-      title: 'Community Pedigree — Saved Suggestions Backlog',
+      title: 'Pedigree — Saved Suggestions Backlog',
       overviewHeading: null,
       auditNote: null,
       sections: [],
@@ -99,7 +99,7 @@ export function parseSuggestionsBacklogMarkdown(rawMarkdown: string): ParsedSugg
   }
 
   const lines = rawMarkdown.split(/\r?\n/);
-  let title = 'Community Pedigree — Saved Suggestions Backlog';
+  let title = 'Pedigree — Saved Suggestions Backlog';
   let overviewHeading: string | null = null;
   const auditLines: string[] = [];
   const sections: BacklogSection[] = [];
@@ -372,7 +372,7 @@ export function buildCapturedIdeasMarkdownExport(
   exportedAtIso: string = new Date().toISOString()
 ): string {
   const lines: string[] = [
-    '# Community Pedigree — Pending Captured Ideas',
+    '# Pedigree — Pending Captured Ideas',
     '',
     `Exported: ${exportedAtIso}`,
     `Total Ideas: ${ideas.length}`,

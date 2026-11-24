@@ -369,7 +369,7 @@ describe('economicsLedger — P&L margins, processing yields & 4-H/FFA project b
       projectTitle: '<script>alert(1)</script>Market Rabbit SAE',
       memberName: 'Alex Mercer',
       clubOrChapter: 'Valley Clover 4-H',
-      leaderOrAdvisor: 'Coach Kim',
+      leaderOrAdvisor: 'Coach Taylor',
       projectYear: '2026',
       startDateIso: '2026-01-15',
       endDateIso: '2026-09-30',

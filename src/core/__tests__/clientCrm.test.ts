@@ -19,7 +19,7 @@ function makeClient(overrides: Partial<ClientContact> = {}): ClientContact {
     species: 'Rabbit',
     fullName: 'Alice Walker',
     ranchOrHerdName: 'Walker Rabbitry',
-    email: 'alice@example.com',
+    email: 'client@example.com',
     phone: '555-0101',
     preferredContact: 'sms',
     clientKind: 'show_breeder',
@@ -89,7 +89,7 @@ function makeReservation(overrides: Partial<AnimalReservation> = {}): AnimalRese
 const baseSettings: BarnSettings = {
   id: 'barn_settings',
   barnName: 'Copper Creek Barn',
-  breederName: 'Kimberly H.',
+  breederName: 'Breeder H.',
   preferredUnit: 'lbs_oz',
   currencyCode: 'USD',
   defaultSpecies: 'Rabbit',

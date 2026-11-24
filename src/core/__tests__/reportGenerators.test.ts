@@ -846,7 +846,7 @@ describe('reportGenerators (Phase 3)', () => {
           projectTitle: 'County Fair Market Pen',
           memberName: 'Jordan Lee',
           clubOrChapter: 'Pine Creek 4-H',
-          leaderOrAdvisor: 'Kim',
+          leaderOrAdvisor: 'Advisor',
           projectYear: '2026',
           startDateIso: '2026-02-01',
           endDateIso: '2026-10-15',

@@ -186,7 +186,7 @@ export class CrashErrorBoundary extends React.Component<
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Bug Report Bundle',
+          title: 'Pedigree Bug Report Bundle',
           text: `${
             recipient ? `Bug report logs & data bundle for ${recipient}` : 'Bug report logs & data bundle'
           }`,
@@ -206,7 +206,7 @@ export class CrashErrorBoundary extends React.Component<
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Bug Report Bundle',
+          title: 'Pedigree Bug Report Bundle',
         });
         this.setState({
           busy: false,

@@ -275,7 +275,7 @@ const SPECIES_SEED_SPECS: SeedFamilySpec[] = [
     shareGrandsireForLinebreeding: false,
     sanctionBody: 'Specialty Club',
     showTitle: 'Autumn Ferret Championship',
-    showLocation: 'Community Event Center',
+    showLocation: 'County Event Center',
   },
   {
     species: 'Alpaca',
@@ -1289,7 +1289,7 @@ export function buildSampleDataForSpecies(
     varietyA: 'Chestnut',
     varietyB: 'Black',
     tagPrefix: codePrefix,
-    breederName: 'Community Barn',
+    breederName: 'Heritage Barn',
     cagePrefix: `Pen ${codePrefix}`,
     avgAdultGrams: 5400,
     juniorGrams: 2200,

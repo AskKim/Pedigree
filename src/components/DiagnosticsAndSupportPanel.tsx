@@ -431,7 +431,7 @@ export function DiagnosticsAndSupportPanel({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Bug Report Bundle',
+          title: 'Pedigree Bug Report Bundle',
           text: `${
             recipient ? `Bug report for ${recipient}. ` : ''
           }Includes ${built.logCount} diagnostic logs${

@@ -487,10 +487,10 @@ export function ImportExportHubScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-full-backup-${stampSlug}.json`;
+        const baseFilename = `pedigree-full-backup-${stampSlug}.json`;
         if (encryptBackupExport) {
           const rawJson = exportBarnBackupJson(exportSnapshot);
-          const filename = `community-pedigree-full-backup-${stampSlug}-encrypted.json`;
+          const filename = `pedigree-full-backup-${stampSlug}-encrypted.json`;
           const outputJson = JSON.stringify(
             await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
               payloadKind: 'json_backup',
@@ -536,10 +536,10 @@ export function ImportExportHubScreen({
       try {
         const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
         const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-records-only-${stampSlug}.json`;
+        const baseFilename = `pedigree-records-only-${stampSlug}.json`;
         if (encryptBackupExport) {
           const rawJson = exportBarnBackupJson(lightSnapshot);
-          const filename = `community-pedigree-records-only-${stampSlug}-encrypted.json`;
+          const filename = `pedigree-records-only-${stampSlug}-encrypted.json`;
           const outputJson = JSON.stringify(
             await encryptTextWithPassphrase(rawJson, backupExportPassphrase, {
               payloadKind: 'json_backup',
@@ -595,7 +595,7 @@ export function ImportExportHubScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-archive-${stampSlug}.zip`;
+        const baseFilename = `pedigree-archive-${stampSlug}.zip`;
         if (encryptBackupExport) {
           const archive = await buildCompleteBackupZipOffThread(exportSnapshot);
           const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
@@ -603,7 +603,7 @@ export function ImportExportHubScreen({
             originalFileName: baseFilename,
           });
           const finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          const filename = `community-pedigree-archive-${stampSlug}-encrypted.zip`;
+          const filename = `pedigree-archive-${stampSlug}-encrypted.zip`;
           await downloadBinaryFile(filename, finalBytes, 'application/zip');
           void recordBackupExport('zip', filename);
           setBackupFeedback(
@@ -656,7 +656,7 @@ export function ImportExportHubScreen({
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
-        const baseFilename = `community-pedigree-photos-${stampSlug}.zip`;
+        const baseFilename = `pedigree-photos-${stampSlug}.zip`;
         if (encryptBackupExport) {
           const archive = await buildPhotosOnlyZipOffThread(exportSnapshot);
           const env = await encryptBytesWithPassphrase(archive.bytes, backupExportPassphrase, {
@@ -664,7 +664,7 @@ export function ImportExportHubScreen({
             originalFileName: baseFilename,
           });
           const finalBytes = wrapEncryptedZipContainer(env, baseFilename);
-          const filename = `community-pedigree-photos-${stampSlug}-encrypted.zip`;
+          const filename = `pedigree-photos-${stampSlug}-encrypted.zip`;
           await downloadBinaryFile(filename, finalBytes, 'application/zip');
           setBackupFeedback(
             `Saved encrypted ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(finalBytes.byteLength)}).`
@@ -699,7 +699,7 @@ export function ImportExportHubScreen({
         return;
       }
       const stampSlug = formatTimestampedBackupSlug();
-      const filename = `community-pedigree-${stampSlug}.sqlite`;
+      const filename = `pedigree-${stampSlug}.sqlite`;
       await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
       void recordBackupExport('sqlite', filename);
       setBackupFeedback(`Downloaded raw SQLite database (${filename}).`);
@@ -1574,7 +1574,7 @@ export function ImportExportHubScreen({
                     filename: finalFilename,
                     content,
                     mimeType: 'application/json',
-                    title: 'Community Pedigree Multi-Device Delta Log',
+                    title: 'Pedigree Multi-Device Delta Log',
                   });
                   setSyncFeedback(
                     mode === 'cancelled'
@@ -2150,7 +2150,7 @@ export function ImportExportHubScreen({
                   Imports
                 </h2>
                 <p className="text-xs text-[var(--barn-muted)] leading-relaxed">
-                  Restore or merge native Community Pedigree backup files first, or import records
+                  Restore or merge native Pedigree backup files first, or import records
                   from external platforms like HerdBoss and Evans .HTM below.
                 </p>
               </div>

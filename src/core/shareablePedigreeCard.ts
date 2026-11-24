@@ -312,7 +312,7 @@ export function generateShareablePedigreeCardHtml(
       <div class="brand">
         ${safeLogo ? `<img class="logo" src="${safeLogo}" alt="${escapeSafeHtml(settings.barnName || 'Barn Logo')}" />` : ''}
         <div>
-          <div class="barn-name">${escapeSafeHtml(settings.barnName || 'Community Pedigree')}</div>
+          <div class="barn-name">${escapeSafeHtml(settings.barnName || 'Pedigree')}</div>
           <div class="card-sub">Shareable ${depth}-Gen Pedigree Card${settings.breederName ? ` &middot; ${escapeSafeHtml(settings.breederName)}` : ''}</div>
         </div>
       </div>
@@ -390,7 +390,7 @@ export function generateShareablePedigreeCardHtml(
     ${
       showBreederFooter
         ? `<footer class="footer">
-            <span>${breederContactLine ? `<strong>${escapeSafeHtml(breederContactLine)}</strong>` : escapeSafeHtml(settings.barnName || 'Community Pedigree')}</span>
+            <span>${breederContactLine ? `<strong>${escapeSafeHtml(breederContactLine)}</strong>` : escapeSafeHtml(settings.barnName || 'Pedigree')}</span>
             <span>Open-source offline pedigree record</span>
           </footer>`
         : ''

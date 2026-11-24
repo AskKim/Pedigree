@@ -2996,7 +2996,7 @@ export function EconomicsLedgerScreen({
             </label>
 
             <label className="block space-y-1 text-xs">
-              <span className="font-semibold">Fair, Showmanship &amp; Community Service Notes</span>
+              <span className="font-semibold">Fair, Showmanship &amp; Service Notes</span>
               <textarea
                 rows={2}
                 value={projectDraft.showAndCommunityNotes}

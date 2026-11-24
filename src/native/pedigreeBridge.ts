@@ -1,6 +1,6 @@
 /**
  * Community Pedigree — Native Wrapper Bridge
- * Copyright (C) 2026 Community Pedigree Contributors
+ * Copyright (C) 2026 Pedigree Contributors
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 

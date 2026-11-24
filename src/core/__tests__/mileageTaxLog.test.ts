@@ -162,7 +162,7 @@ describe('mileageTaxLog — IRS deduction math, annual summary & CSV/HTML export
     const html = generateAnnualMileageTaxHtml({
       logs: [xssLog],
       barnName: 'Meadowbrook <Farm>',
-      breederName: 'Kim',
+      breederName: 'Breeder',
       speciesName: 'Rabbit',
       yearLabel: '2026',
       shows,

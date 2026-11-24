@@ -40,7 +40,7 @@ import {
 import { parseBarnBackupJson } from './syncAndExports';
 
 export const CURRENT_BACKUP_SCHEMA_VERSION = 6;
-export const APP_SCHEMA_BUILD_TAG = 'pedigree-pwa-v6';
+export const APP_SCHEMA_BUILD_TAG = 'pedigree-v6';
 
 export type VaultBackupKind =
   | 'monthly'

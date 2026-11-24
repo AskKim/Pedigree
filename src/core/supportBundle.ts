@@ -162,7 +162,7 @@ export function formatSupportReportText(
 
   const headerLines = [
     '====================================================================',
-    'Community Pedigree — Crash & Diagnostic Support Report',
+    'Pedigree — Crash & Diagnostic Support Report',
     '====================================================================',
     `Generated UTC:      ${nowIsoUtc()}`,
     `Active Session:     ${summary.sessionId}`,
@@ -302,7 +302,7 @@ export function buildSupportMailtoHref(params: {
 }): string {
   const { recipientEmail, filename, summary, includedData, includedPhotos } = params;
   const email = (recipientEmail || '').trim();
-  const subject = `[Community Pedigree] Bug Report & Diagnostic Bundle (${
+  const subject = `[Pedigree] Bug Report & Diagnostic Bundle (${
     summary.errorCount
   } errors, ${summary.memoryWarningCount} memory warnings)`;
 
@@ -310,7 +310,7 @@ export function buildSupportMailtoHref(params: {
   const bodyLines = [
     'Hello,',
     '',
-    'I am sending a bug report & diagnostic export from Community Pedigree.',
+    'I am sending a bug report & diagnostic export from Pedigree.',
     `Attached / Downloaded File: ${filename}`,
     '',
     '--- Device & Diagnostic Summary ---',

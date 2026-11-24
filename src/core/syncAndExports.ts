@@ -2138,7 +2138,7 @@ export function generateEvansHtmPedigree(
       <div class="header-brand">
         ${safeLogo ? `<img class="barn-logo" src="${safeLogo}" alt="${escapeHtml(settings.barnName || 'Barn Logo')}" />` : ''}
         <div>
-          <div class="barn-title">${escapeHtml(settings.barnName || 'Community Pedigree')}</div>
+          <div class="barn-title">${escapeHtml(settings.barnName || 'Pedigree')}</div>
           <div class="sub-title">${certSubtitle}${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
         </div>
       </div>

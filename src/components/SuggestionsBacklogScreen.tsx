@@ -466,7 +466,7 @@ export function SuggestionsBacklogScreen({ onBackToTechyStuff }: SuggestionsBack
   const handleExportMarkdown = useCallback(async () => {
     await exportLock.runLocked(async () => {
       const markdown = buildCapturedIdeasMarkdownExport(capturedIdeas);
-      const filename = `community-pedigree-captured-ideas-${formatTimestampedBackupSlug()}.md`;
+      const filename = `pedigree-captured-ideas-${formatTimestampedBackupSlug()}.md`;
       await downloadTextFile(filename, markdown, 'text/markdown');
       if (!isMountedRef.current) return;
       showTransientFeedback(`Downloaded ${filename} (${capturedIdeas.length} idea(s)).`);
@@ -476,7 +476,7 @@ export function SuggestionsBacklogScreen({ onBackToTechyStuff }: SuggestionsBack
   const handleExportJson = useCallback(async () => {
     await exportLock.runLocked(async () => {
       const jsonText = buildCapturedIdeasJsonExport(capturedIdeas);
-      const filename = `community-pedigree-captured-ideas-${formatTimestampedBackupSlug()}.json`;
+      const filename = `pedigree-captured-ideas-${formatTimestampedBackupSlug()}.json`;
       await downloadTextFile(filename, jsonText, 'application/json');
       if (!isMountedRef.current) return;
       showTransientFeedback(`Downloaded ${filename} (${capturedIdeas.length} idea(s)).`);
@@ -529,7 +529,7 @@ export function SuggestionsBacklogScreen({ onBackToTechyStuff }: SuggestionsBack
               Suggestion Backlog &amp; Idea Capture
             </h1>
             <p className="text-xs text-[var(--barn-muted)] max-w-3xl leading-relaxed">
-              Offline-ready viewer for Community Pedigree&apos;s saved suggestions backlog, paired
+              Offline-ready viewer for Pedigree&apos;s saved suggestions backlog, paired
               with a sanitized local idea capture inbox for recording new roadmap notes in the barn.
             </p>
           </div>

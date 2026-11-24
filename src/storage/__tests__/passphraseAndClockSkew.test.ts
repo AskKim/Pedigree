@@ -262,7 +262,7 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
         calendarId: 'primary',
         tasks: [task],
         config: {},
-        barnName: 'Kim Barn',
+        barnName: 'Sunny Barn',
       });
 
       expect(res.createdCount).toBe(1);

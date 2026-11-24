@@ -134,7 +134,7 @@ describe('barnJournal — tag hygiene, rich notes, full-text search, grouping & 
     const html = generateBarnJournalHtml({
       entries,
       barnName: 'Meadowbrook <Barn>',
-      breederName: 'Kim',
+      breederName: 'Breeder',
       speciesName: 'Rabbit',
       animals: [doe],
     });

@@ -558,7 +558,7 @@ export function TechyStuffScreen({
         const exportSnapshot = onHydrateSnapshotForExport
           ? await onHydrateSnapshotForExport(snapshot)
           : snapshot;
-        const filename = `community-pedigree-full-backup-${formatTimestampedBackupSlug()}.json`;
+        const filename = `pedigree-full-backup-${formatTimestampedBackupSlug()}.json`;
         await downloadTextChunks(
           filename,
           generateBarnBackupJsonChunks(exportSnapshot),

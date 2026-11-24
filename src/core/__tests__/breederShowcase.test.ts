@@ -94,7 +94,7 @@ describe('breederShowcase — Zero-Server Breeder Showcase & For-Sale Catalog Ex
     const snapshot = makeEmptySnapshot({
       settings: makeSettings({
         barnName: 'Briar Patch Homestead',
-        breederName: 'Kim Breeder',
+        breederName: 'Meadowbrook Breeder',
         breederEmail: 'sales@briarpatch.example',
         breederPhone: '(555) 234-5678',
         breederLocation: 'Willamette Valley, OR',
@@ -116,7 +116,7 @@ describe('breederShowcase — Zero-Server Breeder Showcase & For-Sale Catalog Ex
     const result = buildBreederShowcaseResult(snapshot, {
       todayIso: '2026-11-23',
       includeGenotypes: true,
-      appBaseUrl: 'https://askkim.github.io/Pedigree/',
+      appBaseUrl: 'https://example.org/Pedigree/',
       includeQrCode: true,
     });
 
@@ -426,7 +426,7 @@ describe('breederShowcase — Zero-Server Breeder Showcase & For-Sale Catalog Ex
 
     const snapshot = makeEmptySnapshot({
       settings: makeSettings({
-        breederEmail: 'kim@meadow.example',
+        breederEmail: 'breeder@meadow.example',
         breederPhone: '503-555-0199',
         breederLocation: 'Oregon',
         breederWebsite: 'https://meadow.example',
@@ -438,7 +438,7 @@ describe('breederShowcase — Zero-Server Breeder Showcase & For-Sale Catalog Ex
     const json = exportBarnBackupJson(snapshot);
     const parsed = parseBarnBackupJson(json, makeSettings());
 
-    expect(parsed.settings.breederEmail).toBe('kim@meadow.example');
+    expect(parsed.settings.breederEmail).toBe('breeder@meadow.example');
     expect(parsed.settings.breederPhone).toBe('503-555-0199');
     expect(parsed.settings.breederLocation).toBe('Oregon');
     expect(parsed.settings.breederWebsite).toBe('https://meadow.example');

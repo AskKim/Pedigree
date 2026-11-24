@@ -1036,7 +1036,7 @@ export function HealthReferencePanel({
                     ? 'Disabled: Persistent folder pointers (showDirectoryPicker) are unavailable in this browser (e.g., iOS Safari or Firefox). Save a folder path note or pick PDF files directly below for offline viewing.'
                     : status.hasDirectoryHandle
                       ? `Connected read-only to "${status.meta.folderName || 'Veterinary PDFs'}" · Files stay on your device and are never modified or copied into barn exports.`
-                      : 'Point Community Pedigree to a local device folder holding Merck/extension PDFs, vet instructions, or lab reports for quick offline access.'}
+                      : 'Point Pedigree to a local device folder holding Merck/extension PDFs, vet instructions, or lab reports for quick offline access.'}
               </p>
               {status?.supported && status.hasDirectoryHandle && (
                 <div className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)] pt-0.5">
@@ -1313,7 +1313,7 @@ export function HealthReferencePanel({
                 </div>
                 <p className="text-[11px] text-[var(--barn-muted)]">
                   {status?.reminder.detail ||
-                    'External PDF folders remain outside Community Pedigree .ZIP backups; set a reminder interval to back them up separately.'}
+                    'External PDF folders remain outside Pedigree .ZIP backups; set a reminder interval to back them up separately.'}
                 </p>
               </div>
 

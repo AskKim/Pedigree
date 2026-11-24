@@ -2924,7 +2924,7 @@ export function buildPrintableReportHtml(
   report: GeneratedReport,
   settings: Pick<BarnSettings, 'barnName' | 'breederName'>
 ): string {
-  const barnTitle = (settings.barnName || '').trim() || 'Community Pedigree';
+  const barnTitle = (settings.barnName || '').trim() || 'Pedigree';
   const breeder = (settings.breederName || '').trim();
 
   const summaryHtml =

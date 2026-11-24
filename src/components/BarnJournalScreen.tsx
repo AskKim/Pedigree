@@ -281,7 +281,7 @@ export function BarnJournalScreen({
     if (!printOpen) return '';
     return generateBarnJournalHtml({
       entries: filteredEntries,
-      barnName: settings.barnName || 'Community Pedigree Barn',
+      barnName: settings.barnName || 'Pedigree Barn',
       breederName: settings.breederName || '',
       speciesName: speciesProfile.name,
       animals,

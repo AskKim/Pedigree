@@ -135,7 +135,7 @@ export function parseP2pWireOrDeltaPayload(rawText: string): {
   }
 
   if (!rawOps) {
-    throw new Error('Payload is not a valid Community Pedigree P2P or delta outbox message.');
+    throw new Error('Payload is not a valid Pedigree P2P or delta outbox message.');
   }
   if (rawOps.length > MAX_DELTA_OPERATIONS) {
     throw new Error(

@@ -91,7 +91,7 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     const snap = makeEmptySnapshot({
       settings: makeSettings({
         barnName: 'Sunny Slope Barn',
-        breederName: 'Kim',
+        breederName: 'Breeder',
         defaultGenerations: 6,
         pinnedLandingSpecies: 'Rabbit',
       }),
@@ -118,7 +118,7 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
 
     expect(parsedRaw.exportedAtLocal).toBeTruthy();
     expect(parsedRaw.barnSummary.barnName).toBe('Sunny Slope Barn');
-    expect(parsedRaw.barnSummary.breederName).toBe('Kim');
+    expect(parsedRaw.barnSummary.breederName).toBe('Breeder');
     expect(parsedRaw.barnSummary.counts.animals).toBe(3);
     expect(parsedRaw.barnSummary.counts.activeAnimals).toBe(2);
     expect(parsedRaw.barnSummary.counts.archivedAnimals).toBe(1);

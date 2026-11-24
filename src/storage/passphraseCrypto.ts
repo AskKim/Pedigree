@@ -121,7 +121,7 @@ export async function decryptBytesWithPassphrase(
   passphrase: string
 ): Promise<Uint8Array> {
   if (!passphrase) {
-    throw new Error('Passphrase required to unlock encrypted Community Pedigree file.');
+    throw new Error('Passphrase required to unlock encrypted Pedigree file.');
   }
   const subtle = getSubtleCrypto();
   const salt = base64ToBytesPure(envelope.saltBase64);
