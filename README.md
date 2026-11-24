@@ -56,7 +56,7 @@ All automated checks, builds, website deployments, Android APKs, and codebase ex
 
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the [LICENSE](LICENSE) file for full details.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the [LICENSE](LICENSE) file for full details. Official mobile builds distributed through platforms with restrictive terms (such as the Apple App Store) may be released under the Apache License 2.0 to comply with platform requirements.
 
 ### Public Agencies and Research Collaborations
 
