@@ -21,9 +21,9 @@ jobs:
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci || npm install --legacy-peer-deps --no-audit --no-fund
           else
-            npm install --no-audit --no-fund
+            npm install --legacy-peer-deps --no-audit --no-fund
           fi
 
       - name: Run domain unit tests
@@ -41,4 +41,8 @@ jobs:
       - name: Verify GitHub Pages subpath build
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name || 'Pedigree' }}/
-        run: npm run build
+        run: |
+          npm run build
+          test -f dist/robots.txt || { echo "Missing dist/robots.txt" >&2; exit 1; }
+          test -f dist/sitemap.xml || { echo "Missing dist/sitemap.xml" >&2; exit 1; }
+          test -f dist/404.html || cp dist/index.html dist/404.html

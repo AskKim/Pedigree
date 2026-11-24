@@ -135,6 +135,11 @@ export default defineConfig(() => {
         'sql.js',
       ],
     },
+    build: {
+      rolldownOptions: {
+        external: ['firebase/app', 'firebase/auth'],
+      },
+    },
     server: {
       host: '0.0.0.0',
       port: 3000,

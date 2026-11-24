@@ -1,12 +1,18 @@
 # Community Pedigree Project
 
+[![Live Web App](https://img.shields.io/badge/Live%20PWA-askkim.github.io%2FPedigree-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://askkim.github.io/Pedigree/)
+[![GitHub Pages](https://github.com/AskKim/Pedigree/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/AskKim/Pedigree/actions/workflows/deploy-pages.yml)
+[![CI](https://github.com/AskKim/Pedigree/actions/workflows/ci.yml/badge.svg)](https://github.com/AskKim/Pedigree/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPLv3-blue.svg)](./LICENSE)
+
+- **Live Web App (GitHub Pages):** [https://askkim.github.io/Pedigree/](https://askkim.github.io/Pedigree/)
 - **Project Name:** Community Pedigree Project
 - **App Name:** Community Pedigree
-- **Repository:** [`pedigree`](https://github.com/pedigree) (GitHub paths stay `pedigree`)
+- **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree) (GitHub paths stay `AskKim/Pedigree`)
 - **Package Name:** `pedigree` (lowercase package identifier for `package.json` and the eventual `.apk` / bundle ID segment, e.g., `<reverse-domain>.pedigree`)
-- **License:** Agplv3 
+- **License:** GNU AGPLv3 (`AGPL-3.0-or-later`) — see [LICENSE](./LICENSE)
 
-**Community Pedigree** is an open-source, offline-first livestock registry, cage-side breeding & chore manager, coat color genetics lab, and recursive Wright Coefficient of Inbreeding (COI) pedigree engine—initially tailored for ARBA **New Zealand Red** rabbitry workflows and built out across multi-species livestock.
+**Community Pedigree** is an open-source, offline-first livestock registry, cage-side breeding & chore manager, coat color genetics lab, and recursive Wright Coefficient of Inbreeding (COI) pedigree engine—initially tailored for ARBA **New Zealand Red** rabbitry workflows and built out across multi-species livestock. Launch the live web app directly in any browser at [https://askkim.github.io/Pedigree/](https://askkim.github.io/Pedigree/).
 
 ## Key Capabilities
 

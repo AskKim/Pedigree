@@ -33,3 +33,12 @@ declare module 'firebase/auth' {
     completed?: () => void
   ): () => void;
 }
+
+declare module 'firebase/app' {
+  export interface FirebaseApp {
+    name: string;
+  }
+  export function initializeApp(options?: unknown): FirebaseApp;
+  export function getApp(): FirebaseApp;
+  export function getApps(): FirebaseApp[];
+}
