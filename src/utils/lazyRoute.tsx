@@ -13,19 +13,19 @@ import { logDiagnosticEvent, markCleanSessionExit, recordReactCrash } from '../s
 
 type NamedModule = Record<string, unknown>;
 
-export async function loadWithSingleRetry<T extends NamedModule>(
+export async function loadWithSingleRetry<T extends NamedModule, TProps = Record<string, never>>(
   loader: () => Promise<T>,
   exportName: string,
   routeLabel: string,
   retryDelayMs = 250
-): Promise<{ default: React.ComponentType<any> }> {
+): Promise<{ default: React.ComponentType<TProps> }> {
   try {
     const mod = await loader();
     const resolved = mod[exportName];
     if (!resolved) {
       throw new Error(`Route module "${routeLabel}" did not export "${exportName}".`);
     }
-    return { default: resolved as React.ComponentType<any> };
+    return { default: resolved as React.ComponentType<TProps> };
   } catch (firstErr) {
     logDiagnosticEvent({
       level: 'warn',
@@ -49,7 +49,7 @@ export async function loadWithSingleRetry<T extends NamedModule>(
         category: 'runtime',
         message: `Corrective action: Recovered lazy route chunk "${routeLabel}" on automatic retry.`,
       });
-      return { default: resolved as React.ComponentType<any> };
+      return { default: resolved as React.ComponentType<TProps> };
     } catch (retryErr) {
       logDiagnosticEvent({
         level: 'error',
@@ -67,9 +67,7 @@ export function lazyNamedRoute<TProps>(
   exportName: string,
   routeLabel: string
 ): React.LazyExoticComponent<React.ComponentType<TProps>> {
-  return React.lazy(() => loadWithSingleRetry(loader, exportName, routeLabel)) as React.LazyExoticComponent<
-    React.ComponentType<TProps>
-  >;
+  return React.lazy(() => loadWithSingleRetry<NamedModule, TProps>(loader, exportName, routeLabel));
 }
 
 export function RouteLoadingFallback({ label }: { label: string }) {
@@ -97,7 +95,7 @@ export function RouteLoadingFallback({ label }: { label: string }) {
 interface RouteErrorBoundaryProps {
   routeKey: string;
   routeLabel: string;
-  onNavigateHome: () => void;
+  onNavigateHome?: () => void;
   children: React.ReactNode;
 }
 
@@ -186,17 +184,19 @@ export class RouteErrorBoundary extends React.Component<
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
             Retry Screen
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              this.setState({ hasError: false, error: null });
-              this.props.onNavigateHome();
-            }}
-            className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold inline-flex items-center gap-1.5 hover:bg-[var(--barn-subtle)]"
-          >
-            <Home className="w-3.5 h-3.5" aria-hidden="true" />
-            Back to All Species
-          </button>
+          {this.props.onNavigateHome && (
+            <button
+              type="button"
+              onClick={() => {
+                this.setState({ hasError: false, error: null });
+                this.props.onNavigateHome?.();
+              }}
+              className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] text-xs font-semibold inline-flex items-center gap-1.5 hover:bg-[var(--barn-subtle)]"
+            >
+              <Home className="w-3.5 h-3.5" aria-hidden="true" />
+              Back to All Species
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

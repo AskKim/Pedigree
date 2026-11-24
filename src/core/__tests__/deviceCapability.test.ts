@@ -279,7 +279,8 @@ describe('deviceCapability — 5-tier classification, closability rules & low-me
     expect(t2.dehydrateMirrorPhotos).toBe(true);
     expect(t2.maxSafeImportBytesHint).toBeGreaterThan(t1.maxSafeImportBytesHint);
 
-    expect(t3.dehydrateMirrorPhotos).toBe(false);
+    expect(t3.dehydrateMirrorPhotos).toBe(true);
+    expect(t5.dehydrateMirrorPhotos).toBe(false);
     expect(t5.monthlyCap).toBe(6);
     expect(t5.preUpgradeCap).toBe(3);
     expect(t5.preResetCap).toBe(8);

@@ -21,6 +21,7 @@ import {
   VersionManifest,
 } from '../core/upgradeGate';
 import { markCleanSessionExit } from './crashLogger';
+import { getSafeLocalStorage } from './storageProbes';
 import {
   getAdjustedNowIsoUtc,
   getEffectiveOnlineStatus,
@@ -54,8 +55,9 @@ type RegisterSwFn = (options?: {
 
 function readPersistedUpdatePolicy(): PwaUpdatePolicy {
   try {
-    if (typeof localStorage === 'undefined') return 'auto';
-    const raw = localStorage.getItem(PWA_UPDATE_POLICY_KEY);
+    const ls = getSafeLocalStorage();
+    if (!ls) return 'auto';
+    const raw = ls.getItem(PWA_UPDATE_POLICY_KEY);
     if (raw === 'auto' || raw === 'notify' || raw === 'pinned') {
       return raw;
     }
@@ -109,8 +111,9 @@ export function getPwaUpdatePolicy(): PwaUpdatePolicy {
 
 export function setPwaUpdatePolicy(policy: PwaUpdatePolicy): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(PWA_UPDATE_POLICY_KEY, policy);
+    const ls = getSafeLocalStorage();
+    if (ls) {
+      ls.setItem(PWA_UPDATE_POLICY_KEY, policy);
     }
   } catch {
     // Ignore storage restriction
@@ -145,8 +148,9 @@ export function resetPwaUpdateManagerForTests(): void {
     teardownLifecycleListeners = null;
   }
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(PWA_UPDATE_POLICY_KEY);
+    const ls = getSafeLocalStorage();
+    if (ls) {
+      ls.removeItem(PWA_UPDATE_POLICY_KEY);
     }
   } catch {
     // Ignore

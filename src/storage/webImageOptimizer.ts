@@ -18,17 +18,20 @@
  * On React Native / Expo, swap in `expo-image-manipulator` implementing the same `OptimizedImagePayload` output.
  */
 
-import { dataUrlToBinary } from '../core/backupArchive';
+import { dataUrlToBinary } from '../core/binaryEncoding';
 import {
   calculateSavingsPercent,
+  capCanvasDevicePixelRatio,
+  clampCanvasDimensionsToAreaCeiling,
   computeScaledDimensions,
   estimateDataUrlByteLength,
+  getCanvasAreaCeiling,
   ImageOptimizationPresetId,
   OptimizedImagePayload,
   resolveImageOptimizationPreset,
 } from '../core/imageOptimizationSpec';
 import { StagedImportedPhoto } from '../core/importers/importerTypes';
-import { readBlobAsArrayBuffer } from '../utils/es2018Shims';
+import { isFileReaderSupported, readBlobAsArrayBuffer } from '../utils/es2018Shims';
 import {
   isSvgImageInput,
   MAX_IMAGE_PIXEL_DIMENSION,
@@ -42,6 +45,80 @@ import {
   detectCurrentDeviceCapability,
   probeWebpEncodeSupport,
 } from './deviceCapabilityDetector';
+
+export type ReleasableCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+/**
+ * Releases canvas GPU/RAM backing memory promptly in `finally` blocks across Safari/WebKit/Chromium.
+ */
+export function releaseCanvas(canvas: ReleasableCanvas | null | undefined): void {
+  if (!canvas) return;
+  try {
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d') as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null;
+    if (ctx && typeof ctx.clearRect === 'function') {
+      ctx.clearRect(0, 0, 1, 1);
+    }
+  } catch {
+    // Ignore context/clear errors during teardown
+  } finally {
+    try {
+      canvas.width = 0;
+      canvas.height = 0;
+    } catch {
+      // Ignore detached/readonly canvas teardown errors
+    }
+  }
+}
+
+/**
+ * Verifies both `OffscreenCanvas` global presence and a live 2D context before worker canvas usage.
+ */
+export function probeOffscreenCanvas2dSupport(): boolean {
+  if (typeof OffscreenCanvas === 'undefined') {
+    return false;
+  }
+  let probe: OffscreenCanvas | null = null;
+  try {
+    probe = new OffscreenCanvas(1, 1);
+    const ctx = probe.getContext('2d');
+    return ctx !== null;
+  } catch {
+    return false;
+  } finally {
+    releaseCanvas(probe);
+  }
+}
+
+export function isConstrainedCanvasTier(): boolean {
+  return detectCurrentDeviceCapability().shouldApplyLowMemoryHandling;
+}
+
+export function getEffectiveCanvasDevicePixelRatio(
+  isConstrained: boolean = isConstrainedCanvasTier()
+): number {
+  const rawDpr =
+    typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number'
+      ? window.devicePixelRatio || 1
+      : 1;
+  return capCanvasDevicePixelRatio(rawDpr, isConstrained);
+}
+
+export function enforceCanvasDimensions(
+  width: number,
+  height: number,
+  isConstrained: boolean = isConstrainedCanvasTier()
+): { width: number; height: number; wasClamped: boolean } {
+  return clampCanvasDimensionsToAreaCeiling(
+    width,
+    height,
+    getCanvasAreaCeiling(isConstrained)
+  );
+}
 
 interface DecodedCanvasSource {
   source: CanvasImageSource;
@@ -74,16 +151,26 @@ async function decodeBlobToCanvasSource(
     const objectUrl = URL.createObjectURL(blob);
     const img = new Image();
     img.decoding = 'async';
+    const releaseImageObjectUrl = () => {
+      img.onload = null;
+      img.onerror = null;
+      try {
+        img.src = '';
+      } catch {
+        // Ignore readonly src teardown
+      }
+      URL.revokeObjectURL(objectUrl);
+    };
     img.onload = () => {
       resolve({
         source: img,
         width: img.naturalWidth || img.width || 1,
         height: img.naturalHeight || img.height || 1,
-        cleanup: () => URL.revokeObjectURL(objectUrl),
+        cleanup: releaseImageObjectUrl,
       });
     };
     img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
+      releaseImageObjectUrl();
       const isHeic =
         /heic|heif/i.test(blob.type || '') || /\.(heic|heif)$/i.test(originalFileName);
       reject(
@@ -98,17 +185,19 @@ async function decodeBlobToCanvasSource(
   });
 }
 
-function renderToDataUrl(
+function renderToMainThreadCanvasDataUrl(
   source: CanvasImageSource,
   targetWidth: number,
   targetHeight: number,
-  quality: number
+  quality: number,
+  isConstrained: boolean
 ): { dataUrl: string; mimeType: string } {
+  const safeDims = enforceCanvasDimensions(targetWidth, targetHeight, isConstrained);
   const canvas = document.createElement('canvas');
   let jpegCanvas: HTMLCanvasElement | null = null;
   try {
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
+    canvas.width = safeDims.width;
+    canvas.height = safeDims.height;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       throw new Error('2D Canvas context unavailable for image optimization.');
@@ -116,7 +205,7 @@ function renderToDataUrl(
 
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(source, 0, 0, safeDims.width, safeDims.height);
 
     // Prefer modern WebP (supports alpha transparency + ~35% smaller than JPEG at equal visual clarity)
     if (probeWebpEncodeSupport()) {
@@ -128,34 +217,126 @@ function renderToDataUrl(
 
     // Fallback to JPEG if browser lacks WebP canvas encoding: composite over warm neutral card fill first
     jpegCanvas = document.createElement('canvas');
-    jpegCanvas.width = targetWidth;
-    jpegCanvas.height = targetHeight;
+    jpegCanvas.width = safeDims.width;
+    jpegCanvas.height = safeDims.height;
     const jCtx = jpegCanvas.getContext('2d');
     if (!jCtx) {
       throw new Error('2D Canvas JPEG fallback context unavailable.');
     }
     jCtx.fillStyle = '#F7F2E7';
-    jCtx.fillRect(0, 0, targetWidth, targetHeight);
+    jCtx.fillRect(0, 0, safeDims.width, safeDims.height);
     jCtx.drawImage(canvas, 0, 0);
     const jpegUrl = jpegCanvas.toDataURL('image/jpeg', quality);
     return { dataUrl: jpegUrl, mimeType: 'image/jpeg' };
   } finally {
-    canvas.width = 0;
-    canvas.height = 0;
-    if (jpegCanvas) {
-      jpegCanvas.width = 0;
-      jpegCanvas.height = 0;
-    }
+    releaseCanvas(canvas);
+    releaseCanvas(jpegCanvas);
   }
 }
 
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('Failed reading image blob.'));
-    reader.readAsDataURL(blob);
-  });
+async function renderToOffscreenWorkerDataUrl(
+  source: CanvasImageSource,
+  targetWidth: number,
+  targetHeight: number,
+  quality: number,
+  isConstrained: boolean
+): Promise<{ dataUrl: string; mimeType: string }> {
+  const safeDims = enforceCanvasDimensions(targetWidth, targetHeight, isConstrained);
+  const canvas = new OffscreenCanvas(safeDims.width, safeDims.height);
+  let jpegCanvas: OffscreenCanvas | null = null;
+  try {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('OffscreenCanvas 2D context unavailable for worker image optimization.');
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, safeDims.width, safeDims.height);
+
+    if (typeof canvas.convertToBlob === 'function') {
+      try {
+        const webpBlob = await canvas.convertToBlob({ type: 'image/webp', quality });
+        if (webpBlob.type === 'image/webp') {
+          return { dataUrl: await blobToDataUrl(webpBlob), mimeType: 'image/webp' };
+        }
+      } catch {
+        // Fall through to JPEG OffscreenCanvas encode
+      }
+
+      jpegCanvas = new OffscreenCanvas(safeDims.width, safeDims.height);
+      const jCtx = jpegCanvas.getContext('2d');
+      if (!jCtx) {
+        throw new Error('OffscreenCanvas 2D JPEG fallback context unavailable.');
+      }
+      jCtx.fillStyle = '#F7F2E7';
+      jCtx.fillRect(0, 0, safeDims.width, safeDims.height);
+      jCtx.drawImage(canvas, 0, 0);
+      const jpegBlob = await jpegCanvas.convertToBlob({ type: 'image/jpeg', quality });
+      return { dataUrl: await blobToDataUrl(jpegBlob), mimeType: 'image/jpeg' };
+    }
+
+    throw new Error('OffscreenCanvas.convertToBlob unavailable.');
+  } finally {
+    releaseCanvas(canvas);
+    releaseCanvas(jpegCanvas);
+  }
+}
+
+async function renderToDataUrl(
+  source: CanvasImageSource,
+  targetWidth: number,
+  targetHeight: number,
+  quality: number,
+  isConstrained: boolean
+): Promise<{ dataUrl: string; mimeType: string }> {
+  if (typeof document !== 'undefined') {
+    return renderToMainThreadCanvasDataUrl(
+      source,
+      targetWidth,
+      targetHeight,
+      quality,
+      isConstrained
+    );
+  }
+  if (probeOffscreenCanvas2dSupport()) {
+    return renderToOffscreenWorkerDataUrl(
+      source,
+      targetWidth,
+      targetHeight,
+      quality,
+      isConstrained
+    );
+  }
+  throw new Error(
+    'Neither document 2D canvas nor OffscreenCanvas 2D context is available for image optimization.'
+  );
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  if (isFileReaderSupported()) {
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('Failed reading image blob.'));
+        reader.onabort = () => reject(new Error('Image blob read aborted.'));
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      // Fall through to ArrayBuffer + base64 conversion when FileReader is blocked (e.g. Lockdown Mode)
+    }
+  }
+
+  const buffer = await readBlobAsArrayBuffer(blob);
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  const base64 = typeof btoa === 'function' ? btoa(binary) : '';
+  const mime = blob.type || 'application/octet-stream';
+  return `data:${mime};base64,${base64}`;
 }
 
 /**
@@ -200,19 +381,23 @@ export async function optimizeImageBlob(
         `Image "${originalFileName || 'photo'}" (${decoded.width}x${decoded.height} px) exceeds the safe pixel resolution limit (${MAX_IMAGE_PIXEL_DIMENSION.toLocaleString()}px / 100 MP).`
       );
     }
+    const isConstrained = isConstrainedCanvasTier();
+    const maxCanvasAreaPx = getCanvasAreaCeiling(isConstrained);
     let activePreset = preset;
     let mainDims = computeScaledDimensions(
       decoded.width,
       decoded.height,
-      activePreset.maxDimension
+      activePreset.maxDimension,
+      maxCanvasAreaPx
     );
     let mainEncoded: { dataUrl: string; mimeType: string };
     try {
-      mainEncoded = renderToDataUrl(
+      mainEncoded = await renderToDataUrl(
         decoded.source,
         mainDims.width,
         mainDims.height,
-        activePreset.quality
+        activePreset.quality,
+        isConstrained
       );
     } catch (renderErr) {
       // Automatic low-memory self-recovery: step down to Compact (960px) before failing
@@ -227,13 +412,15 @@ export async function optimizeImageBlob(
         mainDims = computeScaledDimensions(
           decoded.width,
           decoded.height,
-          activePreset.maxDimension
+          activePreset.maxDimension,
+          maxCanvasAreaPx
         );
-        mainEncoded = renderToDataUrl(
+        mainEncoded = await renderToDataUrl(
           decoded.source,
           mainDims.width,
           mainDims.height,
-          activePreset.quality
+          activePreset.quality,
+          isConstrained
         );
       } else {
         throw renderErr;
@@ -259,13 +446,15 @@ export async function optimizeImageBlob(
     const thumbDims = computeScaledDimensions(
       decoded.width,
       decoded.height,
-      activePreset.thumbnailDimension
+      activePreset.thumbnailDimension,
+      maxCanvasAreaPx
     );
-    const thumbEncoded = renderToDataUrl(
+    const thumbEncoded = await renderToDataUrl(
       decoded.source,
       thumbDims.width,
       thumbDims.height,
-      activePreset.thumbnailQuality
+      activePreset.thumbnailQuality,
+      isConstrained
     );
 
     return {
@@ -344,8 +533,10 @@ export async function optimizeStagedImporterPhotos(
   let totalStoredBytes = 0;
 
   const detectedTier = detectCurrentDeviceCapability().tier;
-  const defaultChunkSize = detectedTier <= 2 ? 1 : detectedTier === 3 ? 2 : 4;
-  const CHUNK_SIZE = Math.max(1, Math.min(8, Math.round(options?.concurrency ?? defaultChunkSize)));
+  // Default sequential (1) to avoid concurrent decoded-bitmap memory spikes across devices
+  const requestedConcurrency = options?.concurrency ?? 1;
+  const CHUNK_SIZE =
+    detectedTier <= 2 ? 1 : Math.max(1, Math.min(4, Math.round(requestedConcurrency)));
   for (let i = 0; i < staged.length; i += CHUNK_SIZE) {
     const slice = staged.slice(i, i + CHUNK_SIZE);
     const chunkResults = await Promise.all(

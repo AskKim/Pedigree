@@ -250,6 +250,21 @@ export function AnimalEditorModal({
       : ''
   );
   const [buyerName, setBuyerName] = useState(initialAnimal?.buyerName || '');
+  const [forSale, setForSale] = useState<boolean>(
+    Boolean(
+      initialAnimal?.forSale &&
+        initialAnimal.status !== 'Sold' &&
+        initialAnimal.status !== 'Deceased' &&
+        initialAnimal.status !== 'Archived' &&
+        !initialAnimal.archived
+    )
+  );
+  const [askingPriceInput, setAskingPriceInput] = useState(() =>
+    initialAnimal?.askingPriceCents && initialAnimal.askingPriceCents > 0
+      ? (initialAnimal.askingPriceCents / 100).toFixed(2)
+      : ''
+  );
+  const [saleNotes, setSaleNotes] = useState(initialAnimal?.saleNotes || '');
   const resolvedCurrency = normalizeCurrencyCode(currencyCode, 'USD');
   const [sireId, setSireId] = useState(initialAnimal?.sireId || '');
   const [damId, setDamId] = useState(initialAnimal?.damId || '');
@@ -650,6 +665,15 @@ export function AnimalEditorModal({
           salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
           purchaseCostCents: parseMoneyToCents(purchaseCostInput),
           buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
+          forSale:
+            forSale &&
+            status !== 'Sold' &&
+            status !== 'Deceased' &&
+            status !== 'Archived' &&
+            !archived &&
+            ownershipType !== 'Reference',
+          askingPriceCents: parseMoneyToCents(askingPriceInput),
+          saleNotes: saleNotes.trim(),
           sireId,
           damId,
           notes: notes.trim(),
@@ -1021,8 +1045,9 @@ export function AnimalEditorModal({
                   setStatus(next);
                   setPendingWithdrawalWarning(null);
                   setPendingCapacityWarning(null);
-                  if (next === 'Deceased' || next === 'Sold') {
+                  if (next === 'Deceased' || next === 'Sold' || next === 'Archived') {
                     setArchived(true);
+                    setForSale(false);
                   }
                   if (next === 'Sold' && !soldDateIso) {
                     setSoldDateIso(todayDateIso());
@@ -1208,7 +1233,9 @@ export function AnimalEditorModal({
                 type="checkbox"
                 checked={archived}
                 onChange={(e) => {
-                  setArchived(e.target.checked);
+                  const checked = e.target.checked;
+                  setArchived(checked);
+                  if (checked) setForSale(false);
                   setPendingCapacityWarning(null);
                 }}
                 className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
@@ -1249,6 +1276,95 @@ export function AnimalEditorModal({
               </span>
             </label>
           </div>
+
+          {status !== 'Sold' &&
+            status !== 'Deceased' &&
+            status !== 'Archived' &&
+            !archived &&
+            ownershipType !== 'Reference' && (
+              <div
+                className={`rounded-xl border p-3.5 space-y-3 text-xs transition-colors ${
+                  forSale
+                    ? 'bg-[var(--barn-sage-tint)]/45 border-[var(--barn-sage)]'
+                    : 'bg-[var(--barn-canvas)] border-[var(--barn-border)]'
+                }`}
+              >
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={forSale}
+                    onChange={(e) => setForSale(e.target.checked)}
+                    className="mt-0.5 rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
+                  />
+                  <span>
+                    <strong className="text-[var(--barn-ink)]">
+                      Mark Available For Sale (Include in Breeder Showcase Catalog)
+                    </strong>
+                    <span className="block text-[11px] text-[var(--barn-muted)] mt-0.5">
+                      Lists this animal with photo, asking price, and summarized pedigree in your
+                      zero-server For-Sale Showcase HTML &amp; printable buyer stock sheet.
+                    </span>
+                  </span>
+                </label>
+
+                {forSale && (
+                  <div className="space-y-3 pt-1">
+                    {activeWithdrawal?.isActive && (
+                      <div
+                        role="status"
+                        className="p-2.5 rounded-lg bg-[var(--barn-terracotta-tint)]/75 border border-[var(--barn-terracotta)]/70 flex items-start gap-2 text-[11px]"
+                      >
+                        <ShieldAlert
+                          className="w-3.5 h-3.5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span>
+                          <strong>Active Withdrawal Advisory:</strong> Medication withdrawal clears{' '}
+                          {formatReadableDate(activeWithdrawal.clearDateIso)}. Showcase exports will
+                          display a withdrawal hold notice until cleared.
+                        </span>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label
+                          htmlFor={`${baseId}-asking-price`}
+                          className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                        >
+                          Asking Price ({resolvedCurrency}, opt.)
+                        </label>
+                        <input
+                          id={`${baseId}-asking-price`}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="Leave blank for Inquire"
+                          value={askingPriceInput}
+                          onChange={(e) => setAskingPriceInput(e.target.value)}
+                          className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm font-mono tabular-nums"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label
+                          htmlFor={`${baseId}-sale-notes`}
+                          className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
+                        >
+                          Buyer / Showcase Description (opt.)
+                        </label>
+                        <input
+                          id={`${baseId}-sale-notes`}
+                          type="text"
+                          placeholder="e.g. Show prospect, sweet temperament, ready for pickup after weaning"
+                          value={saleNotes}
+                          onChange={(e) => setSaleNotes(e.target.value)}
+                          className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
           <div className="rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] p-3 space-y-3 text-xs">
             <label className="flex items-start gap-2.5 cursor-pointer">

@@ -19,6 +19,7 @@ import {
   buildDefaultBarnBinderOptions,
   generateSpeciesBarnBinderHtml,
 } from '../barnBinder';
+import { buildBreederShowcaseResult } from '../breederShowcase';
 import { buildIcsCalendarForTasks } from '../calendarExport';
 import {
   analyzeAnimalCarrierLineage,
@@ -275,6 +276,61 @@ export const BUILTIN_NON_NATIVE_EXPORTERS: readonly ExternalExporterDescriptor[]
         recordCount: 1,
         summary: `Exported lightweight ${depth}-gen Shareable Pedigree Card (${filename}) for ${subject.name}.`,
         warnings: [],
+      };
+    },
+  },
+  {
+    id: 'breeder-showcase-html',
+    name: 'Zero-Server Breeder Showcase & For-Sale Catalog',
+    formatExtension: '.HTML',
+    category: 'pedigree_document',
+    targetPlatform: 'Static Web Hosting / Buyer Catalog / Stock Sheet',
+    scopeMode: 'all_or_species',
+    supportsSpeciesFilter: true,
+    status: 'ready',
+    description:
+      'Self-contained static HTML showcase page and printable buyer stock sheet built from animals marked For Sale—with photos, asking prices, 2-gen pedigrees, show honors, and breeder contact links.',
+    compatibilityNote:
+      'Zero external CDNs or server required; host free on GitHub Pages / Netlify / Neocities or share directly offline.',
+    schemaFields: [
+      'For-Sale Filter & Asking Prices',
+      'Embedded Portraits',
+      '2-Gen Pedigree & COI',
+      'Show & Carrier Highlights',
+      'Breeder Contact & Printable Sheet',
+    ],
+    exportPayload(context: ExporterExecutionContext): ExportedArtifactPayload {
+      const { snapshot, speciesName, appBaseUrl } = context;
+      const scopedSpecies = speciesName?.trim() || undefined;
+      const res = buildBreederShowcaseResult(snapshot, {
+        speciesName: scopedSpecies,
+        includePhotos: true,
+        includePedigreeSummary: true,
+        includeContactInfo: true,
+        appBaseUrl,
+        includeQrCode: Boolean(appBaseUrl),
+      });
+
+      const warnings = [...res.activeWithdrawalWarnings];
+      if (res.animalCount === 0) {
+        warnings.push(
+          scopedSpecies
+            ? `No ${scopedSpecies} records are currently marked Available For Sale — exported an empty storefront template.`
+            : 'No animals are currently marked Available For Sale — exported an empty storefront template.'
+        );
+      }
+
+      return {
+        exporterId: 'breeder-showcase-html',
+        filename: res.filename,
+        mimeType: 'text/html;charset=utf-8',
+        content: res.html,
+        recordCount: res.animalCount,
+        summary:
+          res.animalCount > 0
+            ? `Exported zero-server For-Sale Showcase (${res.filename}) featuring ${res.animalCount} animal${res.animalCount === 1 ? '' : 's'}${res.reservedCount > 0 ? ` (${res.reservedCount} on hold/reserved)` : ''}.`
+            : `Exported Breeder Showcase template (${res.filename}) — mark animals "For Sale" in Herd to populate listings.`,
+        warnings,
       };
     },
   },

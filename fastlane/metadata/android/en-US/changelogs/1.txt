@@ -1,5 +1,5 @@
-Initial Android wrapper release (v0.1.0-alpha.2):
-- Offline-first WebViewAssetLoader shell at https://appassets.androidplatform.net
-- Native Back navigation unwinding, file import/export, Share Sheet, and PrintManager support
+Community Pedigree v0.1.0-alpha.2 (Android WebView Wrapper):
+- Offline-first React PWA served via WebViewAssetLoader at https://appassets.androidplatform.net
+- Native Back navigation unwinding, SAF file import/export, Share Sheet & PrintManager support
 - Native Backup Vault mirror (5-snapshot rotation with SHA-256 deduplication)
-- Unified Developer & Diagnostics Panel with Storage Truth Card and 100-event ring buffer
+- Hardened mobile bootability, atomic SQLite migrations, reduced cold-start bundle & worker memory trim

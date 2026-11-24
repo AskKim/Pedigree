@@ -612,6 +612,84 @@ export function migrateAnimalsToSpecies(
     return fa;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).map((cc) => {
+    const fullSpecies = isFullSpeciesFromSource(cc.species);
+    if (fullSpecies && !isSameSpecies(cc.species, targetName)) {
+      return { ...cc, species: targetName, _rev: bumpRecordRevision(cc), updatedAt: ts };
+    }
+    return cc;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).map((wl) => {
+    const linkedBreedingMoved = Boolean(
+      wl.preferredBreedingId && migratedBreedingIds.has(wl.preferredBreedingId)
+    );
+    const fullSpecies = isFullSpeciesFromSource(wl.species);
+    if ((linkedBreedingMoved || fullSpecies) && !isSameSpecies(wl.species, targetName)) {
+      return { ...wl, species: targetName, _rev: bumpRecordRevision(wl), updatedAt: ts };
+    }
+    return wl;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).map((ar) => {
+    const linkedAnimalMoved = Boolean(ar.animalId && actuallyMovingIds.has(ar.animalId));
+    const linkedBreedingMoved = Boolean(ar.breedingId && migratedBreedingIds.has(ar.breedingId));
+    const fullSpecies = isFullSpeciesFromSource(ar.species);
+    if ((linkedAnimalMoved || linkedBreedingMoved || fullSpecies) && !isSameSpecies(ar.species, targetName)) {
+      return { ...ar, species: targetName, _rev: bumpRecordRevision(ar), updatedAt: ts };
+    }
+    return ar;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).map((wh) => {
+    const linkedAnimalMoved = Boolean(wh.animalId && actuallyMovingIds.has(wh.animalId));
+    const fullSpecies = isFullSpeciesFromSource(wh.species);
+    if ((linkedAnimalMoved || fullSpecies) && !isSameSpecies(wh.species, targetName)) {
+      return { ...wh, species: targetName, _rev: bumpRecordRevision(wh), updatedAt: ts };
+    }
+    return wh;
+  });
+
+  const nextMileageLogs = (snapshot.mileageLogs ?? []).map((ml) => {
+    const fullSpecies = isFullSpeciesFromSource(ml.species);
+    if (fullSpecies && !isSameSpecies(ml.species, targetName)) {
+      return { ...ml, species: targetName, _rev: bumpRecordRevision(ml), updatedAt: ts };
+    }
+    return ml;
+  });
+
+  const nextJournalEntries = (snapshot.journalEntries ?? []).map((je) => {
+    const linkedAnimalMoved = Boolean(
+      je.linkedAnimalIds?.some((id) => actuallyMovingIds.has(id))
+    );
+    const fullSpecies = isFullSpeciesFromSource(je.species);
+    if ((linkedAnimalMoved || fullSpecies) && !isSameSpecies(je.species, targetName)) {
+      return { ...je, species: targetName, _rev: bumpRecordRevision(je), updatedAt: ts };
+    }
+    return je;
+  });
+
+  const nextJudgeClubs = (snapshot.judgeClubs ?? []).map((jc) => {
+    if (isFullSpeciesFromSource(jc.species) && !isSameSpecies(jc.species, targetName)) {
+      return { ...jc, species: targetName, _rev: bumpRecordRevision(jc), updatedAt: ts };
+    }
+    return jc;
+  });
+
+  const nextJudgeAssignments = (snapshot.judgeAssignments ?? []).map((ja) => {
+    if (isFullSpeciesFromSource(ja.species) && !isSameSpecies(ja.species, targetName)) {
+      return { ...ja, species: targetName, _rev: bumpRecordRevision(ja), updatedAt: ts };
+    }
+    return ja;
+  });
+
+  const nextJudgeExpenses = (snapshot.judgeExpenses ?? []).map((jx) => {
+    if (isFullSpeciesFromSource(jx.species) && !isSameSpecies(jx.species, targetName)) {
+      return { ...jx, species: targetName, _rev: bumpRecordRevision(jx), updatedAt: ts };
+    }
+    return jx;
+  });
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     speciesProfiles: nextSpeciesProfiles,
@@ -627,6 +705,15 @@ export function migrateAnimalsToSpecies(
     ledgerEntries: nextLedgerEntries,
     processingLogs: nextProcessingLogs,
     youthProjectBooks: nextYouthBooks,
+    clientContacts: nextClientContacts,
+    waitlistEntries: nextWaitlistEntries,
+    animalReservations: nextAnimalReservations,
+    woolHarvests: nextWoolHarvests,
+    mileageLogs: nextMileageLogs,
+    journalEntries: nextJournalEntries,
+    judgeClubs: nextJudgeClubs,
+    judgeAssignments: nextJudgeAssignments,
+    judgeExpenses: nextJudgeExpenses,
   };
 
   let remainingSourceRecordsCount = 0;

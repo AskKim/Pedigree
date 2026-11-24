@@ -191,21 +191,15 @@ export function CalendarSyncConfirmModal({
           </div>
 
           {isOnline && !isSignedIn && (
-            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-2.5">
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-1.5">
               <div className="font-semibold text-[var(--barn-ink)]">
-                Connect your Google account to add events directly
+                Offline .ICS &amp; Web Calendar Templates Ready
               </div>
               <p className="text-[var(--barn-muted)]">
-                Sign in with Google to save these {datedTasks.length === 1 ? 'event' : 'events'}{' '}
-                straight to your online calendar, or choose the offline .ICS file below (which also
-                works with desktop Outlook and Apple Calendar).
+                Direct Google account sign-in is disabled (no cloud/Firebase auth dependency). Use{' '}
+                <strong>Download Offline .ICS</strong> below for any calendar app, or open a quick
+                browser template link when syncing a single chore.
               </p>
-              <SignInWithGoogleButton
-                onClick={() => {
-                  void onSignIn();
-                }}
-                disabled={isBusy}
-              />
             </div>
           )}
 

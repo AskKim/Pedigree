@@ -11,11 +11,8 @@
  */
 
 import { strFromU8, strToU8, zipSync, Zippable } from 'fflate';
-import {
-  BackupPhotoManifestEntry,
-  binaryToDataUrl,
-  dataUrlToBinary,
-} from './backupArchive';
+import type { BackupPhotoManifestEntry } from './backupArchive';
+import { binaryToDataUrl, dataUrlToBinary } from './binaryEncoding';
 import {
   isSvgImageInput,
   MAX_JSON_BACKUP_BYTES,
@@ -331,6 +328,15 @@ export function buildEmptyShellSnapshot(): BarnDatabaseSnapshot {
     ledgerEntries: [],
     processingLogs: [],
     youthProjectBooks: [],
+    clientContacts: [],
+    waitlistEntries: [],
+    animalReservations: [],
+    woolHarvests: [],
+    mileageLogs: [],
+    journalEntries: [],
+    judgeClubs: [],
+    judgeAssignments: [],
+    judgeExpenses: [],
   };
 }
 
@@ -1097,6 +1103,15 @@ export function extractArchiveIndexMetadataOnly(
       ledgerEntries: [],
       processingLogs: [],
       youthProjectBooks: [],
+      clientContacts: [],
+      waitlistEntries: [],
+      animalReservations: [],
+      woolHarvests: [],
+      mileageLogs: [],
+      journalEntries: [],
+      judgeClubs: [],
+      judgeAssignments: [],
+      judgeExpenses: [],
     }),
     fallback
   );
@@ -1206,6 +1221,15 @@ export function unpackArchivedAnimalBundle(
       ledgerEntries: [],
       processingLogs: [],
       youthProjectBooks: [],
+      clientContacts: [],
+      waitlistEntries: [],
+      animalReservations: [],
+      woolHarvests: [],
+      mileageLogs: [],
+      journalEntries: [],
+      judgeClubs: [],
+      judgeAssignments: [],
+      judgeExpenses: [],
     }),
     fallbackSettings
   );
@@ -1214,7 +1238,7 @@ export function unpackArchivedAnimalBundle(
   const reconstructedPhotos: AnimalPhoto[] = [];
   const rawManifest = Array.isArray(parsed.photoManifest) ? parsed.photoManifest : [];
   for (let i = 0; i < rawManifest.length; i++) {
-    const entry = rawManifest[i] as Record<string, any>;
+    const entry = rawManifest[i] as Record<string, unknown> | null | undefined;
     const archivePath = sanitizeSingleLineText(String(entry?.archivePath || ''), 300);
     if (!archivePath || !entry?.animalId) continue;
     const imgBytes = unzipped[archivePath];

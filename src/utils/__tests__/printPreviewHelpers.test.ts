@@ -3,6 +3,7 @@ import {
   canShareHtmlDocument,
   detectDocumentPrintOrientation,
   extractScopedPrintCssFromRawCss,
+  sanitizePrintStageHtml,
   scopePrintSelectorList,
 } from '../../components/PrintPreviewModal';
 
@@ -50,5 +51,31 @@ describe('PrintPreviewModal pure CSS scoping, orientation & native share helpers
         '<html><body></body></html>'
       )
     ).toBe('portrait');
+  });
+
+  it('sanitizes executable tags, inline event handlers, and dangerous URLs from #barn-print-stage HTML while keeping raster photos', () => {
+    const dirty = `
+      <div class="pedigree-card" onclick="alert(1)">
+        <h1>Buck #42</h1>
+        <img src="data:image/png;base64,iVBORw0KGgo=" onerror="fetch('https://evil.example')" alt="Buck" />
+        <a href="javascript:alert(2)">Bad Link</a>
+        <a href="data:text/html,<script>alert(3)</script>">Bad Data Link</a>
+        <script>window.__xss = true;</script>
+        <iframe src="https://evil.example"></iframe>
+        <object data="x.swf"></object>
+        <embed src="x.swf" />
+      </div>
+    `;
+    const cleaned = sanitizePrintStageHtml(dirty);
+    expect(cleaned).toContain('<h1>Buck #42</h1>');
+    expect(cleaned).toContain('data:image/png;base64,iVBORw0KGgo=');
+    expect(cleaned).not.toMatch(/<script/i);
+    expect(cleaned).not.toMatch(/<iframe/i);
+    expect(cleaned).not.toMatch(/<object/i);
+    expect(cleaned).not.toMatch(/<embed/i);
+    expect(cleaned).not.toMatch(/\bonclick\s*=/i);
+    expect(cleaned).not.toMatch(/\bonerror\s*=/i);
+    expect(cleaned).not.toMatch(/javascript:/i);
+    expect(cleaned).not.toMatch(/data:text\/html/i);
   });
 });

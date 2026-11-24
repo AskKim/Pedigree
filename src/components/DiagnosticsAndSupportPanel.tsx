@@ -42,11 +42,9 @@ import {
   ImageOptimizationPresetId,
 } from '../core/imageOptimizationSpec';
 import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
-import {
-  buildImprovementsRecoveryJson,
-  formatImprovementsMarkdown,
-  IMPROVEMENT_CATEGORY_LABELS,
-  IMPROVEMENTS_REGISTRY,
+import type {
+  ImprovementCategory,
+  ImprovementEntry,
 } from '../core/improvementRegistry';
 import { BarnDatabaseSnapshot } from '../core/models';
 import {
@@ -122,6 +120,10 @@ interface DiagnosticsAndSupportPanelProps {
     presetId?: ImageOptimizationPresetId
   ) => Promise<{ updatedCount: number; oversizedFound: number; reclaimedBytes: number }>;
   onPruneFullResPhotoPayloads?: () => Promise<{ prunedCount: number; reclaimedBytes: number }>;
+  visibleSections?: 'all' | 'logs-and-support' | 'maintenance';
+  collapsible?: boolean;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
 }
 
 type LogFilterTab = 'all' | 'errors' | 'memory';
@@ -141,7 +143,14 @@ export function DiagnosticsAndSupportPanel({
   onPruneOrphanPhotos,
   onReoptimizeOversizedPhotos,
   onPruneFullResPhotoPayloads,
+  visibleSections = 'all',
+  collapsible = false,
+  expanded = true,
+  onToggleExpanded,
 }: DiagnosticsAndSupportPanelProps) {
+  const showLogsSections = visibleSections === 'all' || visibleSections === 'logs-and-support';
+  const showMaintenanceSections = visibleSections === 'all' || visibleSections === 'maintenance';
+  const isSectionExpanded = !collapsible || expanded;
   const [config, setConfig] = useState(() => getDiagnosticConfig());
   const [entries, setEntries] = useState<DiagnosticLogEntry[]>([]);
   const [summary, setSummary] = useState<DiagnosticSummary | null>(null);
@@ -166,6 +175,22 @@ export function DiagnosticsAndSupportPanel({
     attemptShare: boolean;
   } | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
+  const [loadedImprovements, setLoadedImprovements] = useState<{
+    entries: ImprovementEntry[];
+    categoryLabels: Record<ImprovementCategory, string>;
+  } | null>(null);
+  const [loadingImprovementsLog, setLoadingImprovementsLog] = useState(false);
+
+  const loadImprovementRegistryModule = useCallback(async () => {
+    const mod = await import('../core/improvementRegistry');
+    setLoadedImprovements((prev) =>
+      prev ?? {
+        entries: mod.IMPROVEMENTS_REGISTRY,
+        categoryLabels: mod.IMPROVEMENT_CATEGORY_LABELS,
+      }
+    );
+    return mod;
+  }, []);
   const [improvementsFeedback, setImprovementsFeedback] = useState<string | null>(null);
   const [lastBuiltMailMeta, setLastBuiltMailMeta] = useState<{
     filename: string;
@@ -419,17 +444,19 @@ export function DiagnosticsAndSupportPanel({
         });
 
         setFeedback(
-          mode === 'shared'
-            ? `Opened Share Sheet with ${built.filename} (${formatByteSizePure(
-                built.bytes.byteLength
-              )}). Choose your email app to send${recipient ? ` to ${recipient}` : ''}.`
-            : `Downloaded ${built.filename} (${formatByteSizePure(
-                built.bytes.byteLength
-              )}).${
-                recipient
-                  ? ` Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
-                  : ' Type a recipient email above or tap "Open Email Draft" below and attach the downloaded .ZIP.'
-              }`
+          mode === 'cancelled'
+            ? 'Share sheet cancelled — no file was saved.'
+            : mode === 'shared'
+              ? `Opened Share Sheet with ${built.filename} (${formatByteSizePure(
+                  built.bytes.byteLength
+                )}). Choose your email app to send${recipient ? ` to ${recipient}` : ''}.`
+              : `Downloaded ${built.filename} (${formatByteSizePure(
+                  built.bytes.byteLength
+                )}).${
+                  recipient
+                    ? ` Tap "Open Email Draft" below and attach the downloaded .ZIP to email ${recipient}.`
+                    : ' Type a recipient email above or tap "Open Email Draft" below and attach the downloaded .ZIP.'
+                }`
         );
       } else {
         await downloadBinaryFile(built.filename, built.bytes, 'application/zip');
@@ -496,26 +523,74 @@ export function DiagnosticsAndSupportPanel({
       })
     : null;
 
+  const errorEntriesCountForHeader = entries.filter(
+    (entry) => entry.level === 'error' || entry.level === 'fatal'
+  ).length;
+
   return (
     <section
-      id="crash-diagnostics"
-      className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-4"
+      id={showLogsSections ? 'crash-diagnostics' : 'maintenance-repair'}
+      className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-5 sm:p-6 space-y-5"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="font-display text-xl font-semibold">
-            Diagnostic &amp; Crash Logs · Send Bug Report
-          </h2>
-          <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-            Automatically captures runtime crashes, unhandled promises, and memory pressure for{' '}
-            {config.retentionDays} days
-          </p>
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={isSectionExpanded}
+          onClick={onToggleExpanded}
+          className="w-full text-left flex items-start justify-between gap-3 group"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-lg font-semibold text-[var(--barn-ink)]">
+                {showLogsSections
+                  ? 'Diagnostic & Crash Logs · Support Bundle'
+                  : 'Database Health, Photo Pruner & Cache Recovery'}
+              </h2>
+              <span className="font-mono text-[11px] text-[var(--barn-muted)]">
+                {showLogsSections
+                  ? `${entries.length} logs · ${errorEntriesCountForHeader} errors`
+                  : `${(snapshot.animalPhotos ?? []).length} photos · DB health · Cache recovery`}
+              </span>
+            </div>
+            <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+              {showLogsSections
+                ? `Captures runtime crashes, unhandled promises, and memory pressure for ${config.retentionDays} days.`
+                : 'Audit photo byte usage, scan structural integrity, reset connections, or purge stale browser caches safely.'}
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1.5 shrink-0 text-xs font-semibold text-[var(--barn-muted)] group-hover:text-[var(--barn-ink)] pt-0.5">
+            <Bug className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+            {isSectionExpanded ? (
+              <ChevronUp className="w-4 h-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="w-4 h-4 shrink-0" aria-hidden="true" />
+            )}
+          </span>
+        </button>
+      ) : (
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-semibold text-[var(--barn-ink)]">
+              {showLogsSections
+                ? 'Diagnostic & Crash Logs · Support Bundle'
+                : 'Database Health, Photo Pruner & Cache Recovery'}
+            </h2>
+            <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+              {showLogsSections
+                ? `Captures runtime crashes, unhandled promises, and memory pressure for ${config.retentionDays} days.`
+                : 'Audit photo byte usage, scan structural integrity, reset connections, or purge stale browser caches safely.'}
+            </p>
+          </div>
+          <Bug className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
         </div>
-        <Bug className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
-      </div>
+      )}
 
-      {/* Live Metrics & Retention Controls */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+      {isSectionExpanded && (
+        <>
+          {showLogsSections && (
+            <>
+          {/* Live Metrics & Retention Controls */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <div className="p-2.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)]">
           <div className="text-[11px] text-[var(--barn-muted)]">Stored Logs</div>
           <div className="font-mono font-semibold tabular-nums mt-0.5">{entries.length}</div>
@@ -1139,9 +1214,13 @@ export function DiagnosticsAndSupportPanel({
           </div>
         )}
       </div>
+        </>
+      )}
 
-      {/* Photo Storage & Orphan Attachment Pruner (IMP-023) */}
-      {onAnalyzePhotoFootprint && (
+      {showMaintenanceSections && (
+        <>
+          {/* Photo Storage & Orphan Attachment Pruner (IMP-023) */}
+          {onAnalyzePhotoFootprint && (
         <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -1657,13 +1736,18 @@ export function DiagnosticsAndSupportPanel({
           </div>
         )}
       </div>
+        </>
+      )}
 
-      {/* App Improvements & GitHub-Overwrite Recovery Log (IMP-011) */}
-      <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+      {showLogsSections && (
+        <>
+          {/* App Improvements & GitHub-Overwrite Recovery Log (IMP-011) */}
+          <div className="p-4 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <div className="text-xs font-semibold text-[var(--barn-ink)]">
-              App Improvements &amp; Recovery Log ({IMPROVEMENTS_REGISTRY.length})
+              App Improvements &amp; Recovery Log
+              {loadedImprovements ? ` (${loadedImprovements.entries.length})` : ''}
             </div>
             <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
               Download or copy the tracked improvements manifest &amp; restoration playbooks.
@@ -1673,7 +1757,24 @@ export function DiagnosticsAndSupportPanel({
             type="button"
             aria-expanded={showImprovementsLog}
             aria-controls={improvementsLogId}
-            onClick={() => setShowImprovementsLog((v) => !v)}
+            onClick={() => {
+              const nextOpen = !showImprovementsLog;
+              setShowImprovementsLog(nextOpen);
+              if (nextOpen && !loadedImprovements && !loadingImprovementsLog) {
+                setLoadingImprovementsLog(true);
+                void loadImprovementRegistryModule()
+                  .catch((err) => {
+                    setImprovementsFeedback(
+                      err instanceof Error
+                        ? err.message
+                        : 'Could not load tracked improvements log.'
+                    );
+                  })
+                  .finally(() => {
+                    setLoadingImprovementsLog(false);
+                  });
+              }
+            }}
             className="min-h-[44px] sm:min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
           >
             {showImprovementsLog ? (
@@ -1695,6 +1796,7 @@ export function DiagnosticsAndSupportPanel({
             type="button"
             onClick={async () => {
               try {
+                const { formatImprovementsMarkdown } = await loadImprovementRegistryModule();
                 await downloadTextFile('IMPROVEMENTS.md', formatImprovementsMarkdown(), 'text/markdown');
                 setImprovementsFeedback('Downloaded IMPROVEMENTS.md recovery manual.');
               } catch (err) {
@@ -1713,6 +1815,7 @@ export function DiagnosticsAndSupportPanel({
             type="button"
             onClick={async () => {
               try {
+                const { buildImprovementsRecoveryJson } = await loadImprovementRegistryModule();
                 await downloadTextFile(
                   'pedigree-improvements-log.json',
                   buildImprovementsRecoveryJson(),
@@ -1736,19 +1839,26 @@ export function DiagnosticsAndSupportPanel({
           <button
             type="button"
             onClick={async () => {
-              const markdown = formatImprovementsMarkdown();
-              const mode = await copyTextWithFallback(markdown);
-              if (mode !== 'unsupported') {
-                setManualCopyBox(null);
-                setImprovementsFeedback('Copied Markdown recovery log to clipboard.');
-              } else {
-                setManualCopyBox({
-                  target: 'improvements',
-                  label: 'Selectable Markdown Recovery Log',
-                  text: markdown,
-                });
+              try {
+                const { formatImprovementsMarkdown } = await loadImprovementRegistryModule();
+                const markdown = formatImprovementsMarkdown();
+                const mode = await copyTextWithFallback(markdown);
+                if (mode !== 'unsupported') {
+                  setManualCopyBox(null);
+                  setImprovementsFeedback('Copied Markdown recovery log to clipboard.');
+                } else {
+                  setManualCopyBox({
+                    target: 'improvements',
+                    label: 'Selectable Markdown Recovery Log',
+                    text: markdown,
+                  });
+                  setImprovementsFeedback(
+                    'Clipboard unavailable in this browser — copy from the text box below or use Download Recovery .JSON.'
+                  );
+                }
+              } catch (err) {
                 setImprovementsFeedback(
-                  'Clipboard unavailable in this browser — copy from the text box below or use Download Recovery .JSON.'
+                  err instanceof Error ? err.message : 'Could not copy recovery log.'
                 );
               }
             }}
@@ -1796,7 +1906,12 @@ export function DiagnosticsAndSupportPanel({
 
         {showImprovementsLog && (
           <div id={improvementsLogId} className="space-y-2 max-h-72 overflow-y-auto pt-1">
-            {IMPROVEMENTS_REGISTRY.map((entry) => (
+            {loadingImprovementsLog && !loadedImprovements && (
+              <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs text-[var(--barn-muted)]">
+                Loading tracked improvements manifest…
+              </div>
+            )}
+            {(loadedImprovements?.entries ?? []).map((entry) => (
               <div
                 key={entry.id}
                 className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1 text-xs"
@@ -1807,7 +1922,7 @@ export function DiagnosticsAndSupportPanel({
                     {entry.title}
                   </span>
                   <span className="text-[11px] font-mono text-[var(--barn-muted)]">
-                    {IMPROVEMENT_CATEGORY_LABELS[entry.category]}
+                    {loadedImprovements?.categoryLabels[entry.category] ?? entry.category}
                   </span>
                 </div>
                 <p className="text-[11px] text-[var(--barn-muted)]">{entry.summary}</p>
@@ -1816,6 +1931,10 @@ export function DiagnosticsAndSupportPanel({
           </div>
         )}
       </div>
+        </>
+      )}
+        </>
+      )}
     </section>
   );
 }

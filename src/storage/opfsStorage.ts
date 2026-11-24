@@ -44,21 +44,32 @@ import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import { pushBackupPayloadToSyncFolder } from './localSyncChannels';
 import {
+  getActiveOpfsHandleCount,
+  getActiveTempFiles,
   getOpfsSubdir,
   isOpfsSupported,
   listDirEntries,
   markTempOpfsFileActive,
+  OpfsCloseableHandle,
   OpfsDirectoryHandle,
   OpfsFileHandle,
   OpfsNamespace,
+  OpfsSyncAccessHandle,
   OpfsWritableStream,
+  probeOpfsRuntime,
   purgeOpfsTmp,
   readOpfsFileBytes,
   readOpfsFileText,
   readTempOpfsFileAsBlob,
   registerOpfsDiagnosticLogger,
+  releaseActiveOpfsHandles,
   removeOpfsEntrySafe,
   removeTempOpfsFile,
+  resetOpfsProbesForTests,
+  safeAwaitOpfsClose,
+  safeAwaitOpfsFlush,
+  safeAwaitOpfsGetSize,
+  safeAwaitOpfsTruncate,
   setOpfsRootResolverForTest,
   StreamedOpfsTempFileResult,
   sweepOrphanedOpfsTmpOnBoot,
@@ -67,6 +78,13 @@ import {
   writeTempOpfsFile,
   writeTempOpfsFileStreamed,
 } from './opfsTempStream';
+import {
+  getSafeIndexedDb,
+  getSafeLocalStorage,
+  registerIndexedDbOpfsDumper,
+  trackActiveIdbConnection,
+  trackActiveIdbTransaction,
+} from './storageProbes';
 import { isQuotaExceededError } from './storageProtection';
 
 registerOpfsDiagnosticLogger((ev) => {
@@ -74,12 +92,21 @@ registerOpfsDiagnosticLogger((ev) => {
 });
 
 export {
+  getActiveOpfsHandleCount,
+  getActiveTempFiles,
   getOpfsSubdir,
   isOpfsSupported,
   markTempOpfsFileActive,
+  probeOpfsRuntime,
   purgeOpfsTmp,
   readTempOpfsFileAsBlob,
+  releaseActiveOpfsHandles,
   removeTempOpfsFile,
+  resetOpfsProbesForTests,
+  safeAwaitOpfsClose,
+  safeAwaitOpfsFlush,
+  safeAwaitOpfsGetSize,
+  safeAwaitOpfsTruncate,
   setOpfsRootResolverForTest,
   sweepOrphanedOpfsTmpOnBoot,
   unmarkTempOpfsFileActive,
@@ -87,9 +114,11 @@ export {
   writeTempOpfsFileStreamed,
 };
 export type {
+  OpfsCloseableHandle,
   OpfsDirectoryHandle,
   OpfsFileHandle,
   OpfsNamespace,
+  OpfsSyncAccessHandle,
   OpfsWritableStream,
   StreamedOpfsTempFileResult,
 };
@@ -138,9 +167,10 @@ export interface OpfsPruneSyncWarning {
 }
 
 export function readOpfsPruneSyncWarning(): OpfsPruneSyncWarning | null {
-  if (typeof localStorage === 'undefined') return null;
+  const ls = getSafeLocalStorage();
+  if (!ls) return null;
   try {
-    const raw = localStorage.getItem(OPFS_PRUNE_WARNING_KEY);
+    const raw = ls.getItem(OPFS_PRUNE_WARNING_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<OpfsPruneSyncWarning>;
     if (!parsed || typeof parsed !== 'object' || typeof parsed.lastFileName !== 'string') {
@@ -170,9 +200,10 @@ export function readOpfsPruneSyncWarning(): OpfsPruneSyncWarning | null {
 }
 
 export function clearOpfsPruneSyncWarning(): void {
-  if (typeof localStorage === 'undefined') return;
+  const ls = getSafeLocalStorage();
+  if (!ls) return;
   try {
-    localStorage.removeItem(OPFS_PRUNE_WARNING_KEY);
+    ls.removeItem(OPFS_PRUNE_WARNING_KEY);
   } catch {
     // Ignore
   }
@@ -209,9 +240,10 @@ function recordOpfsPruneSyncWarning(
       ? `${totalCount} expiring local backup(s) could not offload (${reasonNote}) and were retained locally until sync succeeds. Re-authorize your Backup Sync folder or export a manual backup.`
       : `${totalCount} aging local backup(s) rolled off storage without an off-device sync copy (${reasonNote}). Connect a sync folder or download a manual backup.`,
   };
-  if (typeof localStorage !== 'undefined') {
+  const ls = getSafeLocalStorage();
+  if (ls) {
     try {
-      localStorage.setItem(OPFS_PRUNE_WARNING_KEY, JSON.stringify(next));
+      ls.setItem(OPFS_PRUNE_WARNING_KEY, JSON.stringify(next));
     } catch {
       // Non-fatal
     }
@@ -326,12 +358,19 @@ async function readVaultIndex(backupsDir: OpfsDirectoryHandle): Promise<VaultBac
       if (!bytes || bytes.byteLength === 0) continue;
       const isCompressed = entry.name.endsWith('.zip') || isZipMagicBytes(bytes);
       const text = extractVaultJsonTextFromPayload(bytes, entry.name);
-      const parsed = JSON.parse(text) as Record<string, any>;
+      const parsed = JSON.parse(text) as Record<string, unknown>;
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-      const snap = parsed.snapshot && typeof parsed.snapshot === 'object' ? parsed.snapshot : parsed;
-      const animalCount = Array.isArray(snap?.animals) ? snap.animals.length : 0;
-      const photoCount = Array.isArray(snap?.animalPhotos) ? snap.animalPhotos.length : 0;
-      const speciesCount = Array.isArray(snap?.speciesProfiles) ? snap.speciesProfiles.length : 0;
+      const snap: Record<string, unknown> =
+        parsed.snapshot && typeof parsed.snapshot === 'object' && !Array.isArray(parsed.snapshot)
+          ? (parsed.snapshot as Record<string, unknown>)
+          : parsed;
+      const snapSettings =
+        snap.settings && typeof snap.settings === 'object' && !Array.isArray(snap.settings)
+          ? (snap.settings as Record<string, unknown>)
+          : null;
+      const animalCount = Array.isArray(snap.animals) ? snap.animals.length : 0;
+      const photoCount = Array.isArray(snap.animalPhotos) ? snap.animalPhotos.length : 0;
+      const speciesCount = Array.isArray(snap.speciesProfiles) ? snap.speciesProfiles.length : 0;
       const kind: VaultBackupKind =
         parsed.vaultKind === 'monthly' ||
         parsed.vaultKind === 'pre_upgrade' ||
@@ -356,7 +395,7 @@ async function readVaultIndex(backupsDir: OpfsDirectoryHandle): Promise<VaultBac
         schemaVersion: Number(parsed._schemaVersion) || CURRENT_BACKUP_SCHEMA_VERSION,
         createdAtIso: String(parsed.createdAtIso || parsed.exportedAtIsoUtc || nowIsoUtc()),
         createdByAppVersion: String(parsed.createdByAppVersion || APP_SCHEMA_BUILD_TAG),
-        barnName: String(snap?.settings?.barnName || 'My Barn'),
+        barnName: String(snapSettings?.barnName || 'My Barn'),
         animalCount,
         photoCount,
         speciesCount,
@@ -896,9 +935,10 @@ export async function deleteOpfsHerdArchive(archiveKey: string): Promise<boolean
 // ---------------------------------------------------------------------------
 
 export function readPriorUseSentinel(): PriorUseSentinel | null {
-  if (typeof localStorage === 'undefined') return null;
+  const ls = getSafeLocalStorage();
+  if (!ls) return null;
   try {
-    const raw = localStorage.getItem(PRIOR_USE_SENTINEL_KEY);
+    const raw = ls.getItem(PRIOR_USE_SENTINEL_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PriorUseSentinel>;
     if (!parsed || typeof parsed !== 'object') return null;
@@ -914,7 +954,8 @@ export function readPriorUseSentinel(): PriorUseSentinel | null {
 }
 
 export function markPriorUseSentinelFromSnapshot(snapshot: BarnDatabaseSnapshot): void {
-  if (typeof localStorage === 'undefined') return;
+  const ls = getSafeLocalStorage();
+  if (!ls) return;
   const nonTestingCount = snapshot.animals.filter((a) => !isSampleTestingId(a.id)).length;
   const hasReal = hasNonTestingBarnData(snapshot) || Boolean(snapshot.settings.barnNameOnboarded);
   if (!hasReal && !readPriorUseSentinel()) {
@@ -927,16 +968,17 @@ export function markPriorUseSentinelFromSnapshot(snapshot: BarnDatabaseSnapshot)
       nonTestingCount,
       lastSeenIso: nowIsoUtc(),
     };
-    localStorage.setItem(PRIOR_USE_SENTINEL_KEY, JSON.stringify(next));
+    ls.setItem(PRIOR_USE_SENTINEL_KEY, JSON.stringify(next));
   } catch {
     // Ignore localStorage quota failures
   }
 }
 
 export function clearPriorUseSentinel(): void {
-  if (typeof localStorage === 'undefined') return;
+  const ls = getSafeLocalStorage();
+  if (!ls) return;
   try {
-    localStorage.removeItem(PRIOR_USE_SENTINEL_KEY);
+    ls.removeItem(PRIOR_USE_SENTINEL_KEY);
   } catch {
     // Ignore
   }
@@ -997,16 +1039,17 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
 export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
   if (!isOpfsSupported()) return false;
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-  if (typeof localStorage === 'undefined') return true;
+  const ls = getSafeLocalStorage();
+  if (!ls) return true;
   try {
-    const failRaw = localStorage.getItem(CANARY_LAST_FAIL_KEY);
+    const failRaw = ls.getItem(CANARY_LAST_FAIL_KEY);
     if (failRaw) {
       const failMs = Number(failRaw);
       if (Number.isFinite(failMs) && failMs > 0 && nowMs - failMs < CANARY_FAILURE_COOLDOWN_MS) {
         return false;
       }
     }
-    const raw = localStorage.getItem(CANARY_LAST_RUN_KEY);
+    const raw = ls.getItem(CANARY_LAST_RUN_KEY);
     if (!raw) return true;
     const prevMs = Number(raw);
     if (!Number.isFinite(prevMs) || prevMs <= 0) return true;
@@ -1017,9 +1060,10 @@ export function shouldRunExportCanary(nowMs: number = Date.now()): boolean {
 }
 
 function recordCanaryFailureTimestamp(): void {
-  if (typeof localStorage === 'undefined') return;
+  const ls = getSafeLocalStorage();
+  if (!ls) return;
   try {
-    localStorage.setItem(CANARY_LAST_FAIL_KEY, String(Date.now()));
+    ls.setItem(CANARY_LAST_FAIL_KEY, String(Date.now()));
   } catch {
     // Non-fatal
   }
@@ -1068,10 +1112,11 @@ export async function runOpfsExportCanary(
       return { ok: false, skippedHeavyZip: policy.skipHeavyCanaryZip, reason: verified.reason };
     }
 
-    if (typeof localStorage !== 'undefined') {
+    const ls = getSafeLocalStorage();
+    if (ls) {
       try {
-        localStorage.setItem(CANARY_LAST_RUN_KEY, String(Date.now()));
-        localStorage.removeItem(CANARY_LAST_FAIL_KEY);
+        ls.setItem(CANARY_LAST_RUN_KEY, String(Date.now()));
+        ls.removeItem(CANARY_LAST_FAIL_KEY);
       } catch {
         // Non-fatal
       }
@@ -1245,9 +1290,11 @@ export async function dumpIndexedDbDatabaseToOpfs(
   dbName: string,
   reason: string
 ): Promise<VaultBackupMetadata | null> {
-  if (typeof indexedDB === 'undefined') return null;
+  const idb = getSafeIndexedDb();
+  if (!idb) return null;
 
   let rescuedDb: IDBDatabase | null = null;
+  let untrackDb: (() => void) | null = null;
   try {
     rescuedDb = await new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
@@ -1257,7 +1304,7 @@ export async function dumpIndexedDbDatabaseToOpfs(
         reject(new Error('Rescue IndexedDB open timed out'));
       }, 4000);
       try {
-        const req = indexedDB.open(dbName);
+        const req = idb.open(dbName);
         req.onsuccess = () => {
           if (settled) {
             try {
@@ -1286,6 +1333,7 @@ export async function dumpIndexedDbDatabaseToOpfs(
       }
     });
 
+    untrackDb = trackActiveIdbConnection(rescuedDb);
     const storeNames = Array.from(rescuedDb.objectStoreNames);
     const dumpedStores: Record<string, unknown[]> = {};
     let salvagedSnapshot: BarnDatabaseSnapshot | null = null;
@@ -1294,6 +1342,7 @@ export async function dumpIndexedDbDatabaseToOpfs(
       await new Promise<void>((resolve) => {
         try {
           const tx = rescuedDb!.transaction(storeNames, 'readonly');
+          const untrackTx = trackActiveIdbTransaction(tx);
           let pending = storeNames.length;
           for (const storeName of storeNames) {
             const store = tx.objectStore(storeName);
@@ -1319,15 +1368,31 @@ export async function dumpIndexedDbDatabaseToOpfs(
                 }
               }
               pending--;
-              if (pending === 0) resolve();
+              if (pending === 0) {
+                untrackTx();
+                resolve();
+              }
             };
             getAllReq.onerror = () => {
               pending--;
-              if (pending === 0) resolve();
+              if (pending === 0) {
+                untrackTx();
+                resolve();
+              }
             };
           }
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
+          tx.oncomplete = () => {
+            untrackTx();
+            resolve();
+          };
+          tx.onerror = () => {
+            untrackTx();
+            resolve();
+          };
+          tx.onabort = () => {
+            untrackTx();
+            resolve();
+          };
         } catch {
           resolve();
         }
@@ -1349,6 +1414,7 @@ export async function dumpIndexedDbDatabaseToOpfs(
     });
     return null;
   } finally {
+    untrackDb?.();
     if (rescuedDb) {
       try {
         rescuedDb.close();
@@ -1364,3 +1430,113 @@ export function isVersionError(err: unknown): boolean {
   const e = err as { name?: string; message?: string };
   return e.name === 'VersionError' || /version/i.test(String(e.message || ''));
 }
+
+export interface OpfsNamespaceEntryInfo {
+  name: string;
+  kind: 'file' | 'directory';
+  byteSize: number;
+}
+
+export interface OpfsNamespaceSummary {
+  namespace: OpfsNamespace;
+  exists: boolean;
+  fileCount: number;
+  totalBytes: number;
+  entries: OpfsNamespaceEntryInfo[];
+}
+
+export interface OpfsNamespacesInspectionReport {
+  supported: boolean;
+  inspectedAtIso: string;
+  totalFiles: number;
+  totalBytes: number;
+  namespaces: OpfsNamespaceSummary[];
+}
+
+/**
+ * Inspects `/tmp`, `/backups`, and `/archives` OPFS namespaces read-only, reporting per-file
+ * byte footprints without modifying handles or locks.
+ */
+export async function inspectOpfsNamespaces(): Promise<OpfsNamespacesInspectionReport> {
+  const inspectedAtIso = nowIsoUtc();
+  if (!isOpfsSupported()) {
+    return {
+      supported: false,
+      inspectedAtIso,
+      totalFiles: 0,
+      totalBytes: 0,
+      namespaces: (['tmp', 'backups', 'archives'] as OpfsNamespace[]).map((ns) => ({
+        namespace: ns,
+        exists: false,
+        fileCount: 0,
+        totalBytes: 0,
+        entries: [],
+      })),
+    };
+  }
+
+  const targetNamespaces: OpfsNamespace[] = ['tmp', 'backups', 'archives'];
+  const namespaces: OpfsNamespaceSummary[] = [];
+  let totalFiles = 0;
+  let totalBytes = 0;
+
+  for (const ns of targetNamespaces) {
+    const dir = await getOpfsSubdir(ns, false);
+    if (!dir) {
+      namespaces.push({
+        namespace: ns,
+        exists: false,
+        fileCount: 0,
+        totalBytes: 0,
+        entries: [],
+      });
+      continue;
+    }
+
+    const rawEntries = await listDirEntries(dir).catch(() => []);
+    const entries: OpfsNamespaceEntryInfo[] = [];
+    let nsBytes = 0;
+    let nsFileCount = 0;
+
+    for (const item of rawEntries) {
+      const kind = item.handle.kind === 'directory' ? 'directory' : 'file';
+      let byteSize = 0;
+      if (kind === 'file') {
+        nsFileCount += 1;
+        try {
+          const file = await (item.handle as OpfsFileHandle).getFile();
+          byteSize = Number(file.size) || 0;
+        } catch {
+          byteSize = 0;
+        }
+      }
+      nsBytes += byteSize;
+      entries.push({
+        name: item.name,
+        kind,
+        byteSize,
+      });
+    }
+
+    entries.sort((a, b) => b.byteSize - a.byteSize || a.name.localeCompare(b.name));
+    totalFiles += nsFileCount;
+    totalBytes += nsBytes;
+    namespaces.push({
+      namespace: ns,
+      exists: true,
+      fileCount: nsFileCount,
+      totalBytes: nsBytes,
+      entries,
+    });
+  }
+
+  return {
+    supported: true,
+    inspectedAtIso,
+    totalFiles,
+    totalBytes,
+    namespaces,
+  };
+}
+
+registerIndexedDbOpfsDumper((dbName, reason) => dumpIndexedDbDatabaseToOpfs(dbName, reason));

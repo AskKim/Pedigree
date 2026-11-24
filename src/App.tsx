@@ -31,6 +31,7 @@ import {
   Moon,
   RefreshCw,
   Settings,
+  ShieldAlert,
   Sparkles,
   Sun,
   WifiOff,
@@ -40,8 +41,13 @@ import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } fr
 import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { TechyStuffErrorBoundary } from './components/TechyStuffErrorBoundary';
-import { WipedStorageRecoveryModal } from './components/WipedStorageRecoveryModal';
 import { formatSystemTaskTitle } from './core/calendarExport';
+import {
+  createDefaultVetDocsFolderMeta,
+  evaluateVetDocsBackupReminder,
+  normalizeVetDocsFolderMeta,
+  VetDocsFolderMeta,
+} from './core/healthReference';
 import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
 import { pedigreeBridge } from './native/pedigreeBridge';
@@ -53,8 +59,9 @@ import {
   usePWAInstall,
 } from './storage/storageProtection';
 import { markCleanSessionExit } from './storage/crashLogger';
+import { getSafeLocalStorage } from './storage/storageProbes';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from './utils/lazyRoute';
-import { useAccessibleDialog } from './utils/useAccessibleDialog';
+import { subscribeOpenDialogCount, useAccessibleDialog } from './utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from './utils/useAsyncSubmitLock';
 
 import type { ImportExportHubSection } from './components/ImportExportHubScreen';
@@ -87,6 +94,10 @@ const EconomicsLedgerScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/EconomicsLedgerScreen')['EconomicsLedgerScreen']>
 >(() => import('./components/EconomicsLedgerScreen'), 'EconomicsLedgerScreen', 'Economics & 4-H Ledger');
 
+const ClientCrmScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/ClientCrmScreen')['ClientCrmScreen']>
+>(() => import('./components/ClientCrmScreen'), 'ClientCrmScreen', 'Client CRM & Waitlist');
+
 const ReportsScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/ReportsScreen')['ReportsScreen']>
 >(() => import('./components/ReportsScreen'), 'ReportsScreen', 'Reports');
@@ -94,6 +105,14 @@ const ReportsScreen = lazyNamedRoute<
 const SpeciesMemoScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/SpeciesMemoScreen')['SpeciesMemoScreen']>
 >(() => import('./components/SpeciesMemoScreen'), 'SpeciesMemoScreen', 'Species Memo');
+
+const BarnJournalScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/BarnJournalScreen')['BarnJournalScreen']>
+>(() => import('./components/BarnJournalScreen'), 'BarnJournalScreen', 'Personal Journal');
+
+const JudgeNotebookScreen = lazyNamedRoute<
+  ComponentProps<typeof import('./components/JudgeNotebookScreen')['JudgeNotebookScreen']>
+>(() => import('./components/JudgeNotebookScreen'), 'JudgeNotebookScreen', "The Judge's Notebook");
 
 const ImportExportHubScreen = lazyNamedRoute<
   ComponentProps<typeof import('./components/ImportExportHubScreen')['ImportExportHubScreen']>
@@ -127,6 +146,22 @@ const CalendarSyncConfirmModal = lazyNamedRoute<
   'Calendar Sync'
 );
 
+const WipedStorageRecoveryModal = lazyNamedRoute<
+  ComponentProps<typeof import('./components/WipedStorageRecoveryModal')['WipedStorageRecoveryModal']>
+>(
+  () => import('./components/WipedStorageRecoveryModal'),
+  'WipedStorageRecoveryModal',
+  'Storage Recovery'
+);
+
+const HealthReferenceModal = lazyNamedRoute<
+  ComponentProps<typeof import('./components/HealthReferencePanel')['HealthReferenceModal']>
+>(
+  () => import('./components/HealthReferencePanel'),
+  'HealthReferenceModal',
+  'Health Reference Library'
+);
+
 const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   home: 'All Species',
   dashboard: 'Species Dashboard',
@@ -136,8 +171,11 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   pedigree: 'Pedigree Explorer',
   feed: 'Feed Ledger',
   economics: 'Economics & 4-H Ledger',
+  crm: 'Client CRM & Waitlist',
   reports: 'Reports',
   memo: 'Species Memo',
+  journal: 'Personal Journal',
+  judge: "Judge's Notebook",
   importExport: 'Import / Export Hub',
   settings: 'Settings',
   techyStuff: 'The Techy Stuff',
@@ -165,9 +203,52 @@ export default function App() {
   const hasOpenModal = openDomModalCount > 0;
   const [importExportInitialSection, setImportExportInitialSection] =
     useState<ImportExportHubSection>('all');
+  const [healthReferenceSection, setHealthReferenceSection] = useState<
+    'all' | 'wikis' | 'pdfs' | null
+  >(null);
+  const [vetDocsMeta, setVetDocsMeta] = useState<VetDocsFolderMeta>(() => {
+    const ls = getSafeLocalStorage();
+    if (!ls) return createDefaultVetDocsFolderMeta();
+    try {
+      const raw = ls.getItem('pedigree.vetDocsMeta.v1');
+      return raw ? normalizeVetDocsFolderMeta(JSON.parse(raw)) : createDefaultVetDocsFolderMeta();
+    } catch {
+      return createDefaultVetDocsFolderMeta();
+    }
+  });
   const [shortcutToast, setShortcutToast] = useState<{ key: string; label: string } | null>(null);
   const vaultBannerLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
   const reconnectDbLock = useAsyncSubmitLock({ postSettleCooldownMs: 300 });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onCustomMeta = (ev: Event) => {
+      const customEv = ev as CustomEvent<VetDocsFolderMeta>;
+      if (customEv.detail) {
+        setVetDocsMeta(normalizeVetDocsFolderMeta(customEv.detail));
+      }
+    };
+    const onStorageMeta = (ev: StorageEvent) => {
+      if (ev.key !== 'pedigree.vetDocsMeta.v1') return;
+      try {
+        setVetDocsMeta(
+          ev.newValue
+            ? normalizeVetDocsFolderMeta(JSON.parse(ev.newValue))
+            : createDefaultVetDocsFolderMeta()
+        );
+      } catch {
+        setVetDocsMeta(createDefaultVetDocsFolderMeta());
+      }
+    };
+    window.addEventListener('pedigree:vet-docs-meta-changed', onCustomMeta);
+    window.addEventListener('storage', onStorageMeta);
+    return () => {
+      window.removeEventListener('pedigree:vet-docs-meta-changed', onCustomMeta);
+      window.removeEventListener('storage', onStorageMeta);
+    };
+  }, []);
+
+  const vetDocsReminder = evaluateVetDocsBackupReminder(vetDocsMeta);
 
   const openImportExportHub = useCallback(
     (section: ImportExportHubSection = 'all') => {
@@ -316,32 +397,19 @@ export default function App() {
     return () => window.removeEventListener('popstate', onModalPopState);
   }, []);
 
+  const bootStableMarkedRef = useRef(false);
   useEffect(() => {
-    if (typeof document === 'undefined') return;
-    let rafId: number | null = null;
-    const syncOpenModalState = () => {
-      rafId = null;
-      const modalCount = document.querySelectorAll('[role="dialog"], [aria-modal="true"]').length;
+    if (store.isLoading || bootStableMarkedRef.current) return;
+    bootStableMarkedRef.current = true;
+    if (typeof window !== 'undefined') {
+      window.__PEDIGREE_MARK_BOOT_STABLE__?.();
+    }
+  }, [store.isLoading]);
+
+  useEffect(() => {
+    return subscribeOpenDialogCount((modalCount) => {
       setOpenDomModalCount((prev) => (prev === modalCount ? prev : modalCount));
-    };
-    syncOpenModalState();
-    if (typeof MutationObserver === 'undefined') return;
-    const scheduleSync = () => {
-      if (rafId !== null) return;
-      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-        rafId = window.requestAnimationFrame(syncOpenModalState);
-      } else {
-        syncOpenModalState();
-      }
-    };
-    const observer = new MutationObserver(scheduleSync);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-      if (rafId !== null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
-        window.cancelAnimationFrame(rafId);
-      }
-    };
+    });
   }, []);
 
   const triggerShortcutToast = useCallback((key: string, label: string) => {
@@ -410,6 +478,9 @@ export default function App() {
         p: { route: 'pedigree', label: 'Pedigree' },
         f: { route: 'feed', label: 'Feed Ledger' },
         e: { route: 'economics', label: 'Economics & 4-H Ledger' },
+        c: { route: 'crm', label: 'Client CRM & Waitlist' },
+        j: { route: 'journal', label: 'Personal Journal' },
+        g: { route: 'judge', label: "Judge's Notebook" },
         o: { route: 'reports', label: 'Reports' },
         i: { route: 'importExport', label: 'Import / Export Hub' },
         s: { route: 'settings', label: 'Settings' },
@@ -925,6 +996,54 @@ export default function App() {
           </div>
         )}
 
+        {/* Persistent 403 / 507 Cloud Quota Circuit Breaker Banner (IMP-060) */}
+        {store.cloudSyncState.circuitBreaker.tripped &&
+          !store.cloudSyncState.circuitBreaker.warningDismissedAtIso && (
+          <div
+            role="alert"
+            className="bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3"
+          >
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <ShieldAlert
+                className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-semibold">
+                  Optional Cloud Sync Paused (HTTP{' '}
+                  {store.cloudSyncState.circuitBreaker.statusCode ?? '403/507'} Quota)
+                </div>
+                <div className="text-[11px] text-[var(--barn-muted)] break-words">
+                  {store.cloudSyncState.circuitBreaker.reason ||
+                    'Cloud app-folder storage or rate quota ceiling was reached.'}{' '}
+                  Local IndexedDB saves continue uninterrupted.
+                  {store.cloudSyncState.circuitBreaker.lastPrunedCount > 0
+                    ? ` Pruned ${store.cloudSyncState.circuitBreaker.lastPrunedCount} old rolling backup(s).`
+                    : ''}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 max-w-full">
+              {route !== 'importExport' && (
+                <button
+                  type="button"
+                  onClick={() => openImportExportHub('sync')}
+                  className="min-h-[44px] sm:min-h-[32px] max-w-full px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+                >
+                  Review Cloud Sync
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={store.dismissCloudCircuitBreakerWarning}
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-[11px] underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Proactive Unbacked-Edits Reminder Banner (IMP-001) */}
         {store.backupStatus &&
           store.backupStatus.showDismissibleBanner &&
@@ -972,6 +1091,52 @@ export default function App() {
                 className="min-h-[44px] sm:min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
               >
                 Snooze 24h
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Periodic External Veterinary PDF Folder Backup Reminder Banner */}
+        {vetDocsReminder.showBanner && (
+          <div
+            role="status"
+            className="w-full bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)] text-[var(--barn-ink)] rounded-xl px-4 py-3 text-xs flex flex-col md:flex-row md:items-center md:justify-between gap-3"
+          >
+            <div className="w-full md:w-auto md:min-w-0 md:flex-1 space-y-1">
+              <div className="font-semibold leading-snug">{vetDocsReminder.headline}</div>
+              <div className="text-[11px] leading-relaxed text-[var(--barn-muted)]">
+                {vetDocsReminder.detail}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto md:shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  void import('./storage/vetDocsFolder').then((mod) => {
+                    mod.markVetDocsBackedUpNow();
+                  });
+                }}
+                className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold whitespace-nowrap"
+              >
+                Mark Backed Up Today
+              </button>
+              <button
+                type="button"
+                onClick={() => setHealthReferenceSection('pdfs')}
+                className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] hover:bg-[var(--barn-subtle)] text-[11px] font-semibold whitespace-nowrap"
+              >
+                Open Vet PDF Folder
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void import('./storage/vetDocsFolder').then((mod) => {
+                    mod.snoozeVetDocsBackupReminder(7);
+                  });
+                }}
+                className="min-h-[44px] sm:min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-medium hover:bg-[var(--barn-subtle)] whitespace-nowrap"
+              >
+                Snooze 7d
               </button>
             </div>
           </div>
@@ -1341,6 +1506,17 @@ export default function App() {
             onOpenSettings={() => setRoute('settings')}
             onOpenImportExportHub={openImportExportHub}
             onHydrateSnapshotForExport={store.hydrateSnapshotForExport}
+            deviceId={store.deviceId}
+            syncOperations={store.syncOperations}
+            syncConflicts={store.syncConflicts}
+            backupSyncStatus={store.backupSyncStatus}
+            onRescheduleTask={store.rescheduleTask}
+            onApplySmartEscalations={store.applySmartTaskEscalations}
+            onReconcileOutboxOps={store.reconcileP2pOutboxOps}
+            onResolveSyncConflict={store.resolveSyncConflict}
+            onDismissSyncConflict={store.dismissSyncConflict}
+            onBuildLocalDeltaJson={store.buildLocalDeltaJsonPayload}
+            onOpenHealthReference={(section) => setHealthReferenceSection(section || 'all')}
           />
         )}
 
@@ -1403,6 +1579,10 @@ export default function App() {
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
+            onSaveWoolHarvest={store.saveWoolHarvest}
+            onDeleteWoolHarvest={store.deleteWoolHarvest}
+            onOpenHealthReference={(section) => setHealthReferenceSection(section || 'all')}
+            isConstrainedDevice={deviceCapability.assessment.shouldApplyLowMemoryHandling}
           />
         )}
 
@@ -1434,6 +1614,9 @@ export default function App() {
             preselectedGrowthAnimalIds={store.preselectedGrowthAnimalIds}
             onConsumePreselectedGrowthAnimalIds={() => store.setPreselectedGrowthAnimalIds(null)}
             onSaveTargetWeightCurve={store.updateSpeciesTargetWeightCurve}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
+            }}
           />
         )}
 
@@ -1464,6 +1647,7 @@ export default function App() {
               void store.restoreAnimalConflictAlert(animalId, kinds);
             }}
             onLoadFullPhoto={store.loadAnimalPhotoDataUrl}
+            onLoadFullPhotosBatch={store.loadAnimalPhotoDataUrlsBatch}
             onLoadPedigreeNeighborhood={store.loadPedigreeNeighborhood}
             onCheckPedigreeBranchesHaveAncestors={store.checkPedigreeBranchesHaveAncestors}
             onUpdateBreederLogo={(dataUrl) => {
@@ -1490,6 +1674,7 @@ export default function App() {
             onUpdateSettings={(patch, options) => {
               void store.updateSettings(patch, options);
             }}
+            onLoadFullTagPhoto={store.loadFeedBatchTagPhotoDataUrl}
           />
         )}
 
@@ -1508,6 +1693,30 @@ export default function App() {
             onDeleteProcessingLog={store.deleteProcessingLog}
             onSaveYouthProjectBook={store.saveYouthProjectBook}
             onDeleteYouthProjectBook={store.deleteYouthProjectBook}
+            onSaveMileageLog={store.saveMileageLog}
+            onDeleteMileageLog={store.deleteMileageLog}
+            onLoadFullReceiptPhoto={store.loadLedgerEntryReceiptPhotoDataUrl}
+          />
+        )}
+
+        {route === 'crm' && (
+          <ClientCrmScreen
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onBackToHub={() => setRoute('dashboard')}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
+            onOpenReports={() => setRoute('reports')}
+            onSaveClient={store.saveClientContact}
+            onDeleteClient={store.deleteClientContact}
+            onSaveWaitlistEntry={store.saveWaitlistEntry}
+            onDeleteWaitlistEntry={store.deleteWaitlistEntry}
+            onSaveReservation={store.saveAnimalReservation}
+            onDeleteReservation={store.deleteAnimalReservation}
+            onCompleteReservationSale={store.completeReservationSale}
+            onCreateReminderTask={store.createCrmReminderTask}
           />
         )}
 
@@ -1529,6 +1738,40 @@ export default function App() {
             speciesProfile={activeSpeciesData.speciesProfile}
             onSaveMemo={store.saveSpeciesMemo}
             onBackToHub={() => setRoute('dashboard')}
+            onOpenJournal={() => setRoute('journal')}
+          />
+        )}
+
+        {route === 'journal' && (
+          <BarnJournalScreen
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onBackToHub={() => setRoute('dashboard')}
+            onOpenMemo={() => setRoute('memo')}
+            onOpenAnimal={(animalId) => {
+              store.setSelectedAnimalId(animalId);
+              setRoute('herd');
+            }}
+            onSaveJournalEntry={store.saveJournalEntry}
+            onDeleteJournalEntry={store.deleteJournalEntry}
+          />
+        )}
+
+        {route === 'judge' && (
+          <JudgeNotebookScreen
+            activeData={activeSpeciesData}
+            settings={snapshot.settings}
+            onBackToHub={() => setRoute('dashboard')}
+            onUpdateSettings={(patch, options) => {
+              void store.updateSettings(patch, options);
+            }}
+            onOpenEconomics={() => setRoute('economics')}
+            onSaveJudgeClub={store.saveJudgeClub}
+            onDeleteJudgeClub={store.deleteJudgeClub}
+            onSaveJudgeAssignment={store.saveJudgeAssignment}
+            onDeleteJudgeAssignment={store.deleteJudgeAssignment}
+            onSaveJudgeExpense={store.saveJudgeExpense}
+            onDeleteJudgeExpense={store.deleteJudgeExpense}
           />
         )}
 
@@ -1582,6 +1825,16 @@ export default function App() {
             onDisconnectBackupSync={store.disconnectBackupSyncFolder}
             onSyncVaultToSyncNow={store.syncVaultBackupsToSyncNow}
             onDismissPruneWarning={store.dismissPruneSyncWarning}
+            storageStatus={store.storageStatus}
+            cloudSyncState={store.cloudSyncState}
+            cloudSyncBusy={store.cloudSyncBusy}
+            onUpdateCloudSyncSettings={store.updateCloudSyncSettings}
+            onConnectCloudSyncToken={store.connectCloudSyncAccessToken}
+            onDisconnectCloudSync={store.disconnectCloudSync}
+            onStartCloudSyncPkce={store.startCloudSyncPkce}
+            onRunManualCloudSyncNow={store.runManualCloudSyncNow}
+            onResetAndRetryCloudSync={store.resetAndRetryCloudSync}
+            onDismissCloudCircuitBreakerWarning={store.dismissCloudCircuitBreakerWarning}
           />
         )}
 
@@ -1617,6 +1870,10 @@ export default function App() {
             rollingBackups={store.rollingBackups}
             onOpenImportExportHub={openImportExportHub}
             onOpenTechyStuff={() => setRoute('techyStuff')}
+            onOpenHealthReference={(section) => setHealthReferenceSection(section || 'all')}
+            cloudSyncState={store.cloudSyncState}
+            cloudSyncBusy={store.cloudSyncBusy}
+            onResetAndRetryCloudSync={store.resetAndRetryCloudSync}
           />
         )}
 
@@ -1632,6 +1889,13 @@ export default function App() {
               opfsSupported={store.opfsSupported}
               opfsVaultBackups={store.opfsVaultBackups}
               deviceCapability={deviceCapability}
+              deviceId={store.deviceId}
+              rollingBackups={store.rollingBackups}
+              syncOperations={store.syncOperations}
+              syncConflicts={store.syncConflicts}
+              backupSyncStatus={store.backupSyncStatus}
+              cloudSyncState={store.cloudSyncState}
+              onSyncVaultToSyncFolderNow={store.syncVaultBackupsToSyncNow}
               onBackToSettings={() => setRoute('settings')}
               onOpenImportExportHub={openImportExportHub}
               onOpenPromptsDirectory={() => setRoute('prompts')}
@@ -1700,6 +1964,9 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">B</kbd> Breeding ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">P</kbd> Pedigree ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">F</kbd> Feed ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">C</kbd> CRM ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">J</kbd> Journal ·{' '}
+              <kbd className="font-mono font-semibold text-[var(--barn-ink)]">G</kbd> Judge ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">O</kbd> Reports ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">I</kbd> Import/Export ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
@@ -1718,45 +1985,104 @@ export default function App() {
 
       {/* Online Google Calendar Confirmation + Automatic Offline .ICS Fallback */}
       {store.pendingCalendarSync && (
-        <Suspense fallback={null}>
-          <CalendarSyncConfirmModal
-            pending={store.pendingCalendarSync}
-            config={normalizeCalendarSyncSettings(snapshot.settings.calendarSync)}
-            barnName={snapshot.settings.barnName}
-            context={{
-              animals: snapshot.animals,
-              breedings: snapshot.breedings,
-              speciesProfiles: snapshot.speciesProfiles,
-              appBaseUrl:
-                typeof window !== 'undefined'
-                  ? `${window.location.origin}${window.location.pathname}`
-                  : '',
-            }}
-            isSignedIn={store.googleAuthConnected}
-            userEmail={store.googleUserEmail}
-            isBusy={store.googleSyncBusy}
-            isOnline={isOnline}
-            onSignIn={store.connectGoogleCalendar}
-            onConfirmGoogleSync={store.confirmGoogleCalendarSync}
-            onFallbackOfflineIcs={store.fallbackPendingCalendarSyncToIcs}
-            onCancel={store.cancelPendingCalendarSync}
-          />
-        </Suspense>
+        <RouteErrorBoundary
+          routeKey="calendar-sync-confirm"
+          routeLabel="Calendar Sync"
+          onNavigateHome={() => store.cancelPendingCalendarSync()}
+        >
+          <Suspense
+            fallback={
+              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="w-full max-w-md">
+                  <RouteLoadingFallback label="Calendar Sync" />
+                </div>
+              </div>
+            }
+          >
+            <CalendarSyncConfirmModal
+              pending={store.pendingCalendarSync}
+              config={normalizeCalendarSyncSettings(snapshot.settings.calendarSync)}
+              barnName={snapshot.settings.barnName}
+              context={{
+                animals: snapshot.animals,
+                breedings: snapshot.breedings,
+                speciesProfiles: snapshot.speciesProfiles,
+                appBaseUrl:
+                  typeof window !== 'undefined'
+                    ? `${window.location.origin}${window.location.pathname}`
+                    : '',
+              }}
+              isSignedIn={store.googleAuthConnected}
+              userEmail={store.googleUserEmail}
+              isBusy={store.googleSyncBusy}
+              isOnline={isOnline}
+              onSignIn={store.connectGoogleCalendar}
+              onConfirmGoogleSync={store.confirmGoogleCalendarSync}
+              onFallbackOfflineIcs={store.fallbackPendingCalendarSyncToIcs}
+              onCancel={store.cancelPendingCalendarSync}
+            />
+          </Suspense>
+        </RouteErrorBoundary>
       )}
 
       {/* Blocking Wiped-Browser-Storage Recovery Gate (IMP-018) */}
-      <WipedStorageRecoveryModal
-        context={store.wipedRecoveryContext}
-        archivedHerdBundles={store.archivedHerdBundles}
-        onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
-        onRestoreArchivedBundle={(archiveKey) => store.restoreArchivedHerdBundle(archiveKey)}
-        onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
-        onImportArchiveReplace={(bytes, fileName) =>
-          store.importBackupArchiveBytes(bytes, fileName, 'replace')
-        }
-        onImportSqlite={store.importSqliteBytes}
-        onStartFresh={store.startFreshAfterWipedRecovery}
-      />
+      {store.wipedRecoveryContext?.detected && (
+        <RouteErrorBoundary
+          routeKey="wiped-storage-recovery"
+          routeLabel="Storage Recovery"
+          onNavigateHome={() => setRoute('home')}
+        >
+          <Suspense
+            fallback={
+              <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="w-full max-w-md">
+                  <RouteLoadingFallback label="Storage Recovery" />
+                </div>
+              </div>
+            }
+          >
+            <WipedStorageRecoveryModal
+              context={store.wipedRecoveryContext}
+              archivedHerdBundles={store.archivedHerdBundles}
+              onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+              onRestoreArchivedBundle={(archiveKey) =>
+                store.restoreArchivedHerdBundle(archiveKey)
+              }
+              onImportJsonReplace={(jsonText) => store.importJsonBackup(jsonText, 'replace')}
+              onImportArchiveReplace={(bytes, fileName) =>
+                store.importBackupArchiveBytes(bytes, fileName, 'replace')
+              }
+              onImportSqlite={store.importSqliteBytes}
+              onStartFresh={store.startFreshAfterWipedRecovery}
+            />
+          </Suspense>
+        </RouteErrorBoundary>
+      )}
+
+      {/* Lazy-Loaded Curated Health Reference Wikis & Local Veterinary PDF Folder Modal */}
+      {healthReferenceSection !== null && (
+        <RouteErrorBoundary
+          routeKey={`health-reference:${activeSpeciesName}`}
+          routeLabel="Health Reference Library"
+          onNavigateHome={() => setHealthReferenceSection(null)}
+        >
+          <Suspense
+            fallback={
+              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="w-full max-w-md">
+                  <RouteLoadingFallback label="Health Reference Library" />
+                </div>
+              </div>
+            }
+          >
+            <HealthReferenceModal
+              speciesName={activeSpeciesName}
+              initialSection={healthReferenceSection}
+              onClose={() => setHealthReferenceSection(null)}
+            />
+          </Suspense>
+        </RouteErrorBoundary>
+      )}
 
       {/* Select Livestock Species Before Entering Herd from Home */}
       {showHerdSpeciesPicker && (
@@ -1858,7 +2184,10 @@ export default function App() {
                 { key: 'B', label: 'Breeding Lab', desc: 'COI pairing check, Punnett predictions & births' },
                 { key: 'P', label: 'Pedigree Explorer', desc: 'Interactive 3–6 generation ancestry tree' },
                 { key: 'F', label: 'Feed & Lot Ledger', desc: 'Feed purchases, tag OCR lot indexing & biosecurity purge' },
-                { key: 'E', label: 'Economics & 4-H Ledger', desc: 'Expenses, receipts, P&L margins, meat/pelt yields & 4-H/FFA books' },
+                { key: 'E', label: 'Economics & 4-H Ledger', desc: 'Expenses, receipts, P&L margins, meat/pelt yields, mileage tax & 4-H/FFA books' },
+                { key: 'C', label: 'Client CRM & Waitlist', desc: 'Buyer contacts, ranked waitlist matching, deposits & sales agreements' },
+                { key: 'J', label: 'Personal Journal', desc: 'Date-organized barn journal with rich notes, color tags, ratings & search' },
+                { key: 'G', label: "The Judge's Notebook", desc: 'Optional show judge schedule, bids, contracts, club directory & travel expenses' },
                 { key: 'O', label: 'Reports', desc: 'Barn reports, printable herd rosters & inventory summaries' },
                 { key: 'I', label: 'Import / Export Hub', desc: 'System backups, native restores, sync & external exporters' },
                 { key: 'S', label: 'Settings', desc: 'Barn preferences, calendar sync, appearance & diagnostics' },

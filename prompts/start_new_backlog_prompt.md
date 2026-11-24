@@ -37,6 +37,7 @@
 
 7. **Finalize & Clean Up**
    - Once all objectives and verification checks pass:
+     - Log any significant changes (especially anything affecting bootability, loading, storage, or memory) in `src/core/improvementRegistry.ts` and `IMPROVEMENTS.md` and verify with `npm run verify:improvements`.
      - Delete `docs/plans/active-backlog-plan.md`.
      - Remove the completed item(s) from `docs/plans/suggestions-backlog.md` (updating remaining counts/numbering cleanly).
      - End your response per `prompts/master_system_prompt.md` (`Complete: [Task Name]` and updated plan state).

@@ -16,13 +16,10 @@ declare global {
     __PEDIGREE_PREFLIGHT__?: {
       passed: boolean;
       wasmSupported: boolean;
+      indexedDbAvailable?: boolean;
       blockedReasons: string[];
     };
   }
-}
-
-if (typeof window !== 'undefined') {
-  window.__PEDIGREE_BOOT_OK__ = true;
 }
 
 if (typeof window === 'undefined' || !window.__PEDIGREE_PREFLIGHT_BLOCKED__) {
@@ -31,19 +28,32 @@ if (typeof window === 'undefined' || !window.__PEDIGREE_PREFLIGHT_BLOCKED__) {
   if (import.meta.env.PROD) {
     initPwaUpdater(registerSW);
   } else if (typeof window !== 'undefined') {
-    if ('serviceWorker' in navigator) {
-      void navigator.serviceWorker.getRegistrations().then((regs) => {
-        for (const reg of regs) {
-          void reg.unregister();
-        }
-      });
+    try {
+      if ('serviceWorker' in navigator && typeof navigator.serviceWorker?.getRegistrations === 'function') {
+        void navigator.serviceWorker.getRegistrations()
+          .then((regs) => {
+            for (const reg of regs) {
+              void reg.unregister().catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {
+      // Ignore restricted serviceWorker access
     }
-    if ('caches' in window) {
-      void caches.keys().then((keys) => {
-        for (const key of keys) {
-          void caches.delete(key);
-        }
-      });
+    try {
+      if ('caches' in window && window.caches?.keys) {
+        void window.caches
+          .keys()
+          .then((keys) => {
+            for (const key of keys) {
+              void window.caches.delete(key).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {
+      // Ignore restricted CacheStorage access
     }
   }
 
@@ -55,9 +65,7 @@ if (typeof window === 'undefined' || !window.__PEDIGREE_PREFLIGHT_BLOCKED__) {
       </CrashErrorBoundary>
     );
     if (typeof window !== 'undefined') {
-      window.setTimeout(() => {
-        window.__PEDIGREE_MARK_BOOT_STABLE__?.();
-      }, 2500);
+      window.__PEDIGREE_BOOT_OK__ = true;
     }
   }
 }

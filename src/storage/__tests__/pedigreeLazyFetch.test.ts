@@ -255,4 +255,141 @@ describe('WebSqliteAdapter lazy pedigree neighborhood & branch existence probes'
     expect(existence['ped-g3-leaf']).toBe(false);
     expect(existence['non-existent-id']).toBeUndefined();
   });
+
+  it('omits full-res feed tag and ledger receipt photos in lightweight mode, preserves them across dehydrated edits, and hydrates on demand', async () => {
+    installInMemoryIdb();
+    const thumbUrl =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const tagFullUrl =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const receiptFullUrl =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    const adapter = new WebSqliteAdapter('lazy-photos-tab');
+    await adapter.initialize({ lightweightPhotos: true });
+
+    await adapter.saveFeedBatch({
+      id: 'fb-sqlite-1',
+      species: 'Rabbit',
+      brand: 'Purina',
+      productName: 'Show',
+      lotNumber: 'L-100',
+      millCode: 'M2',
+      manufactureDateIso: '2026-02-01',
+      purchaseDateIso: '2026-02-05',
+      bagCount: 2,
+      bagWeightValue: 50,
+      bagWeightUnit: 'lbs',
+      totalQuantity: 100,
+      remainingQuantity: 100,
+      lowStockThreshold: 20,
+      supplierName: 'Feed Store',
+      notes: 'Initial note',
+      tagPhotoDataUrl: tagFullUrl,
+      tagPhotoThumbnailDataUrl: thumbUrl,
+      createdAt: '2026-02-05T00:00:00.000Z',
+      updatedAt: '2026-02-05T00:00:00.000Z',
+    });
+
+    await adapter.saveLedgerEntry({
+      id: 'le-sqlite-1',
+      species: 'Rabbit',
+      dateIso: '2026-02-05',
+      entryType: 'expense',
+      category: 'feed',
+      amountCents: 4200,
+      title: 'Two bags pellets',
+      vendorOrParty: 'Feed Store',
+      receiptPhotoDataUrl: receiptFullUrl,
+      receiptPhotoThumbnailDataUrl: thumbUrl,
+      notes: 'Initial receipt',
+      createdAt: '2026-02-05T00:00:00.000Z',
+      updatedAt: '2026-02-05T00:00:00.000Z',
+    });
+
+    const lightSnap = await adapter.loadSnapshot({ lightweightPhotos: true });
+    const lightBatch = lightSnap.feedBatches?.find((b) => b.id === 'fb-sqlite-1');
+    const lightEntry = lightSnap.ledgerEntries?.find((e) => e.id === 'le-sqlite-1');
+    expect(lightBatch).toBeDefined();
+    expect(lightEntry).toBeDefined();
+    expect(lightBatch?.tagPhotoDataUrl).toBeUndefined();
+    expect(lightBatch?.tagPhotoThumbnailDataUrl).toBe(thumbUrl);
+    expect(lightEntry?.receiptPhotoDataUrl).toBeUndefined();
+    expect(lightEntry?.receiptPhotoThumbnailDataUrl).toBe(thumbUrl);
+
+    // Lazy on-demand hydration fetches full-res payloads
+    expect(await adapter.loadFeedBatchTagPhotoDataUrl('fb-sqlite-1')).toBe(tagFullUrl);
+    expect(await adapter.loadLedgerEntryReceiptPhotoDataUrl('le-sqlite-1')).toBe(receiptFullUrl);
+
+    // Editing a dehydrated record preserves stored full-res photo when thumbnail remains
+    await adapter.saveFeedBatch({
+      ...lightBatch!,
+      notes: 'Updated note without re-uploading tag photo',
+      updatedAt: '2026-02-06T00:00:00.000Z',
+    });
+    await adapter.saveLedgerEntry({
+      ...lightEntry!,
+      notes: 'Updated receipt note',
+      updatedAt: '2026-02-06T00:00:00.000Z',
+    });
+
+    expect(await adapter.loadFeedBatchTagPhotoDataUrl('fb-sqlite-1')).toBe(tagFullUrl);
+    expect(await adapter.loadLedgerEntryReceiptPhotoDataUrl('le-sqlite-1')).toBe(receiptFullUrl);
+
+    // Explicit removal (clearing thumbnail + full-res) deletes stored full-res photo
+    await adapter.saveFeedBatch({
+      ...lightBatch!,
+      tagPhotoDataUrl: undefined,
+      tagPhotoThumbnailDataUrl: undefined,
+      updatedAt: '2026-02-07T00:00:00.000Z',
+    });
+    await adapter.saveLedgerEntry({
+      ...lightEntry!,
+      receiptPhotoDataUrl: undefined,
+      receiptPhotoThumbnailDataUrl: undefined,
+      updatedAt: '2026-02-07T00:00:00.000Z',
+    });
+
+    expect(await adapter.loadFeedBatchTagPhotoDataUrl('fb-sqlite-1')).toBeNull();
+    expect(await adapter.loadLedgerEntryReceiptPhotoDataUrl('le-sqlite-1')).toBeNull();
+  });
+
+  it('persists and clears BarnTask.startDateIso across SQLite reloads', async () => {
+    installInMemoryIdb();
+    const adapter = new WebSqliteAdapter('gantt-task-tab');
+    await adapter.initialize();
+
+    await adapter.saveTask({
+      id: 'task-gantt-1',
+      species: 'Rabbit',
+      title: 'Wean Transition',
+      category: 'Weaning',
+      priority: 'High',
+      startDateIso: '2026-04-12',
+      dueDateIso: '2026-04-16',
+      linkedAnimalId: '',
+      linkedAnimalName: '',
+      linkedBreedingId: '',
+      completed: false,
+      _rev: 2,
+      createdAt: '2026-04-10T00:00:00.000Z',
+      updatedAt: '2026-04-11T00:00:00.000Z',
+    });
+
+    const adapter2 = new WebSqliteAdapter('gantt-task-tab-2');
+    const reloaded = await adapter2.initialize();
+    const persistedTask = reloaded.tasks.find((t) => t.id === 'task-gantt-1');
+    expect(persistedTask?.startDateIso).toBe('2026-04-12');
+    expect(persistedTask?.dueDateIso).toBe('2026-04-16');
+
+    await adapter2.saveTask({
+      ...persistedTask!,
+      startDateIso: '',
+      updatedAt: '2026-04-12T00:00:00.000Z',
+    });
+
+    const clearedSnap = await adapter2.loadSnapshot();
+    const clearedTask = clearedSnap.tasks.find((t) => t.id === 'task-gantt-1');
+    expect(clearedTask?.startDateIso).toBeUndefined();
+  });
 });

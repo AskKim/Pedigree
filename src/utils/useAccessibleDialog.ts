@@ -14,6 +14,32 @@
 
 import { RefObject, useEffect, useRef } from 'react';
 
+type OpenDialogListener = (openCount: number) => void;
+let openDialogCount = 0;
+const openDialogListeners = new Set<OpenDialogListener>();
+
+function notifyOpenDialogListeners(): void {
+  for (const listener of openDialogListeners) {
+    try {
+      listener(openDialogCount);
+    } catch {
+      // Ignore subscriber errors
+    }
+  }
+}
+
+export function getOpenDialogCount(): number {
+  return openDialogCount;
+}
+
+export function subscribeOpenDialogCount(listener: OpenDialogListener): () => void {
+  openDialogListeners.add(listener);
+  listener(openDialogCount);
+  return () => {
+    openDialogListeners.delete(listener);
+  };
+}
+
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled]):not([aria-hidden="true"])',
@@ -62,6 +88,9 @@ export function useAccessibleDialog<T extends HTMLElement = HTMLDivElement>({
 
   useEffect(() => {
     if (!isOpen) return;
+
+    openDialogCount += 1;
+    notifyOpenDialogListeners();
 
     const container = dialogRef.current;
     const previouslyFocused =
@@ -128,6 +157,8 @@ export function useAccessibleDialog<T extends HTMLElement = HTMLDivElement>({
 
     document.addEventListener('keydown', handleKeyDown);
     return () => {
+      openDialogCount = Math.max(0, openDialogCount - 1);
+      notifyOpenDialogListeners();
       window.cancelAnimationFrame(rafId);
       document.removeEventListener('keydown', handleKeyDown);
       if (

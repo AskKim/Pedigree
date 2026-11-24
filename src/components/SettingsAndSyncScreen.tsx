@@ -16,6 +16,7 @@ import {
   Download,
   FolderSync,
   HardDrive,
+  HeartPulse,
   HelpCircle,
   Image as ImageIcon,
   LogOut,
@@ -71,11 +72,15 @@ import {
 import type { GoogleCalendarOption } from '../utils/googleCalendarClient';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { downloadTextChunks } from '../utils/webFileActions';
-import { SignInWithGoogleButton } from './CalendarIntegrationModals';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';
 import { ImageCompressionNotice } from './ImageCompressionNotice';
 import type { ImportExportHubSection } from './ImportExportHubScreen';
 import { SpeciesEditorModal } from './SpeciesEditorModal';
+import { CLOUD_SYNC_PROVIDER_DESCRIPTORS } from '../core/cloudAppFolderSync';
+import type {
+  CloudSyncClientState,
+  RunCloudAppFolderSyncResult,
+} from '../storage/cloudAppFolderSync';
 
 interface SettingsAndSyncScreenProps {
   snapshot: BarnDatabaseSnapshot;
@@ -110,6 +115,10 @@ interface SettingsAndSyncScreenProps {
   rollingBackups?: RollingBackupMeta[];
   onOpenImportExportHub?: (section?: ImportExportHubSection) => void;
   onOpenTechyStuff?: () => void;
+  onOpenHealthReference?: (section?: 'all' | 'wikis' | 'pdfs') => void;
+  cloudSyncState?: CloudSyncClientState | null;
+  cloudSyncBusy?: boolean;
+  onResetAndRetryCloudSync?: () => Promise<RunCloudAppFolderSyncResult>;
 }
 
 export function SettingsAndSyncScreen({
@@ -139,6 +148,10 @@ export function SettingsAndSyncScreen({
   rollingBackups = [],
   onOpenImportExportHub,
   onOpenTechyStuff,
+  onOpenHealthReference,
+  cloudSyncState = null,
+  cloudSyncBusy = false,
+  onResetAndRetryCloudSync,
 }: SettingsAndSyncScreenProps) {
   const baseId = useId();
   const { settings, speciesProfiles } = snapshot;
@@ -153,6 +166,11 @@ export function SettingsAndSyncScreen({
 
   const [barnName, setBarnName] = useState(settings.barnName);
   const [breederName, setBreederName] = useState(settings.breederName);
+  const [breederEmail, setBreederEmail] = useState(settings.breederEmail || '');
+  const [breederPhone, setBreederPhone] = useState(settings.breederPhone || '');
+  const [breederLocation, setBreederLocation] = useState(settings.breederLocation || '');
+  const [breederWebsite, setBreederWebsite] = useState(settings.breederWebsite || '');
+  const [showcaseTagline, setShowcaseTagline] = useState(settings.showcaseTagline || '');
   const [preferredUnit, setPreferredUnit] = useState<WeightUnit>(settings.preferredUnit);
   const [currencyCode, setCurrencyCode] = useState<string>(() =>
     normalizeCurrencyCode(settings.currencyCode, 'USD')
@@ -179,6 +197,9 @@ export function SettingsAndSyncScreen({
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [autoOffloadRetiredToOpfs, setAutoOffloadRetiredToOpfs] = useState<boolean>(
     Boolean(settings.autoOffloadRetiredToOpfs)
+  );
+  const [enableJudgeNotebook, setEnableJudgeNotebook] = useState<boolean>(
+    Boolean(settings.enableJudgeNotebook)
   );
 
   const [quickBackupFeedback, setQuickBackupFeedback] = useState<string | null>(null);
@@ -209,6 +230,7 @@ export function SettingsAndSyncScreen({
     setIncludePhotoOnPedigree(Boolean(settings.includePhotoOnPedigree));
     setBreederLogoDataUrl(sanitizeSafeRasterImageDataUrl(settings.breederLogoDataUrl));
     setAutoOffloadRetiredToOpfs(Boolean(settings.autoOffloadRetiredToOpfs));
+    setEnableJudgeNotebook(Boolean(settings.enableJudgeNotebook));
   }, [settings]);
 
   const isDark = settings.themeMode === 'dark';
@@ -259,6 +281,11 @@ export function SettingsAndSyncScreen({
       barnName: barnName.trim() || 'My Barn',
       barnNameOnboarded: true,
       breederName: breederName.trim(),
+      breederEmail: breederEmail.trim() || undefined,
+      breederPhone: breederPhone.trim() || undefined,
+      breederLocation: breederLocation.trim() || undefined,
+      breederWebsite: breederWebsite.trim() || undefined,
+      showcaseTagline: showcaseTagline.trim() || undefined,
       preferredUnit,
       currencyCode: normalizeCurrencyCode(currencyCode, 'USD'),
       defaultSpecies,
@@ -269,6 +296,7 @@ export function SettingsAndSyncScreen({
       includePhotoOnPedigree,
       breederLogoDataUrl: breederLogoDataUrl || undefined,
       autoOffloadRetiredToOpfs,
+      enableJudgeNotebook,
     });
   };
 
@@ -463,7 +491,7 @@ export function SettingsAndSyncScreen({
                   htmlFor={`${baseId}-breederName`}
                   className="block text-xs font-medium text-[var(--barn-muted)] mb-1"
                 >
-                  Breeder Name (for Pedigrees)
+                  Breeder Name (for Pedigrees &amp; Showcase)
                 </label>
                 <input
                   id={`${baseId}-breederName`}
@@ -471,6 +499,100 @@ export function SettingsAndSyncScreen({
                   value={breederName}
                   onChange={(e) => setBreederName(e.target.value)}
                   className="w-full min-h-[42px] px-3 py-2 rounded-lg bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Optional Breeder Contact Details for Zero-Server For-Sale Showcase */}
+            <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] space-y-3">
+              <div>
+                <div className="text-xs font-semibold text-[var(--barn-ink)]">
+                  Breeder Showcase Contact &amp; Storefront Header (Optional)
+                </div>
+                <p className="text-[11px] text-[var(--barn-muted)]">
+                  Included on exported Zero-Server For-Sale HTML Catalogs so buyers can inquire directly.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-breederEmail`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Inquiry Email
+                  </label>
+                  <input
+                    id={`${baseId}-breederEmail`}
+                    type="email"
+                    placeholder="breeder@example.com"
+                    value={breederEmail}
+                    onChange={(e) => setBreederEmail(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-breederPhone`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Phone / Text
+                  </label>
+                  <input
+                    id={`${baseId}-breederPhone`}
+                    type="tel"
+                    placeholder="(555) 123-4567"
+                    value={breederPhone}
+                    onChange={(e) => setBreederPhone(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-breederLocation`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    City / State / Region
+                  </label>
+                  <input
+                    id={`${baseId}-breederLocation`}
+                    type="text"
+                    placeholder="e.g. Willamette Valley, OR"
+                    value={breederLocation}
+                    onChange={(e) => setBreederLocation(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-breederWebsite`}
+                    className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                  >
+                    Website / Social Link
+                  </label>
+                  <input
+                    id={`${baseId}-breederWebsite`}
+                    type="text"
+                    placeholder="https://myrabbitry.github.io"
+                    value={breederWebsite}
+                    onChange={(e) => setBreederWebsite(e.target.value)}
+                    className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                  />
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor={`${baseId}-showcaseTagline`}
+                  className="block text-[11px] font-medium text-[var(--barn-muted)] mb-1"
+                >
+                  Showcase Tagline / Pickup Terms
+                </label>
+                <input
+                  id={`${baseId}-showcaseTagline`}
+                  type="text"
+                  placeholder="e.g. ARBA-registered Satin & Holland Lop breeding stock · Local pickup & show transport available"
+                  value={showcaseTagline}
+                  onChange={(e) => setShowcaseTagline(e.target.value)}
+                  className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
                 />
               </div>
             </div>
@@ -796,6 +918,19 @@ export function SettingsAndSyncScreen({
                     preserving all data
                   </span>
                 </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableJudgeNotebook}
+                    onChange={(e) => setEnableJudgeNotebook(e.target.checked)}
+                    className="w-4 h-4 accent-[var(--barn-sage)]"
+                  />
+                  <span>
+                    Enable The Judge&apos;s Notebook (optional show judge bids, contracts, club
+                    directory &amp; travel expenses module)
+                  </span>
+                </label>
               </div>
             </div>
 
@@ -836,8 +971,8 @@ export function SettingsAndSyncScreen({
                   [
                     {
                       id: 'google_calendar' as CalendarDeliveryMode,
-                      title: 'Link Online Google Calendar (auto-fallback to .ICS)',
-                      desc: 'Add chores straight to your Google Calendar when online. Automatically falls back to offline .ICS files & links if offline or disconnected.',
+                      title: 'Google Calendar Web Links + .ICS Fallback',
+                      desc: 'Preview chores with quick Google Calendar / Outlook Web event links when online, and automatically fall back to offline .ICS downloads.',
                     },
                     {
                       id: 'external_app_or_ics' as CalendarDeliveryMode,
@@ -881,20 +1016,12 @@ export function SettingsAndSyncScreen({
               {calendarSync.deliveryMode === 'google_calendar' && (
                 <div className="mt-2 p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-3">
                   {!googleAuthConnected ? (
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <div className="text-[11px] text-[var(--barn-muted)]">
-                        Connect your own Google account to grant Community Pedigree permission to
-                        view your calendar list and add barn chore events. If you stay signed out or
-                        go offline, the app automatically falls back to offline .ICS downloads.
+                        Direct Google account sign-in is disabled so Community Pedigree stays 100%
+                        cloud- and Firebase-free. Single chores open quick Google/Outlook Web event
+                        links when online, and all chores export cleanly as offline .ICS files.
                       </div>
-                      {onConnectGoogleCalendar && (
-                        <SignInWithGoogleButton
-                          onClick={() => {
-                            void onConnectGoogleCalendar();
-                          }}
-                          disabled={googleSyncBusy}
-                        />
-                      )}
                     </div>
                   ) : (
                     <div className="space-y-2.5">
@@ -1404,6 +1531,61 @@ export function SettingsAndSyncScreen({
               </div>
             )}
 
+            {cloudSyncState && cloudSyncState.circuitBreaker.tripped && (
+              <div
+                role="alert"
+                className="p-3 rounded-xl border border-[var(--barn-terracotta)] bg-[var(--barn-terracotta-tint)] text-xs space-y-2"
+              >
+                <div className="font-semibold text-[var(--barn-ink)]">
+                  Optional Cloud Sync Paused (HTTP {cloudSyncState.circuitBreaker.statusCode ?? '403/507'} Quota)
+                </div>
+                <p className="text-[11px] text-[var(--barn-muted)] leading-relaxed">
+                  {cloudSyncState.circuitBreaker.reason} Local IndexedDB saves remain unaffected.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {onOpenImportExportHub && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenImportExportHub('sync')}
+                      className="min-h-[34px] px-3 py-1 rounded-lg bg-[var(--barn-terracotta)] text-white text-[11px] font-semibold"
+                    >
+                      Review Cloud App-Folder Sync
+                    </button>
+                  )}
+                  {onResetAndRetryCloudSync && (
+                    <button
+                      type="button"
+                      disabled={cloudSyncBusy}
+                      onClick={() => void onResetAndRetryCloudSync()}
+                      className="min-h-[34px] px-3 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold disabled:opacity-55"
+                    >
+                      Reset Breaker &amp; Retry
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {cloudSyncState && !cloudSyncState.circuitBreaker.tripped && cloudSyncState.settings.enabled && (
+              <div className="p-3 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-[11px] flex flex-wrap items-center justify-between gap-2">
+                <span className="font-medium text-[var(--barn-ink)]">
+                  Cloud App-Folder ({CLOUD_SYNC_PROVIDER_DESCRIPTORS[cloudSyncState.settings.provider].label}):{' '}
+                  {cloudSyncState.hasMemoryTokenByProvider[cloudSyncState.settings.provider]
+                    ? 'Memory token connected'
+                    : 'Not connected'}
+                </span>
+                {onOpenImportExportHub && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportExportHub('sync')}
+                    className="text-[11px] font-semibold text-[var(--barn-sage)] underline"
+                  >
+                    Configure Cloud Sync
+                  </button>
+                )}
+              </div>
+            )}
+
             {quickBackupError && (
               <div
                 role="alert"
@@ -1484,6 +1666,33 @@ export function SettingsAndSyncScreen({
             )}
           </section>
 
+          {/* Health Reference Wikis & Local Veterinary PDF Folder */}
+          {onOpenHealthReference && (
+            <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-xl font-semibold">
+                    Health Reference Wikis &amp; Local Vet PDF Folder
+                  </h2>
+                  <p className="text-xs text-[var(--barn-muted)] mt-0.5">
+                    Curated online species health references plus a read-only local device folder
+                    pointer for offline veterinary PDFs and external folder backup reminders.
+                  </p>
+                </div>
+                <HeartPulse className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => onOpenHealthReference('all')}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <HeartPulse className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                Open Health Wikis &amp; Veterinary PDF Folder
+              </button>
+            </section>
+          )}
+
           {/* Developer & Troubleshooting Page Launcher ("The Techy Stuff") */}
           {onOpenTechyStuff && (
             <section className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-6 space-y-3.5">
@@ -1551,6 +1760,7 @@ export function SettingsAndSyncScreen({
                     { key: 'R', label: 'Herd Registry (or Picker on Home)' },
                     { key: 'B', label: 'Breeding Lab' },
                     { key: 'P', label: 'Pedigree Explorer' },
+                    { key: 'G', label: "The Judge's Notebook" },
                     { key: 'O', label: 'Reports' },
                     { key: 'I', label: 'Import / Export Hub' },
                     { key: 'S', label: 'Settings' },

@@ -9,11 +9,12 @@
  * export/sync/restore action and never enter SQLite, IndexedDB, or localStorage.
  */
 
-import { strFromU8, strToU8 } from 'fflate';
 import {
   base64ToBytesPure,
   bytesToBase64Pure,
-} from '../core/backupArchive';
+  bytesToUtf8String,
+  utf8StringToBytes,
+} from '../core/binaryEncoding';
 import {
   DEFAULT_PBKDF2_ITERATIONS,
   ENCRYPTED_ENVELOPE_FORMAT,
@@ -58,7 +59,7 @@ async function deriveAesGcmKey(
   const subtle = getSubtleCrypto();
   const baseKey = await subtle.importKey(
     'raw',
-    toExactArrayBuffer(strToU8(cleanPass)),
+    toExactArrayBuffer(utf8StringToBytes(cleanPass)),
     { name: 'PBKDF2' },
     false,
     ['deriveKey']
@@ -161,7 +162,7 @@ export async function encryptTextWithPassphrase(
     iterations?: number;
   }
 ): Promise<EncryptedPayloadEnvelope> {
-  return encryptBytesWithPassphrase(strToU8(text), passphrase, options);
+  return encryptBytesWithPassphrase(utf8StringToBytes(text), passphrase, options);
 }
 
 export async function decryptTextWithPassphrase(
@@ -169,5 +170,5 @@ export async function decryptTextWithPassphrase(
   passphrase: string
 ): Promise<string> {
   const plainBytes = await decryptBytesWithPassphrase(envelope, passphrase);
-  return strFromU8(plainBytes);
+  return bytesToUtf8String(plainBytes);
 }

@@ -21,6 +21,14 @@ import {
 } from 'fflate';
 import { generateSpeciesBarnBinderHtml } from './barnBinder';
 import {
+  base64ToBytesPure,
+  binaryToDataUrl,
+  bytesToBase64Pure,
+  dataUrlToBinary,
+} from './binaryEncoding';
+
+export { base64ToBytesPure, binaryToDataUrl, bytesToBase64Pure, dataUrlToBinary };
+import {
   isSvgImageInput,
   MAX_JSON_BACKUP_BYTES,
   MAX_ZIP_ARCHIVE_BYTES,
@@ -97,102 +105,7 @@ export type ParsedBackupArchive =
       sourceFormat: 'zip';
     };
 
-const BASE64_ALPHABET =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-const BASE64_LOOKUP = (() => {
-  const table = new Uint8Array(256);
-  table.fill(255);
-  for (let i = 0; i < BASE64_ALPHABET.length; i++) {
-    table[BASE64_ALPHABET.charCodeAt(i)] = i;
-  }
-  return table;
-})();
-
-/**
- * Pure TypeScript `Uint8Array` -> base64 string encoder (zero DOM `btoa` / Latin-1 limits).
- */
-export function bytesToBase64Pure(bytes: Uint8Array): string {
-  if (bytes.length === 0) return '';
-  const chunks: string[] = [];
-  const len = bytes.length;
-  for (let i = 0; i < len; i += 3) {
-    const b0 = bytes[i];
-    const hasB1 = i + 1 < len;
-    const hasB2 = i + 2 < len;
-    const b1 = hasB1 ? bytes[i + 1] : 0;
-    const b2 = hasB2 ? bytes[i + 2] : 0;
-
-    const triplet = (b0 << 16) | (b1 << 8) | b2;
-    chunks.push(
-      BASE64_ALPHABET[(triplet >> 18) & 0x3f] +
-        BASE64_ALPHABET[(triplet >> 12) & 0x3f] +
-        (hasB1 ? BASE64_ALPHABET[(triplet >> 6) & 0x3f] : '=') +
-        (hasB2 ? BASE64_ALPHABET[triplet & 0x3f] : '=')
-    );
-  }
-  return chunks.join('');
-}
-
-/**
- * Pure TypeScript base64 string -> `Uint8Array` decoder.
- */
-export function base64ToBytesPure(base64: string): Uint8Array {
-  const clean = base64.replace(/[^A-Za-z0-9+/=]/g, '');
-  if (!clean) return new Uint8Array(0);
-  const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
-  const outLen = Math.max(0, Math.floor((clean.length * 3) / 4) - pad);
-  const out = new Uint8Array(outLen);
-
-  let outIdx = 0;
-  for (let i = 0; i < clean.length; i += 4) {
-    const c0 = BASE64_LOOKUP[clean.charCodeAt(i)] ?? 0;
-    const c1 = BASE64_LOOKUP[clean.charCodeAt(i + 1)] ?? 0;
-    const c2 = clean[i + 2] === '=' ? 0 : BASE64_LOOKUP[clean.charCodeAt(i + 2)] ?? 0;
-    const c3 = clean[i + 3] === '=' ? 0 : BASE64_LOOKUP[clean.charCodeAt(i + 3)] ?? 0;
-
-    const triplet = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
-    if (outIdx < outLen) out[outIdx++] = (triplet >> 16) & 0xff;
-    if (outIdx < outLen) out[outIdx++] = (triplet >> 8) & 0xff;
-    if (outIdx < outLen) out[outIdx++] = triplet & 0xff;
-  }
-  return out;
-}
-
-/**
- * Extracts raw binary bytes and MIME type from a `data:image/...;base64,...` URI.
- */
-export function dataUrlToBinary(
-  dataUrl: string,
-  fallbackMime = 'image/webp'
-): { mimeType: string; bytes: Uint8Array } | null {
-  if (!dataUrl || !dataUrl.startsWith('data:')) return null;
-  const commaIdx = dataUrl.indexOf(',');
-  if (commaIdx === -1) return null;
-  const header = dataUrl.slice(5, commaIdx);
-  const mimeType = header.split(';')[0] || fallbackMime;
-  const payload = dataUrl.slice(commaIdx + 1);
-  if (!header.includes(';base64')) {
-    try {
-      return { mimeType, bytes: strToU8(decodeURIComponent(payload)) };
-    } catch {
-      return null;
-    }
-  }
-  return { mimeType, bytes: base64ToBytesPure(payload) };
-}
-
-/**
- * Converts binary image bytes + MIME type back into a safe `data:image/...;base64,...` URI.
- * Blocks `image/svg+xml` payloads to avoid embedded script smuggling.
- */
-export function binaryToDataUrl(mimeType: string, bytes: Uint8Array): string {
-  const normalizedMime = (mimeType || '').split(';')[0].trim().toLowerCase();
-  const isAllowedRaster =
-    /^image\/(webp|jpeg|jpg|png|gif|avif|bmp)$/i.test(normalizedMime);
-  const safeMime = isAllowedRaster ? normalizedMime : 'image/webp';
-  return `data:${safeMime};base64,${bytesToBase64Pure(bytes)}`;
-}
+// Base64 & data-URL binary helpers are imported and re-exported from `./binaryEncoding`.
 
 function extensionForMime(mimeType: string, fallbackName?: string): string {
   const m = (mimeType || '').toLowerCase();
@@ -428,6 +341,33 @@ export function buildCompleteBackupZipFiles(
         ),
         youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
           isSameSpecies(y.species, filterSpecies)
+        ),
+        clientContacts: (snapshot.clientContacts ?? []).filter((c) =>
+          isSameSpecies(c.species, filterSpecies)
+        ),
+        waitlistEntries: (snapshot.waitlistEntries ?? []).filter((w) =>
+          isSameSpecies(w.species, filterSpecies)
+        ),
+        animalReservations: (snapshot.animalReservations ?? []).filter((r) =>
+          isSameSpecies(r.species, filterSpecies)
+        ),
+        woolHarvests: (snapshot.woolHarvests ?? []).filter((w) =>
+          isSameSpecies(w.species, filterSpecies)
+        ),
+        mileageLogs: (snapshot.mileageLogs ?? []).filter((m) =>
+          isSameSpecies(m.species, filterSpecies)
+        ),
+        journalEntries: (snapshot.journalEntries ?? []).filter((j) =>
+          isSameSpecies(j.species, filterSpecies)
+        ),
+        judgeClubs: (snapshot.judgeClubs ?? []).filter((c) =>
+          isSameSpecies(c.species, filterSpecies)
+        ),
+        judgeAssignments: (snapshot.judgeAssignments ?? []).filter((a) =>
+          isSameSpecies(a.species, filterSpecies)
+        ),
+        judgeExpenses: (snapshot.judgeExpenses ?? []).filter((e) =>
+          isSameSpecies(e.species, filterSpecies)
         ),
       }
     : {
@@ -915,6 +855,33 @@ export async function streamCompleteBackupZipArchive(
           youthProjectBooks: (snapshot.youthProjectBooks ?? []).filter((y) =>
             isSameSpecies(y.species, filterSpecies)
           ),
+          clientContacts: (snapshot.clientContacts ?? []).filter((c) =>
+            isSameSpecies(c.species, filterSpecies)
+          ),
+          waitlistEntries: (snapshot.waitlistEntries ?? []).filter((w) =>
+            isSameSpecies(w.species, filterSpecies)
+          ),
+          animalReservations: (snapshot.animalReservations ?? []).filter((r) =>
+            isSameSpecies(r.species, filterSpecies)
+          ),
+          woolHarvests: (snapshot.woolHarvests ?? []).filter((w) =>
+            isSameSpecies(w.species, filterSpecies)
+          ),
+          mileageLogs: (snapshot.mileageLogs ?? []).filter((m) =>
+            isSameSpecies(m.species, filterSpecies)
+          ),
+          journalEntries: (snapshot.journalEntries ?? []).filter((j) =>
+            isSameSpecies(j.species, filterSpecies)
+          ),
+          judgeClubs: (snapshot.judgeClubs ?? []).filter((c) =>
+            isSameSpecies(c.species, filterSpecies)
+          ),
+          judgeAssignments: (snapshot.judgeAssignments ?? []).filter((a) =>
+            isSameSpecies(a.species, filterSpecies)
+          ),
+          judgeExpenses: (snapshot.judgeExpenses ?? []).filter((e) =>
+            isSameSpecies(e.species, filterSpecies)
+          ),
         }
       : {
           ...snapshot,
@@ -1091,11 +1058,15 @@ export function parseBackupArchiveInput(
       throw new Error('ZIP archive photos/manifest.json exceeds the maximum safe JSON size limit.');
     }
     try {
-      const parsedManifest = JSON.parse(strFromU8(manifestBytes));
-      const rawList: any[] = Array.isArray(parsedManifest?.photos)
-        ? parsedManifest.photos
+      const parsedManifest = JSON.parse(strFromU8(manifestBytes)) as
+        | { photos?: unknown }
+        | unknown[];
+      const rawList: BackupPhotoManifestEntry[] = Array.isArray(
+        (parsedManifest as { photos?: unknown })?.photos
+      )
+        ? ((parsedManifest as { photos: BackupPhotoManifestEntry[] }).photos)
         : Array.isArray(parsedManifest)
-        ? parsedManifest
+        ? (parsedManifest as BackupPhotoManifestEntry[])
         : [];
       manifestEntries = rawList;
 

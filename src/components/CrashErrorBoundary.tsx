@@ -19,12 +19,8 @@ import {
   Share2,
 } from 'lucide-react';
 import React from 'react';
-import { BarnDatabaseSnapshot } from '../core/models';
-import {
-  buildSupportMailtoHref,
-  formatSupportReportText,
-} from '../core/supportBundle';
-import { formatTimestampedBackupSlug } from '../core/syncAndExports';
+import type { BarnDatabaseSnapshot } from '../core/models';
+import type { buildSupportMailtoHref as BuildSupportMailtoHrefFn } from '../core/supportBundle';
 import {
   DiagnosticSummary,
   getDiagnosticSummary,
@@ -93,6 +89,8 @@ export class CrashErrorBoundary extends React.Component<
   CrashErrorBoundaryProps,
   CrashErrorBoundaryState
 > {
+  private buildMailtoHrefFn: typeof BuildSupportMailtoHrefFn | null = null;
+
   constructor(props: CrashErrorBoundaryProps) {
     super(props);
     this.state = {
@@ -132,10 +130,14 @@ export class CrashErrorBoundary extends React.Component<
   private handleDownloadLogsTxt = async () => {
     this.setState({ busy: true, feedback: null });
     try {
-      const entries = await listDiagnosticLogs();
+      const [entries, supportMod, { formatTimestampedBackupSlug }] = await Promise.all([
+        listDiagnosticLogs(),
+        import('../core/supportBundle'),
+        import('../core/syncAndExports'),
+      ]);
       const summary = await getDiagnosticSummary(entries);
       const snapshot = await loadBestAvailableSnapshotForSupport(false);
-      const report = formatSupportReportText(entries, summary, snapshot);
+      const report = supportMod.formatSupportReportText(entries, summary, snapshot);
       const filename = `pedigree-crash-logs-${formatTimestampedBackupSlug()}.txt`;
       await downloadTextFile(filename, report, 'text/plain');
       this.setState({
@@ -153,7 +155,11 @@ export class CrashErrorBoundary extends React.Component<
   private handleExportOrSendBundle = async (sendViaShare: boolean) => {
     this.setState({ busy: true, feedback: null, lastBuiltMailMeta: null });
     try {
-      const entries = await listDiagnosticLogs();
+      const [entries, supportMod] = await Promise.all([
+        listDiagnosticLogs(),
+        import('../core/supportBundle'),
+      ]);
+      this.buildMailtoHrefFn = supportMod.buildSupportMailtoHref;
       const summary = await getDiagnosticSummary(entries);
       const snapshot = this.state.includeData
         ? await loadBestAvailableSnapshotForSupport(this.state.includePhotos)
@@ -189,12 +195,14 @@ export class CrashErrorBoundary extends React.Component<
           busy: false,
           lastBuiltMailMeta,
           feedback:
-            mode === 'shared'
-              ? `Opened share sheet with ${built.filename}.${recipient ? ` You can send the bug report directly to ${recipient}.` : ''}`
-              : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP${recipient ? ` to send to ${recipient}` : ''}.`,
+            mode === 'cancelled'
+              ? 'Share sheet cancelled — no file was saved.'
+              : mode === 'shared'
+                ? `Opened share sheet with ${built.filename}.${recipient ? ` You can send the bug report directly to ${recipient}.` : ''}`
+                : `Saved ${built.filename}. Tap "Open Email Draft" below and attach the downloaded .ZIP${recipient ? ` to send to ${recipient}` : ''}.`,
         });
       } else {
-        await shareBinaryFileOrDownload({
+        const mode = await shareBinaryFileOrDownload({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
@@ -203,9 +211,12 @@ export class CrashErrorBoundary extends React.Component<
         this.setState({
           busy: false,
           lastBuiltMailMeta,
-          feedback: `Exported ${built.filename} (${built.logCount} logs${
-            built.includedData ? `, ${built.animalCount} animals` : ''
-          }).`,
+          feedback:
+            mode === 'cancelled'
+              ? 'Share sheet cancelled — no file was saved.'
+              : `Exported ${built.filename} (${built.logCount} logs${
+                  built.includedData ? `, ${built.animalCount} animals` : ''
+                }).`,
         });
       }
     } catch (err) {
@@ -223,12 +234,13 @@ export class CrashErrorBoundary extends React.Component<
 
     const { error, componentStack, showDetails, busy, includeData, includePhotos, recipientEmail, feedback, lastBuiltMailMeta } =
       this.state;
-    const mailtoHref = lastBuiltMailMeta
-      ? buildSupportMailtoHref({
-          recipientEmail,
-          ...lastBuiltMailMeta,
-        })
-      : null;
+    const mailtoHref =
+      lastBuiltMailMeta && this.buildMailtoHrefFn
+        ? this.buildMailtoHrefFn({
+            recipientEmail,
+            ...lastBuiltMailMeta,
+          })
+        : null;
     const memoryFault = error ? isMemoryLikeError(error) : false;
 
     return (

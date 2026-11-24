@@ -13,6 +13,7 @@
 import {
   ArrowLeft,
   Bold,
+  BookOpen,
   Calendar,
   Check,
   CheckSquare,
@@ -48,6 +49,7 @@ interface SpeciesMemoScreenProps {
     options?: { silent?: boolean }
   ) => Promise<void> | void;
   onBackToHub: () => void;
+  onOpenJournal?: () => void;
 }
 
 function renderInlineTokens(tokens: MemoInlineToken[]) {
@@ -74,6 +76,7 @@ export function SpeciesMemoScreen({
   speciesProfile,
   onSaveMemo,
   onBackToHub,
+  onOpenJournal,
 }: SpeciesMemoScreenProps) {
   const persistedMemo = sanitizeSpeciesMemo(speciesProfile.memoText ?? '');
   const [draft, setDraft] = useState<string>(persistedMemo);
@@ -277,6 +280,19 @@ export function SpeciesMemoScreen({
                 </>
               )}
             </button>
+            {onOpenJournal && (
+              <button
+                type="button"
+                onClick={() => {
+                  flushSaveNow(true);
+                  onOpenJournal();
+                }}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                Personal Journal
+              </button>
+            )}
           </div>
         </div>
       </section>

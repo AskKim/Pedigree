@@ -5,9 +5,14 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  computeSnapshotCollectionFootprint,
+  createDefaultSubunitOpenMap,
   DESTRUCTIVE_CONFIRM_PHRASES,
+  DEVELOPER_CONSOLE_SUBUNIT_IDS,
+  DEVELOPER_CONSOLE_TABS,
   evaluateStorageQuotaForOperation,
   isDestructiveActionConfirmationValid,
+  normalizeDeveloperConsoleTab,
   validateDiagnosticTriggerInput,
   validateLogRetentionDaysOverride,
   validatePwaUpdatePolicyOverride,
@@ -172,5 +177,43 @@ describe('techyStuffGuardrails — quota preflight, strict sanitization & destru
     expect(isDestructiveActionConfirmationValid('clear_sync_outbox', 'RESET SYNC')).toBe(true);
     expect(isDestructiveActionConfirmationValid('purge_opfs_tmp', 'PURGE TMP')).toBe(true);
     expect(isDestructiveActionConfirmationValid('clear_diagnostic_logs', 'CLEAR LOGS')).toBe(true);
+  });
+
+  it('normalizes developer console tabs, subunit maps, and estimates snapshot collection footprints cleanly', () => {
+    expect(DEVELOPER_CONSOLE_TABS).toHaveLength(4);
+    expect(normalizeDeveloperConsoleTab('runtime')).toBe('runtime');
+    expect(normalizeDeveloperConsoleTab('all')).toBe('all');
+    expect(normalizeDeveloperConsoleTab('invalid-tab')).toBe('storage');
+
+    const collapsedMap = createDefaultSubunitOpenMap(false);
+    const expandedMap = createDefaultSubunitOpenMap(true);
+    for (const id of DEVELOPER_CONSOLE_SUBUNIT_IDS) {
+      expect(collapsedMap[id]).toBe(false);
+      expect(expandedMap[id]).toBe(true);
+    }
+
+    const emptyReport = computeSnapshotCollectionFootprint(null);
+    expect(emptyReport.totalRecords).toBe(0);
+    expect(emptyReport.collections).toEqual([]);
+
+    const report = computeSnapshotCollectionFootprint({
+      speciesProfiles: [{}, {}],
+      animals: [{}, {}, {}],
+      animalPhotos: [
+        { storedBytes: 120_000, thumbnailDataUrl: 'data:image/webp;base64,AAAA' },
+        { storedBytes: 0, thumbnailDataUrl: 'data:image/webp;base64,BBBB' },
+      ],
+      careLogs: [{}],
+      journalEntries: [{}, {}],
+    });
+    expect(report.speciesCount).toBe(2);
+    expect(report.totalRecords).toBe(10);
+    expect(report.photoSummary.totalPhotos).toBe(2);
+    expect(report.photoSummary.photosWithFullResCount).toBe(1);
+    expect(report.photoSummary.fullResStoredBytes).toBe(120_000);
+    expect(report.collections[0].key).toBe('animalPhotos');
+    const sumPercent = report.collections.reduce((acc, c) => acc + c.sharePercent, 0);
+    expect(sumPercent).toBeGreaterThan(99);
+    expect(sumPercent).toBeLessThanOrEqual(100.5);
   });
 });

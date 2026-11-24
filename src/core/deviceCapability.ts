@@ -95,7 +95,7 @@ export interface TierStoragePolicy {
   recoveryDumpCap: number;
   /** Cap for IndexedDB rolling fallback snapshots. */
   rollingIdbCap: number;
-  /** When true (Tiers 1–2), strip full-res `dataUrl` from 15s IDB fallback mirror & rolling snapshots to cut RAM 3–4x while preserving thumbnails & primary SQLite full-res. */
+  /** When true (Tiers 1–3), strip full-res `dataUrl` from 15s IDB fallback mirror & rolling snapshots to cut RAM 3–4x while preserving thumbnails & primary SQLite full-res. */
   dehydrateMirrorPhotos: boolean;
   /** Compress OPFS vault `/backups` payloads as `.vault.zip` to reduce browser disk quota pressure. */
   compressVaultBackups: boolean;
@@ -140,7 +140,7 @@ export const TIER_STORAGE_POLICIES: Record<DeviceCapabilityTierNumber, TierStora
     manualCap: 12,
     recoveryDumpCap: 4,
     rollingIdbCap: 3,
-    dehydrateMirrorPhotos: false,
+    dehydrateMirrorPhotos: true,
     compressVaultBackups: true,
     maxSafeImportBytesHint: 32 * 1024 * 1024,
     skipHeavyCanaryZip: false,

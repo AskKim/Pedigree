@@ -430,6 +430,33 @@ export function countSpeciesTestingRecords(
   const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter(
     (yp) => isSameSpecies(yp.species, speciesName) && isSampleTestingId(yp.id)
   ).length;
+  const clientContacts = (snapshot.clientContacts ?? []).filter(
+    (cc) => isSameSpecies(cc.species, speciesName) && isSampleTestingId(cc.id)
+  ).length;
+  const waitlistEntries = (snapshot.waitlistEntries ?? []).filter(
+    (wl) => isSameSpecies(wl.species, speciesName) && isSampleTestingId(wl.id)
+  ).length;
+  const animalReservations = (snapshot.animalReservations ?? []).filter(
+    (ar) => isSameSpecies(ar.species, speciesName) && isSampleTestingId(ar.id)
+  ).length;
+  const woolHarvests = (snapshot.woolHarvests ?? []).filter(
+    (wh) => isSameSpecies(wh.species, speciesName) && isSampleTestingId(wh.id)
+  ).length;
+  const mileageLogs = (snapshot.mileageLogs ?? []).filter(
+    (ml) => isSameSpecies(ml.species, speciesName) && isSampleTestingId(ml.id)
+  ).length;
+  const journalEntries = (snapshot.journalEntries ?? []).filter(
+    (je) => isSameSpecies(je.species, speciesName) && isSampleTestingId(je.id)
+  ).length;
+  const judgeClubs = (snapshot.judgeClubs ?? []).filter(
+    (jc) => isSameSpecies(jc.species, speciesName) && isSampleTestingId(jc.id)
+  ).length;
+  const judgeAssignments = (snapshot.judgeAssignments ?? []).filter(
+    (ja) => isSameSpecies(ja.species, speciesName) && isSampleTestingId(ja.id)
+  ).length;
+  const judgeExpenses = (snapshot.judgeExpenses ?? []).filter(
+    (jx) => isSameSpecies(jx.species, speciesName) && isSampleTestingId(jx.id)
+  ).length;
 
   return (
     seedAnimalIds.size +
@@ -443,7 +470,16 @@ export function countSpeciesTestingRecords(
     feedAllocations +
     ledgerEntries +
     processingLogs +
-    youthProjectBooks
+    youthProjectBooks +
+    clientContacts +
+    waitlistEntries +
+    animalReservations +
+    woolHarvests +
+    mileageLogs +
+    journalEntries +
+    judgeClubs +
+    judgeAssignments +
+    judgeExpenses
   );
 }
 
@@ -478,6 +514,33 @@ export function countAllSpeciesRecords(
   const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) =>
     isSameSpecies(yp.species, speciesName)
   ).length;
+  const clientContacts = (snapshot.clientContacts ?? []).filter((cc) =>
+    isSameSpecies(cc.species, speciesName)
+  ).length;
+  const waitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) =>
+    isSameSpecies(wl.species, speciesName)
+  ).length;
+  const animalReservations = (snapshot.animalReservations ?? []).filter((ar) =>
+    isSameSpecies(ar.species, speciesName)
+  ).length;
+  const woolHarvests = (snapshot.woolHarvests ?? []).filter((wh) =>
+    isSameSpecies(wh.species, speciesName)
+  ).length;
+  const mileageLogs = (snapshot.mileageLogs ?? []).filter((ml) =>
+    isSameSpecies(ml.species, speciesName)
+  ).length;
+  const journalEntries = (snapshot.journalEntries ?? []).filter((je) =>
+    isSameSpecies(je.species, speciesName)
+  ).length;
+  const judgeClubs = (snapshot.judgeClubs ?? []).filter((jc) =>
+    isSameSpecies(jc.species, speciesName)
+  ).length;
+  const judgeAssignments = (snapshot.judgeAssignments ?? []).filter((ja) =>
+    isSameSpecies(ja.species, speciesName)
+  ).length;
+  const judgeExpenses = (snapshot.judgeExpenses ?? []).filter((jx) =>
+    isSameSpecies(jx.species, speciesName)
+  ).length;
 
   return (
     animals +
@@ -491,7 +554,16 @@ export function countAllSpeciesRecords(
     feedAllocations +
     ledgerEntries +
     processingLogs +
-    youthProjectBooks
+    youthProjectBooks +
+    clientContacts +
+    waitlistEntries +
+    animalReservations +
+    woolHarvests +
+    mileageLogs +
+    journalEntries +
+    judgeClubs +
+    judgeAssignments +
+    judgeExpenses
   );
 }
 
@@ -649,6 +721,62 @@ export function purgeSpeciesTestingDataPure(
     return !remove;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    const remove = isSameSpecies(cc.species, speciesName) && isSampleTestingId(cc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    const remove = isSameSpecies(wl.species, speciesName) && isSampleTestingId(wl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    const remove = isSameSpecies(ar.species, speciesName) && isSampleTestingId(ar.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    const remove =
+      (isSameSpecies(wh.species, speciesName) && isSampleTestingId(wh.id)) ||
+      removedAnimalIds.has(wh.animalId);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextMileageLogs = (snapshot.mileageLogs ?? []).filter((ml) => {
+    const remove = isSameSpecies(ml.species, speciesName) && isSampleTestingId(ml.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJournalEntries = (snapshot.journalEntries ?? []).filter((je) => {
+    const remove = isSameSpecies(je.species, speciesName) && isSampleTestingId(je.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeClubs = (snapshot.judgeClubs ?? []).filter((jc) => {
+    const remove = isSameSpecies(jc.species, speciesName) && isSampleTestingId(jc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeAssignments = (snapshot.judgeAssignments ?? []).filter((ja) => {
+    const remove = isSameSpecies(ja.species, speciesName) && isSampleTestingId(ja.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeExpenses = (snapshot.judgeExpenses ?? []).filter((jx) => {
+    const remove = isSameSpecies(jx.species, speciesName) && isSampleTestingId(jx.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -664,6 +792,15 @@ export function purgeSpeciesTestingDataPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
+      mileageLogs: nextMileageLogs,
+      journalEntries: nextJournalEntries,
+      judgeClubs: nextJudgeClubs,
+      judgeAssignments: nextJudgeAssignments,
+      judgeExpenses: nextJudgeExpenses,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -810,6 +947,62 @@ export function purgeSpeciesNonTestingDataPure(
     return !remove;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    const remove = isSameSpecies(cc.species, speciesName) && !isSampleTestingId(cc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    const remove = isSameSpecies(wl.species, speciesName) && !isSampleTestingId(wl.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    const remove = isSameSpecies(ar.species, speciesName) && !isSampleTestingId(ar.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    const remove =
+      (isSameSpecies(wh.species, speciesName) && !isSampleTestingId(wh.id)) ||
+      removedAnimalIds.has(wh.animalId);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextMileageLogs = (snapshot.mileageLogs ?? []).filter((ml) => {
+    const remove = isSameSpecies(ml.species, speciesName) && !isSampleTestingId(ml.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJournalEntries = (snapshot.journalEntries ?? []).filter((je) => {
+    const remove = isSameSpecies(je.species, speciesName) && !isSampleTestingId(je.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeClubs = (snapshot.judgeClubs ?? []).filter((jc) => {
+    const remove = isSameSpecies(jc.species, speciesName) && !isSampleTestingId(jc.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeAssignments = (snapshot.judgeAssignments ?? []).filter((ja) => {
+    const remove = isSameSpecies(ja.species, speciesName) && !isSampleTestingId(ja.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
+  const nextJudgeExpenses = (snapshot.judgeExpenses ?? []).filter((jx) => {
+    const remove = isSameSpecies(jx.species, speciesName) && !isSampleTestingId(jx.id);
+    if (remove) removedTotalRecords++;
+    return !remove;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -825,6 +1018,15 @@ export function purgeSpeciesNonTestingDataPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
+      mileageLogs: nextMileageLogs,
+      journalEntries: nextJournalEntries,
+      judgeClubs: nextJudgeClubs,
+      judgeAssignments: nextJudgeAssignments,
+      judgeExpenses: nextJudgeExpenses,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -945,6 +1147,78 @@ export function purgeAllSpeciesRecordsPure(
     return true;
   });
 
+  const nextClientContacts = (snapshot.clientContacts ?? []).filter((cc) => {
+    if (isSameSpecies(cc.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextWaitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) => {
+    if (isSameSpecies(wl.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextAnimalReservations = (snapshot.animalReservations ?? []).filter((ar) => {
+    if (isSameSpecies(ar.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextWoolHarvests = (snapshot.woolHarvests ?? []).filter((wh) => {
+    if (isSameSpecies(wh.species, speciesName) || removedAnimalIds.has(wh.animalId)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextMileageLogs = (snapshot.mileageLogs ?? []).filter((ml) => {
+    if (isSameSpecies(ml.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextJournalEntries = (snapshot.journalEntries ?? []).filter((je) => {
+    if (isSameSpecies(je.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextJudgeClubs = (snapshot.judgeClubs ?? []).filter((jc) => {
+    if (isSameSpecies(jc.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextJudgeAssignments = (snapshot.judgeAssignments ?? []).filter((ja) => {
+    if (isSameSpecies(ja.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
+  const nextJudgeExpenses = (snapshot.judgeExpenses ?? []).filter((jx) => {
+    if (isSameSpecies(jx.species, speciesName)) {
+      removedTotalRecords++;
+      return false;
+    }
+    return true;
+  });
+
   return {
     nextSnapshot: {
       ...snapshot,
@@ -960,6 +1234,15 @@ export function purgeAllSpeciesRecordsPure(
       ledgerEntries: nextLedgerEntries,
       processingLogs: nextProcessingLogs,
       youthProjectBooks: nextYouthProjectBooks,
+      clientContacts: nextClientContacts,
+      waitlistEntries: nextWaitlistEntries,
+      animalReservations: nextAnimalReservations,
+      woolHarvests: nextWoolHarvests,
+      mileageLogs: nextMileageLogs,
+      journalEntries: nextJournalEntries,
+      judgeClubs: nextJudgeClubs,
+      judgeAssignments: nextJudgeAssignments,
+      judgeExpenses: nextJudgeExpenses,
     },
     removedAnimals: removedAnimalIds.size,
     removedTotalRecords,
@@ -1580,6 +1863,7 @@ export function buildFullPredefinedSampleSnapshot(
     dismissedMemoAlertSignatures: existingSettings?.dismissedMemoAlertSignatures ?? {},
     includePhotoOnPedigree: existingSettings?.includePhotoOnPedigree ?? false,
     feedTagPurgeWindowDays: existingSettings?.feedTagPurgeWindowDays ?? 60,
+    enableJudgeNotebook: existingSettings?.enableJudgeNotebook ?? false,
     updatedAt: ts,
   };
 
@@ -1623,5 +1907,14 @@ export function buildFullPredefinedSampleSnapshot(
     ledgerEntries: [],
     processingLogs: [],
     youthProjectBooks: [],
+    clientContacts: [],
+    waitlistEntries: [],
+    animalReservations: [],
+    woolHarvests: [],
+    mileageLogs: [],
+    journalEntries: [],
+    judgeClubs: [],
+    judgeAssignments: [],
+    judgeExpenses: [],
   };
 }

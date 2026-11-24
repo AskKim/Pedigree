@@ -17,3 +17,9 @@ android-wrapper/app/src/main/assets/www/*
 *.aab
 *.jks
 *.keystore
+!import/
+!import/.gitkeep
+!export/
+!export/.gitkeep
+!upload/
+!upload/.gitkeep

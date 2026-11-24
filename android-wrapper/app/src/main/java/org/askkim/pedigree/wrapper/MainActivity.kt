@@ -48,6 +48,9 @@ import java.util.Locale
  * Main host Activity for the Pedigree Android Wrapper (`org.askkim.pedigree.wrapper`).
  *
  * Architecture & Security Responsibilities:
+ * **CRITICAL HYBRID BOUNDARY**: This Activity is ONLY a thin native WebView shell. All application UI,
+ * routing, state, SQLite/OPFS persistence, and domain logic belong exclusively in the **React + Vite + TypeScript PWA**
+ * (`/src/` -> `dist/` -> `assets/www/`). NEVER recode the PWA in Kotlin or Compose.
  * 1. **Offline Asset Hosting**: Serves bundled Vite `dist/` assets from `assets/www/` at virtual
  *    origin `https://appassets.androidplatform.net/` via [WebViewAssetLoader] and intercepts
  *    Service Worker requests via [ServiceWorkerControllerCompat].
@@ -405,6 +408,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun attachOriginLockedWebMessageListener(wv: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            diagnosticBuffer.record(
+                DiagnosticRingBuffer.LEVEL_WARN,
+                "BRIDGE_UNSUPPORTED",
+                "WebViewFeature.WEB_MESSAGE_LISTENER unsupported (requires Chromium 82+). Falling back to web-only download/print mode."
+            )
             return
         }
 

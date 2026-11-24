@@ -13,18 +13,27 @@
 import {
   Animal,
   AnimalPhoto,
+  AnimalReservation,
   BarnDatabaseSnapshot,
+  BarnJournalEntry,
   BarnSettings,
   BarnTask,
   BreedingRecord,
   CageLocation,
   CareLog,
+  ClientContact,
   FeedAllocation,
   FeedBatch,
+  JudgeAssignment,
+  JudgeClubContact,
+  JudgeExpense,
   LedgerEntry,
+  MileageLog,
   ProcessingLog,
   ShowEvent,
   SpeciesProfile,
+  WaitlistEntry,
+  WoolHarvest,
   YouthProjectBook,
 } from '../core/models';
 import type { WipedStorageRecoveryContext } from './opfsStorage';
@@ -58,6 +67,18 @@ export interface StorageAdapter {
 
   /** Loads full-resolution `dataUrl` strings for specific photo IDs (or all photos if omitted). */
   loadAnimalPhotoDataUrlsBatch?(photoIds?: string[]): Promise<Record<string, string>>;
+
+  /** Loads the full-resolution base64 `tagPhotoDataUrl` for a single feed batch on demand. */
+  loadFeedBatchTagPhotoDataUrl?(batchId: string): Promise<string | null>;
+
+  /** Loads full-resolution `tagPhotoDataUrl` strings for specific feed batch IDs (or all if omitted). */
+  loadFeedBatchTagPhotoDataUrlsBatch?(batchIds?: string[]): Promise<Record<string, string>>;
+
+  /** Loads the full-resolution base64 `receiptPhotoDataUrl` for a single ledger entry on demand. */
+  loadLedgerEntryReceiptPhotoDataUrl?(entryId: string): Promise<string | null>;
+
+  /** Loads full-resolution `receiptPhotoDataUrl` strings for specific ledger entry IDs (or all if omitted). */
+  loadLedgerEntryReceiptPhotoDataUrlsBatch?(entryIds?: string[]): Promise<Record<string, string>>;
 
   /** Queries a bounded BFS pedigree neighborhood (up to `maxDepth` ancestor generations) directly from SQLite. */
   queryPedigreeNeighborhood?(rootIds: string[], maxDepth: number): Promise<Animal[]>;
@@ -132,6 +153,51 @@ export interface StorageAdapter {
   saveYouthProjectBooksBatch(projects: YouthProjectBook[]): Promise<void>;
   deleteYouthProjectBook(id: string): Promise<void>;
 
+  /** Upserts or deletes ClientContact CRM records (single or batch). */
+  saveClientContact(client: ClientContact): Promise<void>;
+  saveClientContactsBatch(clients: ClientContact[]): Promise<void>;
+  deleteClientContact(id: string): Promise<void>;
+
+  /** Upserts or deletes buyer WaitlistEntry records (single or batch). */
+  saveWaitlistEntry(entry: WaitlistEntry): Promise<void>;
+  saveWaitlistEntriesBatch(entries: WaitlistEntry[]): Promise<void>;
+  deleteWaitlistEntry(id: string): Promise<void>;
+
+  /** Upserts or deletes AnimalReservation records (single or batch). */
+  saveAnimalReservation(reservation: AnimalReservation): Promise<void>;
+  saveAnimalReservationsBatch(reservations: AnimalReservation[]): Promise<void>;
+  deleteAnimalReservation(id: string): Promise<void>;
+
+  /** Upserts or deletes WoolHarvest fiber & IAGARB records (single or batch). */
+  saveWoolHarvest(harvest: WoolHarvest): Promise<void>;
+  saveWoolHarvestsBatch(harvests: WoolHarvest[]): Promise<void>;
+  deleteWoolHarvest(id: string): Promise<void>;
+
+  /** Upserts or deletes MileageLog tax travel records (single or batch). */
+  saveMileageLog(log: MileageLog): Promise<void>;
+  saveMileageLogsBatch(logs: MileageLog[]): Promise<void>;
+  deleteMileageLog(id: string): Promise<void>;
+
+  /** Upserts or deletes BarnJournalEntry personal diary records (single or batch). */
+  saveJournalEntry(entry: BarnJournalEntry): Promise<void>;
+  saveJournalEntriesBatch(entries: BarnJournalEntry[]): Promise<void>;
+  deleteJournalEntry(id: string): Promise<void>;
+
+  /** Upserts or deletes JudgeClubContact records (single or batch). */
+  saveJudgeClub(club: JudgeClubContact): Promise<void>;
+  saveJudgeClubsBatch(clubs: JudgeClubContact[]): Promise<void>;
+  deleteJudgeClub(id: string): Promise<void>;
+
+  /** Upserts or deletes JudgeAssignment show judging engagements (single or batch). */
+  saveJudgeAssignment(assignment: JudgeAssignment): Promise<void>;
+  saveJudgeAssignmentsBatch(assignments: JudgeAssignment[]): Promise<void>;
+  deleteJudgeAssignment(id: string): Promise<void>;
+
+  /** Upserts or deletes JudgeExpense travel/judging expense records (single or batch). */
+  saveJudgeExpense(expense: JudgeExpense): Promise<void>;
+  saveJudgeExpensesBatch(expenses: JudgeExpense[]): Promise<void>;
+  deleteJudgeExpense(id: string): Promise<void>;
+
   /** Exports the raw unencrypted `.sqlite` binary database file (when running SQLite engine). */
   exportRawSqliteBytes(): Promise<Uint8Array | null>;
 
@@ -152,4 +218,7 @@ export interface StorageAdapter {
 
   /** Returns detected wiped-storage recovery state when IndexedDB appeared wiped for a returning user. */
   getWipedRecoveryContext?(): WipedStorageRecoveryContext | null;
+
+  /** Returns true when restricted browser storage forced an in-memory ephemeral session. */
+  isEphemeralMode?(): boolean;
 }

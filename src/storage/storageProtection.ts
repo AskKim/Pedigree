@@ -24,6 +24,14 @@ import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import { NativeContainerInfo, pedigreeBridge } from '../native/pedigreeBridge';
 import { isOpfsSupported } from './opfsTempStream';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
+import {
+  getSafeIndexedDb,
+  getSafeLocalStorage,
+  getSafeStorageManager,
+  trackActiveIdbConnection,
+  trackActiveIdbTransaction,
+  triggerIndexedDbOpfsDump,
+} from './storageProbes';
 
 const ROLLING_IDB_NAME = 'community_pedigree_rolling_backups';
 const ROLLING_STORE_NAME = 'snapshots';
@@ -103,7 +111,8 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
     ? pedigreeBridge.getNativeContainerInfo(400)
     : Promise.resolve(null);
 
-  if (typeof navigator === 'undefined' || !navigator.storage) {
+  const storage = getSafeStorageManager();
+  if (!storage) {
     const nativeContainerInfo = await nativeInfoPromise;
     return {
       supported: false,
@@ -120,11 +129,11 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
   // Never spoof navigator.storage.persisted() — Android WebView returns false honestly.
   let persisted = false;
   try {
-    if (navigator.storage.persisted) {
-      persisted = await navigator.storage.persisted();
+    if (typeof storage.persisted === 'function') {
+      persisted = await storage.persisted();
     }
-    if (!persisted && navigator.storage.persist) {
-      persisted = await navigator.storage.persist();
+    if (!persisted && typeof storage.persist === 'function') {
+      persisted = await storage.persist();
     }
   } catch {
     persisted = false;
@@ -133,8 +142,8 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
   let usageBytes = 0;
   let quotaBytes = 0;
   try {
-    if (navigator.storage.estimate) {
-      const est = await navigator.storage.estimate();
+    if (typeof storage.estimate === 'function') {
+      const est = await storage.estimate();
       usageBytes = Number(est.usage) || 0;
       quotaBytes = Number(est.quota) || 0;
     }
@@ -165,7 +174,8 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
     ? pedigreeBridge.getNativeContainerInfo(400)
     : Promise.resolve(null);
 
-  if (typeof navigator === 'undefined' || !navigator.storage) {
+  const storage = getSafeStorageManager();
+  if (!storage) {
     const nativeContainerInfo = await nativeInfoPromise;
     return {
       supported: false,
@@ -182,11 +192,11 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
   let usageBytes = 0;
   let quotaBytes = 0;
   try {
-    if (navigator.storage.persisted) {
-      persisted = await navigator.storage.persisted();
+    if (typeof storage.persisted === 'function') {
+      persisted = await storage.persisted();
     }
-    if (navigator.storage.estimate) {
-      const est = await navigator.storage.estimate();
+    if (typeof storage.estimate === 'function') {
+      const est = await storage.estimate();
       usageBytes = Number(est.usage) || 0;
       quotaBytes = Number(est.quota) || 0;
     }
@@ -210,6 +220,11 @@ export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
 
 function openRollingIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    const idb = getSafeIndexedDb();
+    if (!idb) {
+      reject(new Error('Rolling backup IndexedDB is unavailable in this browser context.'));
+      return;
+    }
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -230,7 +245,7 @@ function openRollingIdb(): Promise<IDBDatabase> {
     };
 
     try {
-      const req = indexedDB.open(ROLLING_IDB_NAME, 1);
+      const req = idb.open(ROLLING_IDB_NAME, 1);
       req.onupgradeneeded = () => {
         try {
           const db = req.result;
@@ -238,14 +253,10 @@ function openRollingIdb(): Promise<IDBDatabase> {
             db.createObjectStore(ROLLING_STORE_NAME, { keyPath: 'key' });
           }
         } catch (upgradeErr) {
-          void import('./opfsStorage')
-            .then((m) =>
-              m.dumpIndexedDbDatabaseToOpfs(
-                ROLLING_IDB_NAME,
-                'Rolling backup IndexedDB schema upgrade failed'
-              )
-            )
-            .catch(() => {});
+          triggerIndexedDbOpfsDump(
+            ROLLING_IDB_NAME,
+            'Rolling backup IndexedDB schema upgrade failed'
+          );
           finishReject(upgradeErr);
         }
       };
@@ -272,14 +283,10 @@ function openRollingIdb(): Promise<IDBDatabase> {
       req.onerror = () => {
         const err = req.error;
         if (err && (err.name === 'VersionError' || /version/i.test(String(err.message || '')))) {
-          void import('./opfsStorage')
-            .then((m) =>
-              m.dumpIndexedDbDatabaseToOpfs(
-                ROLLING_IDB_NAME,
-                'Rolling backup IndexedDB VersionError'
-              )
-            )
-            .catch(() => {});
+          triggerIndexedDbOpfsDump(
+            ROLLING_IDB_NAME,
+            'Rolling backup IndexedDB VersionError'
+          );
         }
         finishReject(err);
       };
@@ -296,7 +303,7 @@ export async function saveRollingSnapshotBackup(
     dehydratePhotos?: boolean;
   }
 ): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
+  if (!getSafeIndexedDb()) return;
   try {
     const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
     const maxRollingCap = Math.max(
@@ -318,7 +325,9 @@ export async function saveRollingSnapshotBackup(
       snapshot: targetSnapshot,
     };
     const db = await openRollingIdb();
+    const untrackDb = trackActiveIdbConnection(db);
     const closeDb = () => {
+      untrackDb();
       try {
         db.close();
       } catch {
@@ -328,6 +337,7 @@ export async function saveRollingSnapshotBackup(
     try {
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
+        const untrackTx = trackActiveIdbTransaction(tx);
         const store = tx.objectStore(ROLLING_STORE_NAME);
         store.put(entry);
 
@@ -352,9 +362,18 @@ export async function saveRollingSnapshotBackup(
           }
         };
 
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Rolling backup write aborted'));
+        tx.oncomplete = () => {
+          untrackTx();
+          resolve();
+        };
+        tx.onerror = () => {
+          untrackTx();
+          reject(tx.error);
+        };
+        tx.onabort = () => {
+          untrackTx();
+          reject(tx.error || new Error('Rolling backup write aborted'));
+        };
       });
     } finally {
       closeDb();
@@ -370,12 +389,14 @@ export async function saveRollingSnapshotBackup(
 }
 
 export async function listRollingSnapshotBackups(): Promise<RollingBackupMeta[]> {
-  if (typeof indexedDB === 'undefined') return [];
+  if (!getSafeIndexedDb()) return [];
   try {
     const db = await openRollingIdb();
+    const untrackDb = trackActiveIdbConnection(db);
     try {
       return await new Promise<RollingBackupMeta[]>((resolve, reject) => {
         const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
+        const untrackTx = trackActiveIdbTransaction(tx);
         const store = tx.objectStore(ROLLING_STORE_NAME);
         const items: RollingBackupMeta[] = [];
         const req = store.openCursor();
@@ -401,13 +422,21 @@ export async function listRollingSnapshotBackups(): Promise<RollingBackupMeta[]>
             cursor.continue();
           } else {
             items.sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso));
+            untrackTx();
             resolve(items);
           }
         };
-        req.onerror = () => reject(req.error);
-        tx.onabort = () => reject(tx.error || new Error('Rolling backup list aborted'));
+        req.onerror = () => {
+          untrackTx();
+          reject(req.error);
+        };
+        tx.onabort = () => {
+          untrackTx();
+          reject(tx.error || new Error('Rolling backup list aborted'));
+        };
       });
     } finally {
+      untrackDb();
       try {
         db.close();
       } catch {
@@ -422,16 +451,19 @@ export async function listRollingSnapshotBackups(): Promise<RollingBackupMeta[]>
 export async function loadRollingSnapshotBackup(
   key: string
 ): Promise<BarnDatabaseSnapshot | null> {
-  if (typeof indexedDB === 'undefined') return null;
+  if (!getSafeIndexedDb()) return null;
   try {
     const db = await openRollingIdb();
+    const untrackDb = trackActiveIdbConnection(db);
     try {
       return await new Promise<BarnDatabaseSnapshot | null>((resolve, reject) => {
         const tx = db.transaction(ROLLING_STORE_NAME, 'readonly');
+        const untrackTx = trackActiveIdbTransaction(tx);
         const req = tx.objectStore(ROLLING_STORE_NAME).get(key);
         req.onsuccess = () => {
           const rec = req.result as StoredRollingBackup | undefined;
           const snap = rec?.snapshot;
+          untrackTx();
           if (
             !snap ||
             typeof snap !== 'object' ||
@@ -444,10 +476,17 @@ export async function loadRollingSnapshotBackup(
           }
           resolve(snap);
         };
-        req.onerror = () => reject(req.error);
-        tx.onabort = () => reject(tx.error || new Error('Rolling backup load aborted'));
+        req.onerror = () => {
+          untrackTx();
+          reject(req.error);
+        };
+        tx.onabort = () => {
+          untrackTx();
+          reject(tx.error || new Error('Rolling backup load aborted'));
+        };
       });
     } finally {
+      untrackDb();
       try {
         db.close();
       } catch {
@@ -460,18 +499,30 @@ export async function loadRollingSnapshotBackup(
 }
 
 export async function deleteRollingSnapshotBackup(key: string): Promise<boolean> {
-  if (typeof indexedDB === 'undefined') return false;
+  if (!getSafeIndexedDb()) return false;
   try {
     const db = await openRollingIdb();
+    const untrackDb = trackActiveIdbConnection(db);
     try {
       return await new Promise<boolean>((resolve, reject) => {
         const tx = db.transaction(ROLLING_STORE_NAME, 'readwrite');
+        const untrackTx = trackActiveIdbTransaction(tx);
         tx.objectStore(ROLLING_STORE_NAME).delete(key);
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Rolling backup delete aborted'));
+        tx.oncomplete = () => {
+          untrackTx();
+          resolve(true);
+        };
+        tx.onerror = () => {
+          untrackTx();
+          reject(tx.error);
+        };
+        tx.onabort = () => {
+          untrackTx();
+          reject(tx.error || new Error('Rolling backup delete aborted'));
+        };
       });
     } finally {
+      untrackDb();
       try {
         db.close();
       } catch {
@@ -508,8 +559,9 @@ export interface ConnectivityStatusSnapshot {
 
 function readPersistedManualOffline(): boolean {
   try {
-    if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem(MANUAL_OFFLINE_STORAGE_KEY) === 'true';
+    const ls = getSafeLocalStorage();
+    if (!ls) return false;
+    return ls.getItem(MANUAL_OFFLINE_STORAGE_KEY) === 'true';
   } catch {
     return false;
   }
@@ -517,8 +569,9 @@ function readPersistedManualOffline(): boolean {
 
 function readPersistedClockSkewMs(): number | null {
   try {
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(CLOCK_SKEW_STORAGE_KEY);
+    const ls = getSafeLocalStorage();
+    if (!ls) return null;
+    const raw = ls.getItem(CLOCK_SKEW_STORAGE_KEY);
     if (!raw) return null;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
@@ -588,8 +641,9 @@ export function recordServerDateHeaderSkew(
   clockSkewMsState = skewMs;
   setCoreClockSkewMs(skewMs);
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(CLOCK_SKEW_STORAGE_KEY, String(Math.round(skewMs)));
+    const ls = getSafeLocalStorage();
+    if (ls) {
+      ls.setItem(CLOCK_SKEW_STORAGE_KEY, String(Math.round(skewMs)));
     }
   } catch {
     // Non-fatal in private browsing
@@ -635,8 +689,9 @@ export function getEffectiveOnlineStatus(): boolean {
 export function setManualOfflineMode(enabled: boolean): void {
   manualOfflineState = Boolean(enabled);
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(MANUAL_OFFLINE_STORAGE_KEY, manualOfflineState ? 'true' : 'false');
+    const ls = getSafeLocalStorage();
+    if (ls) {
+      ls.setItem(MANUAL_OFFLINE_STORAGE_KEY, manualOfflineState ? 'true' : 'false');
     }
   } catch {
     // Non-fatal in private browsing
@@ -659,9 +714,10 @@ export function resetConnectivityStateForTests(): void {
   setCoreClockSkewMs(0);
   connectivityListeners.clear();
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(MANUAL_OFFLINE_STORAGE_KEY);
-      localStorage.removeItem(CLOCK_SKEW_STORAGE_KEY);
+    const ls = getSafeLocalStorage();
+    if (ls) {
+      ls.removeItem(MANUAL_OFFLINE_STORAGE_KEY);
+      ls.removeItem(CLOCK_SKEW_STORAGE_KEY);
     }
   } catch {
     // Ignore

@@ -15,6 +15,64 @@
 import type { ImageOptimizationPresetId } from './imageOptimizationSpec';
 import type { CustomThemeColors } from './themePalette';
 
+/**
+ * Canonical application code & translation locale: English (United States).
+ * Standardized as BCP 47 (`en-US`) so UI copy, formatting, and future translation
+ * packs share one explicit regional baseline.
+ */
+export const APP_LOCALE = 'en-US' as const;
+export const APP_LANGUAGE_CODE = 'en' as const;
+export const APP_REGION_CODE = 'US' as const;
+export type SupportedAppLocale = typeof APP_LOCALE;
+
+export interface AppLocaleMetadata {
+  locale: SupportedAppLocale;
+  baseLanguage: string;
+  region: string;
+  displayName: string;
+}
+
+export const APP_LOCALE_METADATA: AppLocaleMetadata = {
+  locale: APP_LOCALE,
+  baseLanguage: APP_LANGUAGE_CODE,
+  region: APP_REGION_CODE,
+  displayName: 'English (United States)',
+};
+
+/**
+ * Normalizes a BCP 47 language tag (e.g., `"en_us"` -> `"en-US"`, `"EN"` -> `"en"`).
+ * Returns `""` if the input is not a valid alphanumeric language tag.
+ */
+export function normalizeBcp47LanguageTag(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const clean = raw.trim().replace(/_/g, '-');
+  if (!clean) return '';
+  const parts = clean.split('-').filter(Boolean);
+  if (parts.length === 0 || parts.length > 4) return '';
+  const lang = parts[0].toLowerCase();
+  if (!/^[a-z]{2,3}$/.test(lang)) return '';
+
+  const formattedParts: string[] = [lang];
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    if (!/^[a-zA-Z0-9]{2,8}$/.test(part)) return '';
+    if (part.length === 2 && /^[a-zA-Z]{2}$/.test(part)) {
+      formattedParts.push(part.toUpperCase());
+    } else if (part.length === 4 && /^[a-zA-Z]{4}$/.test(part)) {
+      formattedParts.push(part[0].toUpperCase() + part.slice(1).toLowerCase());
+    } else {
+      formattedParts.push(part.toLowerCase());
+    }
+  }
+  return formattedParts.join('-');
+}
+
+export function extractBaseLanguageCode(tag: string): string {
+  const normalized = normalizeBcp47LanguageTag(tag);
+  if (!normalized) return '';
+  return normalized.split('-')[0] ?? '';
+}
+
 export type BiologicalSex = 'Male' | 'Female' | 'Unknown';
 
 export type AnimalConflictKind = 'duplicate_tattoo' | 'parent_sex_mismatch';
@@ -333,6 +391,52 @@ export function normalizeCalendarSyncSettings(raw?: unknown): CalendarSyncSettin
   };
 }
 
+export type TemperatureUnit = 'F' | 'C';
+
+export interface WeatherForecastSettings {
+  enabled: boolean;
+  locationLabel: string;
+  latitude: number | null;
+  longitude: number | null;
+  temperatureUnit: TemperatureUnit;
+}
+
+export const DEFAULT_WEATHER_FORECAST_SETTINGS: WeatherForecastSettings = {
+  enabled: false,
+  locationLabel: '',
+  latitude: null,
+  longitude: null,
+  temperatureUnit: 'F',
+};
+
+export function normalizeWeatherForecastSettings(raw?: unknown): WeatherForecastSettings {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const label =
+    typeof obj.locationLabel === 'string' ? obj.locationLabel.trim().slice(0, 120) : '';
+  const latNum = Number(obj.latitude);
+  const lonNum = Number(obj.longitude);
+  const hasValidCoords =
+    obj.latitude !== null &&
+    obj.longitude !== null &&
+    obj.latitude !== '' &&
+    obj.longitude !== '' &&
+    Number.isFinite(latNum) &&
+    Number.isFinite(lonNum) &&
+    latNum >= -90 &&
+    latNum <= 90 &&
+    lonNum >= -180 &&
+    lonNum <= 180;
+  const temperatureUnit: TemperatureUnit = obj.temperatureUnit === 'C' ? 'C' : 'F';
+
+  return {
+    enabled: Boolean(obj.enabled),
+    locationLabel: label,
+    latitude: hasValidCoords ? Number(latNum.toFixed(4)) : null,
+    longitude: hasValidCoords ? Number(lonNum.toFixed(4)) : null,
+    temperatureUnit,
+  };
+}
+
 /**
  * Global Barn preferences stored locally on the user's device.
  * `pinnedLandingSpecies`:
@@ -384,9 +488,16 @@ export interface BarnSettings {
   speciesHubBlockOrder?: Record<string, SpeciesHubBlockId[]>;
   includePhotoOnPedigree?: boolean;
   breederLogoDataUrl?: string;
+  breederEmail?: string;
+  breederPhone?: string;
+  breederLocation?: string;
+  breederWebsite?: string;
+  showcaseTagline?: string;
   calendarSync?: CalendarSyncSettings;
+  weatherForecast?: WeatherForecastSettings;
   autoOffloadRetiredToOpfs?: boolean;
   feedTagPurgeWindowDays?: FeedPurgeWindowDays;
+  enableJudgeNotebook?: boolean;
   lastBackupMeta?: {
     exportedAtIso: string;
     format: 'zip' | 'sqlite' | 'json';
@@ -590,6 +701,9 @@ export interface Animal {
   salePriceCents?: number;
   purchaseCostCents?: number;
   buyerName?: string;
+  forSale?: boolean;
+  askingPriceCents?: number;
+  saleNotes?: string;
   sireId: string;
   damId: string;
   notes: string;
@@ -758,6 +872,7 @@ export interface BarnTask {
   title: string;
   category: TaskCategory;
   priority: TaskPriority;
+  startDateIso?: string; // YYYY-MM-DD or ""
   dueDateIso: string; // YYYY-MM-DD or ""
   linkedAnimalId: string;
   linkedAnimalName: string;
@@ -1237,6 +1352,681 @@ export interface YouthProjectBook {
   updatedAt: string;
 }
 
+export type PreferredContactMethod = 'email' | 'phone' | 'sms' | 'in_person' | 'other';
+
+export const PREFERRED_CONTACT_METHODS: ReadonlyArray<{
+  value: PreferredContactMethod;
+  label: string;
+}> = [
+  { value: 'sms', label: 'Text / SMS' },
+  { value: 'phone', label: 'Phone Call' },
+  { value: 'email', label: 'Email' },
+  { value: 'in_person', label: 'In Person / Barn Visit' },
+  { value: 'other', label: 'Other' },
+];
+
+export function normalizePreferredContactMethod(
+  raw: unknown,
+  fallback: PreferredContactMethod = 'sms'
+): PreferredContactMethod {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'email' || clean === 'mail') return 'email';
+  if (clean === 'phone' || clean === 'call') return 'phone';
+  if (clean === 'sms' || clean === 'text') return 'sms';
+  if (clean === 'in_person' || clean === 'in person' || clean === 'barn') return 'in_person';
+  if (clean === 'other') return 'other';
+  return fallback;
+}
+
+export type ClientKind =
+  | 'pet_buyer'
+  | 'show_breeder'
+  | 'commercial_meat'
+  | 'youth_4h_ffa'
+  | 'rescue_partner'
+  | 'other';
+
+export const CLIENT_KINDS: ReadonlyArray<{
+  value: ClientKind;
+  label: string;
+}> = [
+  { value: 'pet_buyer', label: 'Pet / Companion Buyer' },
+  { value: 'show_breeder', label: 'Show & Breeding Program' },
+  { value: 'youth_4h_ffa', label: '4-H / FFA Youth Buyer' },
+  { value: 'commercial_meat', label: 'Commercial / Meat / Homestead' },
+  { value: 'rescue_partner', label: 'Partner / Exchange' },
+  { value: 'other', label: 'Other Client' },
+];
+
+export function normalizeClientKind(
+  raw: unknown,
+  fallback: ClientKind = 'pet_buyer'
+): ClientKind {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  const valid = new Set<ClientKind>(CLIENT_KINDS.map((o) => o.value));
+  if (valid.has(clean as ClientKind)) return clean as ClientKind;
+  if (clean.includes('show') || clean.includes('breed')) return 'show_breeder';
+  if (clean.includes('4-h') || clean.includes('4h') || clean.includes('ffa') || clean.includes('youth')) {
+    return 'youth_4h_ffa';
+  }
+  if (clean.includes('meat') || clean.includes('commercial') || clean.includes('homestead')) {
+    return 'commercial_meat';
+  }
+  if (clean.includes('rescue') || clean.includes('partner')) return 'rescue_partner';
+  if (clean.includes('pet') || clean.includes('companion')) return 'pet_buyer';
+  return fallback;
+}
+
+/**
+ * Local-first breeder CRM client contact record, scoped to a `species`.
+ */
+export interface ClientContact {
+  id: string;
+  species: string;
+  fullName: string;
+  ranchOrHerdName: string;
+  email: string;
+  phone: string;
+  preferredContact: PreferredContactMethod;
+  clientKind: ClientKind;
+  cityState: string;
+  shippingAddress: string;
+  tags: string[];
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WaitlistStatus =
+  | 'Active'
+  | 'Matched'
+  | 'Deposited'
+  | 'Fulfilled'
+  | 'Paused'
+  | 'Cancelled';
+
+export const WAITLIST_STATUSES: ReadonlyArray<WaitlistStatus> = [
+  'Active',
+  'Matched',
+  'Deposited',
+  'Fulfilled',
+  'Paused',
+  'Cancelled',
+];
+
+export function normalizeWaitlistStatus(
+  raw: unknown,
+  fallback: WaitlistStatus = 'Active'
+): WaitlistStatus {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'active' || clean === 'waiting' || clean === 'open') return 'Active';
+  if (clean === 'matched') return 'Matched';
+  if (clean === 'deposited' || clean === 'reserved') return 'Deposited';
+  if (clean === 'fulfilled' || clean === 'completed' || clean === 'sold') return 'Fulfilled';
+  if (clean === 'paused' || clean === 'hold') return 'Paused';
+  if (clean === 'cancelled' || clean === 'canceled') return 'Cancelled';
+  return fallback;
+}
+
+export type WaitlistIntent =
+  | 'Show / Breeding'
+  | 'Pet / Companion'
+  | '4-H / FFA Youth'
+  | 'Meat / Commercial'
+  | 'Any';
+
+export const WAITLIST_INTENTS: ReadonlyArray<WaitlistIntent> = [
+  'Show / Breeding',
+  'Pet / Companion',
+  '4-H / FFA Youth',
+  'Meat / Commercial',
+  'Any',
+];
+
+export function normalizeWaitlistIntent(
+  raw: unknown,
+  fallback: WaitlistIntent = 'Show / Breeding'
+): WaitlistIntent {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean.includes('show') || clean.includes('breed')) return 'Show / Breeding';
+  if (clean.includes('pet') || clean.includes('companion')) return 'Pet / Companion';
+  if (clean.includes('4-h') || clean.includes('4h') || clean.includes('ffa') || clean.includes('youth')) {
+    return '4-H / FFA Youth';
+  }
+  if (clean.includes('meat') || clean.includes('commercial')) return 'Meat / Commercial';
+  if (clean === 'any') return 'Any';
+  return fallback;
+}
+
+/**
+ * Buyer waitlist inquiry & preference record, scoped to a `species`.
+ */
+export interface WaitlistEntry {
+  id: string;
+  species: string;
+  clientId: string;
+  clientName: string;
+  priorityRank: number;
+  status: WaitlistStatus;
+  intent: WaitlistIntent;
+  desiredBreed: string;
+  desiredVariety: string;
+  preferredSex: 'Any' | 'Male' | 'Female';
+  preferredBreedingId?: string;
+  requestedByDateIso: string; // YYYY-MM-DD or ""
+  inquiryDateIso: string; // YYYY-MM-DD
+  followUpDateIso: string; // YYYY-MM-DD or ""
+  lastContactedDateIso: string; // YYYY-MM-DD or ""
+  maxBudgetCents?: number;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ReservationStatus =
+  | 'Inquiry Hold'
+  | 'Pending Deposit'
+  | 'Deposit Paid'
+  | 'Paid in Full'
+  | 'Ready for Pickup'
+  | 'Picked Up / Completed'
+  | 'Cancelled';
+
+export const RESERVATION_STATUSES: ReadonlyArray<ReservationStatus> = [
+  'Inquiry Hold',
+  'Pending Deposit',
+  'Deposit Paid',
+  'Paid in Full',
+  'Ready for Pickup',
+  'Picked Up / Completed',
+  'Cancelled',
+];
+
+export function normalizeReservationStatus(
+  raw: unknown,
+  fallback: ReservationStatus = 'Pending Deposit'
+): ReservationStatus {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'inquiry hold' || clean === 'hold') return 'Inquiry Hold';
+  if (clean === 'pending deposit' || clean === 'pending') return 'Pending Deposit';
+  if (clean === 'deposit paid' || clean === 'deposited') return 'Deposit Paid';
+  if (clean === 'paid in full' || clean === 'paid') return 'Paid in Full';
+  if (clean === 'ready for pickup' || clean === 'ready') return 'Ready for Pickup';
+  if (
+    clean === 'picked up / completed' ||
+    clean === 'completed' ||
+    clean === 'picked up' ||
+    clean === 'sold'
+  ) {
+    return 'Picked Up / Completed';
+  }
+  if (clean === 'cancelled' || clean === 'canceled') return 'Cancelled';
+  return fallback;
+}
+
+/**
+ * Animal or litter-pick reservation with deposit schedule, hold expiration,
+ * follow-up reminders, and printable sales agreement metadata, scoped to a `species`.
+ */
+export interface AnimalReservation {
+  id: string;
+  species: string;
+  agreementNumber: string;
+  clientId: string;
+  clientName: string;
+  waitlistEntryId?: string;
+  animalId?: string;
+  breedingId?: string;
+  pickOrder?: number;
+  itemLabel: string;
+  status: ReservationStatus;
+  reservedDateIso: string; // YYYY-MM-DD
+  holdExpiresDateIso: string; // YYYY-MM-DD or ""
+  totalPriceCents: number;
+  depositRequiredCents: number;
+  depositPaidCents: number;
+  depositDueDateIso: string; // YYYY-MM-DD or ""
+  depositPaidDateIso: string; // YYYY-MM-DD or ""
+  pickupScheduledDateIso: string; // YYYY-MM-DD or ""
+  completedDateIso: string; // YYYY-MM-DD or ""
+  balanceReminderDateIso: string; // YYYY-MM-DD or ""
+  paymentMethod: string;
+  ledgerEntryId?: string;
+  termsSummary: string;
+  healthGuaranteeNotes: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WoolHarvestMethod = 'Shear' | 'Pluck' | 'Brush / Comb' | 'Other';
+
+export const WOOL_HARVEST_METHODS: ReadonlyArray<WoolHarvestMethod> = [
+  'Shear',
+  'Pluck',
+  'Brush / Comb',
+  'Other',
+];
+
+export function normalizeWoolHarvestMethod(
+  raw: unknown,
+  fallback: WoolHarvestMethod = 'Shear'
+): WoolHarvestMethod {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'shear' || clean === 'clipped' || clean === 'clip' || clean === 'sheared') {
+    return 'Shear';
+  }
+  if (clean === 'pluck' || clean === 'plucked') return 'Pluck';
+  if (clean === 'brush / comb' || clean === 'brush' || clean === 'comb' || clean === 'combed') {
+    return 'Brush / Comb';
+  }
+  if (clean === 'other') return 'Other';
+  return fallback;
+}
+
+/**
+ * Official 100-point 7-position IAGARB German Angora evaluation breakdown:
+ * Weight (20), Body Type (20), Wool Density & Length (15), Wool Uniformity (15),
+ * Wool Texture (15), Furnishings (10), Condition (5).
+ */
+export interface IagarbScorecard {
+  weightPts: number;
+  bodyTypePts: number;
+  densityLengthPts: number;
+  uniformityPts: number;
+  texturePts: number;
+  furnishingsPts: number;
+  conditionPts: number;
+  totalPts: number;
+  evaluatorName: string;
+  evaluationDateIso: string; // YYYY-MM-DD or ""
+}
+
+/**
+ * Per-animal wool/fiber harvest record supporting prime vs. grade yields,
+ * shearing cycle interval tracking (e.g., 90-day IAGARB performance test),
+ * and optional IAGARB German Angora 7-position judging scorecard.
+ */
+export interface WoolHarvest {
+  id: string;
+  species: string;
+  animalId: string;
+  harvestDateIso: string; // YYYY-MM-DD
+  shearingIntervalDays?: number;
+  primeWeightGrams: number;
+  gradeWeightGrams: number;
+  harvestMethod: WoolHarvestMethod;
+  stapleLengthMm?: number;
+  iagarbScore?: IagarbScorecard;
+  witnessedBy?: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type MileageTripPurpose =
+  | 'Show Travel'
+  | 'Feed & Supply Run'
+  | 'Veterinary'
+  | 'Delivery / Pickup'
+  | 'Breeding Service'
+  | 'Barn Maintenance'
+  | 'Other';
+
+export const MILEAGE_TRIP_PURPOSES: ReadonlyArray<MileageTripPurpose> = [
+  'Show Travel',
+  'Feed & Supply Run',
+  'Veterinary',
+  'Delivery / Pickup',
+  'Breeding Service',
+  'Barn Maintenance',
+  'Other',
+];
+
+/** Default IRS business standard mileage rate in integer cents per mile ($0.70/mi). */
+export const DEFAULT_IRS_MILEAGE_RATE_CENTS = 70;
+
+export function normalizeMileageTripPurpose(
+  raw: unknown,
+  fallback: MileageTripPurpose = 'Show Travel'
+): MileageTripPurpose {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean.includes('show') || clean.includes('fair') || clean.includes('convention')) {
+    return 'Show Travel';
+  }
+  if (clean.includes('feed') || clean.includes('hay') || clean.includes('suppl')) {
+    return 'Feed & Supply Run';
+  }
+  if (clean.includes('vet') || clean.includes('clinic') || clean.includes('med')) {
+    return 'Veterinary';
+  }
+  if (clean.includes('deliver') || clean.includes('pickup') || clean.includes('transport') || clean.includes('sale')) {
+    return 'Delivery / Pickup';
+  }
+  if (clean.includes('breed') || clean.includes('stud')) {
+    return 'Breeding Service';
+  }
+  if (clean.includes('maint') || clean.includes('repair') || clean.includes('build')) {
+    return 'Barn Maintenance';
+  }
+  if (clean === 'other') return 'Other';
+  return fallback;
+}
+
+/**
+ * Barn & livestock travel mileage entry for annual tax-ready reporting.
+ */
+export interface MileageLog {
+  id: string;
+  species: string;
+  dateIso: string; // YYYY-MM-DD
+  purpose: MileageTripPurpose;
+  origin: string;
+  destination: string;
+  roundTrip: boolean;
+  miles: number;
+  odometerStart?: number;
+  odometerEnd?: number;
+  rateCentsPerMile: number;
+  parkingAndTollsCents?: number;
+  linkedShowId?: string;
+  linkedClientId?: string;
+  vehicleLabel?: string;
+  taxDeductible: boolean;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type JournalColorCategory =
+  | 'sage'
+  | 'terracotta'
+  | 'amber'
+  | 'sky'
+  | 'plum'
+  | 'slate';
+
+export interface JournalCategoryMeta {
+  id: JournalColorCategory;
+  label: string;
+  hexAccent: string;
+}
+
+export const JOURNAL_COLOR_CATEGORIES: ReadonlyArray<JournalCategoryMeta> = [
+  { id: 'sage', label: 'Daily Barn Ops', hexAccent: '#4F6D54' },
+  { id: 'terracotta', label: 'Breeding & Litters', hexAccent: '#B85D43' },
+  { id: 'amber', label: 'Shows & Milestones', hexAccent: '#C28127' },
+  { id: 'sky', label: 'Weather & Observations', hexAccent: '#3B7EA1' },
+  { id: 'plum', label: 'Health & Care', hexAccent: '#7B548B' },
+  { id: 'slate', label: 'Personal & Ideas', hexAccent: '#5C6773' },
+];
+
+export type JournalStarRating = 0 | 1 | 2 | 3 | 4 | 5;
+
+export function normalizeJournalColorCategory(
+  raw: unknown,
+  fallback: JournalColorCategory = 'sage'
+): JournalColorCategory {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (
+    clean === 'sage' ||
+    clean === 'terracotta' ||
+    clean === 'amber' ||
+    clean === 'sky' ||
+    clean === 'plum' ||
+    clean === 'slate'
+  ) {
+    return clean;
+  }
+  return fallback;
+}
+
+export function normalizeJournalStarRating(raw: unknown): JournalStarRating {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  const rounded = Math.round(n);
+  if (rounded <= 0) return 0;
+  if (rounded >= 5) return 5;
+  return rounded as JournalStarRating;
+}
+
+/**
+ * Date-organized Personal Barn Journal entry supporting safe rich-text AST notes,
+ * color categories, 0–5 star ratings, tags, and animal cross-links.
+ */
+export interface BarnJournalEntry {
+  id: string;
+  species: string;
+  entryDateIso: string; // YYYY-MM-DD
+  title: string;
+  body: string;
+  colorCategory: JournalColorCategory;
+  starRating: JournalStarRating;
+  tags: string[];
+  pinned: boolean;
+  linkedAnimalIds?: string[];
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type JudgeBidStatus =
+  | 'Inquiry'
+  | 'Bid Submitted'
+  | 'Bid Accepted'
+  | 'Contracted'
+  | 'Completed'
+  | 'Declined'
+  | 'Cancelled';
+
+export const JUDGE_BID_STATUSES: ReadonlyArray<JudgeBidStatus> = [
+  'Inquiry',
+  'Bid Submitted',
+  'Bid Accepted',
+  'Contracted',
+  'Completed',
+  'Declined',
+  'Cancelled',
+];
+
+export function normalizeJudgeBidStatus(
+  raw: unknown,
+  fallback: JudgeBidStatus = 'Bid Submitted'
+): JudgeBidStatus {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'inquiry' || clean === 'open' || clean === 'lead') return 'Inquiry';
+  if (clean === 'bid submitted' || clean === 'submitted' || clean === 'bid sent' || clean === 'pending') {
+    return 'Bid Submitted';
+  }
+  if (clean === 'bid accepted' || clean === 'accepted' || clean === 'confirmed') {
+    return 'Bid Accepted';
+  }
+  if (clean === 'contracted' || clean === 'booked' || clean === 'signed') return 'Contracted';
+  if (clean === 'completed' || clean === 'judged' || clean === 'done') return 'Completed';
+  if (clean === 'declined' || clean === 'passed' || clean === 'rejected') return 'Declined';
+  if (clean === 'cancelled' || clean === 'canceled') return 'Cancelled';
+  return fallback;
+}
+
+export type JudgeContractStatus =
+  | 'Not Sent'
+  | 'Draft'
+  | 'Sent to Club'
+  | 'Signed by Both'
+  | 'Completed'
+  | 'Void';
+
+export const JUDGE_CONTRACT_STATUSES: ReadonlyArray<JudgeContractStatus> = [
+  'Not Sent',
+  'Draft',
+  'Sent to Club',
+  'Signed by Both',
+  'Completed',
+  'Void',
+];
+
+export function normalizeJudgeContractStatus(
+  raw: unknown,
+  fallback: JudgeContractStatus = 'Not Sent'
+): JudgeContractStatus {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean === 'not sent' || clean === 'none' || clean === 'pending') return 'Not Sent';
+  if (clean === 'draft') return 'Draft';
+  if (clean === 'sent to club' || clean === 'sent' || clean === 'awaiting signature') {
+    return 'Sent to Club';
+  }
+  if (clean === 'signed by both' || clean === 'signed' || clean === 'executed') {
+    return 'Signed by Both';
+  }
+  if (clean === 'completed' || clean === 'fulfilled') return 'Completed';
+  if (clean === 'void' || clean === 'cancelled' || clean === 'canceled') return 'Void';
+  return fallback;
+}
+
+export type JudgeExpenseCategory =
+  | 'Flight / Airfare'
+  | 'Lodging / Hotel'
+  | 'Meals / Per Diem'
+  | 'Rental Car / Fuel'
+  | 'Tolls & Parking'
+  | 'Supplies / Coat'
+  | 'Sanction / License Fee'
+  | 'Other';
+
+export const JUDGE_EXPENSE_CATEGORIES: ReadonlyArray<JudgeExpenseCategory> = [
+  'Flight / Airfare',
+  'Lodging / Hotel',
+  'Meals / Per Diem',
+  'Rental Car / Fuel',
+  'Tolls & Parking',
+  'Supplies / Coat',
+  'Sanction / License Fee',
+  'Other',
+];
+
+export function normalizeJudgeExpenseCategory(
+  raw: unknown,
+  fallback: JudgeExpenseCategory = 'Other'
+): JudgeExpenseCategory {
+  if (typeof raw !== 'string') return fallback;
+  const clean = raw.trim().toLowerCase();
+  if (clean.includes('flight') || clean.includes('air')) return 'Flight / Airfare';
+  if (clean.includes('lodg') || clean.includes('hotel') || clean.includes('motel')) {
+    return 'Lodging / Hotel';
+  }
+  if (clean.includes('meal') || clean.includes('food') || clean.includes('diem')) {
+    return 'Meals / Per Diem';
+  }
+  if (clean.includes('rental') || clean.includes('fuel') || clean.includes('gas') || clean.includes('car')) {
+    return 'Rental Car / Fuel';
+  }
+  if (clean.includes('toll') || clean.includes('park')) return 'Tolls & Parking';
+  if (clean.includes('suppl') || clean.includes('coat') || clean.includes('equip')) {
+    return 'Supplies / Coat';
+  }
+  if (clean.includes('sanction') || clean.includes('licens') || clean.includes('dues')) {
+    return 'Sanction / License Fee';
+  }
+  if (clean === 'other') return 'Other';
+  return fallback;
+}
+
+/**
+ * Show club & secretary/superintendent contact record for The Judge's Notebook.
+ */
+export interface JudgeClubContact {
+  id: string;
+  species: string;
+  clubName: string;
+  sanctioningBody: string;
+  contactPerson: string;
+  roleTitle: string;
+  email: string;
+  phone: string;
+  cityState: string;
+  venueName: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Assigned show engagement, bid status, contract tracking, fee/mileage terms, and travel record
+ * for show judges in The Judge's Notebook.
+ */
+export interface JudgeAssignment {
+  id: string;
+  species: string;
+  showName: string;
+  clubId?: string;
+  clubName: string;
+  sanctioningBody: string;
+  showDateIso: string; // YYYY-MM-DD
+  endDateIso: string; // YYYY-MM-DD or ""
+  location: string;
+  venueAddress: string;
+  assignmentRole: string;
+  breedsAssigned: string;
+  bidStatus: JudgeBidStatus;
+  bidSubmittedDateIso: string; // YYYY-MM-DD or ""
+  bidResponseDueIso: string; // YYYY-MM-DD or ""
+  contractStatus: JudgeContractStatus;
+  contractNumber: string;
+  contractSignedDateIso: string; // YYYY-MM-DD or ""
+  judgingFeeCents: number;
+  perDiemCents: number;
+  hotelProvided: boolean;
+  mileageReimbursementRateCents: number;
+  estimatedMiles: number;
+  actualMiles: number;
+  linkedMileageLogId?: string;
+  feePaid: boolean;
+  feePaidDateIso: string; // YYYY-MM-DD or ""
+  contractTermsSummary: string;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Travel & show-judging expense line item linked optionally to a `JudgeAssignment`.
+ */
+export interface JudgeExpense {
+  id: string;
+  species: string;
+  assignmentId?: string;
+  dateIso: string; // YYYY-MM-DD
+  category: JudgeExpenseCategory;
+  description: string;
+  vendor: string;
+  amountCents: number;
+  reimbursable: boolean;
+  reimbursed: boolean;
+  reimbursedDateIso: string; // YYYY-MM-DD or ""
+  taxDeductible: boolean;
+  notes: string;
+  _rev?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Complete in-memory snapshot of the unencrypted local database.
  */
@@ -1255,6 +2045,15 @@ export interface BarnDatabaseSnapshot {
   ledgerEntries?: LedgerEntry[];
   processingLogs?: ProcessingLog[];
   youthProjectBooks?: YouthProjectBook[];
+  clientContacts?: ClientContact[];
+  waitlistEntries?: WaitlistEntry[];
+  animalReservations?: AnimalReservation[];
+  woolHarvests?: WoolHarvest[];
+  mileageLogs?: MileageLog[];
+  journalEntries?: BarnJournalEntry[];
+  judgeClubs?: JudgeClubContact[];
+  judgeAssignments?: JudgeAssignment[];
+  judgeExpenses?: JudgeExpense[];
 }
 
 export const ANIMAL_STATUSES: AnimalStatus[] = [
@@ -1500,6 +2299,29 @@ export function isAnimalActive(
 ): boolean {
   if (!animal) return false;
   return !isAnimalArchived(animal);
+}
+
+/**
+ * Returns true when an animal is actively listed For Sale and eligible for public showcase export
+ * (excludes Sold, Deceased, Archived records and pedigree-only Reference stubs).
+ */
+export function isAnimalAvailableForSale(
+  animal:
+    | Partial<Pick<Animal, 'forSale' | 'archived' | 'status' | 'ownershipType'>>
+    | undefined
+    | null
+): boolean {
+  if (!animal || !animal.forSale) return false;
+  if (
+    animal.status === 'Sold' ||
+    animal.status === 'Deceased' ||
+    animal.status === 'Archived' ||
+    animal.archived
+  ) {
+    return false;
+  }
+  if (animal.ownershipType === 'Reference') return false;
+  return true;
 }
 
 /**

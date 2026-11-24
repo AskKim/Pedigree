@@ -26,11 +26,12 @@ describe('exporters/registry — extensible non-native format exporters', () => 
     expect(BUILTIN_NON_NATIVE_EXPORTERS.length).toBeGreaterThanOrEqual(8);
     expect(PLANNED_EXTERNAL_SCHEMA_TARGETS).toHaveLength(0);
     expect(getExternalExporterById('clean-csv')?.formatExtension).toBe('.CSV');
+    expect(getExternalExporterById('breeder-showcase-html')?.status).toBe('ready');
     expect(getExternalExporterById('herdboss-transfer-bundle')?.status).toBe('ready');
     expect(getExternalExporterById('registry-worksheet-csv')?.status).toBe('ready');
   });
 
-  it('executes CSV, Evans .HTM, Barn Binder .HTM, Report DTO .JSON, .ICS, HerdBoss .ZIP, and Registry Worksheet .CSV in pure TS', () => {
+  it('executes CSV, Evans .HTM, Breeder Showcase .HTML, Barn Binder .HTM, Report DTO .JSON, .ICS, HerdBoss .ZIP, and Registry Worksheet .CSV in pure TS', () => {
     const snapshot = buildFullPredefinedSampleSnapshot();
     const rabbit = snapshot.animals.find((a) => a.species === 'Rabbit')!;
 
@@ -62,6 +63,39 @@ describe('exporters/registry — extensible non-native format exporters', () => 
     expect(card.mimeType).toBe('text/html;charset=utf-8');
     expect(card.content).toContain(rabbit.name);
     expect(card.content).toContain('3-Generation Lineage Summary');
+
+    const emptyShowcase = runExternalExporter('breeder-showcase-html', {
+      snapshot,
+      speciesName: 'Rabbit',
+    });
+    expect(emptyShowcase.filename.endsWith('.html')).toBe(true);
+    expect(emptyShowcase.recordCount).toBe(0);
+    expect(emptyShowcase.warnings.some((w) => w.includes('empty storefront'))).toBe(true);
+
+    const populatedShowcase = runExternalExporter('breeder-showcase-html', {
+      snapshot: {
+        ...snapshot,
+        animals: snapshot.animals.map((a) =>
+          a.id === rabbit.id
+            ? {
+                ...a,
+                status: 'Active',
+                archived: false,
+                ownershipType: 'Owned',
+                forSale: true,
+                askingPriceCents: 12_500,
+              }
+            : a
+        ),
+      },
+      speciesName: 'Rabbit',
+      appBaseUrl: 'https://askkim.github.io/Pedigree/',
+    });
+    expect(populatedShowcase.filename.endsWith('.html')).toBe(true);
+    expect(populatedShowcase.mimeType).toBe('text/html;charset=utf-8');
+    expect(populatedShowcase.recordCount).toBe(1);
+    expect(populatedShowcase.content).toContain(rabbit.name);
+    expect(populatedShowcase.content).toContain('$125.00');
 
     const binder = runExternalExporter('barn-binder-htm', {
       snapshot,

@@ -298,3 +298,369 @@ export function isDestructiveActionConfirmationValid(
   const cleaned = sanitizeSingleLineText(typedValue, 60).toUpperCase();
   return cleaned === expected;
 }
+
+export type DeveloperConsoleTabId =
+  | 'storage'
+  | 'runtime'
+  | 'logs'
+  | 'maintenance'
+  | 'all';
+
+export interface DeveloperConsoleTabDefinition {
+  id: DeveloperConsoleTabId;
+  label: string;
+  shortDescription: string;
+}
+
+export const DEVELOPER_CONSOLE_TABS: readonly DeveloperConsoleTabDefinition[] = [
+  {
+    id: 'storage',
+    label: 'Storage & OPFS',
+    shortDescription: 'Quota pre-flight, OPFS namespaces, Vault, and DB footprint',
+  },
+  {
+    id: 'runtime',
+    label: 'Runtime & Sync',
+    shortDescription: 'Connectivity, clock skew, release gate, browser APIs & outbox',
+  },
+  {
+    id: 'logs',
+    label: 'Logs & Support',
+    shortDescription: 'Diagnostic ring buffer, telemetry triggers & support ZIP/TXT',
+  },
+  {
+    id: 'maintenance',
+    label: 'Maintenance & Resets',
+    shortDescription: 'Photo pruner, DB self-repair, cache recovery & guarded resets',
+  },
+] as const;
+
+export const DEVELOPER_CONSOLE_SUBUNIT_IDS = [
+  'telemetry',
+  'tier_hierarchy',
+  'storage_protection',
+  'opfs_inspector',
+  'collection_footprint',
+  'connectivity_clock',
+  'update_release_gate',
+  'browser_matrix',
+  'handles_freeze',
+  'sync_outbox',
+  'diagnostics_logs',
+  'manual_trigger',
+  'testing_fixtures',
+  'diagnostics_maintenance',
+  'destructive_lab',
+] as const;
+
+export type DeveloperConsoleSubunitId = (typeof DEVELOPER_CONSOLE_SUBUNIT_IDS)[number];
+
+export function createDefaultSubunitOpenMap(
+  expanded = false
+): Record<DeveloperConsoleSubunitId, boolean> {
+  return {
+    telemetry: expanded,
+    tier_hierarchy: expanded,
+    storage_protection: expanded,
+    opfs_inspector: expanded,
+    collection_footprint: expanded,
+    connectivity_clock: expanded,
+    update_release_gate: expanded,
+    browser_matrix: expanded,
+    handles_freeze: expanded,
+    sync_outbox: expanded,
+    diagnostics_logs: expanded,
+    manual_trigger: expanded,
+    testing_fixtures: expanded,
+    diagnostics_maintenance: expanded,
+    destructive_lab: expanded,
+  };
+}
+
+export function normalizeDeveloperConsoleTab(value: unknown): DeveloperConsoleTabId {
+  if (
+    value === 'storage' ||
+    value === 'runtime' ||
+    value === 'logs' ||
+    value === 'maintenance' ||
+    value === 'all'
+  ) {
+    return value;
+  }
+  return 'storage';
+}
+
+export interface SnapshotCollectionFootprintRow {
+  key: string;
+  label: string;
+  recordCount: number;
+  estimatedBytes: number;
+  sharePercent: number;
+}
+
+export interface SnapshotCollectionFootprintReport {
+  totalRecords: number;
+  totalEstimatedBytes: number;
+  speciesCount: number;
+  photoSummary: {
+    totalPhotos: number;
+    fullResStoredBytes: number;
+    thumbnailEstimatedBytes: number;
+    photosWithFullResCount: number;
+  };
+  collections: SnapshotCollectionFootprintRow[];
+}
+
+export interface MinimalSnapshotForFootprint {
+  speciesProfiles?: ReadonlyArray<unknown>;
+  animals?: ReadonlyArray<unknown>;
+  animalPhotos?: ReadonlyArray<{
+    storedBytes?: number;
+    dataUrl?: string;
+    thumbnailDataUrl?: string;
+  }>;
+  cages?: ReadonlyArray<unknown>;
+  breedings?: ReadonlyArray<unknown>;
+  tasks?: ReadonlyArray<unknown>;
+  careLogs?: ReadonlyArray<unknown>;
+  shows?: ReadonlyArray<unknown>;
+  feedBatches?: ReadonlyArray<{
+    tagPhotoDataUrl?: string;
+    tagPhotoThumbnailDataUrl?: string;
+  }>;
+  feedAllocations?: ReadonlyArray<unknown>;
+  ledgerEntries?: ReadonlyArray<{
+    receiptPhotoDataUrl?: string;
+    receiptPhotoThumbnailDataUrl?: string;
+  }>;
+  processingLogs?: ReadonlyArray<unknown>;
+  youthProjectBooks?: ReadonlyArray<{ feedLogs?: ReadonlyArray<unknown> }>;
+  clientContacts?: ReadonlyArray<unknown>;
+  waitlistEntries?: ReadonlyArray<unknown>;
+  animalReservations?: ReadonlyArray<unknown>;
+  woolHarvests?: ReadonlyArray<unknown>;
+  mileageLogs?: ReadonlyArray<unknown>;
+  journalEntries?: ReadonlyArray<unknown>;
+  judgeClubs?: ReadonlyArray<unknown>;
+  judgeAssignments?: ReadonlyArray<unknown>;
+  judgeExpenses?: ReadonlyArray<unknown>;
+}
+
+/**
+ * Pure TypeScript estimator computing per-collection record counts and byte footprint
+ * across all persisted BarnDatabaseSnapshot tables so developers can spot bloat immediately.
+ */
+export function computeSnapshotCollectionFootprint(
+  snapshot: MinimalSnapshotForFootprint | null | undefined
+): SnapshotCollectionFootprintReport {
+  if (!snapshot) {
+    return {
+      totalRecords: 0,
+      totalEstimatedBytes: 0,
+      speciesCount: 0,
+      photoSummary: {
+        totalPhotos: 0,
+        fullResStoredBytes: 0,
+        thumbnailEstimatedBytes: 0,
+        photosWithFullResCount: 0,
+      },
+      collections: [],
+    };
+  }
+
+  const photos = snapshot.animalPhotos ?? [];
+  let fullResStoredBytes = 0;
+  let thumbnailEstimatedBytes = 0;
+  let photosWithFullResCount = 0;
+
+  for (const p of photos) {
+    const rawBytes = Number(p.storedBytes) > 0
+      ? Number(p.storedBytes)
+      : p.dataUrl
+      ? Math.round(p.dataUrl.length * 0.73)
+      : 0;
+    if (rawBytes > 0) {
+      photosWithFullResCount += 1;
+    }
+    fullResStoredBytes += rawBytes;
+    thumbnailEstimatedBytes += p.thumbnailDataUrl ? Math.round(p.thumbnailDataUrl.length * 0.73) : 0;
+  }
+
+  const photoCollectionBytes = photos.length * 220 + fullResStoredBytes + thumbnailEstimatedBytes;
+
+  let feedBatchBytes = 0;
+  for (const fb of snapshot.feedBatches ?? []) {
+    feedBatchBytes +=
+      360 +
+      (fb.tagPhotoDataUrl?.length || 0) +
+      (fb.tagPhotoThumbnailDataUrl?.length || 0);
+  }
+
+  let ledgerBytes = 0;
+  for (const le of snapshot.ledgerEntries ?? []) {
+    ledgerBytes +=
+      320 +
+      (le.receiptPhotoDataUrl?.length || 0) +
+      (le.receiptPhotoThumbnailDataUrl?.length || 0);
+  }
+
+  let youthBytes = 0;
+  for (const yp of snapshot.youthProjectBooks ?? []) {
+    youthBytes += 540 + (yp.feedLogs?.length || 0) * 140;
+  }
+
+  const rawRows: Array<Omit<SnapshotCollectionFootprintRow, 'sharePercent'>> = [
+    {
+      key: 'animals',
+      label: 'Animals & Pedigrees',
+      recordCount: snapshot.animals?.length ?? 0,
+      estimatedBytes: (snapshot.animals?.length ?? 0) * 650,
+    },
+    {
+      key: 'animalPhotos',
+      label: 'Animal Photos (Full + Thumbs)',
+      recordCount: photos.length,
+      estimatedBytes: photoCollectionBytes,
+    },
+    {
+      key: 'breedings',
+      label: 'Breedings & Litters',
+      recordCount: snapshot.breedings?.length ?? 0,
+      estimatedBytes: (snapshot.breedings?.length ?? 0) * 380,
+    },
+    {
+      key: 'careLogs',
+      label: 'Health & Weight Care Logs',
+      recordCount: snapshot.careLogs?.length ?? 0,
+      estimatedBytes: (snapshot.careLogs?.length ?? 0) * 300,
+    },
+    {
+      key: 'tasks',
+      label: 'Barn Tasks & Reminders',
+      recordCount: snapshot.tasks?.length ?? 0,
+      estimatedBytes: (snapshot.tasks?.length ?? 0) * 260,
+    },
+    {
+      key: 'cages',
+      label: 'Cages & Pens',
+      recordCount: snapshot.cages?.length ?? 0,
+      estimatedBytes: (snapshot.cages?.length ?? 0) * 240,
+    },
+    {
+      key: 'shows',
+      label: 'Show Events & Placements',
+      recordCount: snapshot.shows?.length ?? 0,
+      estimatedBytes: (snapshot.shows?.length ?? 0) * 340,
+    },
+    {
+      key: 'feedBatches',
+      label: 'Feed Lots & Tag Scans',
+      recordCount: snapshot.feedBatches?.length ?? 0,
+      estimatedBytes: feedBatchBytes,
+    },
+    {
+      key: 'feedAllocations',
+      label: 'Feed Allocations',
+      recordCount: snapshot.feedAllocations?.length ?? 0,
+      estimatedBytes: (snapshot.feedAllocations?.length ?? 0) * 220,
+    },
+    {
+      key: 'ledgerEntries',
+      label: 'Economics Ledger & Receipts',
+      recordCount: snapshot.ledgerEntries?.length ?? 0,
+      estimatedBytes: ledgerBytes,
+    },
+    {
+      key: 'processingLogs',
+      label: 'Meat & Processing Logs',
+      recordCount: snapshot.processingLogs?.length ?? 0,
+      estimatedBytes: (snapshot.processingLogs?.length ?? 0) * 320,
+    },
+    {
+      key: 'woolHarvests',
+      label: 'Wool / Fiber Harvests',
+      recordCount: snapshot.woolHarvests?.length ?? 0,
+      estimatedBytes: (snapshot.woolHarvests?.length ?? 0) * 320,
+    },
+    {
+      key: 'youthProjectBooks',
+      label: '4-H / FFA Project Books',
+      recordCount: snapshot.youthProjectBooks?.length ?? 0,
+      estimatedBytes: youthBytes,
+    },
+    {
+      key: 'clientContacts',
+      label: 'Client CRM Contacts',
+      recordCount: snapshot.clientContacts?.length ?? 0,
+      estimatedBytes: (snapshot.clientContacts?.length ?? 0) * 320,
+    },
+    {
+      key: 'waitlistEntries',
+      label: 'Buyer Waitlists',
+      recordCount: snapshot.waitlistEntries?.length ?? 0,
+      estimatedBytes: (snapshot.waitlistEntries?.length ?? 0) * 260,
+    },
+    {
+      key: 'animalReservations',
+      label: 'Animal Reservations & Holds',
+      recordCount: snapshot.animalReservations?.length ?? 0,
+      estimatedBytes: (snapshot.animalReservations?.length ?? 0) * 280,
+    },
+    {
+      key: 'mileageLogs',
+      label: 'Mileage & Tax Logs',
+      recordCount: snapshot.mileageLogs?.length ?? 0,
+      estimatedBytes: (snapshot.mileageLogs?.length ?? 0) * 260,
+    },
+    {
+      key: 'journalEntries',
+      label: 'Personal Barn Journal',
+      recordCount: snapshot.journalEntries?.length ?? 0,
+      estimatedBytes: (snapshot.journalEntries?.length ?? 0) * 480,
+    },
+    {
+      key: 'judgeRecords',
+      label: 'Judge Clubs, Shows & Expenses',
+      recordCount:
+        (snapshot.judgeClubs?.length ?? 0) +
+        (snapshot.judgeAssignments?.length ?? 0) +
+        (snapshot.judgeExpenses?.length ?? 0),
+      estimatedBytes:
+        (snapshot.judgeClubs?.length ?? 0) * 260 +
+        (snapshot.judgeAssignments?.length ?? 0) * 360 +
+        (snapshot.judgeExpenses?.length ?? 0) * 220,
+    },
+    {
+      key: 'speciesProfiles',
+      label: 'Species Configurations',
+      recordCount: snapshot.speciesProfiles?.length ?? 0,
+      estimatedBytes: (snapshot.speciesProfiles?.length ?? 0) * 640,
+    },
+  ];
+
+  const totalRecords = rawRows.reduce((acc, r) => acc + r.recordCount, 0);
+  const totalEstimatedBytes = rawRows.reduce((acc, r) => acc + r.estimatedBytes, 0);
+
+  const collections: SnapshotCollectionFootprintRow[] = rawRows
+    .map((r) => ({
+      ...r,
+      sharePercent:
+        totalEstimatedBytes > 0
+          ? Math.round((r.estimatedBytes / totalEstimatedBytes) * 1000) / 10
+          : 0,
+    }))
+    .sort((a, b) => b.estimatedBytes - a.estimatedBytes || b.recordCount - a.recordCount);
+
+  return {
+    totalRecords,
+    totalEstimatedBytes,
+    speciesCount: snapshot.speciesProfiles?.length ?? 0,
+    photoSummary: {
+      totalPhotos: photos.length,
+      fullResStoredBytes,
+      thumbnailEstimatedBytes,
+      photosWithFullResCount,
+    },
+    collections,
+  };
+}

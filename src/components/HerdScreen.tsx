@@ -25,17 +25,20 @@ import {
   Edit3,
   FileText,
   GitFork,
+  HeartPulse,
   Loader2,
   Plus,
   Printer,
   RotateCcw,
   Search,
   ShieldAlert,
+  Tag,
   Trash2,
   TrendingUp,
   X,
 } from 'lucide-react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { ComponentProps, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from '../utils/lazyRoute';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
@@ -77,6 +80,7 @@ import {
   getSpeciesIdentifierLabels,
   getWeightInputMeta,
   isAnimalArchived,
+  isAnimalAvailableForSale,
   normalizeOwnershipType,
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
@@ -84,8 +88,16 @@ import {
   todayDateIso,
   ULTRASOUND_RESULTS,
   UltrasoundResult,
+  WoolHarvest,
 } from '../core/models';
-import { getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
+import {
+  buildPetBirthCertificateFileName,
+  generatePetBirthCertificateHtml,
+} from '../core/alternativeCertificates';
+import {
+  createSpeciesCoiEvaluator,
+  getPedigreeCompletenessSummary,
+} from '../core/pedigreeCalculator';
 import { SpeciesMigrationOptions } from '../core/speciesMigration';
 import {
   BatchPrintOptions,
@@ -96,6 +108,11 @@ import {
   getBatchPrintLayoutSpec,
   resolveBatchPrintAnimals,
 } from '../core/batchPrint';
+import {
+  BreederShowcaseLayoutMode,
+  buildBreederShowcaseFileName,
+  generateBreederShowcaseHtml,
+} from '../core/breederShowcase';
 import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
@@ -108,14 +125,29 @@ import {
 } from '../core/syncAndExports';
 import { ArchivedHerdIndexEntry } from '../core/backupVault';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
-import { buildAndDownloadPedigreePdf } from '../utils/webPdfActions';
-import { AnimalEditorModal } from './AnimalEditorModal';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
-import { ArchivedHerdsModal } from './ArchivedHerdsModal';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
-import { PrintPreviewModal } from './PrintPreviewModal';
-import { SpeciesMigrationModal } from './SpeciesMigrationModal';
+
+const AnimalEditorModal = lazyNamedRoute<
+  ComponentProps<typeof import('./AnimalEditorModal')['AnimalEditorModal']>
+>(() => import('./AnimalEditorModal'), 'AnimalEditorModal', 'Animal Editor');
+
+const ArchivedHerdsModal = lazyNamedRoute<
+  ComponentProps<typeof import('./ArchivedHerdsModal')['ArchivedHerdsModal']>
+>(() => import('./ArchivedHerdsModal'), 'ArchivedHerdsModal', 'Archived Herds');
+
+const PrintPreviewModal = lazyNamedRoute<
+  ComponentProps<typeof import('./PrintPreviewModal')['PrintPreviewModal']>
+>(() => import('./PrintPreviewModal'), 'PrintPreviewModal', 'Print Preview');
+
+const SpeciesMigrationModal = lazyNamedRoute<
+  ComponentProps<typeof import('./SpeciesMigrationModal')['SpeciesMigrationModal']>
+>(() => import('./SpeciesMigrationModal'), 'SpeciesMigrationModal', 'Species Migration');
+
+const WoolHarvestPanel = lazyNamedRoute<
+  ComponentProps<typeof import('./WoolHarvestPanel')['WoolHarvestPanel']>
+>(() => import('./WoolHarvestPanel'), 'WoolHarvestPanel', 'Wool & Fiber Panel');
 
 export const HERD_PAGE_SIZE = 50;
 
@@ -169,6 +201,12 @@ interface HerdScreenProps {
   onOpenBarnBench?: () => void;
   onCompareGrowthForAnimals?: (animalIds: string[]) => void;
   onUpdateSettings?: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
+  onSaveWoolHarvest?: (
+    draft: Omit<WoolHarvest, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => Promise<string | null> | void;
+  onDeleteWoolHarvest?: (id: string) => Promise<void> | void;
+  onOpenHealthReference?: (section?: 'all' | 'wikis' | 'pdfs') => void;
+  isConstrainedDevice?: boolean;
 }
 
 type HerdFilterTab =
@@ -177,6 +215,7 @@ type HerdFilterTab =
   | 'Female'
   | 'Junior'
   | 'Active'
+  | 'ForSale'
   | 'Archived'
   | 'Withdrawal'
   | 'NeedsAttention'
@@ -227,6 +266,10 @@ export function HerdScreen({
   onOpenBarnBench,
   onCompareGrowthForAnimals,
   onUpdateSettings,
+  onSaveWoolHarvest,
+  onDeleteWoolHarvest,
+  onOpenHealthReference,
+  isConstrainedDevice = false,
 }: HerdScreenProps) {
   const {
     speciesProfile,
@@ -240,6 +283,7 @@ export function HerdScreen({
     cages,
     careLogs,
     shows,
+    woolHarvests = [],
   } = activeData;
 
   const effectiveWeightUnit = resolveSpeciesWeightUnit(speciesProfile, settings);
@@ -309,10 +353,36 @@ export function HerdScreen({
     filename: string;
     html: string;
     isPedigree?: boolean;
+    isShowcase?: boolean;
     hasGenetics?: boolean;
     pedigreeSubject?: Animal;
     cageCardSubject?: Animal;
+    birthCertSubject?: Animal;
   } | null>(null);
+  const [showcaseOptions, setShowcaseOptions] = useState<{
+    scopeAllSpecies: boolean;
+    includePhotos: boolean;
+    includeGenotypes: boolean;
+    layoutMode: BreederShowcaseLayoutMode;
+  }>({
+    scopeAllSpecies: false,
+    includePhotos: true,
+    includeGenotypes: false,
+    layoutMode: 'showcase_and_sheet',
+  });
+  const [showcaseHydratedPhotos, setShowcaseHydratedPhotos] = useState<Record<string, string>>({});
+  const [birthCertOptions, setBirthCertOptions] = useState<{
+    companionFamilyName: string;
+    keepsakeMessage: string;
+    includePrimaryPhoto: boolean;
+  }>({
+    companionFamilyName: '',
+    keepsakeMessage: '',
+    includePrimaryPhoto: true,
+  });
+  const [familyPortraitPhotosByAnimalId, setFamilyPortraitPhotosByAnimalId] = useState<
+    Record<string, string>
+  >({});
   const [includeThermalCageCardQr, setIncludeThermalCageCardQr] = useState(true);
   const [hydratedPedigreePhoto, setHydratedPedigreePhoto] = useState<{
     photoId: string;
@@ -326,13 +396,19 @@ export function HerdScreen({
   const [batchPhotoHydrating, setBatchPhotoHydrating] = useState(false);
 
   useEffect(() => {
-    if (!previewDoc?.isPedigree || !previewDoc.pedigreeSubject || !settings.includePhotoOnPedigree) {
+    const photoSubject = previewDoc?.pedigreeSubject ?? previewDoc?.birthCertSubject;
+    const shouldIncludePhoto = previewDoc?.pedigreeSubject
+      ? Boolean(settings.includePhotoOnPedigree)
+      : previewDoc?.birthCertSubject
+        ? birthCertOptions.includePrimaryPhoto
+        : false;
+    if (!photoSubject || !shouldIncludePhoto) {
       if (hydratedPedigreePhoto !== null) {
         setHydratedPedigreePhoto(null);
       }
       return;
     }
-    const primary = primaryPhotoByAnimalId.get(previewDoc.pedigreeSubject.id);
+    const primary = primaryPhotoByAnimalId.get(photoSubject.id);
     if (!primary || primary.dataUrl || !onLoadFullPhoto) return;
     if (hydratedPedigreePhoto?.photoId === primary.id) return;
     let cancelled = false;
@@ -347,9 +423,74 @@ export function HerdScreen({
   }, [
     previewDoc,
     settings.includePhotoOnPedigree,
+    birthCertOptions.includePrimaryPhoto,
     primaryPhotoByAnimalId,
     onLoadFullPhoto,
     hydratedPedigreePhoto,
+  ]);
+
+  useEffect(() => {
+    if (
+      !previewDoc?.isPedigree ||
+      !previewDoc.pedigreeSubject ||
+      pedigreePrintOptions.layoutPreset !== 'family_portrait'
+    ) {
+      setFamilyPortraitPhotosByAnimalId((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    const animalById = new Map<string, Animal>(allAnimals.map((a) => [a.id, a]));
+    const subj = previewDoc.pedigreeSubject;
+    const sire = subj.sireId ? animalById.get(subj.sireId) : undefined;
+    const dam = subj.damId ? animalById.get(subj.damId) : undefined;
+    const familyIds = [
+      subj.id,
+      sire?.id,
+      dam?.id,
+      sire?.sireId,
+      sire?.damId,
+      dam?.sireId,
+      dam?.damId,
+    ].filter((id): id is string => Boolean(id));
+
+    const nextImmediate: Record<string, string> = {};
+    const photoIdsToHydrate: Array<{ animalId: string; photoId: string }> = [];
+    for (const animalId of familyIds) {
+      const rec = primaryPhotoByAnimalId.get(animalId);
+      if (!rec) continue;
+      if (rec.dataUrl) {
+        nextImmediate[animalId] = rec.dataUrl;
+      } else {
+        if (rec.thumbnailDataUrl) nextImmediate[animalId] = rec.thumbnailDataUrl;
+        if (onLoadFullPhotosBatch) {
+          photoIdsToHydrate.push({ animalId, photoId: rec.id });
+        }
+      }
+    }
+    setFamilyPortraitPhotosByAnimalId(nextImmediate);
+
+    if (photoIdsToHydrate.length === 0 || !onLoadFullPhotosBatch) return;
+    let cancelled = false;
+    void onLoadFullPhotosBatch(photoIdsToHydrate.map((x) => x.photoId)).then((loadedMap) => {
+      if (cancelled) return;
+      setFamilyPortraitPhotosByAnimalId((prev) => {
+        const merged = { ...prev };
+        for (const item of photoIdsToHydrate) {
+          if (loadedMap[item.photoId]) {
+            merged[item.animalId] = loadedMap[item.photoId];
+          }
+        }
+        return merged;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    previewDoc,
+    pedigreePrintOptions.layoutPreset,
+    allAnimals,
+    primaryPhotoByAnimalId,
+    onLoadFullPhotosBatch,
   ]);
 
   useEffect(() => {
@@ -420,6 +561,66 @@ export function HerdScreen({
     onLoadFullPhoto,
   ]);
 
+  useEffect(() => {
+    if (!previewDoc?.isShowcase || !showcaseOptions.includePhotos || isConstrainedDevice) {
+      return;
+    }
+    const missingIds: string[] = [];
+    const targetAnimals = snapshot.animals.filter(
+      (a) =>
+        isAnimalAvailableForSale(a) &&
+        (showcaseOptions.scopeAllSpecies || a.species === speciesProfile.name)
+    );
+    const targetAnimalIdSet = new Set(targetAnimals.map((a) => a.id));
+    for (const p of snapshot.animalPhotos) {
+      if (missingIds.length >= 40) break;
+      if (!targetAnimalIdSet.has(p.animalId)) continue;
+      if (!p.dataUrl && !(p.id in showcaseHydratedPhotos)) {
+        missingIds.push(p.id);
+      }
+    }
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        if (onLoadFullPhotosBatch) {
+          const loaded = await onLoadFullPhotosBatch(missingIds);
+          if (!cancelled && Object.keys(loaded).length > 0) {
+            setShowcaseHydratedPhotos((prev) => ({ ...prev, ...loaded }));
+          }
+        } else if (onLoadFullPhoto) {
+          const entries: Record<string, string> = {};
+          for (const pid of missingIds) {
+            if (cancelled) return;
+            const url = await onLoadFullPhoto(pid);
+            if (url) entries[pid] = url;
+          }
+          if (!cancelled && Object.keys(entries).length > 0) {
+            setShowcaseHydratedPhotos((prev) => ({ ...prev, ...entries }));
+          }
+        }
+      } catch {
+        // Keep thumbnails cleanly if hydration fails
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    previewDoc?.isShowcase,
+    showcaseOptions.includePhotos,
+    showcaseOptions.scopeAllSpecies,
+    isConstrainedDevice,
+    snapshot.animals,
+    snapshot.animalPhotos,
+    speciesProfile.name,
+    showcaseHydratedPhotos,
+    onLoadFullPhotosBatch,
+    onLoadFullPhoto,
+  ]);
+
   // Quick Cage-Side Care/Weight Log state
   const [showLogForm, setShowLogForm] = useState(false);
   const [logType, setLogType] = useState<CareLogType>('Weight Check');
@@ -450,6 +651,7 @@ export function HerdScreen({
     femaleCount,
     juniorCount,
     activeCount,
+    forSaleCount,
     archivedCount,
     needsAttentionCount,
     withdrawalCount,
@@ -458,6 +660,7 @@ export function HerdScreen({
     let female = 0;
     let junior = 0;
     let active = 0;
+    let forSale = 0;
     let archived = 0;
     let needsAttention = 0;
     let withdrawal = 0;
@@ -467,6 +670,7 @@ export function HerdScreen({
       if (a.status === 'Junior') junior++;
       if (isAnimalArchived(a)) archived++;
       else active++;
+      if (isAnimalAvailableForSale(a)) forSale++;
       if (doesAnimalNeedAttention(a)) needsAttention++;
       if (withdrawalByAnimalId.get(a.id)?.isActive) withdrawal++;
     }
@@ -475,6 +679,7 @@ export function HerdScreen({
       femaleCount: female,
       juniorCount: junior,
       activeCount: active,
+      forSaleCount: forSale,
       archivedCount: archived,
       needsAttentionCount: needsAttention,
       withdrawalCount: withdrawal,
@@ -491,23 +696,26 @@ export function HerdScreen({
     [speciesProfile.name]
   );
 
-  const carrierAnalysisById = useMemo(() => {
+  const hasCarrierFilter = carrierFilterMode !== 'all' || carrierTraitQuery.trim().length > 0;
+
+  const fullCarrierAnalysisById = useMemo(() => {
     const map = new Map<string, AnimalCarrierLineageAnalysis>();
+    if (!hasCarrierFilter) return map;
     for (const a of animals) {
       map.set(a.id, analyzeAnimalCarrierLineage(a, herdById));
     }
     return map;
-  }, [animals, herdById]);
+  }, [animals, herdById, hasCarrierFilter]);
 
   const filteredAnimals = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const hasCarrierFilter = carrierFilterMode !== 'all' || carrierTraitQuery.trim().length > 0;
     const filtered = animals.filter((a) => {
       const archived = isAnimalArchived(a);
       if (filterKey === 'Male' && a.sex !== 'Male') return false;
       if (filterKey === 'Female' && a.sex !== 'Female') return false;
       if (filterKey === 'Junior' && a.status !== 'Junior') return false;
       if (filterKey === 'Active' && archived) return false;
+      if (filterKey === 'ForSale' && !isAnimalAvailableForSale(a)) return false;
       if (filterKey === 'Archived' && !archived) return false;
       if (filterKey === 'Withdrawal' && !withdrawalByAnimalId.get(a.id)?.isActive) return false;
       if (filterKey === 'NeedsAttention' && !doesAnimalNeedAttention(a)) return false;
@@ -516,7 +724,7 @@ export function HerdScreen({
       }
 
       if (hasCarrierFilter) {
-        const analysis = carrierAnalysisById.get(a.id);
+        const analysis = fullCarrierAnalysisById.get(a.id);
         if (!analysis || !doesAnimalMatchCarrierFilter(analysis, carrierFilterMode, carrierTraitQuery)) {
           return false;
         }
@@ -566,9 +774,10 @@ export function HerdScreen({
     query,
     filterKey,
     sortBy,
+    hasCarrierFilter,
     carrierFilterMode,
     carrierTraitQuery,
-    carrierAnalysisById,
+    fullCarrierAnalysisById,
     conflictsByAnimalId,
     withdrawalByAnimalId,
   ]);
@@ -594,6 +803,11 @@ export function HerdScreen({
   const activeAnimalShowSummary = useMemo(
     () => (activeAnimal ? computeAnimalShowSummary(activeAnimal, shows, careLogs) : null),
     [activeAnimal, shows, careLogs]
+  );
+
+  const activeAnimalWoolHarvests = useMemo(
+    () => (activeAnimal ? woolHarvests.filter((wh) => wh.animalId === activeAnimal.id) : []),
+    [activeAnimal, woolHarvests]
   );
 
   const [eLegLightbox, setELegLightbox] = useState<{
@@ -659,16 +873,11 @@ export function HerdScreen({
     [activeAnimal]
   );
 
-  const activeLineageAnalysis = useMemo(
-    () => (activeAnimal ? carrierAnalysisById.get(activeAnimal.id) ?? null : null),
-    [activeAnimal, carrierAnalysisById]
-  );
-
   const herdVirtual = useVirtualWindow({
     itemCount: filteredAnimals.length,
     estimateSize: 80,
-    overscan: 8,
-    initialFallbackCount: HERD_PAGE_SIZE,
+    overscan: isConstrainedDevice ? 3 : 8,
+    initialFallbackCount: isConstrainedDevice ? 20 : HERD_PAGE_SIZE,
     resetKey: `${speciesProfile.name}::${filterKey}::${sortBy}::${query}::${carrierFilterMode}::${carrierTraitQuery}`,
   });
 
@@ -687,6 +896,44 @@ export function HerdScreen({
       herdVirtual.windowRange.endIndex,
     ]
   );
+
+  const carrierAnalysisById = useMemo(() => {
+    if (hasCarrierFilter) return fullCarrierAnalysisById;
+    const map = new Map<string, AnimalCarrierLineageAnalysis>();
+    if (activeAnimal) {
+      map.set(activeAnimal.id, analyzeAnimalCarrierLineage(activeAnimal, herdById));
+    }
+    for (const a of visibleAnimals) {
+      if (!map.has(a.id)) {
+        map.set(a.id, analyzeAnimalCarrierLineage(a, herdById));
+      }
+    }
+    return map;
+  }, [hasCarrierFilter, fullCarrierAnalysisById, activeAnimal, visibleAnimals, herdById]);
+
+  const activeLineageAnalysis = useMemo(
+    () => (activeAnimal ? carrierAnalysisById.get(activeAnimal.id) ?? null : null),
+    [activeAnimal, carrierAnalysisById]
+  );
+
+  const visibleCoiByAnimalId = useMemo(() => {
+    if (!activeAnimal && visibleAnimals.length === 0) return coiByAnimalId;
+    const needCompute =
+      (activeAnimal && !coiByAnimalId.has(activeAnimal.id)) ||
+      visibleAnimals.some((a) => !coiByAnimalId.has(a.id));
+    if (!needCompute) return coiByAnimalId;
+    const evaluator = createSpeciesCoiEvaluator(herdById);
+    const map = new Map(coiByAnimalId);
+    if (activeAnimal && !map.has(activeAnimal.id)) {
+      map.set(activeAnimal.id, evaluator.calculateAnimalCoi(activeAnimal));
+    }
+    for (const a of visibleAnimals) {
+      if (!map.has(a.id)) {
+        map.set(a.id, evaluator.calculateAnimalCoi(a));
+      }
+    }
+    return map;
+  }, [activeAnimal, visibleAnimals, coiByAnimalId, herdById]);
 
   const checkedIdSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const filteredIds = useMemo(() => filteredAnimals.map((a) => a.id), [filteredAnimals]);
@@ -809,8 +1056,37 @@ export function HerdScreen({
           ...pedigreePrintOptions,
           shows,
           careLogs,
+          woolHarvests,
+          ancestorPhotosByAnimalId:
+            pedigreePrintOptions.layoutPreset === 'family_portrait'
+              ? familyPortraitPhotosByAnimalId
+              : undefined,
         }
       ),
+    });
+  };
+
+  const openBirthCertificatePreview = (subject: Animal) => {
+    setBatchPrintSubjects(null);
+    setBatchHydratedPhotos({});
+    setBirthCertOptions((prev) => ({
+      ...prev,
+      companionFamilyName: subject.buyerName || prev.companionFamilyName || '',
+    }));
+    const primaryRec = primaryPhotoByAnimalId.get(subject.id);
+    const photoUrl =
+      primaryRec && birthCertOptions.includePrimaryPhoto
+        ? primaryRec.dataUrl || primaryRec.thumbnailDataUrl
+        : undefined;
+    setPreviewDoc({
+      title: `Pet Birth Certificate — ${subject.name}`,
+      filename: buildPetBirthCertificateFileName(subject),
+      birthCertSubject: subject,
+      html: generatePetBirthCertificateHtml(subject, allAnimals, speciesProfiles, settings, {
+        primaryPhotoDataUrl: photoUrl,
+        companionFamilyName: subject.buyerName || birthCertOptions.companionFamilyName,
+        keepsakeMessage: birthCertOptions.keepsakeMessage,
+      }),
     });
   };
 
@@ -1205,6 +1481,22 @@ export function HerdScreen({
                   {formatSexForSpecies(activeAnimal.sex, speciesProfile)} · {activeAnimal.breed}{' '}
                   {activeAnimal.variety} · DOB {formatReadableDate(activeAnimal.birthDateIso)}
                 </p>
+                {isAnimalAvailableForSale(activeAnimal) && (
+                  <p className="text-xs font-medium text-[var(--barn-sage)] font-mono tabular-nums pt-0.5 flex flex-wrap items-center gap-1.5">
+                    <Tag className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      Listed For Sale
+                      {(activeAnimal.askingPriceCents ?? 0) > 0
+                        ? ` · ${formatCurrencyCents(activeAnimal.askingPriceCents, settings.currencyCode)}`
+                        : ' · Inquire for Price'}
+                    </span>
+                    {activeAnimal.saleNotes && (
+                      <span className="font-sans text-[var(--barn-muted)] font-normal">
+                        — {activeAnimal.saleNotes}
+                      </span>
+                    )}
+                  </p>
+                )}
                 {(activeAnimal.culled ||
                   activeAnimal.status === 'Sold' ||
                   activeAnimal.status === 'Deceased') && (
@@ -1277,6 +1569,35 @@ export function HerdScreen({
                   </button>
                   <button
                     type="button"
+                    onClick={() => openBirthCertificatePreview(activeAnimal)}
+                    title="Print keepsake Birth Certificate (omits breeder contact & sale pricing)"
+                    className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Award className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                    Birth Cert
+                  </button>
+                  {isAnimalAvailableForSale(activeAnimal) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewDoc({
+                          title: `Breeder Showcase — ${speciesProfile.name} For Sale`,
+                          filename: buildBreederShowcaseFileName(
+                            settings.barnName,
+                            speciesProfile.name
+                          ),
+                          html: '',
+                          isShowcase: true,
+                        })
+                      }
+                      className="min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)]/60 text-xs font-semibold hover:brightness-105 inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Tag className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Showcase
+                    </button>
+                  )}
+                  <button
+                    type="button"
                     onClick={() => {
                       setEditingAnimal(activeAnimal);
                       setShowAnimalModal(true);
@@ -1314,7 +1635,7 @@ export function HerdScreen({
               <div>
                 <div className="text-[var(--barn-muted)]">Wright COI</div>
                 {(() => {
-                  const activeCoi = coiByAnimalId.get(activeAnimal.id);
+                  const activeCoi = visibleCoiByAnimalId.get(activeAnimal.id);
                   const comp = activeCoi ? getPedigreeCompletenessSummary(activeCoi) : null;
                   return (
                     <div className="mt-0.5">
@@ -1778,6 +2099,16 @@ export function HerdScreen({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  {onOpenHealthReference && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenHealthReference('all')}
+                      className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] text-xs font-medium hover:bg-[var(--barn-subtle)] inline-flex items-center gap-1 whitespace-nowrap"
+                    >
+                      <HeartPulse className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                      Health Wikis &amp; Vet PDFs
+                    </button>
+                  )}
                   {onCompareGrowthForAnimals && (
                     <button
                       type="button"
@@ -2120,6 +2451,17 @@ export function HerdScreen({
               )}
             </div>
 
+            {/* Wool / Fiber Harvests & IAGARB Angora Evaluation */}
+            <Suspense fallback={null}>
+              <WoolHarvestPanel
+                speciesProfile={speciesProfile}
+                animalId={activeAnimal.id}
+                animalWoolHarvests={activeAnimalWoolHarvests}
+                onSaveWoolHarvest={onSaveWoolHarvest}
+                onDeleteWoolHarvest={onDeleteWoolHarvest}
+              />
+            </Suspense>
+
             {activeAnimal.notes && (
               <div className="border-t border-[var(--barn-border)] pt-4 text-xs text-[var(--barn-muted)]">
                 <strong className="text-[var(--barn-ink)]">Notes:</strong> {activeAnimal.notes}
@@ -2165,6 +2507,9 @@ export function HerdScreen({
                     ['Female', `${speciesProfile.femaleLabel}s (${femaleCount})`],
                     ['Junior', `Juniors (${juniorCount})`],
                     ['Active', `Active (${activeCount})`],
+                    ...(forSaleCount > 0 || filterKey === 'ForSale'
+                      ? ([['ForSale', `For Sale (${forSaleCount})`]] as const)
+                      : []),
                     ['Archived', `Archived (${archivedCount})`],
                     ...(withdrawalCount > 0 || filterKey === 'Withdrawal'
                       ? ([['Withdrawal', `Withdrawal (${withdrawalCount})`]] as const)
@@ -2187,6 +2532,8 @@ export function HerdScreen({
                         ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
                         : key === 'Withdrawal' || key === 'NeedsAttention' || key === 'Conflicts'
                         ? 'text-[var(--barn-terracotta)] hover:bg-[var(--barn-terracotta-tint)]'
+                        : key === 'ForSale'
+                        ? 'text-[var(--barn-sage)] hover:bg-[var(--barn-sage-tint)]'
                         : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
                     }`}
                   >
@@ -2214,6 +2561,28 @@ export function HerdScreen({
                 <option value="tattoo">Sort: {idLabels.shortLabel}</option>
                 <option value="newest_dob">Sort: Newest DOB</option>
               </select>
+
+              {forSaleCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPreviewDoc({
+                      title: `Breeder Showcase — ${speciesProfile.name} For Sale (${forSaleCount})`,
+                      filename: buildBreederShowcaseFileName(
+                        settings.barnName,
+                        speciesProfile.name
+                      ),
+                      html: '',
+                      isShowcase: true,
+                    })
+                  }
+                  title="Preview, print stock sheet, or export a zero-server HTML For-Sale Catalog"
+                  className="min-h-[42px] max-w-full px-3.5 py-2 rounded-xl border border-[var(--barn-sage)] bg-[var(--barn-sage-tint)]/55 text-[var(--barn-ink)] hover:brightness-105 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+                >
+                  <Tag className="w-4 h-4 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
+                  <span>For-Sale Catalog ({forSaleCount})</span>
+                </button>
+              )}
 
               {onOpenBarnBench && (
                 <button
@@ -2490,7 +2859,7 @@ export function HerdScreen({
                       const rowIndex = herdVirtual.windowRange.startIndex + localIdx;
                       const isChecked = checkedIdSet.has(a.id);
                       const isArch = isAnimalArchived(a);
-                      const coi = coiByAnimalId.get(a.id);
+                      const coi = visibleCoiByAnimalId.get(a.id);
                       const coverPhoto = primaryPhotoByAnimalId.get(a.id);
                       const photoCount = photosByAnimalId.get(a.id)?.length || 0;
                       const sexColor =
@@ -2559,6 +2928,15 @@ export function HerdScreen({
                                   {isArch && (
                                     <span className="text-[11px] font-medium text-[var(--barn-muted)] shrink-0">
                                       · Archived
+                                    </span>
+                                  )}
+                                  {isAnimalAvailableForSale(a) && (
+                                    <span className="text-[11px] font-semibold text-[var(--barn-sage)] inline-flex items-center gap-1 shrink-0 font-mono tabular-nums">
+                                      · <Tag className="w-3 h-3" aria-hidden="true" />
+                                      For Sale
+                                      {(a.askingPriceCents ?? 0) > 0
+                                        ? ` (${formatCurrencyCents(a.askingPriceCents, settings.currencyCode)})`
+                                        : ''}
                                     </span>
                                   )}
                                   {doesAnimalNeedAttention(a) && (
@@ -2693,83 +3071,110 @@ export function HerdScreen({
       )}
 
       {showAnimalModal && (
-        <AnimalEditorModal
-          initialAnimal={editingAnimal}
-          speciesProfile={speciesProfile}
-          speciesAnimals={animals}
-          speciesCages={cages}
-          animalCareLogs={editingAnimalCareLogs}
-          preferredUnit={effectiveWeightUnit}
-          currencyCode={settings.currencyCode}
-          optimizationPresetId={settings.imageOptimizationPreset}
-          defaultBreederName={settings.breederName}
-          defaultOwnerName={settings.barnName}
-          opfsSupported={opfsSupported}
-          autoOffloadRetiredToOpfs={Boolean(settings.autoOffloadRetiredToOpfs)}
-          onSave={onSaveAnimal}
-          onOffloadRetiredAnimal={
-            onOffloadAnimalsToOpfsArchive
-              ? async (animalId) => {
-                  await onOffloadAnimalsToOpfsArchive([animalId]);
-                }
-              : undefined
-          }
-          onSetAutoOffloadRetired={
-            onUpdateSettings
-              ? (enabled) => onUpdateSettings({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
-              : undefined
-          }
-          onDelete={onDeleteAnimal}
+        <HerdModalSuspenseBoundary
+          routeKey="herd-animal-editor"
+          label="Animal Editor"
           onClose={() => setShowAnimalModal(false)}
-        />
+        >
+          <AnimalEditorModal
+            initialAnimal={editingAnimal}
+            speciesProfile={speciesProfile}
+            speciesAnimals={animals}
+            speciesCages={cages}
+            animalCareLogs={editingAnimalCareLogs}
+            preferredUnit={effectiveWeightUnit}
+            currencyCode={settings.currencyCode}
+            optimizationPresetId={settings.imageOptimizationPreset}
+            defaultBreederName={settings.breederName}
+            defaultOwnerName={settings.barnName}
+            opfsSupported={opfsSupported}
+            autoOffloadRetiredToOpfs={Boolean(settings.autoOffloadRetiredToOpfs)}
+            onSave={onSaveAnimal}
+            onOffloadRetiredAnimal={
+              onOffloadAnimalsToOpfsArchive
+                ? async (animalId) => {
+                    await onOffloadAnimalsToOpfsArchive([animalId]);
+                  }
+                : undefined
+            }
+            onSetAutoOffloadRetired={
+              onUpdateSettings
+                ? (enabled) => onUpdateSettings({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
+                : undefined
+            }
+            onDelete={onDeleteAnimal}
+            onClose={() => setShowAnimalModal(false)}
+          />
+        </HerdModalSuspenseBoundary>
       )}
 
-      <ArchivedHerdsModal
-        isOpen={showArchivedHerdsModal}
-        opfsSupported={opfsSupported}
-        archives={archivedHerdBundles}
-        autoOffloadEnabled={Boolean(settings.autoOffloadRetiredToOpfs)}
-        onToggleAutoOffload={(enabled) =>
-          onUpdateSettings?.({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
-        }
-        onRestoreArchive={async (archiveKey, opts) => {
-          if (onRestoreArchivedHerdBundle) {
-            await onRestoreArchivedHerdBundle(archiveKey, opts);
-          }
-        }}
-        onDownloadArchive={async (archiveKey) => {
-          if (onDownloadArchivedHerdBundle) {
-            await onDownloadArchivedHerdBundle(archiveKey);
-          }
-        }}
-        onDeleteArchive={async (archiveKey) => {
-          if (onDeleteArchivedHerdBundle) {
-            await onDeleteArchivedHerdBundle(archiveKey);
-          }
-        }}
-        onClose={() => setShowArchivedHerdsModal(false)}
-      />
+      {showArchivedHerdsModal && (
+        <HerdModalSuspenseBoundary
+          routeKey="herd-archived-herds"
+          label="Archived Herds"
+          onClose={() => setShowArchivedHerdsModal(false)}
+        >
+          <ArchivedHerdsModal
+            isOpen={showArchivedHerdsModal}
+            opfsSupported={opfsSupported}
+            archives={archivedHerdBundles}
+            autoOffloadEnabled={Boolean(settings.autoOffloadRetiredToOpfs)}
+            onToggleAutoOffload={(enabled) =>
+              onUpdateSettings?.({ autoOffloadRetiredToOpfs: enabled }, { silent: true })
+            }
+            onRestoreArchive={async (archiveKey, opts) => {
+              if (onRestoreArchivedHerdBundle) {
+                await onRestoreArchivedHerdBundle(archiveKey, opts);
+              }
+            }}
+            onDownloadArchive={async (archiveKey) => {
+              if (onDownloadArchivedHerdBundle) {
+                await onDownloadArchivedHerdBundle(archiveKey);
+              }
+            }}
+            onDeleteArchive={async (archiveKey) => {
+              if (onDeleteArchivedHerdBundle) {
+                await onDeleteArchivedHerdBundle(archiveKey);
+              }
+            }}
+            onClose={() => setShowArchivedHerdsModal(false)}
+          />
+        </HerdModalSuspenseBoundary>
+      )}
 
       {migrationModalState && (
-        <SpeciesMigrationModal
-          snapshot={snapshot}
-          sourceSpecies={speciesProfile.name}
-          directAnimalIds={migrationModalState.animalIds}
-          mode={migrationModalState.mode}
-          onConfirmMigrate={async (ids, target, options) => {
-            await onMigrateAnimalsSpecies(ids, target, options);
-            setCheckedIds([]);
-          }}
+        <HerdModalSuspenseBoundary
+          routeKey="herd-species-migration"
+          label="Species Migration"
           onClose={() => setMigrationModalState(null)}
-        />
+        >
+          <SpeciesMigrationModal
+            snapshot={snapshot}
+            sourceSpecies={speciesProfile.name}
+            directAnimalIds={migrationModalState.animalIds}
+            mode={migrationModalState.mode}
+            onConfirmMigrate={async (ids, target, options) => {
+              await onMigrateAnimalsSpecies(ids, target, options);
+              setCheckedIds([]);
+            }}
+            onClose={() => setMigrationModalState(null)}
+          />
+        </HerdModalSuspenseBoundary>
       )}
 
       {previewDoc && (() => {
         const resolvedPedigreeSubject = previewDoc.pedigreeSubject;
-        const resolvedPedigreePhoto =
-          resolvedPedigreeSubject && settings.includePhotoOnPedigree
+        const resolvedBirthCertSubject = previewDoc.birthCertSubject;
+        const resolvedSubjectForPhoto = resolvedPedigreeSubject ?? resolvedBirthCertSubject;
+        const shouldUseSubjectPhoto = resolvedPedigreeSubject
+          ? Boolean(settings.includePhotoOnPedigree)
+          : resolvedBirthCertSubject
+            ? birthCertOptions.includePrimaryPhoto
+            : false;
+        const resolvedSubjectPhoto =
+          resolvedSubjectForPhoto && shouldUseSubjectPhoto
             ? (() => {
-                const primaryRec = primaryPhotoByAnimalId.get(resolvedPedigreeSubject.id);
+                const primaryRec = primaryPhotoByAnimalId.get(resolvedSubjectForPhoto.id);
                 if (!primaryRec) return undefined;
                 return (
                   primaryRec.dataUrl ||
@@ -2779,141 +3184,300 @@ export function HerdScreen({
                 );
               })()
             : undefined;
+        const resolvedPedigreePhoto = resolvedPedigreeSubject ? resolvedSubjectPhoto : undefined;
         const isShareableCard =
           Boolean(resolvedPedigreeSubject) && pedigreeDocMode === 'shareable_card';
+        const effectivePedigreeOptions: PedigreePrintOptions = {
+          ...pedigreePrintOptions,
+          shows,
+          careLogs,
+          woolHarvests,
+          ancestorPhotosByAnimalId:
+            pedigreePrintOptions.layoutPreset === 'family_portrait'
+              ? familyPortraitPhotosByAnimalId
+              : undefined,
+        };
+        const showcaseSnapshot: BarnDatabaseSnapshot | null = previewDoc.isShowcase
+          ? {
+              ...snapshot,
+              animalPhotos: snapshot.animalPhotos.map((p) =>
+                !p.dataUrl && showcaseHydratedPhotos[p.id]
+                  ? { ...p, dataUrl: showcaseHydratedPhotos[p.id] }
+                  : p
+              ),
+            }
+          : null;
+        const showcaseSpeciesFilter = showcaseOptions.scopeAllSpecies
+          ? undefined
+          : speciesProfile.name;
         return (
-          <PrintPreviewModal
-            title={
-              isShareableCard && resolvedPedigreeSubject
-                ? `Shareable Pedigree Card — ${resolvedPedigreeSubject.name}`
-                : previewDoc.title
-            }
-            filename={
-              isShareableCard && resolvedPedigreeSubject
-                ? buildShareablePedigreeCardFileName(resolvedPedigreeSubject)
-                : previewDoc.filename
-            }
-            htmlContent={
-              resolvedPedigreeSubject
-                ? isShareableCard
-                  ? generateShareablePedigreeCardHtml(
-                      resolvedPedigreeSubject,
-                      allAnimals,
-                      speciesProfiles,
-                      settings,
-                      settings.defaultGenerations,
-                      resolvedPedigreePhoto,
-                      {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
-                        appBaseUrl,
-                        includeQrCode: Boolean(appBaseUrl),
-                      }
-                    )
-                  : generateEvansHtmPedigree(
-                      resolvedPedigreeSubject,
-                      allAnimals,
-                      speciesProfiles,
-                      settings,
-                      settings.defaultGenerations,
-                      resolvedPedigreePhoto,
-                      {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
-                      }
-                    )
-                : previewDoc.cageCardSubject
-                  ? generateThermalCageCardHtml(
-                      previewDoc.cageCardSubject,
-                      allAnimals,
-                      speciesProfiles,
-                      settings,
-                      {
-                        includeQrCode: includeThermalCageCardQr,
-                        appBaseUrl,
-                      }
-                    )
-                  : previewDoc.html
-            }
-            includePrimaryPhoto={
-              previewDoc.isPedigree ? settings.includePhotoOnPedigree : undefined
-            }
-            onToggleIncludePrimaryPhoto={
-              previewDoc.isPedigree ? onToggleIncludePhotoOnPedigree : undefined
-            }
-            includeCageCardQr={
-              previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
-            }
-            onToggleIncludeCageCardQr={
-              previewDoc.cageCardSubject ? setIncludeThermalCageCardQr : undefined
-            }
-            pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
-            onChangePedigreePrintOptions={
-              previewDoc.isPedigree ? setPedigreePrintOptions : undefined
-            }
-            pedigreeDocMode={previewDoc.isPedigree ? pedigreeDocMode : undefined}
-            onChangePedigreeDocMode={
-              previewDoc.isPedigree ? setPedigreeDocMode : undefined
-            }
-            breederLogoDataUrl={previewDoc.isPedigree ? settings.breederLogoDataUrl : undefined}
-            onUpdateBreederLogo={
-              previewDoc.isPedigree && onUpdateSettings
-                ? (dataUrl) => onUpdateSettings({ breederLogoDataUrl: dataUrl }, { silent: true })
-                : undefined
-            }
-            onDownloadPdf={
-              resolvedPedigreeSubject && !isShareableCard
-                ? () =>
-                    buildAndDownloadPedigreePdf({
-                      subject: resolvedPedigreeSubject,
-                      allAnimals,
-                      speciesProfiles,
-                      settings,
-                      generations: settings.defaultGenerations,
-                      printOptions: {
-                        ...pedigreePrintOptions,
-                        shows,
-                        careLogs,
-                      },
-                      primaryPhotoDataUrl: resolvedPedigreePhoto,
-                      pdfFilename: `${previewDoc.filename.replace(/\.html?$/i, '')}.pdf`,
-                    })
-                : undefined
-            }
-            headerNotice={
-              previewDoc.hasGenetics ? <ColorGeneticsNotice compact /> : undefined
-            }
+          <HerdModalSuspenseBoundary
+            routeKey="herd-print-preview"
+            label="Print Preview"
             onClose={() => {
               setPreviewDoc(null);
               setHydratedPedigreePhoto(null);
+              setFamilyPortraitPhotosByAnimalId({});
             }}
-          />
+          >
+            <PrintPreviewModal
+              title={
+                isShareableCard && resolvedPedigreeSubject
+                  ? `Shareable Pedigree Card — ${resolvedPedigreeSubject.name}`
+                  : previewDoc.isShowcase
+                    ? `Breeder Showcase — ${showcaseSpeciesFilter || 'All Species'} For Sale`
+                    : previewDoc.title
+              }
+              filename={
+                isShareableCard && resolvedPedigreeSubject
+                  ? buildShareablePedigreeCardFileName(resolvedPedigreeSubject)
+                  : previewDoc.isShowcase
+                    ? buildBreederShowcaseFileName(settings.barnName, showcaseSpeciesFilter)
+                    : previewDoc.filename
+              }
+              htmlContent={
+                resolvedPedigreeSubject
+                  ? isShareableCard
+                    ? generateShareablePedigreeCardHtml(
+                        resolvedPedigreeSubject,
+                        allAnimals,
+                        speciesProfiles,
+                        settings,
+                        settings.defaultGenerations,
+                        resolvedPedigreePhoto,
+                        {
+                          ...effectivePedigreeOptions,
+                          appBaseUrl,
+                          includeQrCode: Boolean(appBaseUrl),
+                        }
+                      )
+                    : generateEvansHtmPedigree(
+                        resolvedPedigreeSubject,
+                        allAnimals,
+                        speciesProfiles,
+                        settings,
+                        settings.defaultGenerations,
+                        resolvedPedigreePhoto,
+                        effectivePedigreeOptions
+                      )
+                  : resolvedBirthCertSubject
+                    ? generatePetBirthCertificateHtml(
+                        resolvedBirthCertSubject,
+                        allAnimals,
+                        speciesProfiles,
+                        settings,
+                        {
+                          primaryPhotoDataUrl: resolvedSubjectPhoto,
+                          companionFamilyName: birthCertOptions.companionFamilyName,
+                          keepsakeMessage: birthCertOptions.keepsakeMessage,
+                        }
+                      )
+                    : previewDoc.cageCardSubject
+                      ? generateThermalCageCardHtml(
+                          previewDoc.cageCardSubject,
+                          allAnimals,
+                          speciesProfiles,
+                          settings,
+                          {
+                            includeQrCode: includeThermalCageCardQr,
+                            appBaseUrl,
+                          }
+                        )
+                      : showcaseSnapshot
+                        ? generateBreederShowcaseHtml(showcaseSnapshot, {
+                            speciesName: showcaseSpeciesFilter,
+                            includePhotos: showcaseOptions.includePhotos,
+                            preferThumbnails: isConstrainedDevice,
+                            includePedigreeSummary: true,
+                            includeGenotypes: showcaseOptions.includeGenotypes,
+                            includeContactInfo: true,
+                            layoutMode: showcaseOptions.layoutMode,
+                            appBaseUrl,
+                            includeQrCode: Boolean(appBaseUrl),
+                          })
+                        : previewDoc.html
+              }
+              includePrimaryPhoto={
+                previewDoc.isPedigree
+                  ? settings.includePhotoOnPedigree
+                  : resolvedBirthCertSubject
+                    ? birthCertOptions.includePrimaryPhoto
+                    : previewDoc.isShowcase
+                      ? showcaseOptions.includePhotos
+                      : undefined
+              }
+              onToggleIncludePrimaryPhoto={
+                previewDoc.isPedigree
+                  ? onToggleIncludePhotoOnPedigree
+                  : resolvedBirthCertSubject
+                    ? (inc) => setBirthCertOptions((prev) => ({ ...prev, includePrimaryPhoto: inc }))
+                    : previewDoc.isShowcase
+                      ? (inc) => setShowcaseOptions((prev) => ({ ...prev, includePhotos: inc }))
+                      : undefined
+              }
+              includeCageCardQr={
+                previewDoc.cageCardSubject ? includeThermalCageCardQr : undefined
+              }
+              onToggleIncludeCageCardQr={
+                previewDoc.cageCardSubject ? setIncludeThermalCageCardQr : undefined
+              }
+              pedigreePrintOptions={previewDoc.isPedigree ? pedigreePrintOptions : undefined}
+              onChangePedigreePrintOptions={
+                previewDoc.isPedigree ? setPedigreePrintOptions : undefined
+              }
+              pedigreeDocMode={previewDoc.isPedigree ? pedigreeDocMode : undefined}
+              onChangePedigreeDocMode={
+                previewDoc.isPedigree ? setPedigreeDocMode : undefined
+              }
+              breederLogoDataUrl={previewDoc.isPedigree ? settings.breederLogoDataUrl : undefined}
+              onUpdateBreederLogo={
+                previewDoc.isPedigree && onUpdateSettings
+                  ? (dataUrl) => onUpdateSettings({ breederLogoDataUrl: dataUrl }, { silent: true })
+                  : undefined
+              }
+              onDownloadPdf={
+                resolvedPedigreeSubject && !isShareableCard
+                  ? async () => {
+                      const { buildAndDownloadPedigreePdf } = await import('../utils/webPdfActions');
+                      await buildAndDownloadPedigreePdf({
+                        subject: resolvedPedigreeSubject,
+                        allAnimals,
+                        speciesProfiles,
+                        settings,
+                        generations: settings.defaultGenerations,
+                        printOptions: effectivePedigreeOptions,
+                        primaryPhotoDataUrl: resolvedPedigreePhoto,
+                        pdfFilename: `${previewDoc.filename.replace(/\.html?$/i, '')}.pdf`,
+                      });
+                    }
+                  : undefined
+              }
+              extraToolbarContent={
+                resolvedBirthCertSubject ? (
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <input
+                      type="text"
+                      value={birthCertOptions.companionFamilyName}
+                      onChange={(e) =>
+                        setBirthCertOptions((prev) => ({
+                          ...prev,
+                          companionFamilyName: e.target.value,
+                        }))
+                      }
+                      placeholder="Companion / adopter family name (optional)"
+                      aria-label="Companion or adopter family name"
+                      className="min-h-[30px] min-w-[200px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                    />
+                    <input
+                      type="text"
+                      value={birthCertOptions.keepsakeMessage}
+                      onChange={(e) =>
+                        setBirthCertOptions((prev) => ({
+                          ...prev,
+                          keepsakeMessage: e.target.value,
+                        }))
+                      }
+                      placeholder="Optional keepsake welcome note..."
+                      aria-label="Optional keepsake welcome note"
+                      className="flex-1 min-w-[220px] min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                    />
+                    <span className="text-[11px] text-[var(--barn-muted)]">
+                      Privacy mode: Breeder contact info &amp; pricing omitted.
+                    </span>
+                  </div>
+                ) : previewDoc.isShowcase ? (
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showcaseOptions.scopeAllSpecies}
+                        onChange={(e) =>
+                          setShowcaseOptions((prev) => ({
+                            ...prev,
+                            scopeAllSpecies: e.target.checked,
+                          }))
+                        }
+                        className="accent-[var(--barn-sage)]"
+                      />
+                      <span>Include all species</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showcaseOptions.includeGenotypes}
+                        onChange={(e) =>
+                          setShowcaseOptions((prev) => ({
+                            ...prev,
+                            includeGenotypes: e.target.checked,
+                          }))
+                        }
+                        className="accent-[var(--barn-sage)]"
+                      />
+                      <span>Show genotypes</span>
+                    </label>
+                    <select
+                      aria-label="Showcase layout mode"
+                      value={showcaseOptions.layoutMode}
+                      onChange={(e) =>
+                        setShowcaseOptions((prev) => ({
+                          ...prev,
+                          layoutMode: e.target.value as BreederShowcaseLayoutMode,
+                        }))
+                      }
+                      className="min-h-[30px] px-2.5 py-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs"
+                    >
+                      <option value="showcase_and_sheet">Showcase Cards + Stock Sheet</option>
+                      <option value="stock_sheet_only">Compact Stock Sheet Only</option>
+                    </select>
+                  </div>
+                ) : undefined
+              }
+              headerNotice={
+                previewDoc.hasGenetics || (previewDoc.isShowcase && showcaseOptions.includeGenotypes)
+                  ? <ColorGeneticsNotice compact />
+                  : undefined
+              }
+              onClose={() => {
+                setPreviewDoc(null);
+                setHydratedPedigreePhoto(null);
+                setFamilyPortraitPhotosByAnimalId({});
+              }}
+            />
+          </HerdModalSuspenseBoundary>
         );
       })()}
 
       {batchPrintSubjects && batchPrintSubjects.length > 0 && (
-        <PrintPreviewModal
-          title={`Batch Print — ${getBatchPrintLayoutSpec(batchPrintOptions.layout).label} (${batchPrintSubjects.length} ${speciesProfile.name})`}
-          filename={buildBatchPrintFileName(
-            settings.barnName,
-            speciesProfile.name,
-            batchPrintOptions.layout,
-            batchPrintSubjects.length
-          )}
-          htmlContent={batchPrintHtml}
-          batchPrintOptions={batchPrintOptions}
-          onChangeBatchPrintOptions={setBatchPrintOptions}
-          batchAnimalCount={batchPrintSubjects.length}
-          batchPageCount={batchPrintPageCount}
-          batchPhotoHydrating={batchPhotoHydrating}
+        <HerdModalSuspenseBoundary
+          routeKey="herd-batch-print-preview"
+          label="Batch Print Preview"
           onClose={() => {
             setBatchPrintSubjects(null);
             setBatchHydratedPhotos({});
             setBatchPhotoHydrating(false);
           }}
-        />
+        >
+          <PrintPreviewModal
+            title={`Batch Print — ${getBatchPrintLayoutSpec(batchPrintOptions.layout).label} (${batchPrintSubjects.length} ${speciesProfile.name})`}
+            filename={buildBatchPrintFileName(
+              settings.barnName,
+              speciesProfile.name,
+              batchPrintOptions.layout,
+              batchPrintSubjects.length
+            )}
+            htmlContent={batchPrintHtml}
+            batchPrintOptions={batchPrintOptions}
+            onChangeBatchPrintOptions={setBatchPrintOptions}
+            batchAnimalCount={batchPrintSubjects.length}
+            batchPageCount={batchPrintPageCount}
+            batchPhotoHydrating={batchPhotoHydrating}
+            onClose={() => {
+              setBatchPrintSubjects(null);
+              setBatchHydratedPhotos({});
+              setBatchPhotoHydrating(false);
+            }}
+          />
+        </HerdModalSuspenseBoundary>
       )}
 
       {/* E-Leg Certificate Full-Screen Lightbox */}
@@ -2959,6 +3523,34 @@ export function HerdScreen({
         </div>
       )}
     </div>
+  );
+}
+
+function HerdModalSuspenseBoundary({
+  routeKey,
+  label,
+  onClose,
+  children,
+}: {
+  routeKey: string;
+  label: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <RouteErrorBoundary routeKey={routeKey} routeLabel={label} onNavigateHome={onClose}>
+      <Suspense
+        fallback={
+          <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-md">
+              <RouteLoadingFallback label={label} />
+            </div>
+          </div>
+        }
+      >
+        {children}
+      </Suspense>
+    </RouteErrorBoundary>
   );
 }
 

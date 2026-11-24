@@ -103,6 +103,15 @@ export function getLatestSnapshotTimestamp(snapshot: BarnDatabaseSnapshot): stri
   checkItems(snapshot.ledgerEntries);
   checkItems(snapshot.processingLogs);
   checkItems(snapshot.youthProjectBooks);
+  checkItems(snapshot.clientContacts);
+  checkItems(snapshot.waitlistEntries);
+  checkItems(snapshot.animalReservations);
+  checkItems(snapshot.woolHarvests);
+  checkItems(snapshot.mileageLogs);
+  checkItems(snapshot.journalEntries);
+  checkItems(snapshot.judgeClubs);
+  checkItems(snapshot.judgeAssignments);
+  checkItems(snapshot.judgeExpenses);
   return latest;
 }
 
@@ -123,6 +132,15 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
   const hasRealLedgerEntries = (snapshot.ledgerEntries ?? []).some((e) => !isSampleTestingId(e.id));
   const hasRealProcessingLogs = (snapshot.processingLogs ?? []).some((p) => !isSampleTestingId(p.id));
   const hasRealYouthBooks = (snapshot.youthProjectBooks ?? []).some((y) => !isSampleTestingId(y.id));
+  const hasRealClients = (snapshot.clientContacts ?? []).some((c) => !isSampleTestingId(c.id));
+  const hasRealWaitlist = (snapshot.waitlistEntries ?? []).some((w) => !isSampleTestingId(w.id));
+  const hasRealReservations = (snapshot.animalReservations ?? []).some((r) => !isSampleTestingId(r.id));
+  const hasRealWoolHarvests = (snapshot.woolHarvests ?? []).some((w) => !isSampleTestingId(w.id));
+  const hasRealMileageLogs = (snapshot.mileageLogs ?? []).some((m) => !isSampleTestingId(m.id));
+  const hasRealJournalEntries = (snapshot.journalEntries ?? []).some((j) => !isSampleTestingId(j.id));
+  const hasRealJudgeClubs = (snapshot.judgeClubs ?? []).some((c) => !isSampleTestingId(c.id));
+  const hasRealJudgeAssignments = (snapshot.judgeAssignments ?? []).some((a) => !isSampleTestingId(a.id));
+  const hasRealJudgeExpenses = (snapshot.judgeExpenses ?? []).some((e) => !isSampleTestingId(e.id));
   const hasCustomSpecies = snapshot.speciesProfiles.some(
     (sp) => !PREDEFINED_SPECIES_LOWER.has(sp.name.trim().toLowerCase())
   );
@@ -143,6 +161,15 @@ export function hasNonTestingBarnData(snapshot: BarnDatabaseSnapshot): boolean {
     hasRealLedgerEntries ||
     hasRealProcessingLogs ||
     hasRealYouthBooks ||
+    hasRealClients ||
+    hasRealWaitlist ||
+    hasRealReservations ||
+    hasRealWoolHarvests ||
+    hasRealMileageLogs ||
+    hasRealJournalEntries ||
+    hasRealJudgeClubs ||
+    hasRealJudgeAssignments ||
+    hasRealJudgeExpenses ||
     hasCustomSpecies ||
     hasSpeciesMemo
   );

@@ -1,6 +1,10 @@
 /*
  * Pedigree Android Wrapper
  * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * CRITICAL HYBRID BOUNDARY:
+ * This module is ONLY a thin AndroidX WebView container packaging the React + Vite + TypeScript PWA (/src/ -> dist/ -> assets/www/).
+ * NEVER convert, rewrite, or replace the React PWA UI or domain logic with Kotlin or Jetpack Compose.
  */
 
 import java.io.File

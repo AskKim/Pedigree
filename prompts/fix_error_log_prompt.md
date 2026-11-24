@@ -28,6 +28,7 @@ You are an expert full-stack engineer and maintainer of this offline-first Progr
 
 3. **Phase 3 — Targeted Remediation & Verification:**
    - Read the responsible source files before editing (`Read Before Write`). Isolate each failure point and implement robust, defensive root-cause fixes (including proper error boundaries, cleanup guards, and graceful fallbacks).
+   - For any significant fix—especially anything affecting bootability, loading speed, storage, or memory—log the change and its drift invariants in `src/core/improvementRegistry.ts` and `IMPROVEMENTS.md`, then run `npm run verify:improvements`.
    - Add or update regression tests for the resolved failure modes, then run relevant tests, typechecking (`tsc --noEmit`), and build verification to confirm zero regressions.
 
 4. **Phase 4 — Summary & Verification Report:**

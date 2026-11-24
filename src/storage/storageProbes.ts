@@ -326,6 +326,42 @@ export function releaseOpenBroadcastChannels(): number {
   return closed;
 }
 
+let activeForegroundTransferLeases = 0;
+
+export function acquireForegroundTransferLease(): () => void {
+  activeForegroundTransferLeases++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeForegroundTransferLeases = Math.max(0, activeForegroundTransferLeases - 1);
+  };
+}
+
+export function hasActiveForegroundTransferLease(): boolean {
+  return activeForegroundTransferLeases > 0;
+}
+
+export function resetForegroundTransferLeasesForTests(): void {
+  activeForegroundTransferLeases = 0;
+}
+
+export function getTrackedActiveResourceCounts(): {
+  idbConnections: number;
+  idbTransactions: number;
+  broadcastChannels: number;
+  pendingWebLocks: number;
+  activeForegroundTransferLeases: number;
+} {
+  return {
+    idbConnections: activeIdbConnections.size,
+    idbTransactions: activeIdbTransactions.size,
+    broadcastChannels: activeBroadcastChannels.size,
+    pendingWebLocks: pendingWebLockAborters.size,
+    activeForegroundTransferLeases,
+  };
+}
+
 export function getTrackedActiveResourceCountsForTests(): {
   idbConnections: number;
   idbTransactions: number;
@@ -337,3 +373,24 @@ export function getTrackedActiveResourceCountsForTests(): {
     broadcastChannels: activeBroadcastChannels.size,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cycle-Free Hook for Dumping Failing IndexedDB Stores to OPFS Recovery Vault
+// ---------------------------------------------------------------------------
+
+type IndexedDbOpfsDumperFn = (dbName: string, reason: string) => Promise<unknown>;
+let registeredIndexedDbOpfsDumper: IndexedDbOpfsDumperFn | null = null;
+
+export function registerIndexedDbOpfsDumper(fn: IndexedDbOpfsDumperFn): void {
+  registeredIndexedDbOpfsDumper = fn;
+}
+
+export function triggerIndexedDbOpfsDump(dbName: string, reason: string): void {
+  if (!registeredIndexedDbOpfsDumper) return;
+  try {
+    void registeredIndexedDbOpfsDumper(dbName, reason).catch(() => {});
+  } catch {
+    // Ignore synchronous dump dispatch error
+  }
+}
+

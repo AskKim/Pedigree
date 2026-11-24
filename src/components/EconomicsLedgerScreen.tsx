@@ -14,7 +14,9 @@ import {
   AlertTriangle,
   ArrowLeft,
   Award,
+  Calendar,
   Camera,
+  Car,
   Check,
   DollarSign,
   Download,
@@ -32,7 +34,7 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react';
-import { ChangeEvent, FormEvent, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   calculateDressOutPercent,
   computeAnimalProfitMargins,
@@ -59,6 +61,7 @@ import {
   LedgerCategory,
   LedgerEntry,
   LedgerEntryType,
+  MileageLog,
   normalizeCurrencyCode,
   parseWeightInputToGrams,
   PELT_GRADE_OPTIONS,
@@ -77,6 +80,7 @@ import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 import { downloadTextFile } from '../utils/webFileActions';
+import { MileageTaxPanel } from './MileageTaxPanel';
 import { PrintPreviewModal } from './PrintPreviewModal';
 
 export interface EconomicsLedgerScreenProps {
@@ -96,9 +100,14 @@ export interface EconomicsLedgerScreenProps {
     draft: Omit<YouthProjectBook, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
   ) => Promise<boolean>;
   onDeleteYouthProjectBook: (id: string) => Promise<void> | void;
+  onSaveMileageLog?: (
+    draft: Omit<MileageLog, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => Promise<string | null> | Promise<boolean> | void;
+  onDeleteMileageLog?: (id: string) => Promise<void> | void;
+  onLoadFullReceiptPhoto?: (entryId: string) => Promise<string | null>;
 }
 
-type EconomicsTab = 'ledger' | 'processing' | 'youth';
+type EconomicsTab = 'ledger' | 'processing' | 'youth' | 'mileage';
 type LedgerTypeFilter = 'all' | 'expense' | 'income';
 
 interface LedgerFormDraft {
@@ -312,6 +321,9 @@ export function EconomicsLedgerScreen({
   onDeleteProcessingLog,
   onSaveYouthProjectBook,
   onDeleteYouthProjectBook,
+  onSaveMileageLog,
+  onDeleteMileageLog,
+  onLoadFullReceiptPhoto,
 }: EconomicsLedgerScreenProps) {
   const {
     speciesProfile,
@@ -343,6 +355,10 @@ export function EconomicsLedgerScreen({
   const [receiptBusy, setReceiptBusy] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [lightboxEntry, setLightboxEntry] = useState<LedgerEntry | null>(null);
+  const [hydratedLightboxReceipt, setHydratedLightboxReceipt] = useState<{
+    entryId: string;
+    dataUrl: string;
+  } | null>(null);
   const [confirmDeleteLedgerId, setConfirmDeleteLedgerId] = useState<string | null>(null);
   const [marginSubTab, setMarginSubTab] = useState<'litters' | 'animals'>('litters');
   const receiptInputRef = useRef<HTMLInputElement | null>(null);
@@ -391,6 +407,24 @@ export function EconomicsLedgerScreen({
     isOpen: lightboxEntry !== null,
     onClose: () => setLightboxEntry(null),
   });
+
+  useEffect(() => {
+    if (!lightboxEntry || lightboxEntry.receiptPhotoDataUrl || !onLoadFullReceiptPhoto) {
+      return;
+    }
+    if (hydratedLightboxReceipt?.entryId === lightboxEntry.id) {
+      return;
+    }
+    let cancelled = false;
+    void onLoadFullReceiptPhoto(lightboxEntry.id).then((resolved) => {
+      if (!cancelled && resolved) {
+        setHydratedLightboxReceipt({ entryId: lightboxEntry.id, dataUrl: resolved });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lightboxEntry, onLoadFullReceiptPhoto, hydratedLightboxReceipt]);
   const procDialogRef = useAccessibleDialog({
     isOpen: procModalOpen,
     onClose: () => setProcModalOpen(false),
@@ -909,6 +943,21 @@ export function EconomicsLedgerScreen({
         >
           <GraduationCap className="w-4 h-4" aria-hidden="true" />
           4-H / FFA Project Books ({youthProjectBooks.length})
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'mileage'}
+          onClick={() => setActiveTab('mileage')}
+          className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-2 transition-colors ${
+            activeTab === 'mileage'
+              ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)]'
+              : 'bg-[var(--barn-surface)] border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+          }`}
+        >
+          <Car className="w-4 h-4" aria-hidden="true" />
+          Mileage &amp; Tax Log ({activeData.mileageLogs.length})
         </button>
       </div>
 
@@ -2008,6 +2057,16 @@ export function EconomicsLedgerScreen({
         </div>
       )}
 
+      {/* TAB 4: MILEAGE & TAX REPORT LOG */}
+      {activeTab === 'mileage' && onSaveMileageLog && onDeleteMileageLog && (
+        <MileageTaxPanel
+          activeData={activeData}
+          settings={settings}
+          onSaveMileageLog={onSaveMileageLog}
+          onDeleteMileageLog={onDeleteMileageLog}
+        />
+      )}
+
       {/* MODAL 1: ADD / EDIT LEDGER ENTRY */}
       {ledgerModalOpen && (
         <div
@@ -2244,11 +2303,11 @@ export function EconomicsLedgerScreen({
                     <Camera className="w-3.5 h-3.5" aria-hidden="true" />
                     {receiptBusy
                       ? 'Compressing...'
-                      : ledgerDraft.receiptPhotoDataUrl
+                      : ledgerDraft.receiptPhotoDataUrl || ledgerDraft.receiptPhotoThumbnailDataUrl
                       ? 'Replace Receipt'
                       : 'Attach Receipt Photo'}
                   </button>
-                  {ledgerDraft.receiptPhotoDataUrl && (
+                  {(ledgerDraft.receiptPhotoDataUrl || ledgerDraft.receiptPhotoThumbnailDataUrl) && (
                     <button
                       type="button"
                       onClick={() =>
@@ -2353,12 +2412,20 @@ export function EconomicsLedgerScreen({
               </button>
             </div>
             {sanitizeSafeRasterImageDataUrl(
-              lightboxEntry.receiptPhotoDataUrl || lightboxEntry.receiptPhotoThumbnailDataUrl
+              lightboxEntry.receiptPhotoDataUrl ||
+                (hydratedLightboxReceipt?.entryId === lightboxEntry.id
+                  ? hydratedLightboxReceipt.dataUrl
+                  : undefined) ||
+                lightboxEntry.receiptPhotoThumbnailDataUrl
             ) ? (
               <img
                 src={
                   sanitizeSafeRasterImageDataUrl(
-                    lightboxEntry.receiptPhotoDataUrl || lightboxEntry.receiptPhotoThumbnailDataUrl
+                    lightboxEntry.receiptPhotoDataUrl ||
+                      (hydratedLightboxReceipt?.entryId === lightboxEntry.id
+                        ? hydratedLightboxReceipt.dataUrl
+                        : undefined) ||
+                      lightboxEntry.receiptPhotoThumbnailDataUrl
                   )!
                 }
                 alt={`Full receipt for ${lightboxEntry.title}`}

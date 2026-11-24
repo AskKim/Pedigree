@@ -28,6 +28,7 @@
      - **Alignment:** Strict compliance with the active plan, backlog entry requirements, and `prompts/master_system_prompt.md`.
      - **Performance Optimization:** Bundle impact, off-thread/lazy execution, and minimal redundant renders or allocations.
    - **If all objectives in the active plan are fully satisfied:**
+     - Log any significant changes (especially anything affecting bootability, loading, storage, or memory) in `src/core/improvementRegistry.ts` and `IMPROVEMENTS.md` and verify with `npm run verify:improvements`.
      - Delete the active implementation plan file in `docs/plans/`.
      - Remove the corresponding completed item(s) from `docs/plans/suggestions-backlog.md` (updating remaining counts/numbering cleanly).
      - End your response per `prompts/master_system_prompt.md` (`Complete: [Task Name]` and updated plan state).

@@ -1,5 +1,11 @@
 <!doctype html>
-<html lang="en">
+<!--
+  CRITICAL ARCHITECTURE RULE — NEVER CONVERT THIS PWA AWAY FROM REACT:
+  Community Pedigree's core application is strictly a React + Vite + TypeScript PWA (/src/main.tsx).
+  The /android-wrapper/ folder is ONLY a thin hybrid Kotlin WebView shell that loads the built React dist/ bundle.
+  NEVER recode, rewrite, or migrate this site into Kotlin—even when recovering from boot or GitHub import failures.
+-->
+<html lang="en-US">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,9 +16,9 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Community Pedigree</title>
-    <meta name="description" content="Community Pedigree Project (Package: Pedigree) — Open-source multi-platform pedigree project." />
+    <meta name="description" content="Community Pedigree Project (Package: pedigree) — React + Vite + TypeScript offline-first PWA. CRITICAL: Core PWA must always stay in React; android-wrapper/ is only a thin hybrid Kotlin WebView shell." />
     <meta property="og:title" content="Community Pedigree" />
-    <meta property="og:description" content="Community Pedigree Project (Package: Pedigree) — Open-source multi-platform pedigree project." />
+    <meta property="og:description" content="Community Pedigree Project (Package: pedigree) — React + Vite + TypeScript offline-first PWA. CRITICAL: Core PWA must always stay in React; android-wrapper/ is only a thin hybrid Kotlin WebView shell." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -20,7 +26,15 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <style>
       .pedigree-preflight-wrap {
         min-height: 100vh;
@@ -414,12 +428,13 @@
           missingCritical.push('ES Module script support');
         }
 
+        var indexedDbAvailable = false;
         try {
-          if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
-            missingCritical.push('IndexedDB local database storage (may be disabled in private mode)');
-          }
+          indexedDbAvailable = Boolean(
+            typeof window !== 'undefined' && 'indexedDB' in window && window.indexedDB
+          );
         } catch (e) {
-          missingCritical.push('IndexedDB local database storage (blocked by browser privacy settings)');
+          indexedDbAvailable = false;
         }
 
         try {
@@ -437,7 +452,7 @@
             : 'Older or Restricted Browser Detected';
           var intro = isWatchdogFallback
             ? 'Your browser appears to be an older version or interrupted loading before the app could start safely.'
-            : 'To protect your herd records from silent data loss, Community Pedigree requires local storage and ES2018 browser features that are unavailable right now:';
+            : 'To protect your herd records from silent data loss, Community Pedigree requires ES2018 browser features that are unavailable right now:';
           renderNoticeCard({
             badge: 'Browser Compatibility Check',
             title: heading,
@@ -445,7 +460,7 @@
             bullets: reasons,
             footerHtml:
               '<strong>How to fix this:</strong> Use <strong>Chrome 68+</strong>, <strong>Safari 12+</strong>, <strong>Firefox 63+</strong>, or <strong>Edge 79+</strong> (2018+ browsers). ' +
-              'If you are already on a supported browser, check that Private/Incognito mode is not blocking IndexedDB, or trigger <a href="?emergency_reset=true">?emergency_reset=true</a> to clear stale caches.',
+              'If you are already on a supported browser, trigger <a href="?emergency_reset=true">?emergency_reset=true</a> to clear stale caches.',
             buttonLabel: 'Try Reloading Page',
             onAction: function () {
               window.location.reload();
@@ -456,6 +471,7 @@
         window.__PEDIGREE_PREFLIGHT__ = {
           passed: missingCritical.length === 0,
           wasmSupported: wasmSupported,
+          indexedDbAvailable: indexedDbAvailable,
           blockedReasons: missingCritical
         };
 
@@ -487,7 +503,7 @@
               true
             );
           }
-        }, 12000);
+        }, 30000);
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

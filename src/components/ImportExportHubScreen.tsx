@@ -132,9 +132,15 @@ import {
   supportsPassphraseCrypto,
 } from '../storage/passphraseCrypto';
 import { stripPhotoDataUrlsFromSnapshot } from '../storage/photoHydration';
+import type { CloudSyncProvider, CloudSyncSettings } from '../core/cloudAppFolderSync';
+import type {
+  CloudSyncClientState,
+  RunCloudAppFolderSyncResult,
+} from '../storage/cloudAppFolderSync';
 import {
   getAdjustedNowMs,
   RollingBackupMeta,
+  StorageProtectionStatus,
 } from '../storage/storageProtection';
 import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
@@ -145,6 +151,7 @@ import {
   downloadTextFile,
 } from '../utils/webFileActions';
 import { ArchivedHerdsModal } from './ArchivedHerdsModal';
+import { CloudAppFolderSyncPanel } from './CloudAppFolderSyncPanel';
 import { ExternalImporterPanel } from './ExternalImporterPanel';
 import { PedigreeOcrScannerPanel } from './PedigreeOcrScannerPanel';
 import { UnifiedBackupVaultPanel } from './UnifiedBackupVaultPanel';
@@ -222,6 +229,16 @@ interface ImportExportHubScreenProps {
   onDisconnectBackupSync?: () => Promise<unknown>;
   onSyncVaultToSyncNow?: () => Promise<unknown>;
   onDismissPruneWarning?: () => void;
+  storageStatus?: StorageProtectionStatus | null;
+  cloudSyncState?: CloudSyncClientState | null;
+  cloudSyncBusy?: boolean;
+  onUpdateCloudSyncSettings?: (patch: Partial<CloudSyncSettings>) => void;
+  onConnectCloudSyncToken?: (provider: CloudSyncProvider, accessToken: string) => boolean;
+  onDisconnectCloudSync?: (provider?: CloudSyncProvider) => void;
+  onStartCloudSyncPkce?: (provider: CloudSyncProvider, clientId: string) => Promise<void>;
+  onRunManualCloudSyncNow?: () => Promise<RunCloudAppFolderSyncResult>;
+  onResetAndRetryCloudSync?: () => Promise<RunCloudAppFolderSyncResult>;
+  onDismissCloudCircuitBreakerWarning?: () => void;
 }
 
 function getExporterCategoryIcon(category: ExporterCategory) {
@@ -286,6 +303,16 @@ export function ImportExportHubScreen({
   onDisconnectBackupSync,
   onSyncVaultToSyncNow,
   onDismissPruneWarning,
+  storageStatus = null,
+  cloudSyncState = null,
+  cloudSyncBusy = false,
+  onUpdateCloudSyncSettings,
+  onConnectCloudSyncToken,
+  onDisconnectCloudSync,
+  onStartCloudSyncPkce,
+  onRunManualCloudSyncNow,
+  onResetAndRetryCloudSync,
+  onDismissCloudCircuitBreakerWarning,
 }: ImportExportHubScreenProps) {
   const baseId = useId();
   const [sectionView, setSectionView] = useState<ImportExportHubSection>(initialSection);
@@ -1172,7 +1199,8 @@ export function ImportExportHubScreen({
         let workingSnapshot = snapshot;
         if (
           descriptor.category === 'pedigree_document' &&
-          settings.includePhotoOnPedigree !== false &&
+          (descriptor.id === 'breeder-showcase-html' || settings.includePhotoOnPedigree !== false) &&
+          activeDeviceTier >= 2 &&
           onHydrateSnapshotForExport
         ) {
           const hydrateTarget =
@@ -1549,9 +1577,11 @@ export function ImportExportHubScreen({
                     title: 'Community Pedigree Multi-Device Delta Log',
                   });
                   setSyncFeedback(
-                    mode === 'shared'
-                      ? `Shared ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} via native share sheet.`
-                      : `Downloaded ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} for SyncThing or family sharing.`
+                    mode === 'cancelled'
+                      ? 'Share sheet cancelled — no delta file was saved.'
+                      : mode === 'shared'
+                        ? `Shared ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} via native share sheet.`
+                        : `Downloaded ${encryptOutgoingSync ? 'encrypted ' : ''}${finalFilename} for SyncThing or family sharing.`
                   );
                 })
               }
@@ -1694,6 +1724,26 @@ export function ImportExportHubScreen({
               </div>
             </div>
           )}
+          {cloudSyncState &&
+            onUpdateCloudSyncSettings &&
+            onConnectCloudSyncToken &&
+            onDisconnectCloudSync &&
+            onRunManualCloudSyncNow &&
+            onResetAndRetryCloudSync && (
+              <CloudAppFolderSyncPanel
+                cloudSyncState={cloudSyncState}
+                cloudSyncBusy={cloudSyncBusy}
+                storageStatus={storageStatus}
+                deviceTier={deviceCapability?.assessment.tier}
+                onUpdateSettings={onUpdateCloudSyncSettings}
+                onConnectToken={onConnectCloudSyncToken}
+                onDisconnect={onDisconnectCloudSync}
+                onStartPkce={onStartCloudSyncPkce}
+                onSyncNow={onRunManualCloudSyncNow}
+                onResetAndRetry={onResetAndRetryCloudSync}
+                onDismissWarning={onDismissCloudCircuitBreakerWarning}
+              />
+            )}
         </section>
       )}
 

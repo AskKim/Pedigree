@@ -49,6 +49,7 @@ class PedigreeAssetPathHandler(context: Context) : WebViewAssetLoader.PathHandle
         if (
             resolvedPath == "index.html" ||
             resolvedPath == "version.json" ||
+            resolvedPath == "status.json" ||
             resolvedPath.endsWith("sw.js") ||
             resolvedPath.endsWith("service-worker.js")
         ) {

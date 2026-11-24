@@ -11,8 +11,6 @@
 
 import { AlertTriangle, Download, Home, RefreshCw, Settings, ShieldAlert } from 'lucide-react';
 import React from 'react';
-import { formatSupportReportText } from '../core/supportBundle';
-import { formatTimestampedBackupSlug } from '../core/syncAndExports';
 import {
   getDiagnosticSummary,
   listDiagnosticLogs,
@@ -78,7 +76,11 @@ export class TechyStuffErrorBoundary extends React.Component<
   private handleDownloadCrashLogTxt = async () => {
     this.setState({ exportBusy: true, exportFeedback: null });
     try {
-      const entries = await listDiagnosticLogs();
+      const [entries, { formatSupportReportText }, { formatTimestampedBackupSlug }] = await Promise.all([
+        listDiagnosticLogs(),
+        import('../core/supportBundle'),
+        import('../core/syncAndExports'),
+      ]);
       const summary = await getDiagnosticSummary(entries);
       const report = formatSupportReportText(entries, summary, null);
       const filename = `pedigree-techy-stuff-fault-${formatTimestampedBackupSlug()}.txt`;

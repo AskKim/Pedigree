@@ -95,6 +95,15 @@ export function makeEmptySnapshot(overrides: Partial<BarnDatabaseSnapshot> = {})
     ledgerEntries: [],
     processingLogs: [],
     youthProjectBooks: [],
+    clientContacts: [],
+    waitlistEntries: [],
+    animalReservations: [],
+    woolHarvests: [],
+    mileageLogs: [],
+    journalEntries: [],
+    judgeClubs: [],
+    judgeAssignments: [],
+    judgeExpenses: [],
     ...overrides,
   };
 }

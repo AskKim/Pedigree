@@ -10,18 +10,10 @@
  * or restricted environments where `Worker` is unavailable.
  */
 
-import {
-  inspectParsedArchiveBeforeRestorePure,
-  PreRestoreArchiveInspection,
-} from '../core/archiveInspector';
-import {
+import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
+import type {
   BackupArchiveBuildResult,
-  buildCompleteBackupZipArchive,
-  buildPhotosOnlyZipArchive,
-  parseBackupArchiveInput,
   ParsedBackupArchive,
-  streamCompleteBackupZipArchive,
-  streamPhotosOnlyZipArchive,
   StreamingZipArchiveSummary,
 } from '../core/backupArchive';
 import type {
@@ -29,14 +21,12 @@ import type {
   PlatformImportPreview,
   RawArchiveInput,
 } from '../core/importers/importerTypes';
-import { getPlatformImporterById } from '../core/importers/registry';
 import {
   type BarnDatabaseSnapshot,
   type BarnSettings,
   getCoreClockSkewMs,
 } from '../core/models';
-import {
-  buildSupportBundleZipArchive,
+import type {
   SupportBundleBuildParams,
   SupportBundleBuildResult,
 } from '../core/supportBundle';
@@ -46,6 +36,7 @@ import type {
   ArchiveWorkerResponse,
   OpfsTempZipBuildResult,
 } from './archiveAndImport.worker';
+import { registerFreezeLifecycleListener } from './backgroundFreezeCoordinator';
 import { logDiagnosticEvent } from './crashLogger';
 import {
   isOpfsSupported,
@@ -60,7 +51,7 @@ const WORKER_IDLE_TERMINATE_MS = 60_000;
 const MAX_TRANSIENT_WORKER_FAILURES = 3;
 
 interface PendingWorkerJob {
-  resolve: (value: any) => void;
+  resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -69,6 +60,7 @@ let activeWorker: Worker | null = null;
 let workerDisabled = false;
 let consecutiveWorkerFailures = 0;
 let idleTerminateTimer: ReturnType<typeof setTimeout> | null = null;
+let freezeListenerUnregister: (() => void) | null = null;
 let jobCounter = 0;
 const pendingJobs = new Map<string, PendingWorkerJob>();
 
@@ -77,6 +69,34 @@ function clearIdleTerminateTimer(): void {
     clearTimeout(idleTerminateTimer);
     idleTerminateTimer = null;
   }
+}
+
+/**
+ * Terminates the cached archive/import Web Worker immediately if no jobs are in flight.
+ * Triggered on background hide / `pagehide` to release 15–30 MB of mobile worker heap promptly.
+ */
+export function terminateIdleArchiveWorker(): boolean {
+  if (!activeWorker || pendingJobs.size > 0) {
+    return false;
+  }
+  clearIdleTerminateTimer();
+  try {
+    activeWorker.terminate();
+  } catch {
+    // Ignore termination errors on already-closing workers
+  }
+  activeWorker = null;
+  return true;
+}
+
+function ensureWorkerFreezeListenerInstalled(): void {
+  if (freezeListenerUnregister) return;
+  freezeListenerUnregister = registerFreezeLifecycleListener({
+    id: 'archive-worker-freeze-trim',
+    onReleaseResources: () => {
+      terminateIdleArchiveWorker();
+    },
+  });
 }
 
 function scheduleIdleTerminateIfEmpty(): void {
@@ -117,6 +137,7 @@ function getOrCreateWorker(): Worker | null {
   if (workerDisabled || typeof Worker === 'undefined') {
     return null;
   }
+  ensureWorkerFreezeListenerInstalled();
   clearIdleTerminateTimer();
   if (activeWorker) {
     return activeWorker;
@@ -196,7 +217,11 @@ function runInWorker<TResult>(
       );
     }, WORKER_TIMEOUT_MS);
 
-    pendingJobs.set(id, { resolve, reject, timer });
+    pendingJobs.set(id, {
+      resolve: (value: unknown) => resolve(value as TResult),
+      reject,
+      timer,
+    });
     try {
       worker.postMessage(payload);
     } catch (postErr) {
@@ -298,6 +323,7 @@ export async function buildCompleteBackupZipToOpfsTmpOffThread(
     }
     return res;
   }
+  const { streamCompleteBackupZipArchive } = await import('../core/backupArchive');
   return runStreamedZipMainThreadFallback('archive', (onChunk) =>
     streamCompleteBackupZipArchive(snapshot, onChunk, filterSpecies, extraMeta)
   );
@@ -320,6 +346,7 @@ export async function buildPhotosOnlyZipToOpfsTmpOffThread(
     }
     return res;
   }
+  const { streamPhotosOnlyZipArchive } = await import('../core/backupArchive');
   return runStreamedZipMainThreadFallback('photos-archive', (onChunk) =>
     streamPhotosOnlyZipArchive(snapshot, onChunk, filterSpecies)
   );
@@ -345,6 +372,7 @@ export async function buildCompleteBackupZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const { buildCompleteBackupZipArchive } = await import('../core/backupArchive');
   return buildCompleteBackupZipArchive(snapshot, filterSpecies, extraMeta);
 }
 
@@ -362,6 +390,7 @@ export async function buildPhotosOnlyZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const { buildPhotosOnlyZipArchive } = await import('../core/backupArchive');
   return buildPhotosOnlyZipArchive(snapshot, filterSpecies);
 }
 
@@ -381,6 +410,7 @@ export async function parseBackupArchiveOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const { parseBackupArchiveInput } = await import('../core/backupArchive');
   return parseBackupArchiveInput(bytes, fileName, fallbackSettings);
 }
 
@@ -403,6 +433,7 @@ export async function parseExternalImportOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const { getPlatformImporterById } = await import('../core/importers/registry');
   const importer = getPlatformImporterById(platformId);
   return importer.parse(inputs, lightSnapshot, options);
 }
@@ -419,6 +450,7 @@ export async function buildSupportBundleZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const { buildSupportBundleZipArchive } = await import('../core/supportBundle');
   return buildSupportBundleZipArchive(params);
 }
 
@@ -447,6 +479,11 @@ export async function inspectBackupArchiveOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
+  const [{ parseBackupArchiveInput }, { inspectParsedArchiveBeforeRestorePure }] =
+    await Promise.all([
+      import('../core/backupArchive'),
+      import('../core/archiveInspector'),
+    ]);
   const parsed = parseBackupArchiveInput(
     bytes,
     fileName,
@@ -465,5 +502,10 @@ export function isArchiveWorkerDisabled(): boolean {
 
 export function resetArchiveWorkerForTests(): void {
   workerDisabled = false;
+  consecutiveWorkerFailures = 0;
+  if (freezeListenerUnregister) {
+    freezeListenerUnregister();
+    freezeListenerUnregister = null;
+  }
   rejectAndResetWorker('Archive worker reset.');
 }

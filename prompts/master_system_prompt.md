@@ -6,7 +6,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 
 # Master System Prompt: Offline-First Pedigree PWA
 
-**Last-Edited Timestamp:** 2026-11-21
+**Last-Edited Timestamp:** 2026-11-22
 > **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 ## 0. Minimal-Output Alignment Check
@@ -23,6 +23,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 - **Zero Invention:** Verify npm packages in `package.json` and APIs/types against the codebase. Never invent schemas or rabbitry/genetics rules (e.g., ARBA standards, allele logic, chore offsets); ask if missing.
 - **Circuit Breaker:** If a test, typecheck, or build fails twice on the same error, stop, report the trace, and await instruction.
 - **Zero Postmortems:** No completion summaries or change explanations unless requested. End tasks with *only* `Complete: [Task Name]` and updated plan state.
+- **Plan Lifecycle (Delete on Wrap-Up):** Delete temporary active plan files in `docs/plans/` once all objectives and verification checks pass (never archive finished plans; keep `docs/plans/suggestions-backlog.md`).
 - **Flag Uncertainty:** Mark unverified browser quirks/edge cases inline with `// UNVERIFIED: [reason]`.
 
 ## 2. Architecture & Type Safety
@@ -30,6 +31,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 - **Stack & Target:** Unified React + Vite + strict TypeScript PWA (iOS, Android, Desktop), transpiled to ES2018 (`browserslist > 0.5%`). Offline-first, zero mandatory cloud/accounts.
 - **Strict Types:** Never silence TypeScript errors with `as any`, `@ts-ignore`, or `@ts-expect-error`; fix root types.
 - **Modularity & Sync:** Keep strict separation across `components/` (UI), `hooks/` (state), `storage/` (adapters/OPFS), and `core/` (pure TS domain logic, zero DOM/window). Preserve unit tests, run validation scripts after edits, and keep docs synced with code.
+- **Mandatory Improvement Logging (`IMPROVEMENTS.md` & `src/core/improvementRegistry.ts`):** Register *every* significant change to the app in `src/core/improvementRegistry.ts` and `IMPROVEMENTS.md` with automated drift invariants—even when it is not a full large-scale build-out—especially anything affecting bootability, loading speed, storage, memory management, or release packaging.
 
 ## 3. Coding Invariants
 - **IndexedDB:** Keep transactions atomic/short (`readonly` preferred). Wrap schema migrations in `try/catch` with graceful fallback (dump raw stores to OPFS before reset) to prevent `VersionError` locks.

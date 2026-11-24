@@ -6,12 +6,18 @@
  *
  * Replaces a static `<select>` dropdown whenever "Include Archived" is enabled
  * during parent selection in Breedings, Pairings, or Animal Pedigree editing.
+ * Virtualizes large candidate lists via `useVirtualWindow` so mobile/constrained
+ * devices never mount thousands of option nodes at once.
  */
 
 import { Check, Search, X } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Animal, doesAnimalNeedAttention, isAnimalArchived } from '../core/models';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
+import { useVirtualWindow } from '../utils/useVirtualWindow';
+
+const OPTION_ROW_ESTIMATE_PX = 36;
+const LISTBOX_MAX_HEIGHT_PX = 208; // max-h-52
 
 interface SearchableParentPickerProps {
   id?: string;
@@ -20,7 +26,18 @@ interface SearchableParentPickerProps {
   candidates: Animal[];
   unknownLabel?: string;
   placeholder?: string;
+  isConstrained?: boolean;
   onChange: (animalId: string) => void;
+}
+
+function matchesParentCandidateQuery(candidate: Animal, lowerQuery: string): boolean {
+  return (
+    candidate.name.toLowerCase().includes(lowerQuery) ||
+    candidate.tattoo.toLowerCase().includes(lowerQuery) ||
+    candidate.breed.toLowerCase().includes(lowerQuery) ||
+    candidate.variety.toLowerCase().includes(lowerQuery) ||
+    candidate.registrationNumber.toLowerCase().includes(lowerQuery)
+  );
 }
 
 export function SearchableParentPicker({
@@ -30,10 +47,11 @@ export function SearchableParentPicker({
   candidates,
   unknownLabel,
   placeholder,
+  isConstrained = false,
   onChange,
 }: SearchableParentPickerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const listboxRef = useRef<HTMLDivElement | null>(null);
   const listboxId = useId();
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
@@ -47,12 +65,7 @@ export function SearchableParentPicker({
   const filteredCandidates = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return candidates;
-    return candidates.filter((c) =>
-      [c.name, c.tattoo, c.breed, c.variety, c.registrationNumber]
-        .join(' ')
-        .toLowerCase()
-        .includes(q)
-    );
+    return candidates.filter((c) => matchesParentCandidateQuery(c, q));
   }, [candidates, query]);
 
   const selectableOptions = useMemo(() => {
@@ -69,6 +82,14 @@ export function SearchableParentPicker({
     return items;
   }, [unknownLabel, filteredCandidates]);
 
+  const virtualWindow = useVirtualWindow({
+    itemCount: isOpen ? selectableOptions.length : 0,
+    estimateSize: OPTION_ROW_ESTIMATE_PX,
+    overscan: isConstrained ? 2 : 4,
+    initialFallbackCount: isConstrained ? 10 : 16,
+    resetKey: `${isOpen ? 'open' : 'closed'}::${query}`,
+  });
+
   useEffect(() => {
     if (!isOpen) {
       setActiveIndex(-1);
@@ -79,7 +100,17 @@ export function SearchableParentPicker({
 
   useEffect(() => {
     if (!isOpen || activeIndex < 0) return;
-    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+    const el = listboxRef.current;
+    if (!el || typeof el.scrollTo !== 'function') return;
+    const itemTop = activeIndex * OPTION_ROW_ESTIMATE_PX;
+    const itemBottom = itemTop + OPTION_ROW_ESTIMATE_PX;
+    const viewTop = el.scrollTop || 0;
+    const viewHeight = el.clientHeight || LISTBOX_MAX_HEIGHT_PX;
+    if (itemTop < viewTop) {
+      el.scrollTo({ top: itemTop });
+    } else if (itemBottom > viewTop + viewHeight) {
+      el.scrollTo({ top: Math.max(0, itemBottom - viewHeight) });
+    }
   }, [isOpen, activeIndex]);
 
   const handleSelect = (nextId: string) => {
@@ -93,6 +124,26 @@ export function SearchableParentPicker({
     isOpen && activeIndex >= 0 && selectableOptions[activeIndex]
       ? `${listboxId}-opt-${activeIndex}`
       : undefined;
+
+  const visibleOptions = useMemo(() => {
+    if (!isOpen || selectableOptions.length === 0) return [];
+    const slice: Array<{
+      index: number;
+      item: (typeof selectableOptions)[number];
+    }> = [];
+    for (let i = virtualWindow.windowRange.startIndex; i <= virtualWindow.windowRange.endIndex; i++) {
+      const item = selectableOptions[i];
+      if (item) {
+        slice.push({ index: i, item });
+      }
+    }
+    return slice;
+  }, [
+    isOpen,
+    selectableOptions,
+    virtualWindow.windowRange.startIndex,
+    virtualWindow.windowRange.endIndex,
+  ]);
 
   return (
     <div
@@ -221,12 +272,20 @@ export function SearchableParentPicker({
       {/* Searchable Results Dropdown List */}
       {isOpen && (
         <div
+          ref={(node) => {
+            listboxRef.current = node;
+            virtualWindow.scrollContainerRef(node);
+          }}
           id={listboxId}
           role="listbox"
           aria-label={`${label} search results`}
-          className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg divide-y divide-[var(--barn-border)]"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-[var(--barn-border)] bg-[var(--barn-surface)] shadow-lg"
         >
-          {selectableOptions.map((item, idx) => {
+          {virtualWindow.windowRange.paddingTop > 0 && (
+            <div style={{ height: virtualWindow.windowRange.paddingTop }} aria-hidden="true" />
+          )}
+
+          {visibleOptions.map(({ index: idx, item }) => {
             const optionId = `${listboxId}-opt-${idx}`;
             const isHighlighted = idx === activeIndex;
 
@@ -235,16 +294,13 @@ export function SearchableParentPicker({
                 <button
                   key="__unknown__"
                   id={optionId}
-                  ref={(el) => {
-                    optionRefs.current[idx] = el;
-                  }}
                   type="button"
                   role="option"
                   aria-selected={value === ''}
                   onMouseDown={(e) => e.preventDefault()}
                   onMouseEnter={() => setActiveIndex(idx)}
                   onClick={() => handleSelect('')}
-                  className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
+                  className={`w-full text-left px-3 py-2 text-xs border-b border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
                     value === '' ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
                   } ${
                     isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
@@ -266,16 +322,13 @@ export function SearchableParentPicker({
               <button
                 key={cand.id}
                 id={optionId}
-                ref={(el) => {
-                  optionRefs.current[idx] = el;
-                }}
                 type="button"
                 role="option"
                 aria-selected={isSelected}
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setActiveIndex(idx)}
                 onClick={() => handleSelect(cand.id)}
-                className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
+                className={`w-full text-left px-3 py-2 text-xs border-b border-[var(--barn-border)] last:border-b-0 hover:bg-[var(--barn-subtle)] flex items-center justify-between gap-2 ${
                   isSelected ? 'bg-[var(--barn-sage-tint)] font-semibold' : ''
                 } ${
                   isHighlighted ? 'ring-2 ring-inset ring-[var(--barn-sage)] bg-[var(--barn-subtle)]' : ''
@@ -313,6 +366,10 @@ export function SearchableParentPicker({
             );
           })}
 
+          {virtualWindow.windowRange.paddingBottom > 0 && (
+            <div style={{ height: virtualWindow.windowRange.paddingBottom }} aria-hidden="true" />
+          )}
+
           {filteredCandidates.length === 0 && (
             <div className="px-3 py-3 text-xs text-[var(--barn-muted)]">
               No matching {label.toLowerCase()} found for &ldquo;{query.trim()}&rdquo;.
@@ -323,3 +380,4 @@ export function SearchableParentPicker({
     </div>
   );
 }
+ 

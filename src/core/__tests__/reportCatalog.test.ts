@@ -53,10 +53,12 @@ describe('buildReportCatalogForSpecies', () => {
       offspringLabel: 'Chick',
     };
     const quailCatalog = buildReportCatalogForSpecies(customProfile);
-    expect(quailCatalog).toHaveLength(26);
+    expect(quailCatalog).toHaveLength(28);
     expect(quailCatalog.map((r) => r.id)).toContain('barn-economics-report');
     expect(quailCatalog.map((r) => r.id)).toContain('meat-pelt-yield-report');
     expect(quailCatalog.map((r) => r.id)).toContain('youth-project-report');
+    expect(quailCatalog.map((r) => r.id)).toContain('crm-waitlist-report');
+    expect(quailCatalog.map((r) => r.id)).toContain('crm-reservations-deposits-report');
     expect(quailCatalog[0].title).toBe('Hatching Calendar (By ID)');
     expect(quailCatalog.every((e) => e.scopeLabel === 'Quail Only')).toBe(true);
   });

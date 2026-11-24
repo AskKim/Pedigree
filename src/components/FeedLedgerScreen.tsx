@@ -92,6 +92,7 @@ export interface FeedLedgerScreenProps {
     silent?: boolean;
   }) => Promise<{ purgedCount: number; reclaimedBytes: number }>;
   onUpdateSettings: (patch: Partial<BarnSettings>, options?: { silent?: boolean }) => void;
+  onLoadFullTagPhoto?: (batchId: string) => Promise<string | null>;
 }
 
 type FeedLedgerTab = 'inventory' | 'allocations' | 'biosecurity';
@@ -210,6 +211,7 @@ export function FeedLedgerScreen({
   onDeleteFeedAllocation,
   onRunBiosecurityPurge,
   onUpdateSettings,
+  onLoadFullTagPhoto,
 }: FeedLedgerScreenProps) {
   const { speciesProfile, feedBatches, feedAllocations, cages, breedings, activeAnimals } =
     activeData;
@@ -233,6 +235,10 @@ export function FeedLedgerScreen({
 
   // Photo Lightbox state
   const [lightboxBatch, setLightboxBatch] = useState<FeedBatch | null>(null);
+  const [hydratedLightboxTagPhoto, setHydratedLightboxTagPhoto] = useState<{
+    batchId: string;
+    dataUrl: string;
+  } | null>(null);
 
   // Inline delete & recall confirm state
   const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState<string | null>(null);
@@ -288,6 +294,7 @@ export function FeedLedgerScreen({
     setBatchFilter('all');
     setBatchModalOpen(false);
     setLightboxBatch(null);
+    setHydratedLightboxTagPhoto(null);
     setConfirmDeleteBatchId(null);
     setConfirmDeleteAllocId(null);
     setRecallEditBatchId(null);
@@ -295,6 +302,24 @@ export function FeedLedgerScreen({
     setAllocTargetId('');
     setLotTraceQuery('');
   }, [speciesProfile.name]);
+
+  useEffect(() => {
+    if (!lightboxBatch || lightboxBatch.tagPhotoDataUrl || !onLoadFullTagPhoto) {
+      return;
+    }
+    if (hydratedLightboxTagPhoto?.batchId === lightboxBatch.id) {
+      return;
+    }
+    let cancelled = false;
+    void onLoadFullTagPhoto(lightboxBatch.id).then((resolved) => {
+      if (!cancelled && resolved) {
+        setHydratedLightboxTagPhoto({ batchId: lightboxBatch.id, dataUrl: resolved });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lightboxBatch, onLoadFullTagPhoto, hydratedLightboxTagPhoto]);
 
   // Keep allocation target defaults aligned with available species batches & targets
   useEffect(() => {
@@ -2038,7 +2063,9 @@ export function FeedLedgerScreen({
                     className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-55"
                   >
                     <Camera className="w-4 h-4" aria-hidden="true" />
-                    {batchDraft.tagPhotoDataUrl ? 'Rescan Tag Photo' : 'Scan / Upload Tag'}
+                    {batchDraft.tagPhotoDataUrl || batchDraft.tagPhotoThumbnailDataUrl
+                      ? 'Rescan Tag Photo'
+                      : 'Scan / Upload Tag'}
                   </button>
                 </div>
 
@@ -2505,7 +2532,13 @@ export function FeedLedgerScreen({
             </div>
             <div className="p-4 bg-[var(--barn-canvas)] flex justify-center max-h-[75vh] overflow-auto">
               <img
-                src={lightboxBatch.tagPhotoDataUrl || lightboxBatch.tagPhotoThumbnailDataUrl}
+                src={
+                  lightboxBatch.tagPhotoDataUrl ||
+                  (hydratedLightboxTagPhoto?.batchId === lightboxBatch.id
+                    ? hydratedLightboxTagPhoto.dataUrl
+                    : undefined) ||
+                  lightboxBatch.tagPhotoThumbnailDataUrl
+                }
                 alt={`Feed tag ${lightboxBatch.lotNumber || lightboxBatch.productName}`}
                 className="max-w-full max-h-[68vh] object-contain rounded-xl"
               />

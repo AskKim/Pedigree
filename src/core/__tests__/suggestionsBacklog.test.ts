@@ -19,24 +19,40 @@ import {
 } from '../suggestionsBacklog';
 
 describe('suggestionsBacklog — markdown parser, idea sanitization & exports', () => {
-  it('parses the repository /docs/plans/suggestions-backlog.md cleanly without raw markdown clutter', () => {
+  it('parses the repository /docs/plans/suggestions-backlog.md cleanly and parses sample backlog sections without raw markdown clutter', () => {
     const backlogPath = path.resolve(process.cwd(), 'docs/plans/suggestions-backlog.md');
     const rawMarkdown = fs.readFileSync(backlogPath, 'utf8');
-    const parsed = parseSuggestionsBacklogMarkdown(rawMarkdown);
+    const repoParsed = parseSuggestionsBacklogMarkdown(rawMarkdown);
 
     expect(SUGGESTIONS_BACKLOG_PATH).toBe('/docs/plans/suggestions-backlog.md');
+    expect(repoParsed.isEmpty).toBe(true);
+    expect(repoParsed.totalItems).toBe(0);
+    expect(repoParsed.sections).toEqual([]);
+    expect(repoParsed.overviewHeading).toContain('0 Remaining');
+
+    const sampleMarkdown = [
+      '# Community Pedigree — Saved Suggestions Backlog',
+      '',
+      '## Current App Suggestions & Remediation List (1 Remaining)',
+      '',
+      '### Priority 4: Specialized Operations',
+      '*Larger domain expansions.*',
+      '',
+      '1. **Sample Feature (`FeatureTag`)**',
+      '   - **Goal:** Keep parsing clean.',
+    ].join('\n');
+
+    const parsed = parseSuggestionsBacklogMarkdown(sampleMarkdown);
     expect(parsed.isEmpty).toBe(false);
-    expect(parsed.totalItems).toBe(8);
+    expect(parsed.totalItems).toBe(1);
     expect(parsed.sections).toHaveLength(1);
     expect(parsed.sections[0].title).toContain('Priority 4');
-    expect(parsed.sections[0].items).toHaveLength(8);
+    expect(parsed.sections[0].items).toHaveLength(1);
 
     const firstItem = parsed.sections[0].items[0];
     expect(firstItem.number).toBe(1);
-    expect(firstItem.title).toBe(
-      'Client CRM, Buyer Waitlist, Reservations & Deposit Reminders'
-    );
-    expect(firstItem.codeTag).toBeNull();
+    expect(firstItem.title).toBe('Sample Feature');
+    expect(firstItem.codeTag).toBe('FeatureTag');
     expect(firstItem.details.length).toBeGreaterThan(0);
 
     for (const section of parsed.sections) {

@@ -8,98 +8,134 @@
  * - globalThis (ES2020)
  * - Promise.allSettled (ES2020)
  * - Object.fromEntries (ES2019)
+ * - Array.prototype.flat / flatMap (ES2019 — Chrome 69+ -> Android 8 Chromium 61–68 fallback)
  * - Blob.prototype.arrayBuffer / Blob.prototype.text (Chrome 76+ / Safari 14+ -> FileReader fallback)
  * - String.prototype.trimStart / trimEnd (Chrome 66+ / Safari 12+)
  */
 
-type MarkedShimFn = ((...args: any[]) => any) & { __pedigreeEs2018Shim?: boolean };
+type MarkedShimFn = ((...args: unknown[]) => unknown) & { __pedigreeEs2018Shim?: boolean };
 
-/**
- * Reads any Blob/File into an ArrayBuffer safely on 2018 browsers (Chrome 68–75, Safari 12–13,
- * Firefox 63–68) where native `Blob.prototype.arrayBuffer()` does not exist yet.
- */
-export function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
-  const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
-  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
-    return Promise.resolve(candidate.call(blob));
+export function isFileReaderSupported(): boolean {
+  try {
+    if (typeof FileReader !== 'function') return false;
+    const probe = new FileReader();
+    return Boolean(probe && typeof probe.readAsArrayBuffer === 'function');
+  } catch {
+    return false;
   }
-
-  if (typeof FileReader === 'function') {
-    return new Promise<ArrayBuffer>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (reader.result instanceof ArrayBuffer) {
-          resolve(reader.result);
-        } else {
-          reject(new Error('FileReader did not return an ArrayBuffer.'));
-        }
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error('Failed to read binary file data.'));
-      };
-      reader.onabort = () => {
-        reject(new Error('Binary file read was aborted.'));
-      };
-      reader.readAsArrayBuffer(blob);
-    });
-  }
-
-  if (typeof Response === 'function') {
-    return new Response(blob).arrayBuffer();
-  }
-
-  return Promise.reject(new Error('Blob binary reader is unavailable in this browser.'));
 }
 
 /**
- * Reads any Blob/File as UTF-8 text safely on 2018 browsers where native `Blob.prototype.text()`
- * is unavailable, falling back to `FileReader.prototype.readAsText` or `TextDecoder`.
+ * Reads any Blob/File into an ArrayBuffer safely across modern browsers (preferring native
+ * `blob.arrayBuffer()`), legacy 2018 browsers (`FileReader`), and Safari Lockdown Mode (`Response`).
  */
-export function readBlobAsText(blob: Blob): Promise<string> {
-  const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
+export async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
   if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
-    return Promise.resolve(candidate.call(blob));
+    try {
+      return await Promise.resolve(candidate.call(blob) as PromiseLike<ArrayBuffer> | ArrayBuffer);
+    } catch {
+      // Fall through cleanly if native method rejects or is blocked
+    }
   }
 
-  if (typeof FileReader === 'function') {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        resolve(typeof reader.result === 'string' ? reader.result : '');
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error('Failed to read text file data.'));
-      };
-      reader.onabort = () => {
-        reject(new Error('Text file read was aborted.'));
-      };
-      reader.readAsText(blob, 'utf-8');
-    });
+  if (isFileReaderSupported()) {
+    try {
+      return await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (reader.result instanceof ArrayBuffer) {
+            resolve(reader.result);
+          } else {
+            reject(new Error('FileReader did not return an ArrayBuffer.'));
+          }
+        };
+        reader.onerror = () => {
+          reject(reader.error || new Error('Failed to read binary file data.'));
+        };
+        reader.onabort = () => {
+          reject(new Error('Binary file read was aborted.'));
+        };
+        reader.readAsArrayBuffer(blob);
+      });
+    } catch {
+      // Fall through cleanly to Response fallback
+    }
   }
 
   if (typeof Response === 'function') {
-    return new Response(blob).text();
+    try {
+      return await new Response(blob).arrayBuffer();
+    } catch {
+      // Fall through to structured error below
+    }
   }
 
-  return readBlobAsArrayBuffer(blob).then((buf) => {
-    if (typeof TextDecoder === 'function') {
-      return new TextDecoder('utf-8').decode(new Uint8Array(buf));
+  throw new Error('Blob binary reader is unavailable in this browser.');
+}
+
+/**
+ * Reads any Blob/File as UTF-8 text safely, preferring native `blob.text()` first, then
+ * `FileReader`, `Response`, and `TextDecoder` fallbacks.
+ */
+export async function readBlobAsText(blob: Blob): Promise<string> {
+  const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
+  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+    try {
+      return await Promise.resolve(candidate.call(blob) as PromiseLike<string> | string);
+    } catch {
+      // Fall through cleanly if native method rejects or is blocked
     }
-    const bytes = new Uint8Array(buf);
-    let out = '';
-    for (let i = 0; i < bytes.length; i += 1) {
-      out += String.fromCharCode(bytes[i]);
+  }
+
+  if (isFileReaderSupported()) {
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve(typeof reader.result === 'string' ? reader.result : '');
+        };
+        reader.onerror = () => {
+          reject(reader.error || new Error('Failed to read text file data.'));
+        };
+        reader.onabort = () => {
+          reject(new Error('Text file read was aborted.'));
+        };
+        reader.readAsText(blob, 'utf-8');
+      });
+    } catch {
+      // Fall through cleanly to Response / TextDecoder fallback
     }
-    return out;
-  });
+  }
+
+  if (typeof Response === 'function') {
+    try {
+      return await new Response(blob).text();
+    } catch {
+      // Fall through to ArrayBuffer decode fallback
+    }
+  }
+
+  const buf = await readBlobAsArrayBuffer(blob);
+  if (typeof TextDecoder === 'function') {
+    return new TextDecoder('utf-8').decode(new Uint8Array(buf));
+  }
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += String.fromCharCode(bytes[i]);
+  }
+  return out;
 }
 
 function defineNonEnumerableMethod(
-  proto: Record<string, any> | undefined,
+  proto: Record<string, unknown> | object | undefined,
   methodName: string,
   fn: MarkedShimFn
 ): void {
-  if (!proto || typeof proto[methodName] === 'function') return;
+  if (!proto) return;
+  const record = proto as Record<string, unknown>;
+  if (typeof record[methodName] === 'function') return;
   try {
     Object.defineProperty(proto, methodName, {
       value: fn,
@@ -109,7 +145,7 @@ function defineNonEnumerableMethod(
     });
   } catch {
     try {
-      proto[methodName] = fn;
+      record[methodName] = fn;
     } catch {
       // Ignore frozen prototypes
     }
@@ -117,16 +153,16 @@ function defineNonEnumerableMethod(
 }
 
 export function ensureEs2018Globals(host?: Record<string, unknown>): void {
-  const g: Record<string, any> | undefined =
+  const g: Record<string, unknown> | undefined =
     host ??
     (typeof globalThis !== 'undefined'
-      ? (globalThis as Record<string, any>)
+      ? (globalThis as unknown as Record<string, unknown>)
       : typeof window !== 'undefined'
-      ? (window as Record<string, any>)
+      ? (window as unknown as Record<string, unknown>)
       : typeof self !== 'undefined'
-      ? (self as Record<string, any>)
+      ? (self as unknown as Record<string, unknown>)
       : typeof global !== 'undefined'
-      ? (global as Record<string, any>)
+      ? (global as unknown as Record<string, unknown>)
       : undefined);
 
   if (!g) return;
@@ -139,12 +175,18 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     }
   }
 
+  interface PromiseShimHost {
+    all: (values: Iterable<unknown>) => Promise<unknown[]>;
+    resolve: (value: unknown) => Promise<unknown>;
+    allSettled?: (values: Iterable<unknown>) => Promise<unknown[]>;
+  }
+
   const promiseObj = (g.Promise ?? (typeof Promise === 'function' ? Promise : undefined)) as
-    | Record<string, any>
+    | PromiseShimHost
     | undefined;
 
-  if (promiseObj && typeof promiseObj['allSettled'] !== 'function') {
-    promiseObj['allSettled'] = function allSettledShim(values: Iterable<unknown>): Promise<unknown[]> {
+  if (promiseObj && typeof promiseObj.allSettled !== 'function') {
+    promiseObj.allSettled = function allSettledShim(values: Iterable<unknown>): Promise<unknown[]> {
       const items = Array.from(values);
       return promiseObj.all(
         items.map((item) =>
@@ -157,7 +199,7 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     };
   }
 
-  const objectObj = (g.Object ?? Object) as Record<string, any>;
+  const objectObj = (g.Object ?? Object) as unknown as Record<string, unknown>;
   if (objectObj && typeof objectObj['fromEntries'] !== 'function') {
     objectObj['fromEntries'] = function fromEntriesShim(
       entries: Iterable<readonly [PropertyKey, unknown]>
@@ -174,7 +216,7 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
   }
 
   const blobCtor = (g.Blob ?? (typeof Blob === 'function' ? Blob : undefined)) as
-    | { prototype?: Record<string, any> }
+    | { prototype?: Record<string, unknown> }
     | undefined;
   if (blobCtor?.prototype) {
     const arrayBufferShim: MarkedShimFn = function blobArrayBufferShim(this: Blob) {
@@ -212,6 +254,54 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
         : String(this).replace(/[\s\uFEFF\xA0]+$/, '');
     };
     defineNonEnumerableMethod(stringCtor.prototype, 'trimEnd', trimEndShim);
+  }
+
+  const arrayCtor = (g.Array ?? Array) as { prototype?: Record<string, unknown> } | undefined;
+  if (arrayCtor?.prototype) {
+    const flatShim: MarkedShimFn = function arrayFlatShim(this: unknown[], ...args: unknown[]): unknown[] {
+      const depth = args[0];
+      const targetDepth = typeof depth === 'number' && Number.isFinite(depth) ? Math.floor(depth) : 1;
+      function flatten(arr: unknown[], d: number): unknown[] {
+        const out: unknown[] = [];
+        for (let i = 0; i < arr.length; i += 1) {
+          if (Object.prototype.hasOwnProperty.call(arr, i)) {
+            const item = arr[i];
+            if (Array.isArray(item) && d > 0) {
+              out.push(...flatten(item, d - 1));
+            } else {
+              out.push(item);
+            }
+          }
+        }
+        return out;
+      }
+      return flatten(this, targetDepth);
+    };
+    flatShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(arrayCtor.prototype, 'flat', flatShim);
+
+    const flatMapShim: MarkedShimFn = function arrayFlatMapShim(this: unknown[], ...args: unknown[]): unknown[] {
+      const callback = args[0];
+      const thisArg = args[1];
+      if (typeof callback !== 'function') {
+        throw new TypeError('Array.prototype.flatMap callback must be a function');
+      }
+      const cb = callback as (value: unknown, index: number, array: unknown[]) => unknown;
+      const out: unknown[] = [];
+      for (let i = 0; i < this.length; i += 1) {
+        if (Object.prototype.hasOwnProperty.call(this, i)) {
+          const mapped = cb.call(thisArg, this[i], i, this);
+          if (Array.isArray(mapped)) {
+            out.push(...mapped);
+          } else {
+            out.push(mapped);
+          }
+        }
+      }
+      return out;
+    };
+    flatMapShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(arrayCtor.prototype, 'flatMap', flatMapShim);
   }
 }
 

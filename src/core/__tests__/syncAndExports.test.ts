@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyAnimalNamePrefix,
+  BarnJournalEntry,
   formatWeight,
   getSpeciesIdentifierLabels,
+  MileageLog,
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
 } from '../models';
@@ -28,6 +30,7 @@ import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
 } from '../shareablePedigreeCard';
+import { diffSnapshotsToSyncOperations, mergeDeltaOperations } from '../syncOutbox';
 import { makeAnimal, makeEmptySnapshot, makeSettings, makeSpeciesProfile } from './testFixtures';
 
 describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen HTM exports', () => {
@@ -637,4 +640,190 @@ describe('syncAndExports — multi-device snapshot merge, JSON backup & 5/6-gen 
     expect(mergedRabbit?.targetWeightCurve).toHaveLength(2);
     expect(merged.snapshot.breedings[0].litterWeightMilestones?.[0].totalWeightGrams).toBe(3180);
   });
+
+  it('renders family_portrait multi-photo pedigrees, iagarb_angora 7-position scorecards, and persists woolHarvests in backups', () => {
+    const sire = makeAnimal('s1', {
+      name: 'Boreal King',
+      sex: 'Male',
+      breed: 'German Angora',
+      variety: 'White',
+    });
+    const dam = makeAnimal('d1', {
+      name: 'Cloud Silk',
+      sex: 'Female',
+      breed: 'German Angora',
+      variety: 'White',
+    });
+    const subject = makeAnimal('a1', {
+      name: 'Snowdrift',
+      tattoo: 'ANG01',
+      sex: 'Female',
+      breed: 'German Angora',
+      variety: 'White',
+      sireId: 's1',
+      damId: 'd1',
+    });
+    const harvest = {
+      id: 'wh-test-1',
+      species: 'Rabbit',
+      animalId: 'a1',
+      harvestDateIso: '2026-06-01',
+      shearingIntervalDays: 90,
+      primeWeightGrams: 280,
+      gradeWeightGrams: 80,
+      harvestMethod: 'Shear' as const,
+      stapleLengthMm: 78,
+      iagarbScore: {
+        weightPts: 19,
+        bodyTypePts: 18,
+        densityLengthPts: 13.5,
+        uniformityPts: 13,
+        texturePts: 14,
+        furnishingsPts: 8.5,
+        conditionPts: 4.5,
+        totalPts: 90.5,
+        evaluatorName: 'E. Registrar',
+        evaluationDateIso: '2026-06-01',
+      },
+      notes: 'Clean uniform staple',
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    };
+
+    const samplePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    const familyHtml = generateEvansHtmPedigree(
+      subject,
+      [subject, sire, dam],
+      [makeSpeciesProfile('Rabbit')],
+      makeSettings(),
+      3,
+      samplePng,
+      {
+        layoutPreset: 'family_portrait',
+        ancestorPhotosByAnimalId: {
+          s1: samplePng,
+          d1: samplePng,
+        },
+        woolHarvests: [harvest],
+      }
+    );
+    expect(familyHtml).toContain('Boreal King');
+    expect(familyHtml).toContain('360g total');
+    expect(familyHtml).toContain('family-strip');
+    expect(familyHtml).toContain('anc-photo');
+
+    const iagarbHtml = generateEvansHtmPedigree(
+      subject,
+      [subject, sire, dam],
+      [makeSpeciesProfile('Rabbit')],
+      makeSettings(),
+      3,
+      samplePng,
+      {
+        layoutPreset: 'iagarb_angora',
+        woolHarvests: [harvest],
+      }
+    );
+    expect(iagarbHtml).toContain('IAGARB German Angora Wool &amp; Evaluation Standard');
+    expect(iagarbHtml).toContain('90.5 / 100 pts');
+    expect(iagarbHtml).toContain('360g/90d');
+    expect(iagarbHtml).toContain('90.5/100');
+
+    const snap = makeEmptySnapshot({
+      animals: [subject, sire, dam],
+      woolHarvests: [harvest],
+    });
+    const parsed = parseBarnBackupJson(exportBarnBackupJson(snap), makeSettings());
+    expect(parsed.woolHarvests).toHaveLength(1);
+    expect(parsed.woolHarvests?.[0].primeWeightGrams).toBe(280);
+    expect(parsed.woolHarvests?.[0].iagarbScore?.totalPts).toBe(90.5);
+  });
+
+  it('round-trips mileageLogs, journalEntries, and weatherForecast settings across JSON export/merge/delta-sync/purge', () => {
+    const ml: MileageLog = {
+      id: 'ml-round-1',
+      species: 'Rabbit',
+      dateIso: '2026-11-12',
+      purpose: 'Show Travel',
+      origin: 'Home Barn',
+      destination: 'State Expo',
+      roundTrip: true,
+      miles: 145,
+      odometerStart: 12000,
+      odometerEnd: 12145,
+      rateCentsPerMile: 70,
+      parkingAndTollsCents: 1500,
+      vehicleLabel: 'Barn Truck',
+      taxDeductible: true,
+      notes: 'Winter Convention trip',
+      createdAt: '2026-11-12T10:00:00.000Z',
+      updatedAt: '2026-11-12T10:00:00.000Z',
+    };
+    const je: BarnJournalEntry = {
+      id: 'je-round-1',
+      species: 'Rabbit',
+      entryDateIso: '2026-11-12',
+      title: 'Travel & Judging Observations',
+      body: '- [x] Pack carriers\nGood coat density notes.',
+      colorCategory: 'plum',
+      starRating: 5,
+      tags: ['show', 'coat'],
+      pinned: true,
+      linkedAnimalIds: [],
+      createdAt: '2026-11-12T18:00:00.000Z',
+      updatedAt: '2026-11-12T18:00:00.000Z',
+    };
+
+    const snap = makeEmptySnapshot({
+      settings: makeSettings({
+        weatherForecast: {
+          enabled: true,
+          locationLabel: 'Columbus, Ohio, US',
+          latitude: 39.9612,
+          longitude: -82.9988,
+          temperatureUnit: 'F',
+        },
+      }),
+      mileageLogs: [ml],
+      journalEntries: [je],
+    });
+
+    const parsed = parseBarnBackupJson(exportBarnBackupJson(snap), makeSettings());
+    expect(parsed.mileageLogs).toHaveLength(1);
+    expect(parsed.mileageLogs?.[0].parkingAndTollsCents).toBe(1500);
+    expect(parsed.journalEntries).toHaveLength(1);
+    expect(parsed.journalEntries?.[0].starRating).toBe(5);
+    expect(parsed.journalEntries?.[0].tags).toEqual(['show', 'coat']);
+    expect(parsed.settings.weatherForecast?.enabled).toBe(true);
+    expect(parsed.settings.weatherForecast?.locationLabel).toBe('Columbus, Ohio, US');
+
+    // Merge & delta sync outbox verification
+    const base = makeEmptySnapshot();
+    const merged = mergeBarnSnapshots(base, parsed);
+    expect(merged.snapshot.mileageLogs).toHaveLength(1);
+    expect(merged.snapshot.journalEntries).toHaveLength(1);
+
+    let counter = 1;
+    const ops = diffSnapshotsToSyncOperations({
+      previous: base,
+      next: snap,
+      deviceId: 'dev-a',
+      nextCounter: () => counter++,
+      timestamp: '2026-11-12T19:00:00.000Z',
+    });
+    expect(ops.some((op) => op.entity_type === 'mileageLog')).toBe(true);
+    expect(ops.some((op) => op.entity_type === 'journalEntry')).toBe(true);
+
+    const deltaApplied = mergeDeltaOperations(base, [], ops, 'dev-b');
+    expect(deltaApplied.nextSnapshot.mileageLogs).toHaveLength(1);
+    expect(deltaApplied.nextSnapshot.journalEntries).toHaveLength(1);
+
+    // Non-testing purge must clear mileage & journal records for the target species
+    expect(countSpeciesNonTestingRecords(snap, 'Rabbit')).toBeGreaterThanOrEqual(2);
+    const purged = purgeSpeciesNonTestingDataPure(snap, 'Rabbit');
+    expect(purged.nextSnapshot.mileageLogs).toHaveLength(0);
+    expect(purged.nextSnapshot.journalEntries).toHaveLength(0);
+  });
 });
+

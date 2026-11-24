@@ -578,8 +578,7 @@ export function normalizeFlexibleDateIso(raw: string | undefined): string {
   if (/^\d{5}(?:\.\d+)?$/.test(s)) {
     const serial = Math.floor(Number(s));
     if (serial >= 10000 && serial <= 80000) {
-      const utcMs = Date.UTC(1899, 11, 30) + serial * 86_400_000;
-      const d = new Date(utcMs);
+      const d = new Date(Date.UTC(1899, 11, 30 + serial));
       return validateAndFormatYmd(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
     }
   }

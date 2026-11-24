@@ -1,3 +1,6 @@
+# Hybrid APK Packaging Pipeline:
+# 1. Core app is ALWAYS the React + Vite + TypeScript PWA in /src/ (compiled to dist/).
+# 2. android-wrapper/ is ONLY a thin Kotlin WebView shell serving dist/ from assets/www/.
 name: Build Android APK
 
 on:
@@ -18,7 +21,7 @@ concurrency:
 
 jobs:
   build-android:
-    name: Build PWA dist & Android Debug/Release APKs
+    name: Build React PWA dist & Thin Android WebView APKs
     runs-on: ubuntu-latest
 
     steps:
@@ -37,19 +40,23 @@ jobs:
       # Builds and verifies the TypeScript bridge + web bundle before packaging into Android assets.
       # Ensure Vite builds with `--base=/` so all asset URLs resolve cleanly from
       # https://appassets.androidplatform.net/index.html.
-      - name: Install PWA dependencies, verify & build dist/
+      - name: Install PWA dependencies & run verification suite
         run: |
           if [ -f bun.lock ] || [ -f bun.lockb ]; then
             bun install --frozen-lockfile || bun install
           elif [ -f package-lock.json ]; then
-            npm ci
+            npm ci || npm install --legacy-peer-deps --no-audit --no-fund
           else
             npm install --legacy-peer-deps --no-audit --no-fund
           fi
           npm run verify:improvements
           npm test
           npm run lint
-          npm run build -- --base=/
+
+      - name: Build production PWA bundle (root path)
+        env:
+          NODE_ENV: production
+        run: npm run build -- --base=/
 
       # Copies the built web bundle into android-wrapper/app/src/main/assets/www/ so
       # PedigreeAssetPathHandler can serve the entire app 100% offline.
@@ -69,7 +76,6 @@ jobs:
       - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
-          build-root-directory: android-wrapper
           gradle-version: "8.13"
 
       - name: Decode release keystore if secrets are configured

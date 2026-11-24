@@ -1,12 +1,23 @@
-# Community Pedigree Project — Architecture & Expo Migration Guide
+# Community Pedigree Project — Architecture & Hybrid Wrapper Guardrails
 
 - **Project Name:** Community Pedigree Project
 - **App Name:** Community Pedigree
 - **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree)
 - **Package Name:** `pedigree`
 - **License:** GNU AGPLv3 (`AGPL-3.0-or-later`) — see [LICENSE](./LICENSE)
+- **Mandatory Core Stack:** **React + Vite + TypeScript PWA** (`/src/`, `/index.html`, `/vite.config.ts`)
 
-## Cross-Platform & Expo Migration Guardrails
+## 0. Critical Hybrid Architecture Boundary (React Core PWA + Thin Android Wrapper)
+
+1. **The Core App MUST Always Stay in React (`src/`):**
+   - Every screen, state hook, storage adapter, and domain module lives in the **React + Vite + TypeScript PWA** (`src/`).
+   - **Never Convert PWA Away From React:** Do not rewrite, convert, or migrate the PWA to Kotlin, Android Views, Jetpack Compose, or any non-React stack—even during GitHub import recovery, build-crash triage, or bootability troubleshooting.
+2. **Thin Hybrid Android Wrapper (`android-wrapper/`):**
+   - `android-wrapper/` is **strictly a thin native AndroidX `WebView` container** written in Kotlin.
+   - Its sole job is to host the compiled React PWA production bundle (`npm run build -- --base=/` → `dist/` → `android-wrapper/app/src/main/assets/www/`) offline at `https://appassets.androidplatform.net/` via `WebViewAssetLoader` and bridge native file/print/vault/back actions (`window.pedigreeNative` ↔ `src/native/pedigreeBridge.ts`).
+   - It contains **zero** application UI screens, genetics logic, or database schemas; all app logic remains in React/TypeScript.
+
+## Cross-Platform & Pure Domain Guardrails
 
 1. **100% Pure TypeScript Domain Core (`src/core/`):**
    - `models.ts`: Canonical entities (`BarnSettings`, `SpeciesProfile`, `Animal`, `CageLocation`, `BreedingRecord`, `BarnTask`, `CareLog`, `ShowEvent`) with globally unique `id` (UUID v4), ISO-8601 UTC `updatedAt` timestamps, per-species weight unit overrides (`lbs_oz`, `lbs`, `kg`, `grams`), and species-aware identifier labels.
@@ -23,7 +34,7 @@
    - `storageAdapter.ts`: Defines the `StorageAdapter` contract.
    - `webSqliteAdapter.ts`: Executes standard relational SQLite (`PEDIGREE_SQLITE_SCHEMA`) in the browser via `sql.js` WebAssembly and persists the unencrypted `.sqlite` binary inside IndexedDB.
    - **Why SQLite-First Wins Cross-Platform:** The exact same `PEDIGREE_SQLITE_SCHEMA` SQL runs in `expo-sqlite` on Android/iOS, and users can export/sync a literal unencrypted `.sqlite` database file across devices via Google Drive, OneDrive, Dropbox, or SyncThing.
-   - **Strictly Optional Google Calendar OAuth:** `firebase` (`firebase/app`, `firebase/auth`) + `firebase-applet-config.json` are scoped exclusively to `src/utils/googleCalendarClient.ts` for opt-in client-side Google Calendar sign-in; all core barn workflows remain 100% offline-first with `.ics` fallback.
+   - **Offline-First Calendar Export (`src/utils/`):** `src/utils/googleCalendarClient.ts` has no external Firebase/auth dependency and pairs with `src/core/calendarExport.ts` for offline `.ics` generation and optional Google/Outlook Calendar web template links.
 
 3. **Strict Species Isolation:**
    - Every animal, breeding, task, cage, care log, and show carries an explicit `species` field.

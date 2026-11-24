@@ -18,20 +18,36 @@
  */
 
 import { analyzeBarnAnimalConflicts } from './animalConflicts';
+import { normalizeBarnJournalEntry } from './barnJournal';
+import {
+  normalizeJudgeAssignment,
+  normalizeJudgeClubContact,
+  normalizeJudgeExpense,
+} from './judgeNotebook';
+import { normalizeMileageLog } from './mileageTaxLog';
 import {
   Animal,
   AnimalPhoto,
+  AnimalReservation,
   BarnDatabaseSnapshot,
+  BarnJournalEntry,
   BarnSettings,
+  ClientContact,
   FeedAllocation,
   FeedBatch,
   isSameSpecies,
+  JudgeAssignment,
+  JudgeClubContact,
+  JudgeExpense,
   LedgerEntry,
+  MileageLog,
   normalizeYouthProjectFeedLogs,
   nowIsoUtc,
   ProcessingLog,
   resolveSpeciesProfile,
   SpeciesProfile,
+  WaitlistEntry,
+  WoolHarvest,
   YouthProjectBook,
 } from './models';
 import { buildSpeciesHerdMap, wouldCreateCycle } from './pedigreeCalculator';
@@ -75,7 +91,7 @@ export interface BarnHealthRepairResult {
   reportAfter: BarnHealthReport;
 }
 
-function isPlainObject(v: unknown): v is Record<string, any> {
+function isPlainObject(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 }
 
@@ -127,6 +143,33 @@ function collectUsedSpeciesNames(snapshot: BarnDatabaseSnapshot): string[] {
   }
   for (const yp of Array.isArray(snapshot.youthProjectBooks) ? snapshot.youthProjectBooks : []) {
     if (isPlainObject(yp)) add(yp.species);
+  }
+  for (const cc of Array.isArray(snapshot.clientContacts) ? snapshot.clientContacts : []) {
+    if (isPlainObject(cc)) add(cc.species);
+  }
+  for (const wl of Array.isArray(snapshot.waitlistEntries) ? snapshot.waitlistEntries : []) {
+    if (isPlainObject(wl)) add(wl.species);
+  }
+  for (const ar of Array.isArray(snapshot.animalReservations) ? snapshot.animalReservations : []) {
+    if (isPlainObject(ar)) add(ar.species);
+  }
+  for (const wh of Array.isArray(snapshot.woolHarvests) ? snapshot.woolHarvests : []) {
+    if (isPlainObject(wh)) add(wh.species);
+  }
+  for (const ml of Array.isArray(snapshot.mileageLogs) ? snapshot.mileageLogs : []) {
+    if (isPlainObject(ml)) add(ml.species);
+  }
+  for (const je of Array.isArray(snapshot.journalEntries) ? snapshot.journalEntries : []) {
+    if (isPlainObject(je)) add(je.species);
+  }
+  for (const jc of Array.isArray(snapshot.judgeClubs) ? snapshot.judgeClubs : []) {
+    if (isPlainObject(jc)) add(jc.species);
+  }
+  for (const ja of Array.isArray(snapshot.judgeAssignments) ? snapshot.judgeAssignments : []) {
+    if (isPlainObject(ja)) add(ja.species);
+  }
+  for (const jx of Array.isArray(snapshot.judgeExpenses) ? snapshot.judgeExpenses : []) {
+    if (isPlainObject(jx)) add(jx.species);
   }
 
   return Array.from(seen.values());
@@ -723,6 +766,94 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
       feedLogs: normalizeYouthProjectFeedLogs(yp.feedLogs),
     }));
 
+  const workingClientContacts: ClientContact[] = (Array.isArray(snapshot.clientContacts) ? snapshot.clientContacts : [])
+    .filter((cc): cc is ClientContact => isPlainObject(cc) && typeof cc.id === 'string' && cc.id.trim().length > 0)
+    .map((cc) => ({
+      ...cc,
+      tags: Array.isArray(cc.tags) ? cc.tags.filter((t): t is string => typeof t === 'string') : [],
+    }));
+
+  const workingWaitlistEntries: WaitlistEntry[] = (Array.isArray(snapshot.waitlistEntries) ? snapshot.waitlistEntries : [])
+    .filter((wl): wl is WaitlistEntry => isPlainObject(wl) && typeof wl.id === 'string' && wl.id.trim().length > 0)
+    .map((wl) => {
+      const rank = Number(wl.priorityRank);
+      if (!Number.isFinite(rank) || rank < 1) {
+        repairsApplied.push(`Normalized waitlist priority rank for "${wl.clientName || wl.id}" to 1.`);
+        return { ...wl, priorityRank: 1, updatedAt: ts };
+      }
+      return { ...wl };
+    });
+
+  const workingReservations: AnimalReservation[] = (Array.isArray(snapshot.animalReservations) ? snapshot.animalReservations : [])
+    .filter((ar): ar is AnimalReservation => isPlainObject(ar) && typeof ar.id === 'string' && ar.id.trim().length > 0)
+    .map((ar) => {
+      const next = { ...ar };
+      let changed = false;
+      for (const key of ['totalPriceCents', 'depositRequiredCents', 'depositPaidCents'] as const) {
+        const val = Number(next[key]);
+        if (!Number.isFinite(val) || val < 0) {
+          next[key] = 0;
+          changed = true;
+        }
+      }
+      if (changed) {
+        next.updatedAt = ts;
+        repairsApplied.push(`Reset negative/invalid price or deposit field on reservation "${next.agreementNumber || next.id}".`);
+      }
+      return next;
+    });
+
+  const workingWoolHarvests: WoolHarvest[] = (Array.isArray(snapshot.woolHarvests) ? snapshot.woolHarvests : [])
+    .filter((wh): wh is WoolHarvest => isPlainObject(wh) && typeof wh.id === 'string' && wh.id.trim().length > 0)
+    .map((wh) => {
+      const next = { ...wh };
+      let changed = false;
+      for (const key of ['primeWeightGrams', 'gradeWeightGrams', 'shearingIntervalDays', 'stapleLengthMm'] as const) {
+        if (next[key] !== undefined) {
+          const val = Number(next[key]);
+          if (!Number.isFinite(val) || val < 0) {
+            next[key] = 0;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        next.updatedAt = ts;
+        repairsApplied.push(`Reset negative/invalid fiber measurement on wool harvest "${next.id}".`);
+      }
+      return next;
+    });
+
+  const workingMileageLogs: MileageLog[] = (
+    Array.isArray(snapshot.mileageLogs) ? snapshot.mileageLogs : []
+  )
+    .map((ml) => normalizeMileageLog(ml))
+    .filter((ml): ml is MileageLog => Boolean(ml));
+
+  const workingJournalEntries: BarnJournalEntry[] = (
+    Array.isArray(snapshot.journalEntries) ? snapshot.journalEntries : []
+  )
+    .map((je) => normalizeBarnJournalEntry(je))
+    .filter((je): je is BarnJournalEntry => Boolean(je));
+
+  const workingJudgeClubs: JudgeClubContact[] = (
+    Array.isArray(snapshot.judgeClubs) ? snapshot.judgeClubs : []
+  )
+    .map((jc) => normalizeJudgeClubContact(jc))
+    .filter((jc): jc is JudgeClubContact => Boolean(jc));
+
+  const workingJudgeAssignments: JudgeAssignment[] = (
+    Array.isArray(snapshot.judgeAssignments) ? snapshot.judgeAssignments : []
+  )
+    .map((ja) => normalizeJudgeAssignment(ja))
+    .filter((ja): ja is JudgeAssignment => Boolean(ja));
+
+  const workingJudgeExpenses: JudgeExpense[] = (
+    Array.isArray(snapshot.judgeExpenses) ? snapshot.judgeExpenses : []
+  )
+    .map((jx) => normalizeJudgeExpense(jx))
+    .filter((jx): jx is JudgeExpense => Boolean(jx));
+
   const nextSnapshot: BarnDatabaseSnapshot = {
     ...snapshot,
     settings: nextSettings,
@@ -734,6 +865,15 @@ export function repairBarnDataHealth(snapshot: BarnDatabaseSnapshot): BarnHealth
     ledgerEntries: workingLedgerEntries,
     processingLogs: workingProcessingLogs,
     youthProjectBooks: workingYouthBooks,
+    clientContacts: workingClientContacts,
+    waitlistEntries: workingWaitlistEntries,
+    animalReservations: workingReservations,
+    woolHarvests: workingWoolHarvests,
+    mileageLogs: workingMileageLogs,
+    journalEntries: workingJournalEntries,
+    judgeClubs: workingJudgeClubs,
+    judgeAssignments: workingJudgeAssignments,
+    judgeExpenses: workingJudgeExpenses,
   };
 
   const reportAfter = analyzeBarnDataHealth(nextSnapshot);

@@ -18,7 +18,9 @@ import { formatGenotypeArray, parseGenotypeString } from './geneticsEngine';
 import {
   Animal,
   AnimalPhoto,
+  AnimalReservation,
   BarnDatabaseSnapshot,
+  BarnJournalEntry,
   BarnSettings,
   BarnTask,
   BreedingRecord,
@@ -26,6 +28,7 @@ import {
   CageLocation,
   CareLog,
   CareLogType,
+  ClientContact,
   FeedAllocation,
   FeedAllocationTargetType,
   FeedBatch,
@@ -36,12 +39,17 @@ import {
   generateUuid,
   isAnimalArchived,
   isSameSpecies,
+  JudgeAssignment,
+  JudgeClubContact,
+  JudgeExpense,
   LedgerEntry,
+  MileageLog,
   millisToDateIso,
   normalizeAnimalStatus,
   normalizeBiologicalSex,
   normalizeBreedScheduleOverrides,
   normalizeCalendarSyncSettings,
+  normalizeClientKind,
   normalizeCurrencyCode,
   normalizeFeedPurgeWindowDays,
   normalizeHousingUnitType,
@@ -52,11 +60,16 @@ import {
   normalizeOwnershipType,
   normalizePedigreeGenerationDepth,
   normalizePeltGrade,
+  normalizePreferredContactMethod,
   normalizeProcessingStatus,
+  normalizeReservationStatus,
   normalizeRufusLevel,
   normalizeServiceFeeDirection,
   normalizeTargetWeightCurve,
   normalizeUltrasoundResult,
+  normalizeWaitlistIntent,
+  normalizeWaitlistStatus,
+  normalizeWeatherForecastSettings,
   normalizeWeightUnit,
   normalizeYouthOrgType,
   normalizeYouthProjectFeedLogs,
@@ -73,7 +86,26 @@ import {
   TaskCategory,
   TaskPriority,
   todayDateIso,
+  WaitlistEntry,
+  WoolHarvest,
 } from './models';
+import { normalizeBarnJournalEntry } from './barnJournal';
+import {
+  normalizeJudgeAssignment,
+  normalizeJudgeClubContact,
+  normalizeJudgeExpense,
+} from './judgeNotebook';
+import { normalizeMileageLog } from './mileageTaxLog';
+import {
+  AnimalWoolSummary,
+  buildWoolHarvestSummaryByAnimalId,
+  formatWoolWeightSummary,
+  IAGARB_JUDGING_POSITIONS,
+  IAGARB_MIN_90_DAY_WOOL_GRAMS,
+  IAGARB_REGISTRATION_MIN_POINTS,
+  normalizeWoolHarvest,
+  summarizeAnimalWoolHarvests,
+} from './woolFiber';
 import {
   buildPedigreeSlots,
   buildSpeciesHerdMap,
@@ -308,6 +340,42 @@ export function mergeBarnSnapshots(
     local.youthProjectBooks ?? [],
     incoming.youthProjectBooks ?? []
   );
+  const clientContactsRes = mergeByIdAndTimestamp(
+    local.clientContacts ?? [],
+    incoming.clientContacts ?? []
+  );
+  const waitlistEntriesRes = mergeByIdAndTimestamp(
+    local.waitlistEntries ?? [],
+    incoming.waitlistEntries ?? []
+  );
+  const animalReservationsRes = mergeByIdAndTimestamp(
+    local.animalReservations ?? [],
+    incoming.animalReservations ?? []
+  );
+  const woolHarvestsRes = mergeByIdAndTimestamp(
+    local.woolHarvests ?? [],
+    incoming.woolHarvests ?? []
+  );
+  const mileageLogsRes = mergeByIdAndTimestamp(
+    local.mileageLogs ?? [],
+    incoming.mileageLogs ?? []
+  );
+  const journalEntriesRes = mergeByIdAndTimestamp(
+    local.journalEntries ?? [],
+    incoming.journalEntries ?? []
+  );
+  const judgeClubsRes = mergeByIdAndTimestamp(
+    local.judgeClubs ?? [],
+    incoming.judgeClubs ?? []
+  );
+  const judgeAssignmentsRes = mergeByIdAndTimestamp(
+    local.judgeAssignments ?? [],
+    incoming.judgeAssignments ?? []
+  );
+  const judgeExpensesRes = mergeByIdAndTimestamp(
+    local.judgeExpenses ?? [],
+    incoming.judgeExpenses ?? []
+  );
 
   const sortedSpecies = Array.from(speciesByName.values())
     .sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name))
@@ -329,6 +397,15 @@ export function mergeBarnSnapshots(
       ledgerEntries: ledgerEntriesRes.merged,
       processingLogs: processingLogsRes.merged,
       youthProjectBooks: youthBooksRes.merged,
+      clientContacts: clientContactsRes.merged,
+      waitlistEntries: waitlistEntriesRes.merged,
+      animalReservations: animalReservationsRes.merged,
+      woolHarvests: woolHarvestsRes.merged,
+      mileageLogs: mileageLogsRes.merged,
+      journalEntries: journalEntriesRes.merged,
+      judgeClubs: judgeClubsRes.merged,
+      judgeAssignments: judgeAssignmentsRes.merged,
+      judgeExpenses: judgeExpensesRes.merged,
     },
     animalsAdded: animalsRes.added,
     animalsUpdated: animalsRes.updated,
@@ -496,6 +573,15 @@ function buildBarnBackupEnvelopeContext(
         ledgerEntries: (snapshot.ledgerEntries ?? []).length,
         processingLogs: (snapshot.processingLogs ?? []).length,
         youthProjectBooks: (snapshot.youthProjectBooks ?? []).length,
+        clientContacts: (snapshot.clientContacts ?? []).length,
+        waitlistEntries: (snapshot.waitlistEntries ?? []).length,
+        animalReservations: (snapshot.animalReservations ?? []).length,
+        woolHarvests: (snapshot.woolHarvests ?? []).length,
+        mileageLogs: (snapshot.mileageLogs ?? []).length,
+        journalEntries: (snapshot.journalEntries ?? []).length,
+        judgeClubs: (snapshot.judgeClubs ?? []).length,
+        judgeAssignments: (snapshot.judgeAssignments ?? []).length,
+        judgeExpenses: (snapshot.judgeExpenses ?? []).length,
       },
       bySpecies: Array.from(bySpeciesMap.values()),
     },
@@ -539,6 +625,15 @@ export function exportBarnBackupJson(
     ledgerEntries: snapshot.ledgerEntries ?? [],
     processingLogs: snapshot.processingLogs ?? [],
     youthProjectBooks: snapshot.youthProjectBooks ?? [],
+    clientContacts: snapshot.clientContacts ?? [],
+    waitlistEntries: snapshot.waitlistEntries ?? [],
+    animalReservations: snapshot.animalReservations ?? [],
+    woolHarvests: snapshot.woolHarvests ?? [],
+    mileageLogs: snapshot.mileageLogs ?? [],
+    journalEntries: snapshot.journalEntries ?? [],
+    judgeClubs: snapshot.judgeClubs ?? [],
+    judgeAssignments: snapshot.judgeAssignments ?? [],
+    judgeExpenses: snapshot.judgeExpenses ?? [],
   };
   return JSON.stringify(payload, null, 2);
 }
@@ -577,6 +672,15 @@ export function* generateBarnBackupJsonChunks(
     { key: 'ledgerEntries', items: snapshot.ledgerEntries ?? [] },
     { key: 'processingLogs', items: snapshot.processingLogs ?? [] },
     { key: 'youthProjectBooks', items: snapshot.youthProjectBooks ?? [] },
+    { key: 'clientContacts', items: snapshot.clientContacts ?? [] },
+    { key: 'waitlistEntries', items: snapshot.waitlistEntries ?? [] },
+    { key: 'animalReservations', items: snapshot.animalReservations ?? [] },
+    { key: 'woolHarvests', items: snapshot.woolHarvests ?? [] },
+    { key: 'mileageLogs', items: snapshot.mileageLogs ?? [] },
+    { key: 'journalEntries', items: snapshot.journalEntries ?? [] },
+    { key: 'judgeClubs', items: snapshot.judgeClubs ?? [] },
+    { key: 'judgeAssignments', items: snapshot.judgeAssignments ?? [] },
+    { key: 'judgeExpenses', items: snapshot.judgeExpenses ?? [] },
   ];
 
   for (let sIdx = 0; sIdx < sections.length; sIdx++) {
@@ -654,7 +758,7 @@ export function parseBarnBackupJson(
   }
 
   const ts = nowIsoUtc();
-  const isObj = (v: unknown): v is Record<string, any> =>
+  const isObj = (v: unknown): v is Record<string, unknown> =>
     Boolean(v) && typeof v === 'object' && !Array.isArray(v);
   const finiteNum = (v: unknown, fb = 0): number => {
     const n = Number(v);
@@ -758,8 +862,31 @@ export function parseBarnBackupJson(
         ? undefined
         : sanitizeSafeRasterImageDataUrl(rawSettings.breederLogoDataUrl) ||
           fallbackSettings.breederLogoDataUrl,
+    breederEmail:
+      rawSettings.breederEmail !== undefined
+        ? sanitizeSingleLineText(rawSettings.breederEmail, 160) || undefined
+        : fallbackSettings.breederEmail,
+    breederPhone:
+      rawSettings.breederPhone !== undefined
+        ? sanitizeSingleLineText(rawSettings.breederPhone, 80) || undefined
+        : fallbackSettings.breederPhone,
+    breederLocation:
+      rawSettings.breederLocation !== undefined
+        ? sanitizeSingleLineText(rawSettings.breederLocation, 160) || undefined
+        : fallbackSettings.breederLocation,
+    breederWebsite:
+      rawSettings.breederWebsite !== undefined
+        ? sanitizeSingleLineText(rawSettings.breederWebsite, 300) || undefined
+        : fallbackSettings.breederWebsite,
+    showcaseTagline:
+      rawSettings.showcaseTagline !== undefined
+        ? sanitizeSingleLineText(rawSettings.showcaseTagline, 240) || undefined
+        : fallbackSettings.showcaseTagline,
     calendarSync: normalizeCalendarSyncSettings(
       rawSettings.calendarSync ?? fallbackSettings.calendarSync
+    ),
+    weatherForecast: normalizeWeatherForecastSettings(
+      rawSettings.weatherForecast ?? fallbackSettings.weatherForecast
     ),
     autoOffloadRetiredToOpfs:
       typeof rawSettings.autoOffloadRetiredToOpfs === 'boolean'
@@ -769,10 +896,14 @@ export function parseBarnBackupJson(
       rawSettings.feedTagPurgeWindowDays,
       fallbackSettings.feedTagPurgeWindowDays ?? 60
     ),
+    enableJudgeNotebook:
+      typeof rawSettings.enableJudgeNotebook === 'boolean'
+        ? rawSettings.enableJudgeNotebook
+        : fallbackSettings.enableJudgeNotebook ?? false,
     updatedAt: sanitizeSingleLineText(rawSettings.updatedAt || ts, 64) || ts,
   };
 
-  const rawSpeciesList: Record<string, any>[] = (Array.isArray(raw.speciesProfiles)
+  const rawSpeciesList: Record<string, unknown>[] = (Array.isArray(raw.speciesProfiles)
     ? raw.speciesProfiles
     : Array.isArray(raw.speciesConfigs)
     ? raw.speciesConfigs
@@ -782,20 +913,21 @@ export function parseBarnBackupJson(
   const speciesProfiles: SpeciesProfile[] =
     rawSpeciesList.length > 0
       ? rawSpeciesList
-          .map((item: any, idx: number) => {
+          .map((item: Record<string, unknown>, idx: number) => {
             const maturity = finiteNonNeg(item.maturityDays, 0);
             return {
               id: safeId(item.id),
               name: sanitizeSingleLineText(item.name, 100) || 'Rabbit',
               sortOrder: finiteNum(item.sortOrder, idx),
               defaultAnimalPrefix: sanitizeSingleLineText(item.defaultAnimalPrefix || '', 40),
-              preferredUnit:
+              preferredUnit: (
                 item.preferredUnit === 'lbs_oz' ||
                 item.preferredUnit === 'lbs' ||
                 item.preferredUnit === 'grams' ||
                 item.preferredUnit === 'kg'
                   ? item.preferredUnit
-                  : undefined,
+                  : undefined
+              ) as SpeciesProfile['preferredUnit'],
               memoText: sanitizeSpeciesMemo(item.memoText),
               memoUpdatedAt: typeof item.memoUpdatedAt === 'string' ? item.memoUpdatedAt : '',
               gestationDays: finiteNonNeg(item.gestationDays, 31) || 31,
@@ -813,9 +945,15 @@ export function parseBarnBackupJson(
                     .filter(Boolean)
                 : [],
               milestones: Array.isArray(item.milestones)
-                ? item.milestones.filter(isObj).map((m: any) => ({
+                ? item.milestones.filter(isObj).map((m: Record<string, unknown>) => ({
                     label: sanitizeSingleLineText(m.label, 120) || 'Care Check',
-                    relativeTo: m.relativeTo || 'BEFORE_BIRTH',
+                    relativeTo: (
+                      m.relativeTo === 'AFTER_BRED' || m.relativeTo === 'AFTER_BREEDING'
+                        ? 'AFTER_BRED'
+                        : m.relativeTo === 'AFTER_BIRTH'
+                        ? 'AFTER_BIRTH'
+                        : 'BEFORE_BIRTH'
+                    ) as 'AFTER_BRED' | 'AFTER_BIRTH' | 'BEFORE_BIRTH',
                     daysOffset: finiteNum(m.daysOffset, 0),
                     category: (m.category as TaskCategory) || 'Care',
                     priority: (m.priority as TaskPriority) || 'Normal',
@@ -823,11 +961,11 @@ export function parseBarnBackupJson(
                 : [],
               breedOverrides: normalizeBreedScheduleOverrides(
                 Array.isArray(item.breedOverrides)
-                  ? item.breedOverrides.filter(isObj).map((ov: any) => ({
+                  ? item.breedOverrides.filter(isObj).map((ov: Record<string, unknown>) => ({
                       ...ov,
                       breed: sanitizeSingleLineText(ov.breed, 120),
                       milestoneOverrides: Array.isArray(ov.milestoneOverrides)
-                        ? ov.milestoneOverrides.filter(isObj).map((mo: any) => ({
+                        ? ov.milestoneOverrides.filter(isObj).map((mo: Record<string, unknown>) => ({
                             label: sanitizeSingleLineText(mo.label, 120),
                             daysOffset: mo.daysOffset,
                           }))
@@ -852,10 +990,10 @@ export function parseBarnBackupJson(
 
   const animals: Animal[] = (Array.isArray(raw.animals) ? raw.animals : [])
     .filter(isObj)
-    .map((a: any) => {
+    .map((a: Record<string, unknown>) => {
       const speciesName = sanitizeSingleLineText(a.species, 100) || 'Rabbit';
       const genoArray = Array.isArray(a.genotype)
-        ? a.genotype.filter(isObj)
+        ? (a.genotype.filter(isObj) as unknown as Animal['genotype'])
         : parseGenotypeString(
             typeof a.genotype === 'string' ? a.genotype : typeof a.genotypeRaw === 'string' ? a.genotypeRaw : '',
             speciesName
@@ -873,7 +1011,10 @@ export function parseBarnBackupJson(
         a.clearedCarrierOf
       );
 
-      const status = normalizeAnimalStatus(a.status, a.archived);
+      const status = normalizeAnimalStatus(
+        typeof a.status === 'string' ? a.status : undefined,
+        typeof a.archived === 'boolean' ? a.archived : undefined
+      );
       const birthMillis = finiteNonNeg(a.birthDateMillis, 0);
 
       return {
@@ -883,7 +1024,7 @@ export function parseBarnBackupJson(
         species: speciesName,
         breed: sanitizeSingleLineText(a.breed || '', 120),
         variety: sanitizeSingleLineText(a.variety || '', 120),
-        sex: normalizeBiologicalSex(a.sex || 'Unknown'),
+        sex: normalizeBiologicalSex(typeof a.sex === 'string' && a.sex ? a.sex : 'Unknown'),
         status,
         archived:
           typeof a.archived === 'boolean' ? a.archived : isAnimalArchived({ status }),
@@ -916,6 +1057,15 @@ export function parseBarnBackupJson(
         salePriceCents: Math.round(finiteNonNeg(a.salePriceCents, 0)),
         purchaseCostCents: Math.round(finiteNonNeg(a.purchaseCostCents, 0)),
         buyerName: sanitizeSingleLineText(a.buyerName || '', 140),
+        forSale:
+          typeof a.forSale === 'boolean' &&
+          status !== 'Sold' &&
+          status !== 'Deceased' &&
+          status !== 'Archived'
+            ? a.forSale
+            : false,
+        askingPriceCents: Math.round(finiteNonNeg(a.askingPriceCents, 0)),
+        saleNotes: sanitizePlainText(a.saleNotes || '', 2_000),
         sireId: typeof a.sireId === 'string' && isSafeRecordKey(a.sireId) ? a.sireId : '',
         damId: typeof a.damId === 'string' && isSafeRecordKey(a.damId) ? a.damId : '',
         notes: sanitizePlainText(a.notes || '', 20_000),
@@ -930,7 +1080,7 @@ export function parseBarnBackupJson(
 
   const cages: CageLocation[] = (Array.isArray(raw.cages) ? raw.cages : [])
     .filter(isObj)
-    .map((c: any) => {
+    .map((c: Record<string, unknown>) => {
       const unitType = normalizeHousingUnitType(c.unitType);
       const feedLotName = sanitizeSingleLineText(c.feedLotName || '', 120);
       const feedStockRemaining = finiteNonNeg(c.feedStockRemaining, 0);
@@ -976,7 +1126,7 @@ export function parseBarnBackupJson(
 
   const breedings: BreedingRecord[] = (Array.isArray(raw.breedings) ? raw.breedings : [])
     .filter(isObj)
-    .map((b: any) => {
+    .map((b: Record<string, unknown>) => {
       const sireId = typeof b.sireId === 'string' && isSafeRecordKey(b.sireId) ? b.sireId : '';
       const damId = typeof b.damId === 'string' && isSafeRecordKey(b.damId) ? b.damId : '';
       const inferredSpecies =
@@ -1022,7 +1172,7 @@ export function parseBarnBackupJson(
 
   const tasks: BarnTask[] = (Array.isArray(raw.tasks) ? raw.tasks : [])
     .filter(isObj)
-    .map((t: any) => {
+    .map((t: Record<string, unknown>) => {
       const linkedAnimalId =
         typeof t.linkedAnimalId === 'string' && isSafeRecordKey(t.linkedAnimalId)
           ? t.linkedAnimalId
@@ -1055,7 +1205,7 @@ export function parseBarnBackupJson(
 
   const careLogs: CareLog[] = (Array.isArray(raw.careLogs) ? raw.careLogs : [])
     .filter(isObj)
-    .map((l: any) => {
+    .map((l: Record<string, unknown>) => {
       const animalId =
         typeof l.animalId === 'string' && isSafeRecordKey(l.animalId) ? l.animalId : '';
       return {
@@ -1088,7 +1238,7 @@ export function parseBarnBackupJson(
 
   const shows: ShowEvent[] = (Array.isArray(raw.shows) ? raw.shows : [])
     .filter(isObj)
-    .map((s: any) => {
+    .map((s: Record<string, unknown>) => {
       const enteredIds = Array.isArray(s.enteredAnimalIds)
         ? s.enteredAnimalIds
             .filter((x: unknown): x is string => typeof x === 'string' && isSafeRecordKey(x))
@@ -1123,15 +1273,19 @@ export function parseBarnBackupJson(
   const animalPhotos: AnimalPhoto[] = (
     Array.isArray(raw.animalPhotos) ? raw.animalPhotos : []
   )
-    .map((p: any, idx: number) => {
-      if (!p || typeof p !== 'object' || !p.animalId) return null;
+    .map((rawPhoto: unknown, idx: number) => {
+      if (!isObj(rawPhoto) || typeof rawPhoto.animalId !== 'string' || !rawPhoto.animalId) return null;
+      const p = rawPhoto;
       const safeDataUrl = sanitizeSafeRasterImageDataUrl(p.dataUrl);
       if (!safeDataUrl) return null;
       const safeThumbUrl = sanitizeSafeRasterImageDataUrl(p.thumbnailDataUrl) || safeDataUrl;
+      const photoAnimalId = sanitizeSingleLineText(p.animalId, 120);
       return {
         id: sanitizeSingleLineText(p.id, 120) || generateUuid(),
-        species: sanitizeSingleLineText(p.species || animalById.get(p.animalId)?.species || 'Rabbit', 100) || 'Rabbit',
-        animalId: sanitizeSingleLineText(p.animalId, 120),
+        species:
+          sanitizeSingleLineText(p.species || animalById.get(photoAnimalId)?.species || 'Rabbit', 100) ||
+          'Rabbit',
+        animalId: photoAnimalId,
         isPrimary: Boolean(p.isPrimary),
         sortOrder: typeof p.sortOrder === 'number' && Number.isFinite(p.sortOrder) ? p.sortOrder : idx,
         caption: sanitizePlainText(p.caption || '', 2000),
@@ -1151,7 +1305,7 @@ export function parseBarnBackupJson(
 
   const feedBatches: FeedBatch[] = (Array.isArray(raw.feedBatches) ? raw.feedBatches : [])
     .filter(isObj)
-    .map((f: any) => {
+    .map((f: Record<string, unknown>) => {
       const safeTagPhoto = sanitizeSafeRasterImageDataUrl(f.tagPhotoDataUrl) || undefined;
       const safeTagThumb =
         sanitizeSafeRasterImageDataUrl(f.tagPhotoThumbnailDataUrl) || safeTagPhoto || undefined;
@@ -1216,7 +1370,7 @@ export function parseBarnBackupJson(
     Array.isArray(raw.feedAllocations) ? raw.feedAllocations : []
   )
     .filter(isObj)
-    .map((fa: any) => {
+    .map((fa: Record<string, unknown>) => {
       const targetType: FeedAllocationTargetType =
         fa.targetType === 'cage' ||
         fa.targetType === 'litter' ||
@@ -1245,7 +1399,7 @@ export function parseBarnBackupJson(
     Array.isArray(raw.ledgerEntries) ? raw.ledgerEntries : []
   )
     .filter(isObj)
-    .map((le: any) => {
+    .map((le: Record<string, unknown>) => {
       const rawDate = typeof le.dateIso === 'string' ? le.dateIso.trim() : '';
       const receiptData = sanitizeSafeRasterImageDataUrl(le.receiptPhotoDataUrl);
       const receiptThumb = sanitizeSafeRasterImageDataUrl(le.receiptPhotoThumbnailDataUrl);
@@ -1289,7 +1443,7 @@ export function parseBarnBackupJson(
     Array.isArray(raw.processingLogs) ? raw.processingLogs : []
   )
     .filter(isObj)
-    .map((pl: any) => {
+    .map((pl: Record<string, unknown>) => {
       const schedDate = typeof pl.scheduledDateIso === 'string' ? pl.scheduledDateIso.trim() : '';
       const harvDate = typeof pl.harvestDateIso === 'string' ? pl.harvestDateIso.trim() : '';
       const liveW = Math.round(finiteNonNeg(pl.liveWeightGrams, 0));
@@ -1340,7 +1494,7 @@ export function parseBarnBackupJson(
     Array.isArray(raw.youthProjectBooks) ? raw.youthProjectBooks : []
   )
     .filter(isObj)
-    .map((yp: any) => {
+    .map((yp: Record<string, unknown>) => {
       const startDate = typeof yp.startDateIso === 'string' ? yp.startDateIso.trim() : '';
       const endDate = typeof yp.endDateIso === 'string' ? yp.endDateIso.trim() : '';
       return {
@@ -1373,6 +1527,159 @@ export function parseBarnBackupJson(
       } satisfies YouthProjectBook;
     });
 
+  const clientContacts: ClientContact[] = (
+    Array.isArray(raw.clientContacts) ? raw.clientContacts : []
+  )
+    .filter(isObj)
+    .map((cc: Record<string, unknown>) => ({
+      id: safeId(cc.id),
+      species: sanitizeSingleLineText(cc.species, 100) || 'Rabbit',
+      fullName: sanitizeSingleLineText(cc.fullName, 140) || 'Buyer',
+      ranchOrHerdName: sanitizeSingleLineText(cc.ranchOrHerdName || '', 160),
+      email: sanitizeSingleLineText(cc.email || '', 160),
+      phone: sanitizeSingleLineText(cc.phone || '', 60),
+      preferredContact: normalizePreferredContactMethod(cc.preferredContact, 'sms'),
+      clientKind: normalizeClientKind(cc.clientKind, 'pet_buyer'),
+      cityState: sanitizeSingleLineText(cc.cityState || '', 120),
+      shippingAddress: sanitizePlainText(cc.shippingAddress || '', 400),
+      tags: Array.isArray(cc.tags)
+        ? cc.tags
+            .filter((t: unknown): t is string => typeof t === 'string' && t.trim().length > 0)
+            .map((t: string) => sanitizeSingleLineText(t, 60))
+            .filter(Boolean)
+        : [],
+      notes: sanitizePlainText(cc.notes || '', 5000),
+      ...(typeof cc._rev === 'number' && Number.isFinite(cc._rev) ? { _rev: Math.floor(cc._rev) } : {}),
+      createdAt: typeof cc.createdAt === 'string' && cc.createdAt ? cc.createdAt : ts,
+      updatedAt: typeof cc.updatedAt === 'string' && cc.updatedAt ? cc.updatedAt : ts,
+    }));
+
+  const waitlistEntries: WaitlistEntry[] = (
+    Array.isArray(raw.waitlistEntries) ? raw.waitlistEntries : []
+  )
+    .filter(isObj)
+    .map((wl: Record<string, unknown>) => {
+      const reqDate = typeof wl.requestedByDateIso === 'string' ? wl.requestedByDateIso.trim() : '';
+      const inqDate = typeof wl.inquiryDateIso === 'string' ? wl.inquiryDateIso.trim() : '';
+      const fuDate = typeof wl.followUpDateIso === 'string' ? wl.followUpDateIso.trim() : '';
+      const lcDate = typeof wl.lastContactedDateIso === 'string' ? wl.lastContactedDateIso.trim() : '';
+      const rawSex = String(wl.preferredSex || 'Any');
+      const preferredSex: WaitlistEntry['preferredSex'] =
+        rawSex === 'Male' || rawSex === 'Female' ? rawSex : 'Any';
+      return {
+        id: safeId(wl.id),
+        species: sanitizeSingleLineText(wl.species, 100) || 'Rabbit',
+        clientId: typeof wl.clientId === 'string' && isSafeRecordKey(wl.clientId) ? wl.clientId : '',
+        clientName: sanitizeSingleLineText(wl.clientName || 'Buyer', 140),
+        priorityRank: Math.max(1, Math.round(finiteNonNeg(wl.priorityRank, 1))),
+        status: normalizeWaitlistStatus(wl.status, 'Active'),
+        intent: normalizeWaitlistIntent(wl.intent, 'Show / Breeding'),
+        desiredBreed: sanitizeSingleLineText(wl.desiredBreed || '', 120),
+        desiredVariety: sanitizeSingleLineText(wl.desiredVariety || '', 120),
+        preferredSex,
+        ...(typeof wl.preferredBreedingId === 'string' && isSafeRecordKey(wl.preferredBreedingId)
+          ? { preferredBreedingId: wl.preferredBreedingId }
+          : {}),
+        requestedByDateIso: /^\d{4}-\d{2}-\d{2}$/.test(reqDate) ? reqDate : '',
+        inquiryDateIso: /^\d{4}-\d{2}-\d{2}$/.test(inqDate) ? inqDate : todayDateIso(),
+        followUpDateIso: /^\d{4}-\d{2}-\d{2}$/.test(fuDate) ? fuDate : '',
+        lastContactedDateIso: /^\d{4}-\d{2}-\d{2}$/.test(lcDate) ? lcDate : '',
+        ...(wl.maxBudgetCents !== undefined && Number(wl.maxBudgetCents) > 0
+          ? { maxBudgetCents: Math.round(finiteNonNeg(wl.maxBudgetCents, 0)) }
+          : {}),
+        notes: sanitizePlainText(wl.notes || '', 5000),
+        ...(typeof wl._rev === 'number' && Number.isFinite(wl._rev) ? { _rev: Math.floor(wl._rev) } : {}),
+        createdAt: typeof wl.createdAt === 'string' && wl.createdAt ? wl.createdAt : ts,
+        updatedAt: typeof wl.updatedAt === 'string' && wl.updatedAt ? wl.updatedAt : ts,
+      };
+    });
+
+  const animalReservations: AnimalReservation[] = (
+    Array.isArray(raw.animalReservations) ? raw.animalReservations : []
+  )
+    .filter(isObj)
+    .map((ar: Record<string, unknown>) => {
+      const isoOrEmpty = (val: unknown) =>
+        typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim()) ? val.trim() : '';
+      return {
+        id: safeId(ar.id),
+        species: sanitizeSingleLineText(ar.species, 100) || 'Rabbit',
+        agreementNumber: sanitizeSingleLineText(ar.agreementNumber || '', 60),
+        clientId: typeof ar.clientId === 'string' && isSafeRecordKey(ar.clientId) ? ar.clientId : '',
+        clientName: sanitizeSingleLineText(ar.clientName || 'Buyer', 140),
+        ...(typeof ar.waitlistEntryId === 'string' && isSafeRecordKey(ar.waitlistEntryId)
+          ? { waitlistEntryId: ar.waitlistEntryId }
+          : {}),
+        ...(typeof ar.animalId === 'string' && isSafeRecordKey(ar.animalId)
+          ? { animalId: ar.animalId }
+          : {}),
+        ...(typeof ar.breedingId === 'string' && isSafeRecordKey(ar.breedingId)
+          ? { breedingId: ar.breedingId }
+          : {}),
+        ...(ar.pickOrder !== undefined && Number(ar.pickOrder) > 0
+          ? { pickOrder: Math.round(finiteNonNeg(ar.pickOrder, 1)) }
+          : {}),
+        itemLabel: sanitizeSingleLineText(ar.itemLabel || '', 180),
+        status: normalizeReservationStatus(ar.status, 'Pending Deposit'),
+        reservedDateIso: isoOrEmpty(ar.reservedDateIso) || todayDateIso(),
+        holdExpiresDateIso: isoOrEmpty(ar.holdExpiresDateIso),
+        totalPriceCents: Math.round(finiteNonNeg(ar.totalPriceCents, 0)),
+        depositRequiredCents: Math.round(finiteNonNeg(ar.depositRequiredCents, 0)),
+        depositPaidCents: Math.round(finiteNonNeg(ar.depositPaidCents, 0)),
+        depositDueDateIso: isoOrEmpty(ar.depositDueDateIso),
+        depositPaidDateIso: isoOrEmpty(ar.depositPaidDateIso),
+        pickupScheduledDateIso: isoOrEmpty(ar.pickupScheduledDateIso),
+        completedDateIso: isoOrEmpty(ar.completedDateIso),
+        balanceReminderDateIso: isoOrEmpty(ar.balanceReminderDateIso),
+        paymentMethod: sanitizeSingleLineText(ar.paymentMethod || '', 80),
+        ...(typeof ar.ledgerEntryId === 'string' && isSafeRecordKey(ar.ledgerEntryId)
+          ? { ledgerEntryId: ar.ledgerEntryId }
+          : {}),
+        termsSummary: sanitizePlainText(ar.termsSummary || '', 5000),
+        healthGuaranteeNotes: sanitizePlainText(ar.healthGuaranteeNotes || '', 5000),
+        notes: sanitizePlainText(ar.notes || '', 5000),
+        ...(typeof ar._rev === 'number' && Number.isFinite(ar._rev) ? { _rev: Math.floor(ar._rev) } : {}),
+        createdAt: typeof ar.createdAt === 'string' && ar.createdAt ? ar.createdAt : ts,
+        updatedAt: typeof ar.updatedAt === 'string' && ar.updatedAt ? ar.updatedAt : ts,
+      };
+    });
+
+  const woolHarvests: WoolHarvest[] = (
+    Array.isArray(raw.woolHarvests) ? raw.woolHarvests : []
+  )
+    .map((wh: unknown) => normalizeWoolHarvest(wh, settings.defaultSpecies || 'Rabbit'))
+    .filter((wh: WoolHarvest | null): wh is WoolHarvest => Boolean(wh));
+
+  const mileageLogs: MileageLog[] = (
+    Array.isArray(raw.mileageLogs) ? raw.mileageLogs : []
+  )
+    .map((ml: unknown) => normalizeMileageLog(ml))
+    .filter((ml: MileageLog | null): ml is MileageLog => Boolean(ml));
+
+  const journalEntries: BarnJournalEntry[] = (
+    Array.isArray(raw.journalEntries) ? raw.journalEntries : []
+  )
+    .map((je: unknown) => normalizeBarnJournalEntry(je))
+    .filter((je: BarnJournalEntry | null): je is BarnJournalEntry => Boolean(je));
+
+  const judgeClubs: JudgeClubContact[] = (
+    Array.isArray(raw.judgeClubs) ? raw.judgeClubs : []
+  )
+    .map((jc: unknown) => normalizeJudgeClubContact(jc))
+    .filter((jc: JudgeClubContact | null): jc is JudgeClubContact => Boolean(jc));
+
+  const judgeAssignments: JudgeAssignment[] = (
+    Array.isArray(raw.judgeAssignments) ? raw.judgeAssignments : []
+  )
+    .map((ja: unknown) => normalizeJudgeAssignment(ja))
+    .filter((ja: JudgeAssignment | null): ja is JudgeAssignment => Boolean(ja));
+
+  const judgeExpenses: JudgeExpense[] = (
+    Array.isArray(raw.judgeExpenses) ? raw.judgeExpenses : []
+  )
+    .map((jx: unknown) => normalizeJudgeExpense(jx))
+    .filter((jx: JudgeExpense | null): jx is JudgeExpense => Boolean(jx));
+
   return {
     settings,
     speciesProfiles,
@@ -1388,6 +1695,15 @@ export function parseBarnBackupJson(
     ledgerEntries,
     processingLogs,
     youthProjectBooks,
+    clientContacts,
+    waitlistEntries,
+    animalReservations,
+    woolHarvests,
+    mileageLogs,
+    journalEntries,
+    judgeClubs,
+    judgeAssignments,
+    judgeExpenses,
   };
 }
 
@@ -1446,6 +1762,10 @@ export interface PedigreePrintOptions {
   /** Optional species shows & careLogs so pedigree certificates auto-surface show honors & GC progress. */
   shows?: ShowEvent[];
   careLogs?: CareLog[];
+  /** Optional wool/fiber harvests to summarize fiber yields & IAGARB scores onto pedigrees. */
+  woolHarvests?: WoolHarvest[];
+  /** Optional map of ancestor animalId -> portrait data URL used by `family_portrait` layout. */
+  ancestorPhotosByAnimalId?: Record<string, string>;
 }
 
 /**
@@ -1453,7 +1773,7 @@ export interface PedigreePrintOptions {
  * with Evans Rabbit Register / ARBA breeder sharing conventions and direct PDF printing.
  * Supports 3 through 8 generations, Landscape/Portrait 8.5"x11" sizing, customizable print
  * border/color/layout presets, optional breeder logo, ARBA `lbs.oz` dot weight notation,
- * and embedded primary portrait photo.
+ * multi-photo Family Portrait mode, IAGARB German Angora template, and fiber harvest totals.
  */
 export function generateEvansHtmPedigree(
   subject: Animal,
@@ -1492,6 +1812,17 @@ export function generateEvansHtmPedigree(
     slotMap.set(`${sl.generation}:${sl.slotIndex}`, sl);
   }
 
+  const woolHarvestList = printOptions?.woolHarvests ?? [];
+  const woolSummaryByAnimalId =
+    woolHarvestList.length > 0
+      ? buildWoolHarvestSummaryByAnimalId(woolHarvestList)
+      : new Map<string, AnimalWoolSummary>();
+  const subjectWoolSummary =
+    woolHarvestList.length > 0 ? summarizeAnimalWoolHarvests(woolHarvestList, subject.id) : null;
+  const subjectWoolLine = subjectWoolSummary ? formatWoolWeightSummary(subjectWoolSummary) : '';
+
+  const isFamilyPortrait = theme.layoutPreset === 'family_portrait';
+  const isIagarbAngora = theme.layoutPreset === 'iagarb_angora';
   const ultraCompactMode = depth >= 7;
   const compactMode = depth >= 5 || theme.layoutPreset === 'compact_ledger';
   const tightMode = compactMode || (isPortrait && depth >= 4);
@@ -1546,6 +1877,17 @@ export function generateEvansHtmPedigree(
       ancShowSummary?.awardsSummaryText ? escapeHtml(ancShowSummary.awardsSummaryText) : '',
     ].filter(Boolean);
 
+    const ancWool = woolSummaryByAnimalId.get(a.id);
+    const ancWoolText =
+      ancWool && (ancWool.harvestCount > 0 || ancWool.highestIagarbScore)
+        ? formatWoolWeightSummary(ancWool, { compact: true })
+        : '';
+
+    const ancSafePhoto =
+      isFamilyPortrait && !compactMode && gen <= 2
+        ? sanitizeSafeRasterImageDataUrl(printOptions?.ancestorPhotosByAnimalId?.[a.id])
+        : '';
+
     if (isTinyLeaf) {
       return `<td rowspan="${rowspan}" class="cell leaf ${idx % 2 === 0 ? 'sire' : 'dam'}">
       <div class="name">${escapeHtml(a.name)}${a.tattoo ? ` <span class="meta">(${escapeHtml(a.tattoo)})</span>` : ''}</div>
@@ -1553,12 +1895,15 @@ export function generateEvansHtmPedigree(
     }
 
     return `<td rowspan="${rowspan}" class="cell ${idx % 2 === 0 ? 'sire' : 'dam'}">
+      ${ancSafePhoto ? `<div class="anc-photo-row"><img class="anc-photo" src="${ancSafePhoto}" alt="${escapeHtml(a.name)}" /><div>` : ''}
       <div class="name">${escapeHtml(a.name)}</div>
       ${metaParts.length ? `<div class="meta">${metaParts.join(' &middot; ')}</div>` : ''}
       ${!compactMode && a.birthDateIso ? `<div class="meta">DOB: ${escapeHtml(formatReadableDate(a.birthDateIso))}</div>` : ''}
       ${!compactMode && regParts.length ? `<div class="meta">${regParts.join(' &middot; ')}</div>` : ''}
+      ${!compactMode && ancWoolText ? `<div class="wool-line">${escapeHtml(ancWoolText)}</div>` : ''}
       ${showGenotypes && !compactMode && geno ? `<div class="geno">${escapeHtml(geno)}</div>` : ''}
       ${carrierText ? `<div class="carrier" title="${escapeHtml(fullCarrierText)}">${escapeHtml(carrierText)}</div>` : ''}
+      ${ancSafePhoto ? `</div></div>` : ''}
     </td>`;
   };
 
@@ -1586,6 +1931,97 @@ export function generateEvansHtmPedigree(
     includeCleared: true,
   });
   const safePhoto = sanitizeSafeRasterImageDataUrl(primaryPhotoDataUrl);
+
+  const familyPortraitStripHtml = (() => {
+    if (!isFamilyPortrait) return '';
+    const cards: Array<{ label: string; name: string; sub: string; photo: string; role: 'subj' | 'sire' | 'dam' }> = [];
+    cards.push({
+      label: 'Subject',
+      name: subject.name,
+      sub: subject.tattoo || subject.variety || '',
+      photo: safePhoto || sanitizeSafeRasterImageDataUrl(printOptions?.ancestorPhotosByAnimalId?.[subject.id]),
+      role: 'subj',
+    });
+    const gen1Slots: Array<{ idx: number; label: string; role: 'sire' | 'dam' }> = [
+      { idx: 0, label: `Sire (${sp.maleLabel})`, role: 'sire' },
+      { idx: 1, label: `Dam (${sp.femaleLabel})`, role: 'dam' },
+    ];
+    for (const entry of gen1Slots) {
+      const anc = slotMap.get(`1:${entry.idx}`)?.animal;
+      if (anc) {
+        cards.push({
+          label: entry.label,
+          name: anc.name,
+          sub: anc.tattoo || anc.variety || '',
+          photo: sanitizeSafeRasterImageDataUrl(printOptions?.ancestorPhotosByAnimalId?.[anc.id]),
+          role: entry.role,
+        });
+      }
+    }
+    const gen2Labels = ['Pat. Grandsire', 'Pat. Granddam', 'Mat. Grandsire', 'Mat. Granddam'];
+    for (let i = 0; i < 4; i += 1) {
+      const anc = slotMap.get(`2:${i}`)?.animal;
+      if (!anc) continue;
+      const ancPhoto = sanitizeSafeRasterImageDataUrl(printOptions?.ancestorPhotosByAnimalId?.[anc.id]);
+      if (ancPhoto) {
+        cards.push({
+          label: gen2Labels[i],
+          name: anc.name,
+          sub: anc.tattoo || anc.variety || '',
+          photo: ancPhoto,
+          role: i % 2 === 0 ? 'sire' : 'dam',
+        });
+      }
+    }
+    if (cards.length <= 1 && !cards[0]?.photo) return '';
+    return `<div class="family-strip" aria-label="Family Portrait Gallery">
+      ${cards
+        .map(
+          (c) => `<div class="fp-card fp-${c.role}">
+            ${
+              c.photo
+                ? `<img class="fp-img" src="${c.photo}" alt="${escapeHtml(c.name)}" />`
+                : `<div class="fp-placeholder">${escapeHtml((c.name || '?').slice(0, 2).toUpperCase())}</div>`
+            }
+            <div class="fp-role">${escapeHtml(c.label)}</div>
+            <div class="fp-name">${escapeHtml(c.name)}</div>
+            ${c.sub ? `<div class="fp-sub">${escapeHtml(c.sub)}</div>` : ''}
+          </div>`
+        )
+        .join('')}
+    </div>`;
+  })();
+
+  const iagarbSectionHtml = (() => {
+    if (!isIagarbAngora) return '';
+    const bestScore = subjectWoolSummary?.highestIagarbScore ?? subjectWoolSummary?.latestIagarbScore ?? null;
+    const totalPrime = subjectWoolSummary?.primeGrams ?? 0;
+    const totalGrade = subjectWoolSummary?.gradeGrams ?? 0;
+    const avg90 = subjectWoolSummary?.average90DayRateGrams;
+    const eligText = subjectWoolSummary?.eligibility.statusLabel || 'Log wool harvests & IAGARB score to verify qualification';
+    const scoreCells = IAGARB_JUDGING_POSITIONS.map((pos) => {
+      const val = bestScore ? bestScore[pos.key] : null;
+      return `<div class="iag-pos">
+        <div class="iag-lbl">${escapeHtml(pos.label)}</div>
+        <div class="iag-val">${val !== null ? `${val} / ${pos.maxPoints}` : `&mdash; / ${pos.maxPoints}`}</div>
+      </div>`;
+    }).join('');
+    return `<div class="iagarb-panel">
+      <div class="iag-head">
+        <div><strong>IAGARB German Angora Wool &amp; Evaluation Standard</strong> (Reg min: ${IAGARB_REGISTRATION_MIN_POINTS}/100 pts &middot; 90-day yield min: ${IAGARB_MIN_90_DAY_WOOL_GRAMS}g)</div>
+        <div class="iag-status">${escapeHtml(eligText)}</div>
+      </div>
+      <div class="iag-stats">
+        <div><strong>Logged Harvests:</strong> ${subjectWoolSummary?.harvestCount ?? 0}</div>
+        <div><strong>Prime Fiber:</strong> ${totalPrime}g</div>
+        <div><strong>Grade Fiber:</strong> ${totalGrade}g</div>
+        <div><strong>Total Yield:</strong> ${subjectWoolSummary?.totalGrams ?? 0}g</div>
+        <div><strong>90-Day Rate:</strong> ${avg90 !== null && avg90 !== undefined ? `${avg90}g` : 'N/A'}</div>
+        <div><strong>Total IAGARB Score:</strong> ${bestScore ? `${bestScore.totalPts} / 100 pts` : 'Not Scored'}</div>
+      </div>
+      <div class="iag-grid">${scoreCells}</div>
+    </div>`;
+  })();
 
   const genHeaders: string[] = [
     '<th>Parents (Gen 1)</th>',
@@ -1616,6 +2052,12 @@ export function generateEvansHtmPedigree(
       ? `0.75px solid ${theme.cellBorderHex}`
       : `1px solid ${theme.cellBorderHex}`;
 
+  const certSubtitle = isIagarbAngora
+    ? `IAGARB German Angora ${depth}-Generation Wool &amp; Evaluation Pedigree`
+    : isFamilyPortrait
+    ? `Family Portrait ${depth}-Generation ${escapeHtml(subject.species)} Pedigree`
+    : `Official ${depth}-Generation ${escapeHtml(subject.species)} Pedigree Certificate`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1637,6 +2079,27 @@ export function generateEvansHtmPedigree(
   .subject-wrap { ${subjectBorderCss} padding: ${theme.layoutPreset === 'compact_ledger' ? '5px 9px' : isPortrait ? '8px 11px' : '10px 14px'}; margin-bottom: ${theme.layoutPreset === 'compact_ledger' ? '6px' : '10px'}; background: #ffffff; display: flex; align-items: center; gap: ${isPortrait ? '12px' : '16px'}; }
   .subject-photo { width: ${theme.layoutPreset === 'compact_ledger' ? '58px' : isPortrait ? '72px' : '84px'}; height: ${theme.layoutPreset === 'compact_ledger' ? '58px' : isPortrait ? '72px' : '84px'}; object-fit: cover; border-radius: 6px; border: 1px solid ${theme.cellBorderHex}; flex-shrink: 0; }
   .subject-box { display: flex; flex-wrap: wrap; gap: ${theme.layoutPreset === 'compact_ledger' ? '4px 12px' : isPortrait ? '6px 14px' : '8px 18px'}; font-size: ${theme.layoutPreset === 'compact_ledger' ? '10.5px' : isPortrait ? '11.5px' : '12.5px'}; flex: 1; }
+  .family-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .fp-card { border: 1px solid ${theme.cellBorderHex}; border-radius: 6px; padding: 6px; text-align: center; background: #ffffff; }
+  .fp-card.fp-subj { border-top: 3px solid ${theme.primaryHex}; }
+  .fp-card.fp-sire { border-top: 3px solid ${theme.sireHex}; }
+  .fp-card.fp-dam { border-top: 3px solid ${theme.damHex}; }
+  .fp-img { width: 58px; height: 58px; object-fit: cover; border-radius: 6px; border: 1px solid ${theme.cellBorderHex}; display: block; margin: 0 auto 4px auto; }
+  .fp-placeholder { width: 58px; height: 58px; border-radius: 6px; border: 1px dashed ${theme.cellBorderHex}; display: flex; align-items: center; justify-content: center; margin: 0 auto 4px auto; font-weight: bold; font-size: 16px; color: ${theme.mutedInkHex}; }
+  .fp-role { font-family: Arial, Helvetica, sans-serif; font-size: 8.5px; text-transform: uppercase; color: ${theme.mutedInkHex}; }
+  .fp-name { font-size: 10.5px; font-weight: bold; color: ${theme.inkHex}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fp-sub { font-size: 9px; color: ${theme.mutedInkHex}; }
+  .iagarb-panel { border: 1.5px solid ${theme.borderHex}; border-radius: 6px; padding: 7px 10px; margin-bottom: 10px; font-family: Arial, Helvetica, sans-serif; background: #ffffff; }
+  .iag-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 10.5px; border-bottom: 1px solid ${theme.cellBorderHex}; padding-bottom: 4px; margin-bottom: 5px; }
+  .iag-status { font-weight: bold; color: ${theme.primaryHex}; }
+  .iag-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 10px; margin-bottom: 6px; }
+  .iag-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .iag-pos { border: 1px solid ${theme.cellBorderHex}; border-radius: 4px; padding: 3px 5px; text-align: center; }
+  .iag-lbl { font-size: 8.5px; color: ${theme.mutedInkHex}; }
+  .iag-val { font-size: 10.5px; font-weight: bold; color: ${theme.inkHex}; margin-top: 1px; }
+  .anc-photo-row { display: flex; align-items: flex-start; gap: 6px; }
+  .anc-photo { width: 34px; height: 34px; object-fit: cover; border-radius: 4px; border: 1px solid ${theme.cellBorderHex}; flex-shrink: 0; }
+  .wool-line { color: ${theme.primaryHex}; font-family: Arial, Helvetica, sans-serif; font-size: 9px; font-weight: bold; margin-top: 1px; }
   table.pedigree { width: 100%; border-collapse: collapse; table-layout: fixed; background: #ffffff; }
   table.pedigree thead { display: table-header-group; }
   table.pedigree tr { break-inside: avoid; page-break-inside: avoid; }
@@ -1656,7 +2119,7 @@ export function generateEvansHtmPedigree(
   .footer-contact { width: 100%; font-size: 10.5px; color: ${theme.primaryHex}; font-weight: bold; }
   @media print {
     body { max-width: none; margin: 0; }
-    :root, html, body, .pedigree-frame, .header, .subject-wrap, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .genetics-notice, .footer {
+    :root, html, body, .pedigree-frame, .header, .subject-wrap, .family-strip, .fp-card, .iagarb-panel, .iag-pos, table.pedigree, table.pedigree th, td.cell, td.sire, td.dam, td.empty, .genetics-notice, .footer {
       color-scheme: light only !important;
       background: #ffffff !important;
       background-color: #ffffff !important;
@@ -1676,7 +2139,7 @@ export function generateEvansHtmPedigree(
         ${safeLogo ? `<img class="barn-logo" src="${safeLogo}" alt="${escapeHtml(settings.barnName || 'Barn Logo')}" />` : ''}
         <div>
           <div class="barn-title">${escapeHtml(settings.barnName || 'Community Pedigree')}</div>
-          <div class="sub-title">Official ${depth}-Generation ${escapeHtml(subject.species)} Pedigree Certificate${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
+          <div class="sub-title">${certSubtitle}${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
         </div>
       </div>
       <div class="sub-title">Generated ${escapeHtml(formatReadableDate(nowIsoUtc().slice(0, 10)))} &middot; Wright COI: ${coi.coiPercent.toFixed(2)}% (${escapeHtml(coi.risk.label)})</div>
@@ -1712,11 +2175,15 @@ export function generateEvansHtmPedigree(
           }
           return parts.join('\n        ');
         })()}
+        ${subjectWoolLine ? `<div><strong>Wool / Fiber:</strong> ${escapeHtml(subjectWoolLine)}</div>` : ''}
         ${subject.rufusLevel ? `<div><strong>Rufus Intensity:</strong> ${escapeHtml(subject.rufusLevel)}</div>` : ''}
         ${showGenotypes && subjectGeno ? `<div><strong>Genotype:</strong> <code>${escapeHtml(subjectGeno)}</code></div>` : ''}
         ${subjectCarriers ? `<div><strong>Carrier Disclosures:</strong> ${escapeHtml(subjectCarriers)}</div>` : ''}
       </div>
     </div>
+
+    ${familyPortraitStripHtml}
+    ${iagarbSectionHtml}
 
     <table class="pedigree">
       <thead>
@@ -1795,6 +2262,33 @@ export function exportSpeciesBackupJson(
   const youthProjectBooks = (snapshot.youthProjectBooks ?? []).filter((yp) =>
     isSameSpecies(yp.species, speciesName)
   );
+  const clientContacts = (snapshot.clientContacts ?? []).filter((cc) =>
+    isSameSpecies(cc.species, speciesName)
+  );
+  const waitlistEntries = (snapshot.waitlistEntries ?? []).filter((wl) =>
+    isSameSpecies(wl.species, speciesName)
+  );
+  const animalReservations = (snapshot.animalReservations ?? []).filter((ar) =>
+    isSameSpecies(ar.species, speciesName)
+  );
+  const woolHarvests = (snapshot.woolHarvests ?? []).filter(
+    (wh) => isSameSpecies(wh.species, speciesName) || animalIds.has(wh.animalId)
+  );
+  const mileageLogs = (snapshot.mileageLogs ?? []).filter((ml) =>
+    isSameSpecies(ml.species, speciesName)
+  );
+  const journalEntries = (snapshot.journalEntries ?? []).filter((je) =>
+    isSameSpecies(je.species, speciesName)
+  );
+  const judgeClubs = (snapshot.judgeClubs ?? []).filter((jc) =>
+    isSameSpecies(jc.species, speciesName)
+  );
+  const judgeAssignments = (snapshot.judgeAssignments ?? []).filter((ja) =>
+    isSameSpecies(ja.species, speciesName)
+  );
+  const judgeExpenses = (snapshot.judgeExpenses ?? []).filter((jx) =>
+    isSameSpecies(jx.species, speciesName)
+  );
 
   return exportBarnBackupJson(
     {
@@ -1812,6 +2306,15 @@ export function exportSpeciesBackupJson(
       ledgerEntries,
       processingLogs,
       youthProjectBooks,
+      clientContacts,
+      waitlistEntries,
+      animalReservations,
+      woolHarvests,
+      mileageLogs,
+      journalEntries,
+      judgeClubs,
+      judgeAssignments,
+      judgeExpenses,
     },
     {
       backupScope: 'species',
