@@ -54,3 +54,11 @@ All automated checks, builds, website deployments, Android APKs, and codebase ex
 - **Security & Dependency Hygiene Audit (`security-audit.yml`)** *(Weekly / dependency edits / manual)* — Checks for leaked secrets/keystores, enforces Android minimal-dependency rules, and runs an advisory `npm audit`.
 - **Release PWA & Android Bundle (`release.yml`)** *(Version tags `v*.*.*` or manual)* — Verifies cross-file version sync, packages the built PWA `.zip` and thin Android WebView `.apk` files with `.sha256` checksums, and attaches both to the GitHub Release on tags.
 
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the [LICENSE](LICENSE) file for full details.
+
+### Public Agencies and Research Collaborations
+
+We actively welcome collaboration with public agricultural agencies, land-grant universities, and open research initiatives (including the USDA and related breeding programs). If your organization needs alternative licensing terms—such as Apache 2.0—to integrate this work into public-interest tools, please open an issue or contact the project maintainer directly to discuss a separate licensing agreement.
+
