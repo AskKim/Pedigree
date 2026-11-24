@@ -45,6 +45,7 @@ import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
 import type {
   ImprovementCategory,
   ImprovementEntry,
+  ImprovementRelease,
 } from '../core/improvementRegistry';
 import { BarnDatabaseSnapshot } from '../core/models';
 import {
@@ -175,9 +176,14 @@ export function DiagnosticsAndSupportPanel({
     attemptShare: boolean;
   } | null>(null);
   const [showImprovementsLog, setShowImprovementsLog] = useState(false);
+  const [improvementReleaseFilter, setImprovementReleaseFilter] = useState<
+    'all' | 'alpha-2' | 'alpha-3'
+  >('all');
   const [loadedImprovements, setLoadedImprovements] = useState<{
     entries: ImprovementEntry[];
     categoryLabels: Record<ImprovementCategory, string>;
+    releaseLabels: Record<string, string>;
+    getRelease: (entry: { id: string; release?: ImprovementRelease }) => ImprovementRelease;
   } | null>(null);
   const [loadingImprovementsLog, setLoadingImprovementsLog] = useState(false);
 
@@ -187,6 +193,8 @@ export function DiagnosticsAndSupportPanel({
       prev ?? {
         entries: mod.IMPROVEMENTS_REGISTRY,
         categoryLabels: mod.IMPROVEMENT_CATEGORY_LABELS,
+        releaseLabels: mod.IMPROVEMENT_RELEASE_LABELS,
+        getRelease: mod.getImprovementRelease,
       }
     );
     return mod;
@@ -1905,29 +1913,75 @@ export function DiagnosticsAndSupportPanel({
         )}
 
         {showImprovementsLog && (
-          <div id={improvementsLogId} className="space-y-2 max-h-72 overflow-y-auto pt-1">
+          <div id={improvementsLogId} className="space-y-3 max-h-80 overflow-y-auto pt-1">
             {loadingImprovementsLog && !loadedImprovements && (
               <div className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] text-xs text-[var(--barn-muted)]">
                 Loading tracked improvements manifest…
               </div>
             )}
-            {(loadedImprovements?.entries ?? []).map((entry) => (
-              <div
-                key={entry.id}
-                className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1 text-xs"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold text-[var(--barn-ink)]">
-                    <span className="font-mono text-[var(--barn-sage)]">{entry.id}</span> ·{' '}
-                    {entry.title}
-                  </span>
-                  <span className="text-[11px] font-mono text-[var(--barn-muted)]">
-                    {loadedImprovements?.categoryLabels[entry.category] ?? entry.category}
-                  </span>
-                </div>
-                <p className="text-[11px] text-[var(--barn-muted)]">{entry.summary}</p>
+            {loadedImprovements && (
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] pb-1 border-b border-[var(--barn-border)]">
+                <span className="text-[var(--barn-muted)] font-medium mr-1">Milestone:</span>
+                {(['all', 'alpha-2', 'alpha-3'] as const).map((tab) => {
+                  const count =
+                    tab === 'all'
+                      ? loadedImprovements.entries.length
+                      : loadedImprovements.entries.filter(
+                          (e) => loadedImprovements.getRelease(e) === tab
+                        ).length;
+                  const label =
+                    tab === 'all'
+                      ? 'All'
+                      : loadedImprovements.releaseLabels[tab] ?? tab;
+                  const isActive = improvementReleaseFilter === tab;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => setImprovementReleaseFilter(tab)}
+                      className={`px-2 py-0.5 rounded-full border text-[11px] font-medium transition-colors ${
+                        isActive
+                          ? 'bg-[var(--barn-sage)] text-white border-[var(--barn-sage)]'
+                          : 'bg-[var(--barn-surface)] text-[var(--barn-muted)] border-[var(--barn-border)] hover:bg-[var(--barn-subtle)]'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  );
+                })}
               </div>
-            ))}
+            )}
+            {(loadedImprovements?.entries ?? [])
+              .filter((entry) => {
+                if (improvementReleaseFilter === 'all') return true;
+                return loadedImprovements?.getRelease(entry) === improvementReleaseFilter;
+              })
+              .map((entry) => {
+                const rel = loadedImprovements?.getRelease(entry) ?? 'alpha-2';
+                const relLabel = loadedImprovements?.releaseLabels[rel] ?? rel;
+                return (
+                  <div
+                    key={entry.id}
+                    className="p-3 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)] space-y-1 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--barn-ink)]">
+                        <span className="font-mono text-[var(--barn-sage)]">{entry.id}</span> ·{' '}
+                        {entry.title}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[var(--barn-sage-tint)] text-[var(--barn-sage)] border border-[var(--barn-sage)]/30">
+                          {relLabel}
+                        </span>
+                        <span className="text-[11px] font-mono text-[var(--barn-muted)]">
+                          {loadedImprovements?.categoryLabels[entry.category] ?? entry.category}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-[var(--barn-muted)]">{entry.summary}</p>
+                  </div>
+                );
+              })}
           </div>
         )}
       </div>

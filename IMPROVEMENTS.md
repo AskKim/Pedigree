@@ -5,6 +5,11 @@ by `npm run verify:improvements` (and GitHub Actions CI). If an upstream GitHub 
 sync overwrites customized files, run the verifier to pinpoint exactly which improvements were wiped
 and follow the restoration playbook below.
 
+## Release Milestone Classification
+
+- **Alpha 2 (v0.1.0-alpha.2 — Released Baseline):** `IMP-001` through `IMP-064` (64 improvements).
+- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (0 improvements).
+
 ## Quick Verification & Recovery Commands
 
 ```bash
@@ -20,10 +25,11 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (63)
+## Logged Improvements (64)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Add backup reminders and timestamps where necessary, place backup buttons prominently, and keep backups clean and human-readable.
@@ -45,6 +51,7 @@ npm run lint && npm run build
 
 ### IMP-002: Timestamped Pre-Removal Safety Backups & Non-Testing Record Purge
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Provide collision-free timestamped backups before removing a species or clearing non-testing entries in case corruption caused the reset.
@@ -64,6 +71,7 @@ npm run lint && npm run build
 
 ### IMP-003: Decluttered Home Species Cards with Targeted Alerts & Arriving-Babies Indicator
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Home & Alerts (`alerts-home`)
 - **Origin:** Session Improvement
 - **User Goal:** Keep Home species cards focused strictly on navigation, sorting, due/overdue task actionability, and upcoming births.
@@ -83,6 +91,7 @@ npm run lint && npm run build
 
 ### IMP-004: Optional Default Species Naming Prefix with Delimiter-Aware Override
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Save repetitive typing for rabbitry/herd prefixes without double-prefixing or blocking custom names.
@@ -99,6 +108,7 @@ npm run lint && npm run build
 
 ### IMP-005: Species Hub Management Relocation, Cross-Species Migration Modal & Herd Pagination
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Move heavy destructive & migration controls into each species hub and support safe family-linked cross-species moves.
@@ -118,6 +128,7 @@ npm run lint && npm run build
 
 ### IMP-006: Archive-Aware Herd Status & Importer Normalization
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Ensure historical/inactive imported stock stays archived cleanly for pedigrees without triggering active barn tasks.
@@ -135,6 +146,7 @@ npm run lint && npm run build
 
 ### IMP-007: Mobile Chrome Crash Prevention, Cycle-Guarded COI & Batch Storage Writes
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Fix repeated Chrome Android tab crashes before/during app startup and keep pedigree/bulk operations fast under tight mobile RAM.
@@ -156,6 +168,7 @@ npm run lint && npm run build
 
 ### IMP-008: Hardcoded Root Base Path & Disabled Dev HMR Config + GitHub Actions CI
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
 - **User Goal:** Automatically verify all domain tests, lint, improvements, and PWA builds on every push with `/` and disabled dev HMR hardcoded so AI Studio never prompts for env vars.
@@ -180,6 +193,7 @@ npm run lint && npm run build
 
 ### IMP-009: Crash Error Boundary, Persistent Crash Log & DB Health Self-Repair
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Preserved Upstream Feature
 - **User Goal:** Diagnose and recover from browser/storage failures on mobile without losing breeder data.
@@ -197,6 +211,7 @@ npm run lint && npm run build
 
 ### IMP-010: Offline Delta Sync Outbox, Conflict Log & Complete ZIP Photo Archive
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Preserved Upstream Feature
 - **User Goal:** Enable multi-device barn sync and complete archival exports containing both records and photos.
@@ -212,6 +227,7 @@ npm run lint && npm run build
 
 ### IMP-011: Durable App Improvement Registry & GitHub-Overwrite Drift Verifier
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
 - **User Goal:** Log every improvement in a durable, exportable system so a future GitHub sync wiping files can be detected and put back accurately.
@@ -229,6 +245,7 @@ npm run lint && npm run build
 
 ### IMP-012: Startup Self-Healing, Lazy Firebase Auth Guard & Corrective Action Logging
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Auto-fix any initial loading or crash errors on startup and log every corrective action for debugging.
@@ -248,6 +265,7 @@ npm run lint && npm run build
 
 ### IMP-013: Mobile Memory Hardening, Accessibility & Universal Pedigree Importer
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Optimize memory for mobile-first usage, improve cross-device accessibility, and import heterogeneous pedigree files gracefully without crashing.
@@ -268,6 +286,7 @@ npm run lint && npm run build
 
 ### IMP-014: Species Tattoo/Sex Conflict Guardrails, Override & Import Conflict Alerts
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Catch duplicate within-species IDs and parent sex mismatches, discourage accidental duplicate tattoos with an explicit override, never hard-block imports on conflicts, and let breeders locate or ignore soft warnings.
@@ -290,6 +309,7 @@ npm run lint && npm run build
 
 ### IMP-015: 5-Tier Device Capability Detection & Adaptive Memory Cautions
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Detect constrained mobile devices early, warn users appropriately by hardware tier, and keep Tier 1–2 cautions impossible to accidentally hide permanently.
@@ -311,6 +331,7 @@ npm run lint && npm run build
 
 ### IMP-016: Route-Level Code Splitting with Retry & Chunk Error Boundary
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Reduce startup JS bundle size and memory pressure by lazy-loading secondary screens without breaking offline or stale-chunk recovery.
@@ -327,6 +348,7 @@ npm run lint && npm run build
 
 ### IMP-017: On-Demand Full-Resolution Photo Hydration & Off-Thread `.ZIP`/Import Worker
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Eliminate heavy base64 photo retention and UI-thread freezes during large `.ZIP` backups and external pedigree imports on mobile devices.
@@ -349,6 +371,7 @@ npm run lint && npm run build
 
 ### IMP-018: Hybrid OPFS Storage Vault, Archived Herds, Wiped-Storage Recovery & IDB Migration Guard
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Isolate temporary exports in OPFS /tmp, unify automated + manual backup vaults in OPFS /backups with IDB fallback, offload Sold/Deceased stock to OPFS /archives while preserving ancestor pedigree stubs, pause on wiped browser storage with restore recovery, and dump raw stores before resetting failed IndexedDB migrations.
@@ -372,6 +395,7 @@ npm run lint && npm run build
 
 ### IMP-019: ES2018 Compatibility Build, Crash-Loop Circuit Breaker, Manual SW Update & Graceful Fallbacks
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Support 2018+ browsers gracefully without polyfill bloat, break reload/crash loops cleanly, defer PWA updates while editing, offer low-memory DB-only exports, and keep unavailable controls visible with explanation text.
@@ -395,6 +419,7 @@ npm run lint && npm run build
 
 ### IMP-020: Mobile Background Freeze Pause/Resume, Double-Submit Guards & Async Error Toast
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Prevent mid-batch IndexedDB corruption on iOS/Android background freeze, stop rapid-tap duplicate submits while holding unsaved form notes on write failures, and surface gentle non-blocking recovery toasts for uncaught async errors.
@@ -421,6 +446,7 @@ npm run lint && npm run build
 
 ### IMP-021: ARIA Combobox Navigation, Reports/Settings Shortcuts, Focus Polish & rAF Observer Optimization
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Restore and strengthen keyboard shortcuts, tab stops, ARIA combobox navigation, and focus indicators while cleaning up minor export and DOM observer inefficiencies.
@@ -443,6 +469,7 @@ npm run lint && npm run build
 
 ### IMP-022: Virtualized Pedigree Branch Loading, PWA Update Governor, Offline Probe & Upgrade Gate
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Keep pedigree SVG/DOM light on mobile devices, prevent unwanted or revoked app-shell reloads during active barn sessions, separate app offline holding from device Airplane Mode, and require verified backups on multi-version schema jumps.
@@ -467,6 +494,7 @@ npm run lint && npm run build
 
 ### IMP-023: Storage Pruning, Pre-Restore Archive Inspector, Clock-Skew Compensation, Monotonic _rev & Encrypted Backups
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Prevent runaway photo quota growth, inspect backups for species/conflicts before committing restores, protect multi-device sync order against wrong or rewound clocks, avoid duplicate Google Calendar events, and offer opt-in passphrase encryption for shared archives/sync folders.
@@ -493,6 +521,7 @@ npm run lint && npm run build
 
 ### IMP-024: Active Medication Withdrawal Countdown & Livestock Safety Alerts
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Home & Alerts (`alerts-home`)
 - **Origin:** Session Improvement
 - **User Goal:** Surface active care-log withdrawal periods on Herd cards and Home alerts and trigger soft confirmation warnings before marking an animal under active withdrawal for sale, meat/cull processing, or show exhibition.
@@ -514,6 +543,7 @@ npm run lint && npm run build
 
 ### IMP-025: Sync Outbox Alignment, Metadata-Only Photo Sync & Reset State Cleanup
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Session Improvement
 - **User Goal:** Align Folder/Delta Sync outbox mutations for photo actions and cross-species migrations while guaranteeing stale P2P sync queues, conflict logs, and backup reminders never leak across factory resets or full Replace restores.
@@ -535,6 +565,7 @@ npm run lint && npm run build
 
 ### IMP-026: Clock-Skew Consistency & Archive Export Double-Tap Locks
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Enforce clock-skew compensation consistently across upgrade checks and Settings timestamps while eliminating the <16ms double-tap race on heavy archive and backup exports.
@@ -554,6 +585,7 @@ npm run lint && npm run build
 
 ### IMP-027: True Lazy 2–3 Gen SQLite/OPFS Pedigree Fetching & ES2018 Windowed List Virtualization
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Reduce mobile RAM and DOM overhead by fetching Gen 4+ / archived pedigree ancestors lazily from SQLite/OPFS and virtualizing large Breeding, Herd, and Reports lists.
@@ -577,6 +609,7 @@ npm run lint && npm run build
 
 ### IMP-028: Cage / Pen Capacity Warnings & Quick Occupant Assignment
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Compare current animal occupants against CageLocation.capacity (e.g., 3/2 over capacity), allow one-click occupant assignment from housing cards, and warn before exceeding capacity.
@@ -598,6 +631,7 @@ npm run lint && npm run build
 
 ### IMP-029: Breeding Lab & Master Task List Refinements (Post-Birth Recalculation, Quick Checkoffs & Breed Overrides)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Recalculate post-birth tasks to the actual birth date when births arrive early or late, support one-click Palpation/Birth Check checkoffs with automatic Missed task cleanup, and allow optional per-breed gestation/weaning/milestone overrides.
@@ -620,6 +654,7 @@ npm run lint && npm run build
 
 ### IMP-030: Consolidated Import/Export Hub & Extensible Non-Native Exporter Registry
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Consolidate all backup, native restore, multi-worker sync, external importer, and non-native exporter tools into a clean 3-section Import/Export Hub page integrated into navigation and Settings.
@@ -641,6 +676,7 @@ npm run lint && npm run build
 
 ### IMP-031: Interactive CSV Column Mapper, Starter Template & Unlinked Parent Preview
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Provide a one-click Starter CSV Template download, interactive column-mapping preview for spreadsheets, and pre-import highlighting for unresolved Sire/Dam links on non-HerdBoss CSV imports.
@@ -660,6 +696,7 @@ npm run lint && npm run build
 
 ### IMP-032: Low-RAM Export Streaming & Full OPFS /tmp Staging
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Backups & Safety (`backup-safety`)
 - **Origin:** Session Improvement
 - **User Goal:** Route all printable/shareable exports (including <512 KB .HTM pedigrees and cage cards) through OPFS /tmp with immediate post-use cleanup, and stream large .ZIP and .JSON backup chunks incrementally into OPFS /tmp without materializing monolithic JS heap buffers.
@@ -680,6 +717,7 @@ npm run lint && npm run build
 
 ### IMP-033: "The Techy Stuff" Developer & Troubleshooting Screen, Permanent Tier Hierarchy & Production Guardrails
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Session Improvement
 - **User Goal:** Relocate advanced, non-routine operational controls out of Settings into a dedicated lazy-loaded "The Techy Stuff" developer screen with a permanent non-closeable Tier/Memory Hierarchy block, isolated error boundary, OPFS/IDB quota pre-flight checks, strict input sanitization, and multi-step destructive safeguards.
@@ -701,6 +739,7 @@ npm run lint && npm run build
 
 ### IMP-034: "Barn Bench" Fast Sequential Batch Entry Mode
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Let breeders walk down a cage row logging weights, body condition scores, nail trims, or cage moves rapidly with auto-advance and minimal modal switching.
@@ -721,6 +760,7 @@ npm run lint && npm run build
 
 ### IMP-035: Batch Cage Card, Compact Mini-Sheet & Pedigree Printing from Herd Multi-Select
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Print cage cards, 4-up mini pedigrees, 4x6 photo cards, or stacked pedigrees for multiple selected animals in one pass for shows, auctions, or transport.
@@ -740,6 +780,7 @@ npm run lint && npm run build
 
 ### IMP-036: QR-Coded Cage Cards & Visual Hutch-Row / Facility Pen Board
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Embed scannable QR codes on printable cage cards that open the animal profile route directly in the PWA, and provide a visual Hutch-by-Hutch / Cage Row & Pasture Board grouping pens by barn section with linked feedlot inventories and recurring maintenance reminders.
@@ -764,6 +805,7 @@ npm run lint && npm run build
 
 ### IMP-037: Side-by-Side Multi-Candidate Pairing Comparison Matrix (Breeding Lab)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Compare one dam against multiple candidate sires (or vice versa) in a single Breeding Lab table showing COI %, shared bottleneck ancestors, carrier risk flags, and predicted coat varieties side by side.
@@ -782,6 +824,7 @@ npm run lint && npm run build
 
 ### IMP-038: Color-Coded Allele Provenance, Unique-Ancestor Dimming & ARBA Registration Flags
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Color-code alleles by inheritance provenance (sire vs. dam vs. offspring vs. manual), dim unique non-convergent ancestors on pedigree trees to highlight linebred convergence, and flag Gen 0–3 pedigree nodes in red when missing ARBA registration fields would block registration.
@@ -803,6 +846,7 @@ npm run lint && npm run build
 
 ### IMP-039: Pedigree Print Orientation Toggle, Optional Breeder Logo, ARBA lbs.oz Notation & Direct Offline PDF Export
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Allow breeders to switch ARBA pedigrees between Landscape and Portrait 8.5"x11", attach a rabbitry/barn logo in the header, toggle ARBA lbs.oz decimal dot weights, and download a .PDF file directly 100% offline.
@@ -822,6 +866,7 @@ npm run lint && npm run build
 
 ### IMP-040: 8-Generation Pedigree Tree Mode, Custom Print Styling Presets & Shareable HTML Pedigree Cards
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Let breeders view and export up to 8 generations on demand, customize pedigree print borders, colors, and layouts safely on crisp white paper, and export lightweight standalone shareable pedigree HTML cards.
@@ -843,6 +888,7 @@ npm run lint && npm run build
 
 ### IMP-041: Structured Show Placements, Wins, Judge Notes & E-Leg Vault
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Capture structured show results, judge feedback, legs, and E-Leg certificate photos per entered animal so GC progress and show wins automatically enrich pedigrees, Barn Binder, and breeder reports.
@@ -870,6 +916,7 @@ npm run lint && npm run build
 
 ### IMP-042: Genetic Variety / Coat Explorer Sandbox (What-If Playground in Breeding Lab)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Let breeders experiment with hypothetical loci combinations and What-If crosses inside Breeding Lab and see predicted coat varieties, hidden carriers, and alerts without creating temporary animal records first.
@@ -888,6 +935,7 @@ npm run lint && npm run build
 
 ### IMP-043: Rate of Gain, Comparative Weight Charts & Litter Survival Curves
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Track kit/offspring survival rate per dam and sire, chart litter weight-gain milestones across seasons, and compare multi-animal Rate of Gain curves on an age-in-days axis with native target/goal overlays.
@@ -910,6 +958,7 @@ npm run lint && npm run build
 
 ### IMP-044: Feed Inventory Ledger, Tag Lot-Number OCR & Biosecurity Auto-Purge
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Track purchased feed lots, allocate intake to pens and litters, scan feed tag stamps before deep compression with manual fallback, auto-purge heavy raw tag images after lot indexing, and keep an offline feed manufacturer recall & hotline directory.
@@ -933,6 +982,7 @@ npm run lint && npm run build
 
 ### IMP-045: Offline Photo Pedigree Scanning & Local OCR Importer
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Allow breeders to snap a photo or upload JPG/PNG/WebP/PDF scans of paper pedigrees completely offline, review/correct extracted ancestor names, ear tattoos, weights, and ARBA registration numbers across 3 generations, and stage them straight into the Import Review Queue with duplicate/conflict resolution.
@@ -954,6 +1004,7 @@ npm run lint && npm run build
 
 ### IMP-046: Local Economic Ledger, Meat/Pelt Processing Yields & 4-H/FFA Project Books
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Provide offline barn bookkeeping with receipt photos, automated animal/litter P&L margins, meat/pelt carcass yield and pelt grading logs, and printable 4-H/FFA youth livestock project completion books.
@@ -975,6 +1026,7 @@ npm run lint && npm run build
 
 ### IMP-047: Post-Crash Alignment, Ready External Exporters, Feed/Archive Parity & Android WebView Print/Share
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Realign the entire codebase after build-crash drift, keep the PWA locked to React + Vite + TypeScript, complete half-done exporters and migration/inspector coverage, and make pedigree/binder print & share work seamlessly on desktop, mobile web, and the Android WebView APK.
@@ -997,6 +1049,7 @@ npm run lint && npm run build
 
 ### IMP-048: Hybrid Architecture Guardrails & React-Only Core PWA Lock
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
 - **User Goal:** Prevent AI Studio, GitHub import triage, or contributors from misinterpreting the hybrid Kotlin Android WebView wrapper (`android-wrapper/`) as a signal to rewrite the core React PWA into Kotlin.
@@ -1019,6 +1072,7 @@ npm run lint && npm run build
 
 ### IMP-049: Client CRM, Buyer Waitlist, Reservations & Deposit Reminders
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Track buyer contacts, waitlist queues, animal/litter reservations, deposit due reminders, and printable sales agreements offline without cloud dependencies.
@@ -1040,6 +1094,7 @@ npm run lint && npm run build
 
 ### IMP-050: Alternative Certificates, Show Entry/Remark Cards & IAGARB Wool/Fiber Tracking
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Support alternative companion birth/breeding certificates, printable/emailable show documents directly from show rosters, family portrait & IAGARB Angora pedigree templates, and wool/fiber harvest logging.
@@ -1066,6 +1121,7 @@ npm run lint && npm run build
 
 ### IMP-051: Founder Loss / Heritability Analytics, Interactive Barn Scheduler Gantt & LAN P2P Outbox Sync
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Provide heritability trends, founder-loss analytics, drag-and-drop chore scheduling with smart escalation, and serverless LAN P2P outbox sync.
@@ -1092,6 +1148,7 @@ npm run lint && npm run build
 
 ### IMP-052: Post-Import Bootability, Bundle Hygiene, Atomic SQLite Migrations & Memory Hardening
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Harden post-import booting stability, first-paint loading speed, bundle footprint, and mobile memory management without breaking offline-first guarantees.
@@ -1119,6 +1176,7 @@ npm run lint && npm run build
 
 ### IMP-053: v0.1.0-alpha.2 Release Readiness: Targeted Strict TS, Cold-Start Splits, Worker Freeze Trim, Unified PWA+APK Release CI & Prompt Governance
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Prepare Community Pedigree cleanly for its v0.1.0-alpha.2 GitHub release tag with zero new features—optimizing cold-start payload, compiler strictness, mobile worker memory cleanup, unified PWA+Android APK release packaging, plan deletion on wrap-up, and mandatory improvement logging for significant changes.
@@ -1140,6 +1198,7 @@ npm run lint && npm run build
 
 ### IMP-054: Zero-Server Breeder Showcase & For-Sale Catalog Exporter
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Let breeders mark eligible livestock For Sale with asking price and buyer notes, configure public contact details in Barn Settings, and export a self-contained static HTML storefront & printable buyer stock sheet without any server.
@@ -1165,6 +1224,7 @@ npm run lint && npm run build
 
 ### IMP-055: Health Reference Wiki Links, Local Veterinary PDF Folder Pointer & External Backup Reminders
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Provide curated online links to external rabbit and livestock health wikis alongside a simple local device folder pointer for personal offline veterinary PDFs, paired with periodic reminders to back up external document folders.
@@ -1189,6 +1249,7 @@ npm run lint && npm run build
 
 ### IMP-056: Restricted Health Wiki Article Sources Blocklist (House Rabbit Society & Custom Rules)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Maintain a restricted sources list for health wiki article connections starting with House Rabbit Society.
@@ -1208,6 +1269,7 @@ npm run lint && npm run build
 
 ### IMP-057: Preferred Wiki Sources, English USA (en-US) App Locale & Multi-Language Wiki Filter
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Create a preferred sources list for health wiki links (Merck Veterinary Manual, USDA & equivalent federal agencies in all countries, and state/federal/land-grant universities in all countries), define the app locale as English USA (en-US), and require English wiki sources via an extensible multi-language array.
@@ -1229,6 +1291,7 @@ npm run lint && npm run build
 
 ### IMP-058: Breeding Calendar Moon/Holiday/Weather Overlays, Mileage & Tax Report Log & Personal Barn Journal
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Add offline moon-phase and holiday markers plus an optional online 7-day weather forecast strip to the Breeding Calendar, track IRS-deductible farm/show mileage with annual tax reports, and add a date-organized Personal Barn Journal with rich text notes, color categories, star ratings, and full-text search.
@@ -1251,6 +1314,7 @@ npm run lint && npm run build
 
 ### IMP-059: The Judge's Notebook (Dedicated Show Judge Module)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Species & Herd UX (`species-ux`)
 - **Origin:** Session Improvement
 - **User Goal:** Add an optional module for show judges to manage assigned show dates, club contacts, travel mileage, judging expenses, bid statuses, and judging contracts.
@@ -1272,6 +1336,7 @@ npm run lint && npm run build
 
 ### IMP-060: Optional Cloud App-Folder Sync (Google Drive AppFolder / OneDrive AppRoot) & 403/507 Quota Circuit Breaker
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Session Improvement
 - **User Goal:** Support strictly optional app-folder cloud delta sync with tight-storage incremental chunking and an immediate 403/507 quota circuit breaker that protects local IndexedDB writes.
@@ -1292,6 +1357,7 @@ npm run lint && npm run build
 
 ### IMP-061: Developer Console Tabbed Reorganization, Collapsible Subunits & OPFS/Runtime Telemetry
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Diagnostics & Sync (`diagnostics-sync`)
 - **Origin:** Session Improvement
 - **User Goal:** Optimize the developer page, identify and surface unadded useful internal tools, organize the workspace into clean tabbed and collapsible subunits with a header Open All toggle to improve UI/UX.
@@ -1313,6 +1379,7 @@ npm run lint && npm run build
 
 ### IMP-062: Alpha-to-Release Optimization: CI & Android APK Hardening, IndexedDB Quota Recovery, Print Stage XSS Sanitization & Sub-500kB Bundle Splits
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Prepare Community Pedigree from Alpha to release with zero new features by fixing highest-risk CI, storage, security, and cold-start bundle bottlenecks while guaranteeing bootability.
@@ -1335,6 +1402,7 @@ npm run lint && npm run build
 
 ### IMP-063: Mobile Chrome Dev Preview Boot Memory Guard: Inline Sourcemap Stripping, Direct Lucide Icon ESM & Lazy Error-Boundary Export
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Fix mobile Chrome Preview iframe Aw Snap crashes on startup by eliminating excessive dev-mode JS parse memory and inline source map bloat.
@@ -1354,6 +1422,7 @@ npm run lint && npm run build
 
 ### IMP-064: GitHub Pages Deployment, Subpath Routing & Search Engine Optimization (SEO)
 
+- **Release Milestone:** Alpha 2 (`alpha-2`)
 - **Category:** CI & Tooling (`ci-tooling`)
 - **Origin:** Session Improvement
 - **User Goal:** Optimize all GitHub Pages for utility, setup, social preview cards, and search engine discoverability.
@@ -1373,6 +1442,4 @@ npm run lint && npm run build
 2. Keep `public/robots.txt`, `public/sitemap.xml`, and `public/404.html` in place.
 3. Ensure `.github/workflows/deploy-pages.yml` triggers on `main` and `release` and verifies `dist/robots.txt` and `dist/sitemap.xml`.
 4. Keep `"homepage": "https://askkim.github.io/Pedigree/"` in `package.json` and live links in `README.md`.
-
-
 

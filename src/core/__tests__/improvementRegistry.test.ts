@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ALPHA_2_FINAL_IMP_ID,
+  ALPHA_2_RELEASE,
+  ALPHA_3_RELEASE,
   buildImprovementsRecoveryJson,
   evaluateImprovementInvariants,
   formatImprovementsMarkdown,
+  getImprovementRelease,
+  getImprovementsByRelease,
   IMPROVEMENTS_REGISTRY,
+  isAlpha2Improvement,
+  isAlpha3Improvement,
 } from '../improvementRegistry';
 
 describe('improvementRegistry — anti-wipeout tracking & drift verification', () => {
@@ -143,5 +150,48 @@ describe('improvementRegistry — anti-wipeout tracking & drift verification', (
     expect(parsed.entries.some((e: { id: string }) => e.id === 'IMP-059')).toBe(true);
     expect(parsed.entries.some((e: { id: string }) => e.id === 'IMP-060')).toBe(true);
     expect(parsed.entries.some((e: { id: string }) => e.id === 'IMP-061')).toBe(true);
+  });
+
+  it('correctly identifies all current improvements (IMP-001 to IMP-064) as Alpha 2 and subsequent improvements as Alpha 3', () => {
+    expect(ALPHA_2_FINAL_IMP_ID).toBe('IMP-064');
+    expect(ALPHA_2_RELEASE).toBe('alpha-2');
+    expect(ALPHA_3_RELEASE).toBe('alpha-3');
+
+    // All currently registered improvements must be Alpha 2
+    for (const entry of IMPROVEMENTS_REGISTRY) {
+      expect(isAlpha2Improvement(entry)).toBe(true);
+      expect(isAlpha3Improvement(entry)).toBe(false);
+      expect(getImprovementRelease(entry)).toBe('alpha-2');
+    }
+
+    const alpha2List = getImprovementsByRelease('alpha-2');
+    expect(alpha2List.length).toBe(IMPROVEMENTS_REGISTRY.length);
+    expect(alpha2List.length).toBe(64);
+
+    const alpha3List = getImprovementsByRelease('alpha-3');
+    expect(alpha3List.length).toBe(0);
+
+    // Any improvement starting at IMP-065 or higher defaults to Alpha 3
+    const nextEntry = { id: 'IMP-065', title: 'Next improvement', summary: 'Future feature' };
+    expect(isAlpha2Improvement(nextEntry)).toBe(false);
+    expect(isAlpha3Improvement(nextEntry)).toBe(true);
+    expect(getImprovementRelease(nextEntry)).toBe('alpha-3');
+
+    // Explicit release property is honored
+    expect(getImprovementRelease({ id: 'IMP-010', release: 'alpha-3' })).toBe('alpha-3');
+    expect(getImprovementRelease({ id: 'IMP-099', release: 'alpha-2' })).toBe('alpha-2');
+
+    // Recovery bundle JSON reflects Alpha 2 and Alpha 3 counts
+    const json = JSON.parse(buildImprovementsRecoveryJson());
+    expect(json.alpha2Total).toBe(64);
+    expect(json.alpha3Total).toBe(0);
+    expect(json.entries.every((e: { release: string }) => e.release === 'alpha-2')).toBe(true);
+
+    // Markdown documentation reflects classification header
+    const md = formatImprovementsMarkdown();
+    expect(md).toContain('## Release Milestone Classification');
+    expect(md).toContain('- **Alpha 2 (v0.1.0-alpha.2 — Released Baseline):** `IMP-001` through `IMP-064` (64 improvements).');
+    expect(md).toContain('- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (0 improvements).');
+    expect(md).toContain('- **Release Milestone:** Alpha 2 (`alpha-2`)');
   });
 });

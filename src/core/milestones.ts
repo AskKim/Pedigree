@@ -36,7 +36,7 @@ export const ALPHA_3_MILESTONES: ReleaseMilestone = {
   version: '0.1.0-alpha.3',
   label: 'Alpha 3',
   summary:
-    'Device-to-device QR pedigree exchange, architectural modularity, and resolving outdated file dependencies and toolchains.',
+    'Device-to-device QR pedigree exchange, architectural modularity, and resolving outdated file dependencies and toolchains. Tracks subsequent improvements starting from IMP-065.',
   status: 'planned',
   items: [
     {
@@ -89,7 +89,7 @@ export const APP_MILESTONES: Record<string, ReleaseMilestone> = {
     version: '0.1.0-alpha.2',
     label: 'Alpha 2',
     summary:
-      'Client CRM & waitlist, IAGARB wool/fiber tracking, founder loss/heritability analytics, Barn Scheduler Gantt, LAN P2P sync, atomic SQLite migrations, mobile memory hardening & Android WebView packaging.',
+      'Client CRM & waitlist, IAGARB wool/fiber tracking, founder loss/heritability analytics, Barn Scheduler Gantt, LAN P2P sync, atomic SQLite migrations, mobile memory hardening & Android WebView packaging. Encompasses all 64 foundational improvements (IMP-001 through IMP-064).',
     status: 'released',
     items: [],
   },

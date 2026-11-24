@@ -36,10 +36,22 @@ export interface ImprovementInvariant {
   rationale: string;
 }
 
+export type ImprovementRelease = 'alpha-2' | 'alpha-3' | (string & {});
+
+export const ALPHA_2_FINAL_IMP_ID = 'IMP-064';
+export const ALPHA_2_RELEASE: ImprovementRelease = 'alpha-2';
+export const ALPHA_3_RELEASE: ImprovementRelease = 'alpha-3';
+
+export const IMPROVEMENT_RELEASE_LABELS: Record<string, string> = {
+  'alpha-2': 'Alpha 2',
+  'alpha-3': 'Alpha 3',
+};
+
 export interface ImprovementEntry {
   id: string;
   title: string;
   category: ImprovementCategory;
+  release?: ImprovementRelease;
   source: 'session' | 'github-preserved';
   summary: string;
   userIntent: string;
@@ -4900,11 +4912,61 @@ export function evaluateImprovementInvariants(
 }
 
 /**
+ * Determines the release milestone for an improvement entry.
+ * If explicitly specified on the entry (`entry.release`), uses that value.
+ * Otherwise, entries up to and including IMP-064 default to 'alpha-2',
+ * and entries from IMP-065 onwards default to 'alpha-3'.
+ */
+export function getImprovementRelease(entry: {
+  id: string;
+  release?: ImprovementRelease;
+}): ImprovementRelease {
+  if (entry.release) {
+    return entry.release;
+  }
+  const match = entry.id.match(/^IMP-(\d+)$/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (!isNaN(num) && num <= 64) {
+      return ALPHA_2_RELEASE;
+    }
+  }
+  return ALPHA_3_RELEASE;
+}
+
+/**
+ * Checks if an improvement was implemented during the Alpha 2 release cycle.
+ */
+export function isAlpha2Improvement(entry: { id: string; release?: ImprovementRelease }): boolean {
+  return getImprovementRelease(entry) === ALPHA_2_RELEASE;
+}
+
+/**
+ * Checks if an improvement belongs to the Alpha 3 release cycle.
+ */
+export function isAlpha3Improvement(entry: { id: string; release?: ImprovementRelease }): boolean {
+  return getImprovementRelease(entry) === ALPHA_3_RELEASE;
+}
+
+/**
+ * Filters improvement entries by release milestone ('alpha-2' or 'alpha-3').
+ */
+export function getImprovementsByRelease(
+  release: ImprovementRelease,
+  entries: ImprovementEntry[] = IMPROVEMENTS_REGISTRY
+): ImprovementEntry[] {
+  return entries.filter((e) => getImprovementRelease(e) === release);
+}
+
+/**
  * Generates a clean, self-contained Markdown improvements & GitHub-overwrite recovery manual.
  */
 export function formatImprovementsMarkdown(
   entries: ImprovementEntry[] = IMPROVEMENTS_REGISTRY
 ): string {
+  const alpha2Count = entries.filter(isAlpha2Improvement).length;
+  const alpha3Count = entries.filter(isAlpha3Improvement).length;
+
   const lines: string[] = [
     '# Community Pedigree — App Improvements & GitHub-Overwrite Recovery Log',
     '',
@@ -4912,6 +4974,11 @@ export function formatImprovementsMarkdown(
     'by `npm run verify:improvements` (and GitHub Actions CI). If an upstream GitHub pull or AI Studio',
     'sync overwrites customized files, run the verifier to pinpoint exactly which improvements were wiped',
     'and follow the restoration playbook below.',
+    '',
+    '## Release Milestone Classification',
+    '',
+    `- **Alpha 2 (v0.1.0-alpha.2 — Released Baseline):** \`IMP-001\` through \`IMP-064\` (${alpha2Count} improvements).`,
+    `- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** \`IMP-065\` onwards (${alpha3Count} improvements).`,
     '',
     '## Quick Verification & Recovery Commands',
     '',
@@ -4933,10 +5000,13 @@ export function formatImprovementsMarkdown(
   ];
 
   for (const entry of entries) {
+    const rel = getImprovementRelease(entry);
+    const relLabel = IMPROVEMENT_RELEASE_LABELS[rel] ?? rel;
     const sourceBadge =
       entry.source === 'github-preserved' ? 'Preserved Upstream Feature' : 'Session Improvement';
     lines.push(`### ${entry.id}: ${entry.title}`);
     lines.push('');
+    lines.push(`- **Release Milestone:** ${relLabel} (\`${rel}\`)`);
     lines.push(
       `- **Category:** ${IMPROVEMENT_CATEGORY_LABELS[entry.category]} (\`${entry.category}\`)`
     );
@@ -4972,6 +5042,10 @@ export function formatImprovementsMarkdown(
 export function buildImprovementsRecoveryJson(
   entries: ImprovementEntry[] = IMPROVEMENTS_REGISTRY
 ): string {
+  const entriesWithRelease = entries.map((e) => ({
+    ...e,
+    release: getImprovementRelease(e),
+  }));
   return JSON.stringify(
     {
       format: 'community-pedigree-improvements-log',
@@ -4980,7 +5054,9 @@ export function buildImprovementsRecoveryJson(
       exportedAtIsoUtc: nowIsoUtc(),
       verifyCommand: 'npm run verify:improvements',
       totalEntries: entries.length,
-      entries,
+      alpha2Total: entries.filter(isAlpha2Improvement).length,
+      alpha3Total: entries.filter(isAlpha3Improvement).length,
+      entries: entriesWithRelease,
     },
     null,
     2
