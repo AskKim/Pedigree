@@ -2,7 +2,7 @@
   "name": "pedigree",
   "description": "Pedigree Project — App Name: Pedigree | Repo: pedigree | Package Name: pedigree",
   "license": "AGPLV3",
-  "version": "0.1.0-prealpha.1",
+  "version": "0.1.0-alpha.1",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",

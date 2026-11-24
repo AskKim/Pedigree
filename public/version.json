@@ -1,6 +1,6 @@
 {
-  "appVersion": "0.1.0-alpha.2",
-  "schemaVersion": 6,
+  "appVersion": "0.1.0-alpha.1",
+  "schemaVersion": 5,
   "minDirectUpgradeSchema": 4,
-  "releaseNotes": "Client CRM & waitlist, IAGARB wool/fiber & alternative certificates, founder/heritability analytics, Barn Scheduler Gantt, LAN P2P sync, atomic SQLite migrations, mobile memory hardening & Android WebView wrapper."
+  "releaseNotes": "Alpha 1: Offline-first multi-species livestock registry, cage-side breeding & chore manager, coat color genetics lab, and recursive Wright Coefficient of Inbreeding (COI) pedigree engine."
 }

@@ -176,7 +176,7 @@ export function HomeSpeciesScreen({
               aria-hidden="true"
             />
             <span>
-              <strong>Pre-alpha:</strong> Use at your own risk — always back up your data before
+              <strong>Alpha 1:</strong> Use at your own risk — always back up your data before
               upgrading or deleting records.
             </span>
           </div>
