@@ -4751,6 +4751,71 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep dynamic `import(\'../core/syncAndExports\')` inside crash log download handlers in `CrashErrorBoundary.tsx` and `TechyStuffErrorBoundary.tsx`.',
     ],
   },
+  {
+    id: 'IMP-064',
+    title: 'GitHub Pages Deployment, Subpath Routing & Search Engine Optimization (SEO)',
+    category: 'ci-tooling',
+    source: 'session',
+    userIntent:
+      'Optimize all GitHub Pages for utility, setup, social preview cards, and search engine discoverability.',
+    summary:
+      'Enhances GitHub Pages delivery and SEO discovery: configures GitHub repository description, homepage URL, and 16 topics; optimizes index.html with keyword-rich meta tags, canonical link, Open Graph preview tags, Twitter summary card, and Schema.org WebApplication structured data; creates public/robots.txt, public/sitemap.xml, and public/404.html SPA router fallback; updates deploy-pages.yml to trigger on both main and release branches while verifying robots.txt, sitemap.xml, and 404.html in distribution; and adds GitHub Pages status badges and direct web app launch links to README.md and package.json.',
+    files: [
+      'index.html',
+      'public/robots.txt',
+      'public/sitemap.xml',
+      'public/404.html',
+      '.github/workflows/deploy-pages.yml',
+      'README.md',
+      'package.json',
+    ],
+    invariants: [
+      {
+        filePath: 'index.html',
+        requiredSubstrings: [
+          'https://askkim.github.io/Pedigree/',
+          'application/ld+json',
+          'og:image',
+          'twitter:card',
+          'rel="canonical"',
+        ],
+        rationale:
+          'index.html must maintain canonical, OpenGraph, Twitter card, and Schema.org structured data for SEO.',
+      },
+      {
+        filePath: 'public/robots.txt',
+        requiredSubstrings: ['User-agent: *', 'Sitemap: https://askkim.github.io/Pedigree/sitemap.xml'],
+        rationale: 'public/robots.txt must guide search crawlers to the sitemap.',
+      },
+      {
+        filePath: 'public/sitemap.xml',
+        requiredSubstrings: ['<loc>https://askkim.github.io/Pedigree/</loc>'],
+        rationale: 'public/sitemap.xml must define the canonical GitHub Pages location.',
+      },
+      {
+        filePath: 'public/404.html',
+        requiredSubstrings: ['Community Pedigree Project - GitHub Pages SPA Fallback'],
+        rationale: 'public/404.html must provide client-side route fallback for GitHub Pages.',
+      },
+      {
+        filePath: '.github/workflows/deploy-pages.yml',
+        requiredSubstrings: ['- main', '- release', 'dist/robots.txt', 'dist/sitemap.xml'],
+        rationale:
+          'deploy-pages.yml must deploy from both main and release branches and verify SEO artifacts.',
+      },
+      {
+        filePath: 'package.json',
+        requiredSubstrings: ['"homepage": "https://askkim.github.io/Pedigree/"'],
+        rationale: 'package.json must state the official GitHub Pages homepage URL.',
+      },
+    ],
+    restorePlaybook: [
+      'Preserve SEO meta tags, canonical link, Open Graph, and JSON-LD structured data in `index.html`.',
+      'Keep `public/robots.txt`, `public/sitemap.xml`, and `public/404.html` in place.',
+      'Ensure `.github/workflows/deploy-pages.yml` triggers on `main` and `release` and verifies `dist/robots.txt` and `dist/sitemap.xml`.',
+      'Keep `"homepage": "https://askkim.github.io/Pedigree/"` in `package.json` and live links in `README.md`.',
+    ],
+  },
 ];
 
 /**

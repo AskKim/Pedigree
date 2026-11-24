@@ -44,7 +44,7 @@ GitHub Actions are automated helpers that run on GitHub's servers whenever you s
 - **When to use it:** When you want to publish the latest web app to your live `github.io` link.
 - **One-time GitHub setup:** In your GitHub repository go to **Settings → Pages** and set **Source** to **GitHub Actions**.
 - **How to run it:**
-  - **Automatic:** Push or merge code into the `release` branch.
+  - **Automatic:** Push or merge code into the `main` or `release` branch.
   - **Manual:** Go to **Actions → Deploy to GitHub Pages → Run workflow**.
 - **Note:** This workflow intentionally uses **Bun** (do not replace Bun with npm here).
 

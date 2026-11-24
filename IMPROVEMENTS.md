@@ -1352,4 +1352,27 @@ npm run lint && npm run build
 1. Keep `devLucideDirectImportPlugin()`, `devInlineSourcemapStripPlugin()`, and `optimizeDeps.exclude: ['lucide-react']` in `vite.config.ts`.
 2. Keep dynamic `import('../core/syncAndExports')` inside crash log download handlers in `CrashErrorBoundary.tsx` and `TechyStuffErrorBoundary.tsx`.
 
+### IMP-064: GitHub Pages Deployment, Subpath Routing & Search Engine Optimization (SEO)
+
+- **Category:** CI & Tooling (`ci-tooling`)
+- **Origin:** Session Improvement
+- **User Goal:** Optimize all GitHub Pages for utility, setup, social preview cards, and search engine discoverability.
+- **Summary:** Enhances GitHub Pages delivery and SEO discovery: configures GitHub repository description, homepage URL, and 16 topics; optimizes index.html with keyword-rich meta tags, canonical link, Open Graph preview tags, Twitter summary card, and Schema.org WebApplication structured data; creates public/robots.txt, public/sitemap.xml, and public/404.html SPA router fallback; updates deploy-pages.yml to trigger on both main and release branches while verifying robots.txt, sitemap.xml, and 404.html in distribution; and adds GitHub Pages status badges and direct web app launch links to README.md and package.json.
+- **Tracked Files:** `index.html`, `public/robots.txt`, `public/sitemap.xml`, `public/404.html`, `.github/workflows/deploy-pages.yml`, `README.md`, `package.json`
+
+**Automated Invariants Checked:**
+- `index.html` must contain `https://askkim.github.io/Pedigree/`, `application/ld+json`, `og:image`, `twitter:card`, `rel="canonical"` — *index.html must maintain canonical, OpenGraph, Twitter card, and Schema.org structured data for SEO.*
+- `public/robots.txt` must contain `User-agent: *`, `Sitemap: https://askkim.github.io/Pedigree/sitemap.xml` — *public/robots.txt must guide search crawlers to the sitemap.*
+- `public/sitemap.xml` must contain `<loc>https://askkim.github.io/Pedigree/</loc>` — *public/sitemap.xml must define the canonical GitHub Pages location.*
+- `public/404.html` must contain `Community Pedigree Project - GitHub Pages SPA Fallback` — *public/404.html must provide client-side route fallback for GitHub Pages.*
+- `.github/workflows/deploy-pages.yml` must contain `- main`, `- release`, `dist/robots.txt`, `dist/sitemap.xml` — *deploy-pages.yml must deploy from both main and release branches and verify SEO artifacts.*
+- `package.json` must contain `"homepage": "https://askkim.github.io/Pedigree/"` — *package.json must state the official GitHub Pages homepage URL.*
+
+**Restoration Playbook if Overwritten:**
+1. Preserve SEO meta tags, canonical link, Open Graph, and JSON-LD structured data in `index.html`.
+2. Keep `public/robots.txt`, `public/sitemap.xml`, and `public/404.html` in place.
+3. Ensure `.github/workflows/deploy-pages.yml` triggers on `main` and `release` and verifies `dist/robots.txt` and `dist/sitemap.xml`.
+4. Keep `"homepage": "https://askkim.github.io/Pedigree/"` in `package.json` and live links in `README.md`.
+
+
 

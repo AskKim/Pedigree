@@ -50,6 +50,9 @@ jobs:
           fi
           SUBPATH="/${REPO_NAME}/"
           npm run build -- --base="$SUBPATH"
+          test -f dist/robots.txt || { echo "Missing dist/robots.txt" >&2; exit 1; }
+          test -f dist/sitemap.xml || { echo "Missing dist/sitemap.xml" >&2; exit 1; }
+          test -f dist/404.html || cp dist/index.html dist/404.html
           grep -q '"start_url":"./"' dist/manifest.webmanifest
           grep -q '"scope":"./"' dist/manifest.webmanifest
           grep -q '"id":"./"' dist/manifest.webmanifest

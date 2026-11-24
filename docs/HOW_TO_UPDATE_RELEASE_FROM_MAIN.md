@@ -1,8 +1,8 @@
 # How to Update the `release` Branch From `main` (and Redeploy GitHub Pages)
 
 In this repository:
-- **`main`** is where new features, fixes, and workflows live.
-- **`release`** is the branch that automatically triggers **Deploy to GitHub Pages** (`deploy-pages.yml`) to publish the live web app.
+- **`main`** is where new features, fixes, and workflows live (and automatically triggers **Deploy to GitHub Pages**).
+- **`release`** is the stable production branch that also automatically triggers **Deploy to GitHub Pages** (`deploy-pages.yml`) to publish the live web app.
 
 > **Do This First If Needed:** If your current `release` branch holds an older milestone you want to preserve (like Alpha.1), follow [How to Create a GitHub Release](./HOW_TO_CREATE_A_RELEASE.md) (**Part 1**) *before* updating `release` from `main`. That saves a permanent snapshot first.
 
