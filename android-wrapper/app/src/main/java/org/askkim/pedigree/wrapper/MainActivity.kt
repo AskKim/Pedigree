@@ -408,6 +408,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun attachOriginLockedWebMessageListener(wv: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            diagnosticBuffer.record(
+                DiagnosticRingBuffer.LEVEL_WARN,
+                "BRIDGE_UNSUPPORTED",
+                "WebViewFeature.WEB_MESSAGE_LISTENER unsupported (requires Chromium 82+). Falling back to web-only download/print mode."
+            )
             return
         }
 

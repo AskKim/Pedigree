@@ -8,6 +8,7 @@
  * - globalThis (ES2020)
  * - Promise.allSettled (ES2020)
  * - Object.fromEntries (ES2019)
+ * - Array.prototype.flat / flatMap (ES2019 — Chrome 69+ -> Android 8 Chromium 61–68 fallback)
  * - Blob.prototype.arrayBuffer / Blob.prototype.text (Chrome 76+ / Safari 14+ -> FileReader fallback)
  * - String.prototype.trimStart / trimEnd (Chrome 66+ / Safari 12+)
  */
@@ -253,6 +254,54 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
         : String(this).replace(/[\s\uFEFF\xA0]+$/, '');
     };
     defineNonEnumerableMethod(stringCtor.prototype, 'trimEnd', trimEndShim);
+  }
+
+  const arrayCtor = (g.Array ?? Array) as { prototype?: Record<string, unknown> } | undefined;
+  if (arrayCtor?.prototype) {
+    const flatShim: MarkedShimFn = function arrayFlatShim(this: unknown[], ...args: unknown[]): unknown[] {
+      const depth = args[0];
+      const targetDepth = typeof depth === 'number' && Number.isFinite(depth) ? Math.floor(depth) : 1;
+      function flatten(arr: unknown[], d: number): unknown[] {
+        const out: unknown[] = [];
+        for (let i = 0; i < arr.length; i += 1) {
+          if (Object.prototype.hasOwnProperty.call(arr, i)) {
+            const item = arr[i];
+            if (Array.isArray(item) && d > 0) {
+              out.push(...flatten(item, d - 1));
+            } else {
+              out.push(item);
+            }
+          }
+        }
+        return out;
+      }
+      return flatten(this, targetDepth);
+    };
+    flatShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(arrayCtor.prototype, 'flat', flatShim);
+
+    const flatMapShim: MarkedShimFn = function arrayFlatMapShim(this: unknown[], ...args: unknown[]): unknown[] {
+      const callback = args[0];
+      const thisArg = args[1];
+      if (typeof callback !== 'function') {
+        throw new TypeError('Array.prototype.flatMap callback must be a function');
+      }
+      const cb = callback as (value: unknown, index: number, array: unknown[]) => unknown;
+      const out: unknown[] = [];
+      for (let i = 0; i < this.length; i += 1) {
+        if (Object.prototype.hasOwnProperty.call(this, i)) {
+          const mapped = cb.call(thisArg, this[i], i, this);
+          if (Array.isArray(mapped)) {
+            out.push(...mapped);
+          } else {
+            out.push(mapped);
+          }
+        }
+      }
+      return out;
+    };
+    flatMapShim.__pedigreeEs2018Shim = true;
+    defineNonEnumerableMethod(arrayCtor.prototype, 'flatMap', flatMapShim);
   }
 }
 

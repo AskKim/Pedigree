@@ -55,6 +55,34 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
     ).toEqual({ a: 1, b: 'two' });
   });
 
+  it('installs non-enumerable Array.prototype.flat and flatMap shims when absent (Android 8 Chromium 61–68)', () => {
+    const fakeArrayProto: Record<string, unknown> = {};
+    const FakeArray = function () {};
+    FakeArray.prototype = fakeArrayProto;
+
+    const mockHost: Record<string, unknown> = {
+      Array: FakeArray,
+    };
+
+    ensureEs2018Globals(mockHost);
+
+    expect(typeof fakeArrayProto.flat).toBe('function');
+    expect(typeof fakeArrayProto.flatMap).toBe('function');
+
+    const flatFn = fakeArrayProto.flat as (depth?: number) => unknown[];
+    const flatMapFn = fakeArrayProto.flatMap as (
+      cb: (v: unknown, idx: number, arr: unknown[]) => unknown
+    ) => unknown[];
+
+    const nested = [1, [2, [3, 4]], 5];
+    expect(flatFn.call(nested)).toEqual([1, 2, [3, 4], 5]);
+    expect(flatFn.call(nested, 2)).toEqual([1, 2, 3, 4, 5]);
+
+    const items = [1, 2, 3];
+    expect(flatMapFn.call(items, (x) => [Number(x) * 2])).toEqual([2, 4, 6]);
+    expect(flatMapFn.call(items, (x) => (Number(x) === 2 ? [20, 21] : Number(x)))).toEqual([1, 20, 21, 3]);
+  });
+
   it('installs non-enumerable Blob.prototype.arrayBuffer/text and String.prototype.trimStart/trimEnd shims and reads via FileReader when native methods are absent', async () => {
     function FakeBlob(this: any, bytes: number[]) {
       this._bytes = bytes;
