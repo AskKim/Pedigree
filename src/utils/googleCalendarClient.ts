@@ -87,7 +87,7 @@ export async function signInGoogleCalendar(): Promise<{
       throw new Error('Failed to obtain Google Calendar access token.');
     }
     cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    return { user: result.user, accessToken: credential.accessToken };
   } finally {
     isSigningIn = false;
   }

@@ -226,7 +226,7 @@ export function parseDeltaFileJson(text: string): SyncOperation[] {
   if (Array.isArray(parsed)) {
     return parsed as SyncOperation[];
   }
-  throw new Error('Selected file is not a valid Community Pedigree delta log.');
+  throw new Error('Selected file is not a valid Pedigree delta log.');
 }
 
 export function supportsDirectoryPicker(): boolean {

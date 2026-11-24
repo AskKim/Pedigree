@@ -273,7 +273,7 @@ const SPECIES_SEED_SPECS: SeedFamilySpec[] = [
     shareGrandsireForLinebreeding: false,
     sanctionBody: 'Specialty Club',
     showTitle: 'Autumn Ferret Championship',
-    showLocation: 'Community Event Center',
+    showLocation: 'County Event Center',
   },
   {
     species: 'Alpaca',
@@ -765,7 +765,7 @@ export function buildSampleDataForSpecies(
     varietyA: 'Chestnut',
     varietyB: 'Black',
     tagPrefix: codePrefix,
-    breederName: 'Community Barn',
+    breederName: 'Heritage Barn',
     cagePrefix: `Pen ${codePrefix}`,
     avgAdultGrams: 5400,
     juniorGrams: 2200,
@@ -1279,7 +1279,7 @@ export function buildFullPredefinedSampleSnapshot(
   const settings: BarnSettings = {
     id: 'barn_settings',
     barnName: existingSettings?.barnName || 'Copper Creek Barn',
-    breederName: existingSettings?.breederName || 'Kimberly',
+    breederName: existingSettings?.breederName || '',
     preferredUnit: existingSettings?.preferredUnit || 'lbs_oz',
     defaultSpecies: existingSettings?.defaultSpecies || 'Rabbit',
     pinnedLandingSpecies: existingSettings?.pinnedLandingSpecies ?? '',

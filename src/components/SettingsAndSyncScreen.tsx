@@ -333,7 +333,7 @@ export function SettingsAndSyncScreen({
 
   const handleDownloadTimestampedFullBackup = () => {
     const stampSlug = formatTimestampedBackupSlug();
-    const filename = `community-pedigree-full-backup-${stampSlug}.json`;
+    const filename = `pedigree-full-backup-${stampSlug}.json`;
     downloadTextFile(filename, exportBarnBackupJson(snapshot), 'application/json');
     void recordBackupExport('json', filename);
     setPortabilityFeedback(
@@ -345,7 +345,7 @@ export function SettingsAndSyncScreen({
     setImportError(null);
     const stampSlug = formatTimestampedBackupSlug();
     const archive = buildCompleteBackupZipArchive(snapshot);
-    const filename = `community-pedigree-archive-${stampSlug}.zip`;
+    const filename = `pedigree-archive-${stampSlug}.zip`;
     downloadBinaryFile(filename, archive.bytes, 'application/zip');
     void recordBackupExport('zip', filename);
     setPortabilityFeedback(
@@ -361,7 +361,7 @@ export function SettingsAndSyncScreen({
     }
     const stampSlug = formatTimestampedBackupSlug();
     const archive = buildPhotosOnlyZipArchive(snapshot);
-    const filename = `community-pedigree-photos-${stampSlug}.zip`;
+    const filename = `pedigree-photos-${stampSlug}.zip`;
     downloadBinaryFile(filename, archive.bytes, 'application/zip');
     setPortabilityFeedback(
       `Saved ${filename} (${archive.photoCount} organized image files across ${archive.animalCount} animals · ${formatByteSizePure(archive.bytes.byteLength)}).`
@@ -457,7 +457,7 @@ export function SettingsAndSyncScreen({
       return;
     }
     const stamp = formatTimestampedBackupSlug();
-    const filename = `community-pedigree-${stamp}.sqlite`;
+    const filename = `pedigree-${stamp}.sqlite`;
     downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
     void recordBackupExport('sqlite', filename);
   };
@@ -827,7 +827,7 @@ export function SettingsAndSyncScreen({
                   {!googleAuthConnected ? (
                     <div className="space-y-2">
                       <div className="text-[11px] text-[var(--barn-muted)]">
-                        Connect your own Google account to grant Community Pedigree permission to
+                        Connect your own Google account to grant Pedigree permission to
                         view your calendar list and add barn chore events. If you stay signed out or
                         go offline, the app automatically falls back to offline .ICS downloads.
                       </div>
@@ -1134,10 +1134,10 @@ export function SettingsAndSyncScreen({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-display text-xl font-semibold">
-                  Offline PWA &amp; Storage Eviction Defense
+                  Offline Pedigree App &amp; Storage Eviction Defense
                 </h2>
                 <p className="text-xs text-[var(--barn-muted)] mt-0.5">
-                  100% Free zero-cloud PWA · Protects local barn storage against browser cleanup
+                  100% Free zero-cloud Pedigree App · Protects local barn storage against browser cleanup
                 </p>
               </div>
               <ShieldCheck className="w-5 h-5 text-[var(--barn-sage)] shrink-0" aria-hidden="true" />
@@ -1443,7 +1443,7 @@ export function SettingsAndSyncScreen({
                     filename: delta.filename,
                     content: delta.content,
                     mimeType: 'application/json',
-                    title: 'Community Pedigree Worker Delta Log',
+                    title: 'Pedigree Worker Delta Log',
                   });
                   setSyncFeedback(
                     mode === 'shared'

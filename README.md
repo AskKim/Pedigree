@@ -2,7 +2,7 @@
 
 - **Project Name:** Community Pedigree Project
 - **App Name:** Community Pedigree
-- **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree) (GitHub paths stay `AskKim/Pedigree`)
+- **Repository:** [`pedigree`](https://github.com/pedigree) (GitHub paths stay `pedigree`)
 - **Package Name:** `pedigree` (lowercase package identifier for `package.json` and the eventual `.apk` / bundle ID segment, e.g., `<reverse-domain>.pedigree`)
 - **License:** Agplv3 
 

@@ -309,7 +309,7 @@ export interface GeneratedCalendarIcs {
 export function buildIcsCalendarForTasks(
   tasks: BarnTask[],
   rawConfig?: Partial<CalendarSyncSettings>,
-  barnName: string = 'Community Pedigree',
+  barnName: string = 'Pedigree',
   filenameHint?: string,
   context?: CalendarExportContext
 ): GeneratedCalendarIcs | null {
@@ -331,10 +331,10 @@ export function buildIcsCalendarForTasks(
   const lines: string[] = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Community Pedigree Project//Pedigree//EN',
+    'PRODID:-//Pedigree Project//Pedigree//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    `X-WR-CALNAME:${escapeIcsText(`${barnName || 'Community Pedigree'} Barn Chores`)}`,
+    `X-WR-CALNAME:${escapeIcsText(`${barnName || 'Pedigree'} Barn Chores`)}`,
   ];
 
   const animalById = new Map<string, Animal>();
@@ -384,7 +384,7 @@ export function buildIcsCalendarForTasks(
 
     lines.push(
       'BEGIN:VEVENT',
-      `UID:barn-task-${task.id}@community-pedigree.local`,
+      `UID:barn-task-${task.id}@pedigree.local`,
       `DTSTAMP:${dtStamp}`,
       `DTSTART:${dtStart}`,
       `DTEND:${dtEnd}`,
@@ -515,7 +515,7 @@ function buildTaskCalendarMetadata(
 export function buildGoogleCalendarEventPayload(
   task: BarnTask,
   rawConfig?: Partial<CalendarSyncSettings>,
-  barnName: string = 'Community Pedigree',
+  barnName: string = 'Pedigree',
   timeZone: string = 'UTC',
   context?: CalendarExportContext
 ): GoogleCalendarEventPayload | null {
@@ -548,7 +548,7 @@ export function buildGoogleCalendarEventPayload(
     ...(meta.taskDeepLink
       ? {
           source: {
-            title: 'Open Task in Community Pedigree',
+            title: 'Open Task in Pedigree',
             url: meta.taskDeepLink,
           },
         }
@@ -563,7 +563,7 @@ export function buildGoogleCalendarEventPayload(
 export function buildExternalCalendarWebUrls(
   task: BarnTask,
   rawConfig?: Partial<CalendarSyncSettings>,
-  barnName: string = 'Community Pedigree',
+  barnName: string = 'Pedigree',
   context?: CalendarExportContext
 ): { googleWebUrl: string; outlookWebUrl: string } | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(task.dueDateIso || '')) return null;

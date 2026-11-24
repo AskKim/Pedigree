@@ -104,7 +104,7 @@ export function formatSupportReportText(
 
   const headerLines = [
     '====================================================================',
-    'Community Pedigree — Crash & Diagnostic Support Report',
+    'Pedigree — Crash & Diagnostic Support Report',
     '====================================================================',
     `Generated UTC:      ${nowIsoUtc()}`,
     `Active Session:     ${summary.sessionId}`,
@@ -239,16 +239,16 @@ export function buildSupportMailtoHref(params: {
   includedPhotos: boolean;
 }): string {
   const { recipientEmail, filename, summary, includedData, includedPhotos } = params;
-  const email = (recipientEmail || 'askkimsocial@gmail.com').trim();
-  const subject = `[Community Pedigree] Crash / Diagnostic Support Bundle (${
+  const email = (recipientEmail || '').trim();
+  const subject = `[Pedigree] Crash / Diagnostic Support Bundle (${
     summary.errorCount
   } errors, ${summary.memoryWarningCount} memory warnings)`;
 
   const mem = summary.currentMemory;
   const bodyLines = [
-    'Hi Kimberly,',
+    'Hello,',
     '',
-    'I am sending a diagnostic support export from Community Pedigree.',
+    'I am sending a diagnostic support export from Pedigree.',
     `Attached / Downloaded File: ${filename}`,
     '',
     '--- Device & Diagnostic Summary ---',

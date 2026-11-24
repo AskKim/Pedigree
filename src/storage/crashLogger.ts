@@ -20,7 +20,7 @@
 
 import { generateUuid, nowIsoUtc } from '../core/models';
 
-export const DEFAULT_SUPPORT_EMAIL = 'askkimsocial@gmail.com';
+export const DEFAULT_SUPPORT_EMAIL = '';
 
 export type DiagnosticLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 

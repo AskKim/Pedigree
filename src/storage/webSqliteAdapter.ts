@@ -360,6 +360,7 @@ export class WebSqliteAdapter implements StorageAdapter {
     try {
       this.SQL = await initSqlJs({
         locateFile: () => sqlWasmUrl,
+        useOldExtensionFunctions: false,
       });
 
       const savedBytes = await idbGet<Uint8Array>(IDB_PRIMARY_KEY);
@@ -544,7 +545,7 @@ export class WebSqliteAdapter implements StorageAdapter {
       : {
           id: 'barn_settings',
           barnName: 'Copper Creek Barn',
-          breederName: 'Kimberly',
+          breederName: '',
           preferredUnit: 'lbs_oz',
           defaultSpecies: 'Rabbit',
           pinnedLandingSpecies: '',

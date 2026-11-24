@@ -313,7 +313,7 @@ export function buildPhotosOnlyZipArchive(
   zipFiles['README.txt'] = [
     strToU8(
       [
-        'Community Pedigree — Portable Animal Photos Archive',
+        'Pedigree — Portable Animal Photos Archive',
         `Exported: ${nowIsoUtc()}`,
         `Photos Included: ${manifest.length} across ${animalCount} animal(s)`,
         '',
@@ -393,7 +393,7 @@ export function buildCompleteBackupZipFiles(
   zipFiles['README.txt'] = [
     strToU8(
       [
-        'Community Pedigree — Complete Portable Backup Archive (.ZIP)',
+        'Pedigree — Complete Portable Backup Archive (.ZIP)',
         `Barn: ${snapshot.settings.barnName}`,
         `Exported: ${nowIsoUtc()}`,
         `Animals: ${scopedSnapshot.animals.length}`,
@@ -404,7 +404,7 @@ export function buildCompleteBackupZipFiles(
         '- photos/: Standard viewable image files organized by species and animal.',
         '- photos/manifest.json: Index linking every image file to its animal UUID, tattoo, cover flag, and caption.',
         '',
-        'To restore or merge everything back into Community Pedigree on any phone or PC:',
+        'To restore or merge everything back into Pedigree on any phone or PC:',
         'Open Settings -> Open Data Portability & Backups -> Restore or Merge (.JSON / .ZIP).',
       ].join('\n')
     ),
@@ -573,7 +573,7 @@ export function parseBackupArchiveInput(
   }
 
   throw new Error(
-    'This ZIP does not contain a Community Pedigree backup (pedigree-backup.json or photos/manifest.json). For third-party exports (HerdBoss / Evans), use the Multi-Platform Importer above.'
+    'This ZIP does not contain a Pedigree backup (pedigree-backup.json or photos/manifest.json). For third-party exports (HerdBoss / Evans), use the Multi-Platform Importer above.'
   );
 }
 

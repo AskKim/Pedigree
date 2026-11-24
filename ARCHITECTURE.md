@@ -2,7 +2,7 @@
 
 - **Project Name:** Community Pedigree Project
 - **App Name:** Community Pedigree
-- **Repository:** [`AskKim/Pedigree`](https://github.com/AskKim/Pedigree)
+- **Repository:** [`pedigree`](https://github.com/pedigree)
 - **Package Name:** `pedigree`
 - **License:** Apache-2.0
 

@@ -231,8 +231,8 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <strong className="text-[var(--barn-ink)]">Install Offline Barn PWA:</strong>{' '}
-                  Add Community Pedigree to your Home Screen / Desktop for airplane-mode access and
+                  <strong className="text-[var(--barn-ink)]">Install Offline Barn Pedigree App:</strong>{' '}
+                  Add Pedigree to your Home Screen / Desktop for airplane-mode access and
                   elevated storage lock.
                 </>
               )}

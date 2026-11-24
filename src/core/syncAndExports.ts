@@ -859,7 +859,7 @@ export function generateEvansHtmPedigree(
 <body>
   <div class="header">
     <div>
-      <div class="barn-title">${escapeHtml(settings.barnName || 'Community Pedigree')}</div>
+      <div class="barn-title">${escapeHtml(settings.barnName || 'Pedigree')}</div>
       <div class="sub-title">Official ${generations}-Generation ${escapeHtml(subject.species)} Pedigree Certificate${settings.breederName ? ` &middot; Breeder: ${escapeHtml(settings.breederName)}` : ''}</div>
     </div>
     <div class="sub-title">Generated ${escapeHtml(formatReadableDate(nowIsoUtc().slice(0, 10)))} &middot; Wright COI: ${coi.coiPercent.toFixed(2)}% (${escapeHtml(coi.risk.label)})</div>

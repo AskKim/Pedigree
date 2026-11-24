@@ -59,13 +59,13 @@ export default defineConfig(() => {
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-          'pwa-maskable-512x512.png',
+          'pedigree-192x192.png',
+          'pedigree-512x512.png',
+          'pedigree-maskable-512x512.png',
         ],
         manifest: {
           id: basePath,
-          name: 'Community Pedigree',
+          name: 'Pedigree',
           short_name: 'Pedigree',
           description:
             '100% Free Offline-First Multi-Species Livestock Registry, Pedigree & Barn Chore Manager.',
@@ -77,17 +77,17 @@ export default defineConfig(() => {
           start_url: basePath,
           icons: [
             {
-              src: 'pwa-192x192.png',
+              src: 'pedigree-192x192.png',
               sizes: '192x192',
               type: 'image/png',
             },
             {
-              src: 'pwa-512x512.png',
+              src: 'pedigree-512x512.png',
               sizes: '512x512',
               type: 'image/png',
             },
             {
-              src: 'pwa-maskable-512x512.png',
+              src: 'pedigree-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',

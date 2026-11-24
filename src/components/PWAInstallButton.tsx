@@ -24,7 +24,7 @@ export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
       <button
         type="button"
         onClick={() => void install()}
-        title="Install Community Pedigree for offline barn use"
+        title="Install Pedigree for offline barn use"
         className={
           variant === 'header'
             ? 'min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold hover:opacity-95 transition-opacity inline-flex items-center gap-1.5 whitespace-nowrap shrink-0'

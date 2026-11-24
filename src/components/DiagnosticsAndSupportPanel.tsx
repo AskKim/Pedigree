@@ -248,7 +248,7 @@ export function DiagnosticsAndSupportPanel({
           filename: built.filename,
           bytes: built.bytes,
           mimeType: 'application/zip',
-          title: 'Community Pedigree Crash & Support Bundle',
+          title: 'Pedigree Crash & Support Bundle',
           text: `Please send to ${recipient}. Includes ${built.logCount} diagnostic logs${
             built.includedData
               ? ` and ${built.animalCount} animal records${
@@ -795,7 +795,7 @@ export function DiagnosticsAndSupportPanel({
             Database Connection &amp; Corrupted Cache Recovery
           </div>
           <p className="text-[11px] text-[var(--barn-muted)] mt-0.5">
-            Fixes wedged SQLite/IndexedDB handles or stale PWA caches while keeping your saved
+            Fixes wedged SQLite/IndexedDB handles or stale Pedigree caches while keeping your saved
             records safe and retaining a timestamped backup file on your device.
           </p>
         </div>

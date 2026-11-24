@@ -131,7 +131,7 @@ export interface PlatformImportPreview {
   shows: ShowEvent[];
   /**
    * Privacy-safe manifest of filenames, row counts, and column headers (zero breeder PII)
-   * so Kimberly can inspect or share exact export structure for QA tuning.
+   * so users can inspect or share exact export structure for QA tuning.
    */
   schemaDiagnosticReport: string;
 }
