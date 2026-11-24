@@ -32,3 +32,12 @@ npm run dev
 ```
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the pure TypeScript domain layout and Expo / React Native migration guide.
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the [LICENSE](LICENSE) file for full details.
+
+### Public Agencies and Research Collaborations
+
+We actively welcome collaboration with public agricultural agencies, land-grant universities, and open research initiatives (including the USDA and related breeding programs). If your organization needs alternative licensing terms—such as Apache 2.0—to integrate this work into public-interest tools, please open an issue or contact the project maintainer directly to discuss a separate licensing agreement.
+
