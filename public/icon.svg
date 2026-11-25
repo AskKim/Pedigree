@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="hearth-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1C3E2D" />
+      <stop offset="100%" stop-color="#11271B" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#hearth-bg)" />
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- House silhouette -->
+    <path d="M98 232 L256 112 L414 232" stroke="#F8F4ED" stroke-width="24" />
+    <path d="M134 206 V382 H378 V206" stroke="#F8F4ED" stroke-width="24" />
+    <!-- Branching node links -->
+    <path d="M256 184 V286 L196 326" stroke="#D39F4F" stroke-width="20" />
+    <path d="M256 286 L316 326" stroke="#D39F4F" stroke-width="20" />
+  </g>
+  <!-- Top root node -->
+  <circle cx="256" cy="184" r="24" fill="#F8F4ED" />
+  <!-- Branch terminal nodes -->
+  <circle cx="196" cy="326" r="24" fill="#D39F4F" />
+  <circle cx="316" cy="326" r="24" fill="#D39F4F" />
+</svg>

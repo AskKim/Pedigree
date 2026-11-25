@@ -1,0 +1,77 @@
+name: Repo Guardrails & Workflow Validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-guardrails:
+    name: Validate Workflows, Protected Folders & Architecture
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate all GitHub Actions workflow YAML files
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+          import sys
+
+          try:
+              import yaml
+          except ImportError:
+              # Fallback check via PyYAML installed on runner or install pyyaml
+              import subprocess
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"])
+              import yaml
+
+          workflows = sorted(pathlib.Path(".github/workflows").glob("*.yml"))
+          if not workflows:
+              print("No workflow files found under .github/workflows/", file=sys.stderr)
+              sys.exit(1)
+
+          for wf in workflows:
+              data = yaml.safe_load(wf.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  print(f"{wf}: expected mapping at root", file=sys.stderr)
+                  sys.exit(1)
+              # PyYAML parses bare `on:` as boolean True
+              has_on = "on" in data or True in data
+              if not data.get("name") or not has_on or not data.get("jobs"):
+                  print(f"{wf}: missing required 'name', 'on', or 'jobs' key", file=sys.stderr)
+                  sys.exit(1)
+              print(f"OK: {wf}")
+          EOF
+
+      - name: Verify protected folders (import, export, upload) and master prompt exist
+        run: |
+          for dir in import export upload; do
+            test -d "$dir" || { echo "Missing required directory: $dir" >&2; exit 1; }
+            test -f "$dir/.gitkeep" || { echo "Missing .gitkeep marker in: $dir" >&2; exit 1; }
+          done
+          test -f "prompts/master_system_prompt.md" || { echo "Missing prompts/master_system_prompt.md" >&2; exit 1; }
+
+      - name: Enforce /import/ isolation and React-only core PWA boundary
+        run: |
+          if grep -rnE "from ['\"](@/)?import/|import\(['\"](@/)?import/" src index.html 2>/dev/null; then
+            echo "ERROR: /import/ must never be imported into src/ or index.html." >&2
+            exit 1
+          fi
+          test -f "src/App.tsx" && test -f "src/main.tsx" || { echo "Core React PWA entrypoints missing!" >&2; exit 1; }
+          grep -q '"react"' package.json || { echo "Core PWA must depend on React!" >&2; exit 1; }
+          test -f "tsconfig.engine.json" || { echo "Missing tsconfig.engine.json!" >&2; exit 1; }
+          python3 -c 'import json; data = json.load(open("scripts/layer-allowlist.json")); assert isinstance(data, list)'

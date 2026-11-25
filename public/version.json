@@ -1,0 +1,6 @@
+{
+  "appVersion": "0.1.0-alpha.3",
+  "schemaVersion": 6,
+  "minDirectUpgradeSchema": 4,
+  "releaseNotes": "Alpha 3: Device-to-device QR exchange, Settings & Import/Export Hub polish, per-species printable exports, calendar all-day support, and Alpha 3 roadmap alignment."
+}

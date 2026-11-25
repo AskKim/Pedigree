@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src/engine/index.ts",
+    "src/engine/**/*.ts",
+    "src/features/**/*.ts",
+    "src/utils/*.ts",
+    "src/utils/*.tsx"
+  ],
+  "exclude": [
+    "dist",
+    "import",
+    "src/**/__tests__/**",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
+}
