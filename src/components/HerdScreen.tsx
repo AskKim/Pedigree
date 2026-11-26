@@ -46,7 +46,7 @@ import {
   AnimalWithdrawalEvaluation,
   buildWithdrawalByAnimalMap,
 } from '../domain/barnAlerts';
-import { getConflictSortPriority } from '../domain/animalConflicts';
+import { AnimalSaveDraft, getConflictSortPriority } from '../domain/animalConflicts';
 import {
   analyzeAnimalCarrierLineage,
   AnimalCarrierLineageAnalysis,
@@ -162,7 +162,7 @@ interface HerdScreenProps {
   onSelectAnimal: (id: string | null) => void;
   onOpenPedigreeForAnimal: (id: string) => void;
   onSaveAnimal: (
-    draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+    draft: AnimalSaveDraft,
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
   ) => Promise<string | null | void> | string | void;
   onAddAnimalPhotos: (

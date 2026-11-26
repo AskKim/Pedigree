@@ -484,8 +484,14 @@ export function ImportExportHubScreen({
       setZipExportBusy('json');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
+        if (snapshot.animals.length > 0 && exportSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty backup export: serialized snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory. Please wait for pending saves or reload the page.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-full-backup-${stampSlug}.json`;
         if (encryptBackupExport) {
@@ -534,7 +540,16 @@ export function ImportExportHubScreen({
       }
       setZipExportBusy('json-light');
       try {
-        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
+        const flushedSnapshot = onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport()
+          : snapshot;
+        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(flushedSnapshot);
+        if (snapshot.animals.length > 0 && lightSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty backup export: records-only snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-records-only-${stampSlug}.json`;
         if (encryptBackupExport) {
@@ -592,8 +607,14 @@ export function ImportExportHubScreen({
       setZipExportBusy('complete');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
+        if (snapshot.animals.length > 0 && exportSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty archive export: snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-archive-${stampSlug}.zip`;
         if (encryptBackupExport) {
@@ -653,7 +674,7 @@ export function ImportExportHubScreen({
       setZipExportBusy('photos');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-photos-${stampSlug}.zip`;
@@ -693,16 +714,20 @@ export function ImportExportHubScreen({
   const handleDownloadSqlite = async () => {
     await sqliteExportLock.runLocked(async () => {
       setBackupError(null);
-      const bytes = await onExportSqliteBytes();
-      if (!bytes) {
-        setBackupError('Raw SQLite binary export is unavailable in fallback mode.');
-        return;
+      try {
+        const bytes = await onExportSqliteBytes();
+        if (!bytes) {
+          setBackupError('Raw SQLite binary export is unavailable in fallback mode.');
+          return;
+        }
+        const stampSlug = formatTimestampedBackupSlug();
+        const filename = `pedigree-${stampSlug}.sqlite`;
+        await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
+        void recordBackupExport('sqlite', filename);
+        setBackupFeedback(`Downloaded raw SQLite database (${filename}).`);
+      } catch (err: unknown) {
+        setBackupError(err instanceof Error ? err.message : 'Could not export SQLite database.');
       }
-      const stampSlug = formatTimestampedBackupSlug();
-      const filename = `pedigree-${stampSlug}.sqlite`;
-      await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
-      void recordBackupExport('sqlite', filename);
-      setBackupFeedback(`Downloaded raw SQLite database (${filename}).`);
     });
   };
 

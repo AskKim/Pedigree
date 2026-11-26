@@ -25,6 +25,8 @@ import {
   subscribeCrossTabDbCommits,
   TAB_SYNC_CHANNEL_NAME,
 } from '../localSyncChannels';
+import { makeAnimal, makeEmptySnapshot, makeSpeciesProfile } from '../../domain/__tests__/testFixtures';
+import { listRollingSnapshotBackups, saveRollingSnapshotBackup } from '../storageProtection';
 import { IDB_WRITE_EPOCH_KEY, WebSqliteAdapter } from '../webSqliteAdapter';
 
 interface SharedMockIdbEnv {
@@ -39,6 +41,7 @@ function installSharedIdbAndWebLocks(options?: { withBroadcastChannel?: boolean 
       ['pedigree_rolling_backups', new Map()],
     ]),
     keyPathStores: new Map([
+      ['snapshots', new Map()],
       ['sync_outbox', new Map()],
       ['sync_conflicts', new Map()],
       ['sync_handles', new Map()],
@@ -128,6 +131,27 @@ function installSharedIdbAndWebLocks(options?: { withBroadcastChannel?: boolean 
                       map.clear();
                       finishTxSoon();
                       return {};
+                    },
+                    openCursor() {
+                      const r: any = { result: null, onsuccess: null, onerror: null };
+                      const values = Array.from(map.values());
+                      let idx = 0;
+                      const step = () => {
+                        queueMicrotask(() => {
+                          if (idx < values.length) {
+                            const currentVal = values[idx++];
+                            r.result = {
+                              value: currentVal,
+                              continue: step,
+                            };
+                          } else {
+                            r.result = null;
+                          }
+                          r.onsuccess?.();
+                        });
+                      };
+                      step();
+                      return r;
                     },
                   };
                 }
@@ -527,5 +551,49 @@ describe('Cross-Tab Web Locks, Stale WASM Reload & Silent Commit Sync', () => {
     expect(await loadAllSyncOperationsFromIdb()).toEqual([]);
     expect(await loadAllSyncConflictsFromIdb()).toEqual([]);
     expect(await loadSyncCheckpointFromIdb('directory_sync')).toBeNull();
+  });
+
+  it('skips writing empty 0-animal rolling backups unless allowEmpty is true', async () => {
+    installSharedIdbAndWebLocks();
+    const emptySnap = makeEmptySnapshot();
+    await saveRollingSnapshotBackup(emptySnap);
+    expect(await listRollingSnapshotBackups()).toHaveLength(0);
+
+    const populated = makeEmptySnapshot({
+      speciesProfiles: [makeSpeciesProfile('Rabbit')],
+      animals: [makeAnimal('rb-1', { species: 'Rabbit', name: 'Daisy' })],
+    });
+    await saveRollingSnapshotBackup(populated);
+    const list = await listRollingSnapshotBackups();
+    expect(list).toHaveLength(1);
+    expect(list[0].animalCount).toBe(1);
+  });
+
+  it('pauses silent starter reseed on corrupted primary SQLite and surfaces recovery notice when rolling backup recovers', async () => {
+    const { env } = installSharedIdbAndWebLocks();
+    const sqliteMap = env.kvStores.get('sqlite_files')!;
+    // Write corrupted bytes directly to primary SQLite key with zero backups
+    sqliteMap.set('pedigree_master.sqlite', new Uint8Array([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+
+    const adapterNoBackup = new WebSqliteAdapter('tab-corrupt-1');
+    const shellSnap = await adapterNoBackup.initialize({ lightweightPhotos: true });
+    expect(shellSnap.animals).toHaveLength(0);
+    const wipedCtx = adapterNoBackup.getWipedRecoveryContext();
+    expect(wipedCtx?.detected).toBe(true);
+    expect(wipedCtx?.reason).toBe('corrupted_sqlite');
+    expect(wipedCtx?.corruptionError).toBeTruthy();
+
+    // Now seed a valid rolling backup, keep primary SQLite corrupted, and verify recovery + notice
+    const goodSnap = makeEmptySnapshot({
+      speciesProfiles: [makeSpeciesProfile('Rabbit')],
+      animals: [makeAnimal('rec-1', { species: 'Rabbit', name: 'Recovered Doe' })],
+    });
+    await saveRollingSnapshotBackup(goodSnap);
+
+    const adapterWithRolling = new WebSqliteAdapter('tab-corrupt-2');
+    const recoveredSnap = await adapterWithRolling.initialize({ lightweightPhotos: true });
+    expect(recoveredSnap.animals).toHaveLength(1);
+    expect(recoveredSnap.animals[0].name).toBe('Recovered Doe');
+    expect(adapterWithRolling.getCorruptionRecoveryNotice()).toContain('recovered');
   });
 });

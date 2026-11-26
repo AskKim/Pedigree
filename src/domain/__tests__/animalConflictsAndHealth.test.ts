@@ -8,6 +8,7 @@ import {
   findSameSexDuplicateTattooCollisions,
   getConflictSortPriority,
   isOverrideConfirmationValid,
+  mergeConcurrentAnimalEdit,
 } from '../animalConflicts';
 import { analyzeBarnDataHealth, repairBarnDataHealth } from '../dataHealthCheck';
 import { makeAnimal, makeEmptySnapshot, makeSpeciesProfile } from './testFixtures';
@@ -248,5 +249,51 @@ describe('animalConflicts & dataHealthCheck — conflict detection, override gua
     const repairedKit = repaired.nextSnapshot.animals.find((a) => a.id === 'kit-bad');
     expect(repairedKit?.sireId).toBe('sire-wrong');
     expect(repairedKit?.damId).toBe('dam-wrong');
+  });
+
+  it('merges disjoint concurrent multi-tab edits cleanly and flags same-field collisions', () => {
+    const base = makeAnimal('multi-1', {
+      name: 'Clover',
+      cageLocation: 'Row A-1',
+      notes: 'Original note',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      _rev: 1,
+    });
+
+    // No remote change -> no_conflict
+    const localOnly = { ...base, notes: 'Updated locally', updatedAt: '2026-06-01T10:05:00.000Z', _rev: 2 };
+    expect(mergeConcurrentAnimalEdit({ base, remote: base, local: localOnly }).status).toBe('no_conflict');
+
+    // Disjoint edit: remote changed cageLocation while local changed notes -> merged cleanly
+    const remoteDisjoint = {
+      ...base,
+      cageLocation: 'Row B-4',
+      updatedAt: '2026-06-01T10:02:00.000Z',
+      _rev: 2,
+    };
+    const mergedRes = mergeConcurrentAnimalEdit({
+      base,
+      remote: remoteDisjoint,
+      local: { ...localOnly, _rev: 3 },
+    });
+    expect(mergedRes.status).toBe('merged');
+    expect(mergedRes.mergedAnimal.cageLocation).toBe('Row B-4');
+    expect(mergedRes.mergedAnimal.notes).toBe('Updated locally');
+    expect(mergedRes.mergedRemoteFields.map((f) => f.field)).toEqual(['cageLocation']);
+
+    // Same-field collision: both tabs changed notes differently -> conflict
+    const remoteConflicting = {
+      ...base,
+      notes: 'Remote tab note edit',
+      updatedAt: '2026-06-01T10:03:00.000Z',
+      _rev: 2,
+    };
+    const conflictRes = mergeConcurrentAnimalEdit({
+      base,
+      remote: remoteConflicting,
+      local: { ...localOnly, _rev: 3 },
+    });
+    expect(conflictRes.status).toBe('conflict');
+    expect(conflictRes.conflictingFields.map((f) => f.field)).toEqual(['notes']);
   });
 });

@@ -23,7 +23,8 @@ export type ImprovementCategory =
   | 'species-ux'
   | 'stability-pwa'
   | 'ci-tooling'
-  | 'diagnostics-sync';
+  | 'diagnostics-sync'
+  | 'workflow-polish';
 
 export interface ImprovementInvariant {
   /** Workspace-relative POSIX path, e.g. `src/domain/models.ts` */
@@ -84,6 +85,7 @@ export const IMPROVEMENT_CATEGORY_LABELS: Record<ImprovementCategory, string> = 
   'stability-pwa': 'Stability & Mobile PWA',
   'ci-tooling': 'CI & Tooling',
   'diagnostics-sync': 'Diagnostics & Sync',
+  'workflow-polish': 'Workflow & UI Polish',
 };
 
 export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
@@ -5511,7 +5513,7 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
  */
 export const BOOT_ENTRY_LOCK_CHECKSUMS: Readonly<Record<string, string>> = {
   'src/main.tsx': 'b77239b90e2ab0ca96469ccd8692531d17fddc73267cc9aab3a3638a49a663dc',
-  'src/App.tsx': '5a4ca352d50d0f3ff71c9019718e94451f279a9ac8136dc6f1d63b8316eca00d',
+  'src/App.tsx': '22c02c12be08e1b6db62a132a9596c72cf0eea205e1976b3d2ec9f2320c20a7d',
   'index.html': '2ac08f65d0471f000bde064d5edecc433a540e814790b602f99af1a578c13454',
 };
 

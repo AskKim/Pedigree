@@ -255,7 +255,7 @@ export function PairingComparisonMatrix({
   );
 
   const renderCoiBadgeClass = (row: PairingMatrixRow): string => {
-    if (row.coiRisk.code === 'HIGH') {
+    if (row.coiRisk.code === 'HIGH' || row.coiRisk.code === 'CYCLE') {
       return 'bg-[var(--barn-danger)]/15 text-[var(--barn-danger)] border-[var(--barn-danger)]/60';
     }
     if (row.coiRisk.code === 'LINEBRED' || row.coiRisk.code === 'MODERATE') {

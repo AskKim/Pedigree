@@ -173,7 +173,7 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
     expect(describeCoiRisk(25).code).toBe('HIGH');
   });
 
-  it('handles cyclic parent links safely without infinite recursion', () => {
+  it('flags cyclic parent links with CYCLE warning instead of 0% Outcross and skips incomplete-outcross prompt', () => {
     const a = makeAnimal('cyc-a', { sex: 'Male', sireId: 'cyc-b', damId: 'cyc-a' });
     const b = makeAnimal('cyc-b', { sex: 'Female', sireId: 'cyc-a', damId: 'cyc-b' });
     const herd = buildSpeciesHerdMap([a, b], 'Rabbit');
@@ -183,6 +183,20 @@ describe('pedigreeCalculator — Wright COI, cycles & 5/6-gen pedigree slots', (
 
     expect(Number.isFinite(resA.coiPercent)).toBe(true);
     expect(Number.isFinite(resPair.coiPercent)).toBe(true);
+    expect(resA.hasPedigreeCycle).toBe(true);
+    expect(resA.risk.code).toBe('CYCLE');
+    expect(resA.risk.label).toContain('Cycle');
+    expect(resA.risk.guidance.toLowerCase()).toContain('circular');
+    expect(resPair.hasPedigreeCycle).toBe(true);
+    expect(resPair.risk.code).toBe('CYCLE');
+
+    const summaryCycle = getPedigreeCompletenessSummary({
+      coiPercent: 0,
+      knownAncestorsIn3Gen: 2,
+      knownAncestorsIn4Gen: 2,
+      hasPedigreeCycle: true,
+    });
+    expect(summaryCycle.isIncompleteZeroOutcross).toBe(false);
   });
 
   it('flags 0% outcross results with fewer than 14 recorded 3-gen ancestors as incomplete pedigrees', () => {

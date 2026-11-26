@@ -402,3 +402,167 @@ export function getConflictSortPriority(summary: AnimalConflictSummary | undefin
   if (summary.hasActiveConflict) return 0;
   return 1;
 }
+
+export type AnimalSaveDraft = Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & {
+  id?: string;
+  createdAt?: string;
+  _concurrentBase?: Animal;
+  _forceConcurrentOverwrite?: boolean;
+};
+
+export interface AnimalConcurrentConflictField {
+  field: keyof Animal;
+  label: string;
+}
+
+export class ConcurrentEditConflictError extends Error {
+  readonly conflictingFields: AnimalConcurrentConflictField[];
+  readonly remoteAnimal: Animal;
+
+  constructor(
+    conflictingFields: AnimalConcurrentConflictField[],
+    remoteAnimal: Animal,
+    message?: string
+  ) {
+    const labels = conflictingFields.map((f) => f.label).join(', ');
+    super(
+      message ||
+        `Concurrent edit conflict detected on ${labels || 'record fields'} — another tab saved newer changes.`
+    );
+    this.name = 'ConcurrentEditConflictError';
+    this.conflictingFields = conflictingFields;
+    this.remoteAnimal = remoteAnimal;
+  }
+}
+
+const MERGEABLE_ANIMAL_FIELDS: Array<{ field: keyof Animal; label: string }> = [
+  { field: 'name', label: 'Name' },
+  { field: 'tattoo', label: 'Tattoo / Ear ID' },
+  { field: 'breed', label: 'Breed' },
+  { field: 'variety', label: 'Variety / Color' },
+  { field: 'sex', label: 'Sex' },
+  { field: 'status', label: 'Status' },
+  { field: 'archived', label: 'Archived' },
+  { field: 'needsAttention', label: 'Needs Attention' },
+  { field: 'ignoredConflicts', label: 'Ignored Conflicts' },
+  { field: 'birthDateIso', label: 'Date of Birth' },
+  { field: 'weightGrams', label: 'Weight' },
+  { field: 'genotypeRaw', label: 'Genotype' },
+  { field: 'genotype', label: 'Parsed Genotype' },
+  { field: 'rufusLevel', label: 'Rufus Modifier' },
+  { field: 'suspectedCarrierOf', label: 'Suspected Carriers' },
+  { field: 'confirmedCarrierOf', label: 'Confirmed Carriers' },
+  { field: 'clearedCarrierOf', label: 'Cleared Carriers' },
+  { field: 'registrationNumber', label: 'Registration #' },
+  { field: 'grandChampionNumber', label: 'Grand Champion #' },
+  { field: 'legsCount', label: 'Legs Count' },
+  { field: 'cageLocation', label: 'Cage / Pen' },
+  { field: 'breederName', label: 'Breeder' },
+  { field: 'ownerName', label: 'Owner' },
+  { field: 'ownershipType', label: 'Ownership Type' },
+  { field: 'culled', label: 'Culled' },
+  { field: 'cullDateIso', label: 'Cull Date' },
+  { field: 'cullReason', label: 'Cull Reason' },
+  { field: 'deceasedDateIso', label: 'Deceased Date' },
+  { field: 'deathCause', label: 'Cause of Death' },
+  { field: 'soldDateIso', label: 'Sold Date' },
+  { field: 'salePriceCents', label: 'Sale Price' },
+  { field: 'purchaseCostCents', label: 'Purchase Cost' },
+  { field: 'buyerName', label: 'Buyer' },
+  { field: 'forSale', label: 'For Sale' },
+  { field: 'askingPriceCents', label: 'Asking Price' },
+  { field: 'saleNotes', label: 'Sale Notes' },
+  { field: 'sireId', label: 'Sire' },
+  { field: 'damId', label: 'Dam' },
+  { field: 'notes', label: 'Notes' },
+];
+
+function isFieldEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if ((a === undefined || a === null || a === '') && (b === undefined || b === null || b === '')) {
+    return true;
+  }
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  if (typeof a === 'object' && a !== null && b !== null) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+}
+
+export interface ConcurrentAnimalMergeResult {
+  status: 'no_conflict' | 'merged' | 'conflict';
+  mergedAnimal: Animal;
+  mergedRemoteFields: AnimalConcurrentConflictField[];
+  conflictingFields: AnimalConcurrentConflictField[];
+}
+
+/**
+ * Performs a 3-way field-level merge between `base` (when editor opened), `remote` (latest
+ * persisted record from another tab), and `local` (unsaved editor draft).
+ * Disjoint edits are safely combined; same-field collisions are flagged instead of silently overwriting.
+ */
+export function mergeConcurrentAnimalEdit(params: {
+  base: Animal;
+  remote: Animal;
+  local: Animal;
+}): ConcurrentAnimalMergeResult {
+  const { base, remote, local } = params;
+  const hasRemoteRevisionChange =
+    remote.updatedAt !== base.updatedAt ||
+    (typeof base._rev === 'number' && typeof remote._rev === 'number' && remote._rev !== base._rev);
+
+  if (!hasRemoteRevisionChange) {
+    return {
+      status: 'no_conflict',
+      mergedAnimal: local,
+      mergedRemoteFields: [],
+      conflictingFields: [],
+    };
+  }
+
+  const merged: Record<string, unknown> = { ...remote };
+  const mergedRemoteFields: AnimalConcurrentConflictField[] = [];
+  const conflictingFields: AnimalConcurrentConflictField[] = [];
+
+  for (const entry of MERGEABLE_ANIMAL_FIELDS) {
+    const baseVal = base[entry.field];
+    const remoteVal = remote[entry.field];
+    const localVal = local[entry.field];
+
+    const localChanged = !isFieldEqual(baseVal, localVal);
+    const remoteChanged = !isFieldEqual(baseVal, remoteVal);
+
+    if (localChanged && remoteChanged && !isFieldEqual(localVal, remoteVal)) {
+      conflictingFields.push(entry);
+      merged[entry.field] = localVal;
+    } else if (localChanged) {
+      merged[entry.field] = localVal;
+    } else if (remoteChanged) {
+      merged[entry.field] = remoteVal;
+      mergedRemoteFields.push(entry);
+    } else {
+      merged[entry.field] = localVal;
+    }
+  }
+
+  // Keep local _rev / updatedAt metadata assigned by caller
+  merged.id = local.id;
+  merged.species = local.species;
+  merged.createdAt = local.createdAt;
+  merged.updatedAt = local.updatedAt;
+  merged._rev = local._rev;
+  merged.offloadedArchiveKey = remote.offloadedArchiveKey || local.offloadedArchiveKey;
+  merged.offloadedAtIso = remote.offloadedAtIso || local.offloadedAtIso;
+
+  return {
+    status: conflictingFields.length > 0 ? 'conflict' : 'merged',
+    mergedAnimal: merged as unknown as Animal,
+    mergedRemoteFields,
+    conflictingFields,
+  };
+}
+

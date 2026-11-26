@@ -621,7 +621,7 @@ export function SpeciesDashboardScreen({
     setCageViewMode('board');
   }, [highlightedCageId]);
 
-  const activeBreedingStock = animals.filter((a) => a.status === 'Active' && !a.archived).length;
+  const activeHerdCount = activeData.activeAnimals.length;
   const activeGestations = useMemo(
     () =>
       breedings.filter((b) =>
@@ -1504,7 +1504,7 @@ export function SpeciesDashboardScreen({
                   {speciesProfile.name} Herd
                 </span>
                 <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-                  {animals.length} ({activeBreedingStock} active)
+                  {animals.length} ({activeHerdCount} active)
                 </span>
               </button>
 

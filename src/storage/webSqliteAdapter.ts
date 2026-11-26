@@ -109,6 +109,7 @@ import {
   dumpRawRecordsToOpfsRecoveryBackup,
   isVersionError,
   markPriorUseSentinelFromSnapshot,
+  readPriorUseSentinel,
   saveOpfsVaultBackup,
   WipedStorageRecoveryContext,
 } from './opfsStorage';
@@ -1217,6 +1218,7 @@ export class WebSqliteAdapter implements StorageAdapter {
   private fallbackSnapshot: BarnDatabaseSnapshot | null = null;
   private lastRollingSaveMs = 0;
   private wipedRecoveryContext: WipedStorageRecoveryContext | null = null;
+  private corruptionRecoveryNotice: string | null = null;
   private loadedEpoch = 0;
   private ephemeralMode = false;
 
@@ -1245,6 +1247,10 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   getWipedRecoveryContext(): WipedStorageRecoveryContext | null {
     return this.wipedRecoveryContext;
+  }
+
+  getCorruptionRecoveryNotice(): string | null {
+    return this.corruptionRecoveryNotice;
   }
 
   getLoadedEpoch(): number {
@@ -1464,7 +1470,10 @@ export class WebSqliteAdapter implements StorageAdapter {
 
   private async initializeLocked(options?: SnapshotLoadOptions): Promise<BarnDatabaseSnapshot> {
     this.wipedRecoveryContext = null;
+    this.corruptionRecoveryNotice = null;
     this.ephemeralMode = false;
+    let hadPrimarySqliteBytes = false;
+    let primarySqliteCorruptedError: string | null = null;
     const finalizeSnapshot = (snap: BarnDatabaseSnapshot): BarnDatabaseSnapshot =>
       options?.lightweightPhotos ? stripPhotoDataUrlsFromSnapshot(snap) : snap;
 
@@ -1512,8 +1521,10 @@ export class WebSqliteAdapter implements StorageAdapter {
         this.readPersistedWriteEpoch(),
       ]);
       if (savedBytes && savedBytes.byteLength > 0) {
+        hadPrimarySqliteBytes = true;
         const headerCheck = validateSqliteFileHeader(savedBytes, IDB_PRIMARY_KEY);
         if (!headerCheck.ok) {
+          primarySqliteCorruptedError = headerCheck.error;
           logDiagnosticEvent({
             level: 'warn',
             category: 'storage',
@@ -1616,6 +1627,9 @@ export class WebSqliteAdapter implements StorageAdapter {
       if (!this.backingStore && (!getSafeIndexedDb() || isIndexedDbBlockedError(err))) {
         this.ephemeralMode = true;
       }
+      if (hadPrimarySqliteBytes && !this.ephemeralMode && !primarySqliteCorruptedError) {
+        primarySqliteCorruptedError = err instanceof Error ? err.message : String(err);
+      }
 
       console.warn('WASM SQLite fallback to IndexedDB JSON / Ephemeral Session:', err);
       logDiagnosticEvent({
@@ -1653,6 +1667,9 @@ export class WebSqliteAdapter implements StorageAdapter {
           this.fallbackSnapshot = recovered.snapshot;
           this.loadedEpoch = (await this.readPersistedWriteEpoch()).epoch;
         }
+        if (primarySqliteCorruptedError) {
+          this.corruptionRecoveryNotice = `Primary SQLite database could not be read (${primarySqliteCorruptedError}) and was recovered from ${recovered.source} (${recovered.snapshot.animals.length} animals). Please review recent edits and download a backup.`;
+        }
         logDiagnosticEvent({
           level: 'warn',
           category: 'storage',
@@ -1663,8 +1680,35 @@ export class WebSqliteAdapter implements StorageAdapter {
 
       const wipedShell = await tryDetectWipedStorage();
       if (wipedShell) {
+        const currentWiped = this.getWipedRecoveryContext();
+        if (primarySqliteCorruptedError && currentWiped) {
+          this.wipedRecoveryContext = {
+            ...currentWiped,
+            corruptionError: primarySqliteCorruptedError,
+          };
+        }
         this.loadedEpoch = (await this.readPersistedWriteEpoch()).epoch;
         return wipedShell;
+      }
+
+      if (primarySqliteCorruptedError && !options?.allowSeedFresh) {
+        this.wipedRecoveryContext = {
+          detected: true,
+          reason: 'corrupted_sqlite',
+          sentinel: readPriorUseSentinel(),
+          latestOpfsBackup: null,
+          opfsBackupsCount: 0,
+          opfsArchivesCount: 0,
+          rollingBackupsCount: 0,
+          corruptionError: primarySqliteCorruptedError,
+        };
+        this.loadedEpoch = (await this.readPersistedWriteEpoch()).epoch;
+        logDiagnosticEvent({
+          level: 'error',
+          category: 'storage',
+          message: `Paused auto-seed after primary SQLite corruption (${primarySqliteCorruptedError}) with no mirror available — awaiting explicit user recovery or reset`,
+        });
+        return finalizeSnapshot(buildEmptyShellSnapshot());
       }
 
       const seeded = buildFullPredefinedSampleSnapshot();
@@ -1770,9 +1814,9 @@ export class WebSqliteAdapter implements StorageAdapter {
     }
 
     // Periodically capture rolling snapshot backup + JSON fallback mirror (at most every 15s)
+    // Skip empty snapshots so 0-animal shells never overwrite valid rolling recovery points.
     const nowMs = Date.now();
     if (nowMs - this.lastRollingSaveMs > 15_000) {
-      this.lastRollingSaveMs = nowMs;
       try {
         const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
         const snap = preloadedSnapshot
@@ -1780,18 +1824,21 @@ export class WebSqliteAdapter implements StorageAdapter {
             ? stripPhotoDataUrlsFromSnapshot(preloadedSnapshot)
             : preloadedSnapshot
           : this.loadSnapshotUnlocked({ lightweightPhotos: policy.dehydrateMirrorPhotos });
-        markPriorUseSentinelFromSnapshot(snap);
-        void saveRollingSnapshotBackup(snap, {
-          maxRollingBackups: policy.rollingIdbCap,
-          dehydratePhotos: policy.dehydrateMirrorPhotos,
-        }).catch(() => {});
-        if (this.db) {
-          if (this.backingStore) {
-            void this.backingStore
-              .setItem(IDB_FALLBACK_SNAPSHOT_KEY, JSON.stringify(snap))
-              .catch(() => {});
-          } else {
-            void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
+        if (snap.animals.length > 0) {
+          this.lastRollingSaveMs = nowMs;
+          markPriorUseSentinelFromSnapshot(snap);
+          void saveRollingSnapshotBackup(snap, {
+            maxRollingBackups: policy.rollingIdbCap,
+            dehydratePhotos: policy.dehydrateMirrorPhotos,
+          }).catch(() => {});
+          if (this.db) {
+            if (this.backingStore) {
+              void this.backingStore
+                .setItem(IDB_FALLBACK_SNAPSHOT_KEY, JSON.stringify(snap))
+                .catch(() => {});
+            } else {
+              void idbSet(IDB_FALLBACK_SNAPSHOT_KEY, snap).catch(() => {});
+            }
           }
         }
       } catch {
@@ -5489,9 +5536,11 @@ export class WebSqliteAdapter implements StorageAdapter {
   }
 
   async exportRawSqliteBytes(): Promise<Uint8Array | null> {
-    await this.syncFromPersistedStorageIfStale();
-    if (!this.db) return null;
-    return this.db.export();
+    return withCrossTabLock(DB_WRITE_LOCK_NAME, async () => {
+      await this.syncFromPersistedStorageIfStaleLocked();
+      if (!this.db) return null;
+      return this.db.export();
+    });
   }
 
   async inspectRawSqliteBytes(

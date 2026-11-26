@@ -320,9 +320,13 @@ export async function saveRollingSnapshotBackup(
   options?: {
     maxRollingBackups?: number;
     dehydratePhotos?: boolean;
+    allowEmpty?: boolean;
   }
 ): Promise<void> {
   if (!getSafeIndexedDb()) return;
+  if (snapshot.animals.length === 0 && !options?.allowEmpty) {
+    return;
+  }
   try {
     const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
     const maxRollingCap = Math.max(
@@ -333,6 +337,10 @@ export async function saveRollingSnapshotBackup(
     const targetSnapshot = shouldDehydrate
       ? stripPhotoDataUrlsFromSnapshot(snapshot)
       : snapshot;
+
+    if (targetSnapshot.animals.length === 0 && !options?.allowEmpty) {
+      return;
+    }
 
     const entry: StoredRollingBackup = {
       key: `rolling-${getAdjustedNowMs()}`,

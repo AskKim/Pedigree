@@ -26,6 +26,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import React, { ComponentProps, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimalSaveDraft } from '../domain/animalConflicts';
 import { formatCompactCarrierDisclosure } from '../domain/carrierGenetics';
 import {
   analyzeAlleleProvenance,
@@ -91,10 +92,10 @@ interface PedigreeScreenProps {
   onOpenAnimalInHerd: (id: string) => void;
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
   onSaveAnimal: (
-    draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+    draft: AnimalSaveDraft,
     linkParentTarget?: { childId: string; asSire: boolean },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => void;
+  ) => Promise<string | null | void> | string | void;
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
@@ -1300,9 +1301,17 @@ export function PedigreeScreen({
                       <strong className="text-[var(--barn-ink)]">
                         {(coi?.coiPercent ?? 0).toFixed(2)}%
                       </strong>{' '}
-                      ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
+                      <span className={coi?.hasPedigreeCycle ? 'text-[var(--barn-danger)] font-semibold' : ''}>
+                        ({coi?.risk.label || 'Outcross'})
+                      </span>{' '}
+                      · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
                       {comp ? ` (${comp.percent3Gen}%)` : ''}
                     </div>
+                    {coi?.hasPedigreeCycle && (
+                      <div role="alert" className="text-[11px] font-medium text-[var(--barn-danger)]">
+                        {coi.risk.guidance}
+                      </div>
+                    )}
                     {comp?.isIncompleteZeroOutcross && (
                       <div className="text-[11px] text-[var(--barn-muted)]">
                         Incomplete pedigree ({comp.known3Gen}/{comp.max3Gen} 3-gen ancestors recorded) — 0.00% reflects missing ancestry.

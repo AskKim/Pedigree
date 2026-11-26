@@ -592,7 +592,9 @@ export default function App({ bridge, storageAdapter }: AppProps = {}) {
         </div>
         <AsyncErrorToastHost
           onOpenDiagnostics={() => store.setRoute('techyStuff')}
+          onOpenBackups={() => openImportExportHub('backup')}
           isOnSettingsRoute={store.route === 'techyStuff'}
+          isOnBackupsRoute={store.route === 'importExport'}
         />
       </main>
     );
@@ -2096,7 +2098,9 @@ export default function App({ bridge, storageAdapter }: AppProps = {}) {
             <WipedStorageRecoveryModal
               context={store.wipedRecoveryContext}
               archivedHerdBundles={store.archivedHerdBundles}
+              rollingBackups={store.rollingBackups}
               onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+              onRestoreRollingBackup={store.restoreRollingBackupByKey}
               onRestoreArchivedBundle={(archiveKey) =>
                 store.restoreArchivedHerdBundle(archiveKey)
               }
@@ -2324,7 +2328,9 @@ export default function App({ bridge, storageAdapter }: AppProps = {}) {
 
       <AsyncErrorToastHost
         onOpenDiagnostics={() => setRoute('techyStuff')}
+        onOpenBackups={() => openImportExportHub('backup')}
         isOnSettingsRoute={route === 'techyStuff'}
+        isOnBackupsRoute={route === 'importExport'}
       />
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}

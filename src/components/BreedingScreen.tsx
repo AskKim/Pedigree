@@ -1057,7 +1057,14 @@ export function BreedingScreen({
                     <div className="font-mono text-3xl font-semibold tabular-nums mt-0.5">
                       {coiAnalysis.coiPercent.toFixed(2)}%
                     </div>
-                    <div className="text-xs text-[var(--barn-muted)] mt-1">
+                    <div
+                      role={coiAnalysis.hasPedigreeCycle ? 'alert' : undefined}
+                      className={`text-xs mt-1 ${
+                        coiAnalysis.hasPedigreeCycle
+                          ? 'text-[var(--barn-danger)] font-medium'
+                          : 'text-[var(--barn-muted)]'
+                      }`}
+                    >
                       {coiAnalysis.risk.label} — {coiAnalysis.risk.guidance}
                     </div>
                   </div>

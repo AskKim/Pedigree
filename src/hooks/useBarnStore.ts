@@ -17,8 +17,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeBarnAnimalConflicts,
   AnimalConflictSummary,
+  AnimalSaveDraft,
   applyImportConflictAttentionFlags,
+  ConcurrentEditConflictError,
   LitterOffspringDraft,
+  mergeConcurrentAnimalEdit,
 } from '../domain/animalConflicts';
 import type { PreRestoreArchiveInspection } from '../domain/archiveInspector';
 import type { BarnBenchBatchEntryDraft } from '../domain/barnBench';
@@ -610,40 +613,17 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
       message: `${actionLabel} failed`,
       error: err,
     });
+    setStatusMessage(null);
     if (quotaHit) {
-      const msg = `Device storage is full while trying to ${actionLabel}. Open Import & Settings to download a backup, switch photos to Compact (960px), or free device space.`;
+      const msg = `Device storage is full while trying to ${actionLabel}. Open Recovery & Backups to download a backup, switch photos to Compact (960px), or free device space.`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: 'Device Storage Full',
-        detail: msg,
-        severity: 'error',
-        sticky: true,
-        category: 'storage',
-        canOpenDiagnostics: true,
-      });
     } else if (memoryHit) {
       const msg = `Low device memory while trying to ${actionLabel}. Close other browser tabs or use Compact photos in Import & Settings.`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: 'Low Memory Warning',
-        detail: msg,
-        severity: 'error',
-        sticky: true,
-        category: 'memory',
-        canOpenDiagnostics: true,
-      });
     } else {
       const detail = err instanceof Error ? err.message : 'Local storage write failed.';
       const msg = `Could not ${actionLabel}: ${detail}`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: `Could Not ${actionLabel}`,
-        detail,
-        severity: 'error',
-        sticky: true,
-        category: 'storage',
-        canOpenDiagnostics: true,
-      });
     }
   }, []);
 
@@ -896,15 +876,21 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
         const adapter = adapterRef.current!;
         const initial = await adapter.initialize({ lightweightPhotos: true });
         const detectedWiped = adapter.getWipedRecoveryContext?.() ?? null;
+        const corruptionNotice = adapter.getCorruptionRecoveryNotice?.() ?? null;
         if (!detectedWiped?.detected) {
           void sweepOrphanedOpfsTmpOnBoot();
           markPriorUseSentinelFromSnapshot(initial);
+        } else {
+          void refreshVaultAndArchives();
         }
 
         if (!mounted) return;
         snapshotRef.current = initial;
         setSnapshot(initial);
         setWipedRecoveryContext(detectedWiped && detectedWiped.detected ? detectedWiped : null);
+        if (corruptionNotice) {
+          setErrorMessage(corruptionNotice);
+        }
         setPedigreeGenerations(initial.settings.defaultGenerations);
 
         const deepTarget = parseAppDeepLinkParams(
@@ -1640,7 +1626,15 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
       targetSnapshot?: BarnDatabaseSnapshot,
       filterSpecies?: string
     ): Promise<BarnDatabaseSnapshot> => {
-      const base = targetSnapshot ?? snapshotRef.current;
+      if (!targetSnapshot) {
+        await writeQueueRef.current.catch(() => undefined);
+      }
+      const liveSnap = snapshotRef.current;
+      const base =
+        targetSnapshot &&
+        !(targetSnapshot.animals.length === 0 && liveSnap && liveSnap.animals.length > 0)
+          ? targetSnapshot
+          : liveSnap;
       if (!base) {
         throw new Error('Local database is not loaded yet.');
       }
@@ -2782,22 +2776,36 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
 
   const saveAnimal = useCallback(
     async (
-      draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+      draft: AnimalSaveDraft,
       linkParentTarget?: { childId: string; asSire: boolean },
       initialPhotos?: Array<OptimizedImagePayload & { caption?: string }>
     ): Promise<string | null> => {
       return enqueueStoreMutation(async () => {
+        const adapter = adapterRef.current!;
+        if (adapter.syncFromPersistedStorageIfStale) {
+          const synced = await adapter.syncFromPersistedStorageIfStale().catch(() => false);
+          if (synced) {
+            await reloadFromAdapterSilently();
+          }
+        }
+        const {
+          _concurrentBase,
+          _forceConcurrentOverwrite,
+          ...cleanDraft
+        } = draft;
         const latestSnapshot = snapshotRef.current ?? snapshot;
-        const previous = draft.id
-          ? latestSnapshot?.animals.find((a) => a.id === draft.id)
+        const previous = cleanDraft.id
+          ? latestSnapshot?.animals.find((a) => a.id === cleanDraft.id)
           : undefined;
-        const hasExplicitRaw = typeof draft.genotypeRaw === 'string';
-        const trimmedRaw = (draft.genotypeRaw || '').trim();
+        const hasExplicitRaw = typeof cleanDraft.genotypeRaw === 'string';
+        const trimmedRaw = (cleanDraft.genotypeRaw || '').trim();
         const needsGeneticsEngine =
           (hasExplicitRaw && Boolean(trimmedRaw)) ||
-          (!hasExplicitRaw && Boolean(draft.genotype && draft.genotype.length > 0));
+          (!hasExplicitRaw && Boolean(cleanDraft.genotype && cleanDraft.genotype.length > 0));
         let parsedGeno =
-          !hasExplicitRaw && draft.genotype && draft.genotype.length > 0 ? draft.genotype : [];
+          !hasExplicitRaw && cleanDraft.genotype && cleanDraft.genotype.length > 0
+            ? cleanDraft.genotype
+            : [];
         let normalizedRaw = trimmedRaw;
         if (needsGeneticsEngine) {
           const { formatGenotypeArray, parseGenotypeString } = await import(
@@ -2805,50 +2813,73 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
           );
           if (hasExplicitRaw && trimmedRaw) {
             parsedGeno =
-              draft.genotype &&
-              draft.genotype.length > 0 &&
-              formatGenotypeArray(draft.genotype) === trimmedRaw
-                ? draft.genotype
-                : parseGenotypeString(trimmedRaw, draft.species);
+              cleanDraft.genotype &&
+              cleanDraft.genotype.length > 0 &&
+              formatGenotypeArray(cleanDraft.genotype) === trimmedRaw
+                ? cleanDraft.genotype
+                : parseGenotypeString(trimmedRaw, cleanDraft.species);
           }
           normalizedRaw = trimmedRaw || (hasExplicitRaw ? '' : formatGenotypeArray(parsedGeno));
         }
 
         const carriers = reconcileCarrierTraitLists(
-          draft.suspectedCarrierOf,
-          draft.confirmedCarrierOf,
-          draft.clearedCarrierOf
+          cleanDraft.suspectedCarrierOf,
+          cleanDraft.confirmedCarrierOf,
+          cleanDraft.clearedCarrierOf
         );
 
         const resolvedIgnored = normalizeIgnoredConflicts(
-          draft.ignoredConflicts ?? previous?.ignoredConflicts
+          cleanDraft.ignoredConflicts ?? previous?.ignoredConflicts
         );
 
-        const animalId = draft.id || generateUuid();
+        const animalId = cleanDraft.id || generateUuid();
         const rev = nextEntityRev(animalId, previous?._rev);
-        const adjustedTs = getAdjustedNowIsoUtc();
+        let adjustedTs = getAdjustedNowIsoUtc();
+        if (previous?.updatedAt && adjustedTs <= previous.updatedAt) {
+          const prevMs = Date.parse(previous.updatedAt);
+          if (Number.isFinite(prevMs)) {
+            adjustedTs = new Date(prevMs + 1).toISOString();
+          }
+        }
 
-        const animal: Animal = {
-          ...draft,
+        const candidateAnimal: Animal = {
+          ...cleanDraft,
           id: animalId,
-          tattoo: draft.tattoo.trim(),
-          name: draft.name.trim(),
-          archived: Boolean(draft.archived),
-          needsAttention: Boolean(draft.needsAttention),
+          tattoo: cleanDraft.tattoo.trim(),
+          name: cleanDraft.name.trim(),
+          archived: Boolean(cleanDraft.archived),
+          needsAttention: Boolean(cleanDraft.needsAttention),
           ignoredConflicts: resolvedIgnored,
           genotype: parsedGeno,
           genotypeRaw: normalizedRaw,
-          rufusLevel: normalizeRufusLevel(draft.rufusLevel),
+          rufusLevel: normalizeRufusLevel(cleanDraft.rufusLevel),
           suspectedCarrierOf: carriers.suspectedCarrierOf,
           confirmedCarrierOf: carriers.confirmedCarrierOf,
           clearedCarrierOf: carriers.clearedCarrierOf,
           _rev: rev,
-          createdAt: draft.createdAt || adjustedTs,
+          createdAt: cleanDraft.createdAt || previous?.createdAt || adjustedTs,
           updatedAt: adjustedTs,
         };
 
+        let animal = candidateAnimal;
+        let mergedRemoteLabels: string[] = [];
+        if (previous && _concurrentBase && !_forceConcurrentOverwrite) {
+          const mergeResult = mergeConcurrentAnimalEdit({
+            base: _concurrentBase,
+            remote: previous,
+            local: candidateAnimal,
+          });
+          if (mergeResult.status === 'conflict') {
+            throw new ConcurrentEditConflictError(mergeResult.conflictingFields, previous);
+          }
+          if (mergeResult.status === 'merged') {
+            animal = mergeResult.mergedAnimal;
+            mergedRemoteLabels = mergeResult.mergedRemoteFields.map((f) => f.label);
+          }
+        }
+
         try {
-          await adapterRef.current!.saveAnimal(animal);
+          await adapter.saveAnimal(animal);
           await recordOutboxOps(
             diffEntityFieldsToOperations({
               entityType: 'animal',
@@ -2884,7 +2915,7 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
               createdAt: adjustedTs,
               updatedAt: adjustedTs,
             }));
-            await adapterRef.current!.saveAnimalPhotosBatch(newPhotoRecords);
+            await adapter.saveAnimalPhotosBatch(newPhotoRecords);
             for (const rec of newPhotoRecords) {
               photoCacheRef.current.set(rec.id, rec.dataUrl);
             }
@@ -2911,7 +2942,7 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
                   _rev: childRev,
                   updatedAt: adjustedTs,
                 };
-                await adapterRef.current!.saveAnimal(updatedChild);
+                await adapter.saveAnimal(updatedChild);
                 await recordOutboxOps(
                   diffEntityFieldsToOperations({
                     entityType: 'animal',
@@ -2928,10 +2959,14 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
           }
 
           await reloadFromAdapter();
-          notify(
+          const baseNotify =
             initialPhotos && initialPhotos.length > 0
               ? `${animal.name} saved with ${initialPhotos.length} optimized photo(s).`
-              : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`
+              : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`;
+          notify(
+            mergedRemoteLabels.length > 0
+              ? `${baseNotify} Merged concurrent updates (${mergedRemoteLabels.join(', ')}).`
+              : baseNotify
           );
           return animal.id;
         } catch (err) {
@@ -2947,6 +2982,7 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
+      reloadFromAdapterSilently,
       notify,
       reportPersistenceFailure,
     ]
@@ -8861,7 +8897,19 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
   );
 
   const exportSqliteBytes = useCallback(async () => {
-    return adapterRef.current!.exportRawSqliteBytes();
+    await writeQueueRef.current.catch(() => undefined);
+    const adapter = adapterRef.current!;
+    const bytes = await adapter.exportRawSqliteBytes();
+    const liveAnimalCount = snapshotRef.current?.animals.length ?? 0;
+    if (bytes && liveAnimalCount > 0 && adapter.inspectRawSqliteBytes) {
+      const inspected = await adapter.inspectRawSqliteBytes(bytes, { lightweightPhotos: true });
+      if (inspected.animals.length === 0) {
+        throw new Error(
+          `Blocked empty SQLite export: serialized database has 0 animals while ${liveAnimalCount} animal(s) are loaded in memory. Please wait for pending saves or export a JSON backup.`
+        );
+      }
+    }
+    return bytes;
   }, []);
 
   const inspectSqliteRestoreBytes = useCallback(

@@ -219,6 +219,9 @@ export interface StorageAdapter {
   /** Returns detected wiped-storage recovery state when IndexedDB appeared wiped for a returning user. */
   getWipedRecoveryContext?(): WipedStorageRecoveryContext | null;
 
+  /** Returns a user-facing notice when corrupted primary SQLite storage triggered automatic recovery. */
+  getCorruptionRecoveryNotice?(): string | null;
+
   /** Returns true when restricted browser storage forced an in-memory ephemeral session. */
   isEphemeralMode?(): boolean;
 }

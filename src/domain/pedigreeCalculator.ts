@@ -19,7 +19,7 @@
 
 import { Animal, BiologicalSex, isSameSpecies, SpeciesProfile } from './models';
 
-export type CoiRiskCode = 'OUTCROSS' | 'LOW' | 'MODERATE' | 'LINEBRED' | 'HIGH';
+export type CoiRiskCode = 'OUTCROSS' | 'LOW' | 'MODERATE' | 'LINEBRED' | 'HIGH' | 'CYCLE';
 
 export interface CoiRiskDescriptor {
   code: CoiRiskCode;
@@ -41,6 +41,7 @@ export interface CoiAnalysis {
   sharedAncestors: AncestorContribution[];
   knownAncestorsIn3Gen: number;
   knownAncestorsIn4Gen: number;
+  hasPedigreeCycle?: boolean;
 }
 
 export interface PedigreeSlot {
@@ -92,6 +93,15 @@ export function describeCoiRisk(percent: number): CoiRiskDescriptor {
   };
 }
 
+export function describeCycleCoiRisk(): CoiRiskDescriptor {
+  return {
+    code: 'CYCLE',
+    label: 'Cycle Detected (Invalid Lineage)',
+    guidance:
+      'Pedigree contains a circular parent-offspring link. Repair parent assignments before relying on COI.',
+  };
+}
+
 export interface PedigreeCompletenessSummary {
   known3Gen: number;
   max3Gen: number;
@@ -108,14 +118,15 @@ export interface PedigreeCompletenessSummary {
  * that simply lacks ancestor records.
  */
 export function getPedigreeCompletenessSummary(
-  coi: Pick<CoiAnalysis, 'coiPercent' | 'knownAncestorsIn3Gen' | 'knownAncestorsIn4Gen'>
+  coi: Pick<CoiAnalysis, 'coiPercent' | 'knownAncestorsIn3Gen' | 'knownAncestorsIn4Gen' | 'hasPedigreeCycle'>
 ): PedigreeCompletenessSummary {
   const max3Gen = 14;
   const max4Gen = 30;
   const known3Gen = Math.max(0, Math.min(max3Gen, coi.knownAncestorsIn3Gen || 0));
   const known4Gen = Math.max(0, Math.min(max4Gen, coi.knownAncestorsIn4Gen || 0));
   const percent3Gen = Math.round((known3Gen / max3Gen) * 100);
-  const isIncompleteZeroOutcross = (coi.coiPercent || 0) <= 0.0001 && known3Gen < max3Gen;
+  const isIncompleteZeroOutcross =
+    !coi.hasPedigreeCycle && (coi.coiPercent || 0) <= 0.0001 && known3Gen < max3Gen;
   return {
     known3Gen,
     max3Gen,
@@ -167,6 +178,54 @@ export function wouldCreateCycle(
     if (!rec) continue;
     if (rec.sireId && herdById.has(rec.sireId)) stack.push(rec.sireId);
     if (rec.damId && herdById.has(rec.damId)) stack.push(rec.damId);
+  }
+  return false;
+}
+
+function hasPedigreeCycleFromRoots(
+  rootIds: string[],
+  herdById: Map<string, Animal>,
+  overrideSubject?: Animal
+): boolean {
+  const state = new Map<string, 1 | 2>(); // 1 = visiting, 2 = visited
+
+  const getRecord = (id: string): Animal | undefined => {
+    if (overrideSubject && id === overrideSubject.id) return overrideSubject;
+    return herdById.get(id);
+  };
+
+  const dfs = (id: string): boolean => {
+    if (!id) return false;
+    const prev = state.get(id);
+    if (prev === 1) return true;
+    if (prev === 2) return false;
+
+    const rec = getRecord(id);
+    if (!rec) return false;
+
+    state.set(id, 1);
+    if (rec.sireId) {
+      if (rec.sireId === id || dfs(rec.sireId)) return true;
+    }
+    if (rec.damId) {
+      if (rec.damId === id || dfs(rec.damId)) return true;
+    }
+    state.set(id, 2);
+    return false;
+  };
+
+  if (overrideSubject) {
+    if (
+      (overrideSubject.sireId && overrideSubject.sireId === overrideSubject.id) ||
+      (overrideSubject.damId && overrideSubject.damId === overrideSubject.id)
+    ) {
+      return true;
+    }
+    if (overrideSubject.id && dfs(overrideSubject.id)) return true;
+  }
+
+  for (const rootId of rootIds) {
+    if (rootId && dfs(rootId)) return true;
   }
   return false;
 }
@@ -425,15 +484,18 @@ export function createSpeciesCoiEvaluator(
       ];
     };
 
+    const hasCycle = hasPedigreeCycleFromRoots([sireId, damId], herdById, overrideSubject);
+
     if (!sireId || !damId) {
       const [g3, g4] = countKnown();
       return {
         coiFraction: 0,
         coiPercent: 0,
-        risk: describeCoiRisk(0),
+        risk: hasCycle ? describeCycleCoiRisk() : describeCoiRisk(0),
         sharedAncestors: [],
         knownAncestorsIn3Gen: g3,
         knownAncestorsIn4Gen: g4,
+        hasPedigreeCycle: hasCycle,
       };
     }
 
@@ -452,10 +514,11 @@ export function createSpeciesCoiEvaluator(
     return {
       coiFraction: fraction,
       coiPercent: percent,
-      risk: describeCoiRisk(percent),
+      risk: hasCycle ? describeCycleCoiRisk() : describeCoiRisk(percent),
       sharedAncestors,
       knownAncestorsIn3Gen: g3,
       knownAncestorsIn4Gen: g4,
+      hasPedigreeCycle: hasCycle,
     };
   };
 
@@ -491,15 +554,18 @@ export function calculatePairingCoi(
     return [g3, g4];
   };
 
+  const hasCycle = hasPedigreeCycleFromRoots([sireId, damId], herdById, overrideSubject);
+
   if (!sireId || !damId) {
     const [g3, g4] = countKnown();
     return {
       coiFraction: 0,
       coiPercent: 0,
-      risk: describeCoiRisk(0),
+      risk: hasCycle ? describeCycleCoiRisk() : describeCoiRisk(0),
       sharedAncestors: [],
       knownAncestorsIn3Gen: g3,
       knownAncestorsIn4Gen: g4,
+      hasPedigreeCycle: hasCycle,
     };
   }
 
@@ -512,10 +578,11 @@ export function calculatePairingCoi(
   return {
     coiFraction: fraction,
     coiPercent: percent,
-    risk: describeCoiRisk(percent),
+    risk: hasCycle ? describeCycleCoiRisk() : describeCoiRisk(percent),
     sharedAncestors,
     knownAncestorsIn3Gen: g3,
     knownAncestorsIn4Gen: g4,
+    hasPedigreeCycle: hasCycle,
   };
 }
 
