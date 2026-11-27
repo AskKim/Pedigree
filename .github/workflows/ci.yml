@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
+    paths-ignore:
+      - 'old/**'
   pull_request:
+    paths-ignore:
+      - 'old/**'
 
 concurrency:
   group: ci-${{ github.ref }}

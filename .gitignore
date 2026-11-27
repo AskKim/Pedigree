@@ -23,3 +23,5 @@ android-wrapper/app/src/main/assets/www/*
 !export/.gitkeep
 !upload/
 !upload/.gitkeep
+!old/
+!old/.gitkeep

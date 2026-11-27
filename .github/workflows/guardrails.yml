@@ -57,18 +57,18 @@ jobs:
               print(f"OK: {wf}")
           EOF
 
-      - name: Verify protected folders (import, export, upload) and master prompt exist
+      - name: Verify protected folders (import, export, upload, old) and master prompt exist
         run: |
-          for dir in import export upload; do
+          for dir in import export upload old; do
             test -d "$dir" || { echo "Missing required directory: $dir" >&2; exit 1; }
             test -f "$dir/.gitkeep" || { echo "Missing .gitkeep marker in: $dir" >&2; exit 1; }
           done
           test -f "prompts/master_system_prompt.md" || { echo "Missing prompts/master_system_prompt.md" >&2; exit 1; }
 
-      - name: Enforce /import/ isolation and React-only core PWA boundary
+      - name: Enforce /import/ and /old/ isolation and React-only core PWA boundary
         run: |
-          if grep -rnE "from ['\"](@/)?import/|import\(['\"](@/)?import/" src index.html 2>/dev/null; then
-            echo "ERROR: /import/ must never be imported into src/ or index.html." >&2
+          if grep -rnE "from ['\"](@/)?(import|old)/|import\(['\"](@/)?(import|old)/" src index.html 2>/dev/null; then
+            echo "ERROR: /import/ and /old/ must never be imported into src/ or index.html." >&2
             exit 1
           fi
           test -f "src/App.tsx" && test -f "src/main.tsx" || { echo "Core React PWA entrypoints missing!" >&2; exit 1; }

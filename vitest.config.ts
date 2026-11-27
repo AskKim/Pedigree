@@ -12,6 +12,6 @@ export default defineConfig({
     },
   },
   test: {
-    exclude: [...configDefaults.exclude, 'import/**', 'android-wrapper/**'],
+    exclude: [...configDefaults.exclude, 'import/**', 'old/**', 'android-wrapper/**'],
   },
 });

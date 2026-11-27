@@ -103,6 +103,7 @@ jobs:
               "export",
               "import",
               "upload",
+              "old",
               output_dir_top,
           }
 

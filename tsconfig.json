@@ -53,5 +53,5 @@
     "useUnknownInCatchVariables": true,
     "noFallthroughCasesInSwitch": true
   },
-  "exclude": ["dist", "import"]
+  "exclude": ["dist", "import", "old"]
 }

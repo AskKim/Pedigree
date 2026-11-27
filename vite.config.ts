@@ -321,6 +321,45 @@ function importFolderGuardPlugin(): Plugin {
   };
 }
 
+function oldFolderGuardPlugin(): Plugin {
+  const oldRoot = path.resolve(import.meta.dirname, 'old') + path.sep;
+  return {
+    name: 'old-folder-isolation-guard',
+    resolveId(source, importer) {
+      if (
+        source.startsWith('/old/') ||
+        source === '/old' ||
+        source.startsWith('@/old/')
+      ) {
+        throw new Error(
+          `Blocked import from inactive /old/ folder ("${source}"). /old/ contains inactive code and old versions excluded from runtime.`
+        );
+      }
+      if (importer && source.startsWith('.')) {
+        const resolved = path.resolve(path.dirname(importer), source);
+        if (resolved.startsWith(oldRoot)) {
+          throw new Error(
+            `Blocked import from inactive /old/ folder ("${source}"). /old/ contains inactive code and old versions excluded from runtime.`
+          );
+        }
+      }
+      return null;
+    },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split('?')[0] || '';
+        if (url === '/old' || url.startsWith('/old/')) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end('Forbidden: /old/ contains inactive code and old versions excluded from runtime.');
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig(() => {
   // Hardcoded '/' keeps AI Studio from prompting for VITE_BASE_PATH (IMP-008).
   // GitHub Pages subpath builds run via Bun in .github/workflows/deploy-pages.yml passing `--base=...` on CLI.
@@ -334,6 +373,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       importFolderGuardPlugin(),
+      oldFolderGuardPlugin(),
       devServiceWorkerCleanupPlugin(),
       promptsDirectoryPlugin(),
       VitePWA({
@@ -498,7 +538,7 @@ export default defineConfig(() => {
       port: 3000,
       allowedHosts: true as const,
       fs: {
-        deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', 'import', 'import/**'],
+        deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', 'import', 'import/**', 'old', 'old/**'],
       },
       // HMR, WebSocket server, and file watching are hardcoded disabled to prevent preview flickering,
       // mobile iframe reload loops, and AI Studio env-var prompts (production/Pages builds are unaffected).
