@@ -484,7 +484,17 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
   flushAndSize: () => Promise<number | null>;
 }> {
   if (typeof fh.createWritable === 'function') {
-    const writable = await fh.createWritable();
+    // SAFELY acquire a writable OPFS handle; any error here means the file
+    // cannot be written, so we fall back to sync‑access handling.
+    const writable = await fh.createWritable().catch((err) => {
+      emitOpfsLog({
+        level: 'error',
+        category: 'storage',
+        message: 'Failed to create OPFS writable stream – falling back to sync handle',
+        error: err,
+      });
+      throw err;
+    });
     trackActiveOpfsHandle(writable);
     return {
       handle: writable,
@@ -492,6 +502,9 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
       flushAndSize: async () => {
         await safeAwaitOpfsFlush(writable);
         return null;
+      },
+    };
+  }
       },
     };
   }
