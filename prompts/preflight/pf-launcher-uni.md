@@ -1,5 +1,6 @@
 # Reusable Modular Release And Setup Launcher
 
+<!-- MANIFEST_TOC -->
 ```
 <!-- OUTSIDE_PROMPT_NOTE: Human docs, full Schema v2 reference, and Resetting The Launcher instructions live in prompts/preflight/pf-launcher-uni-readme.md and prompts/preflight/pf-launcher-uni-wiring.md. Pristine copy-ready template: prompts/preflight/templates/pf-launcher-uni-clean.md. -->
 

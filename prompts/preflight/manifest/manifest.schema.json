@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Preflight Manifest",
+  "type": "object",
+  "properties": {
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "type", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "file": { "type": "string" },
+          "type": { "enum": ["FIRST_TIME", "REUSABLE", "PER_RELEASE"] },
+          "description": { "type": "string" },
+          "requiresEnv": { "type": "boolean" },
+          "runMode": { "enum": ["once", "always"] },
+          "sinceVersion": { "type": "string" }
+        }
+      }
+    }
+  },
+  "required": ["steps"]
+}

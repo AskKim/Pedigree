@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2024-2026 AskKim
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Preflight CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Target branch name"
+        required: false
+        default: "${{ github.ref_name }}"
+      version:
+        description: "Target version tag"
+        required: false
+        default: "0.1.0-alpha.3"
+      dry_run:
+        description: "Run launcher in dry‑run mode"
+        required: false
+        default: "false"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate manifest schema
+        run: |
+          npx ajv -c prompts/preflight/manifest/manifest.schema.json -s prompts/preflight/manifest/preflight.manifest.json
+
+      - name: Generate wiring & TOC
+        run: node prompts/preflight/scripts/gen-preflight.mjs
+
+      - name: Run Preflight Launcher
+        env:
+          TARGET_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
+          TARGET_VERSION: ${{ github.event.inputs.version || '0.1.0-alpha.3' }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY="--dry-run"
+          else
+            DRY=""
+          fi
+          node prompts/preflight/scripts/preflight-run-context.mjs --branch "$TARGET_BRANCH" --version "$TARGET_VERSION" $DRY

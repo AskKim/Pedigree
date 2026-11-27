@@ -1,0 +1,23 @@
+// SPDX-FileCopyrightText: 2024-2026 AskKim
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+{
+  "steps": [
+    {"id": "seed-handshake", "file": "run-uni/seed-handshake.md", "type": "FIRST_TIME", "description": "Initialize handoff state and basic repo files."},
+    {"id": "ai-baseline", "file": "run-uni/ai.md", "type": "FIRST_TIME", "description": "Baseline AI studio environment checks."},
+    {"id": "a11y-setup", "file": "run-uni/a11y.md", "type": "FIRST_TIME", "description": "One-time accessibility setup."},
+    {"id": "crawl-setup", "file": "run-uni/crawl-setup.md", "type": "FIRST_TIME", "description": "Setup crawling configuration."},
+    {"id": "a11y-check", "file": "run-uni/a11y-check.md", "type": "REUSABLE", "description": "Reusable UI/ARIA diff check."},
+    {"id": "crawl-guide", "file": "run-uni/crawl-guide.md", "type": "REUSABLE", "description": "Reusable crawl manifest guide."},
+    {"id": "release-check-p1", "file": "run-uni/release-check.md", "type": "REUSABLE", "description": "Phase‑A release sanity check."},
+    {"id": "ver-update", "file": "run-uni/ver-update.md", "type": "PER_RELEASE", "description": "Version bump and changelog sync."},
+    {"id": "scripts-lint-setup", "file": "run-uni/scripts-lint-setup.md", "type": "FIRST_TIME", "description": "Validate preflight scripts linting."},
+    {"id": "backup-setup", "file": "run-uni/backup-setup.md", "type": "FIRST_TIME", "description": "Configure backup vault."},
+    {"id": "ci-setup", "file": "run-uni/ci-setup.md", "type": "FIRST_TIME", "description": "Configure CI pipeline."},
+    {"id": "backup-check", "file": "run-uni/backup-check.md", "type": "REUSABLE", "description": "Pre‑merge backup verification."},
+    {"id": "ci-guide", "file": "run-uni/ci-guide.md", "type": "REUSABLE", "description": "CI health and smoke test guide."},
+    {"id": "release-check-p2", "file": "run-uni/release-check.md", "type": "REUSABLE", "description": "Phase‑B release sanity check."},
+    {"id": "attribution-audit", "file": "run-uni/audit.md", "type": "PER_RELEASE", "description": "AGPL‑3 attribution audit."},
+    {"id": "release-plan", "file": "run-uni/release-plan.md", "type": "PER_RELEASE", "description": "Final release plan and sign‑off."}
+  ]
+}
