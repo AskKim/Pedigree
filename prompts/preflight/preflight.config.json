@@ -1,0 +1,51 @@
+{
+
+"\_comment": "Static repository configuration for
+prompts/preflight/pf-launcher-uni.md. Last Updated:
+2026-11-25T18:32:00-06:00",
+
+"schema_version": 2,
+
+"script_dir": "prompts/preflight/scripts",
+
+"launcher_path": "prompts/preflight/pf-launcher-uni.md",
+
+"repo_url": "\<repo-url\>",
+
+"live_url": "\<live-url\>",
+
+"subpath": "\<subpath\>",
+
+"dev_branch": "\<dev-branch\>",
+
+"release_branch": "\<release-branch\>",
+
+"stale_hours": 24,
+
+"phase_a_scope_paths": \[
+
+"src/",
+
+"public/",
+
+"index.html",
+
+"package.json",
+
+"manifest\*"
+
+\],
+
+"phase_b_ignored_paths": \[
+
+"docs/handoff-state.json",
+
+"THIRD_PARTY_NOTICES.md",
+
+".github/workflows/",
+
+"CHANGELOG.md"
+
+\]
+
+}
