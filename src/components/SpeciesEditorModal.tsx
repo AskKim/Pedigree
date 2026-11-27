@@ -26,8 +26,8 @@ import {
   TaskPriority,
   WEIGHT_UNIT_OPTIONS,
   WeightUnit,
-} from '../core/models';
-import { describeMilestoneOffset } from '../core/taskMaster';
+} from '../domain/models';
+import { describeMilestoneOffset } from '../domain/taskMaster';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 

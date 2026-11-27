@@ -19,8 +19,8 @@ import {
   X,
 } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
-import { ArchivedHerdIndexEntry } from '../core/backupVault';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import { ArchivedHerdIndexEntry } from '../domain/backupVault';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface ArchivedHerdsModalProps {

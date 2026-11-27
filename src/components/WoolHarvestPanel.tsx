@@ -18,7 +18,7 @@ import {
   WOOL_HARVEST_METHODS,
   WoolHarvest,
   WoolHarvestMethod,
-} from '../core/models';
+} from '../domain/models';
 import {
   compute90DayEquivalentGrams,
   computeDaysBetweenDateIso,
@@ -26,7 +26,7 @@ import {
   evaluateIagarbEligibility,
   IAGARB_JUDGING_POSITIONS,
   summarizeAnimalWoolHarvests,
-} from '../core/woolFiber';
+} from '../domain/woolFiber';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 
 export interface WoolHarvestPanelProps {

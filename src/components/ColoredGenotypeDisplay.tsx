@@ -17,7 +17,7 @@ import {
   AlleleProvenanceSource,
   AnimalAlleleProvenanceResult,
   AnnotatedAllele,
-} from '../core/geneticsEngine';
+} from '../domain/geneticsEngine';
 
 const SOURCE_CLASS_MAP: Record<AlleleProvenanceSource, string> = {
   sire: 'text-[var(--barn-slate)] font-semibold',

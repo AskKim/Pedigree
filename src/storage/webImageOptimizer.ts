@@ -18,7 +18,7 @@
  * On React Native / Expo, swap in `expo-image-manipulator` implementing the same `OptimizedImagePayload` output.
  */
 
-import { dataUrlToBinary } from '../core/binaryEncoding';
+import { dataUrlToBinary } from '@engine/binaryEncoding';
 import {
   calculateSavingsPercent,
   capCanvasDevicePixelRatio,
@@ -29,8 +29,12 @@ import {
   ImageOptimizationPresetId,
   OptimizedImagePayload,
   resolveImageOptimizationPreset,
-} from '../core/imageOptimizationSpec';
-import { StagedImportedPhoto } from '../core/importers/importerTypes';
+} from '../domain/imageOptimizationSpec';
+import { StagedImportedPhoto } from '../domain/importers/importerTypes';
+import {
+  decodeBlobToCanvasSource,
+  releaseCanvas,
+} from '../utils/canvasUtils';
 import { isFileReaderSupported, readBlobAsArrayBuffer } from '../utils/es2018Shims';
 import {
   isSvgImageInput,
@@ -38,42 +42,15 @@ import {
   MAX_IMAGE_TOTAL_PIXELS,
   MAX_PHOTO_UPLOAD_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
-import { AnimalPhoto, nowIsoUtc } from '../core/models';
+} from '../domain/inputSanitization';
+import { AnimalPhoto, nowIsoUtc } from '../domain/models';
 import { logDiagnosticEvent } from './crashLogger';
 import {
   detectCurrentDeviceCapability,
   probeWebpEncodeSupport,
 } from './deviceCapabilityDetector';
 
-export type ReleasableCanvas = HTMLCanvasElement | OffscreenCanvas;
-
-/**
- * Releases canvas GPU/RAM backing memory promptly in `finally` blocks across Safari/WebKit/Chromium.
- */
-export function releaseCanvas(canvas: ReleasableCanvas | null | undefined): void {
-  if (!canvas) return;
-  try {
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d') as
-      | CanvasRenderingContext2D
-      | OffscreenCanvasRenderingContext2D
-      | null;
-    if (ctx && typeof ctx.clearRect === 'function') {
-      ctx.clearRect(0, 0, 1, 1);
-    }
-  } catch {
-    // Ignore context/clear errors during teardown
-  } finally {
-    try {
-      canvas.width = 0;
-      canvas.height = 0;
-    } catch {
-      // Ignore detached/readonly canvas teardown errors
-    }
-  }
-}
+export { releaseCanvas, type ReleasableCanvas } from '../utils/canvasUtils';
 
 /**
  * Verifies both `OffscreenCanvas` global presence and a live 2D context before worker canvas usage.
@@ -118,71 +95,6 @@ export function enforceCanvasDimensions(
     height,
     getCanvasAreaCeiling(isConstrained)
   );
-}
-
-interface DecodedCanvasSource {
-  source: CanvasImageSource;
-  width: number;
-  height: number;
-  cleanup: () => void;
-}
-
-async function decodeBlobToCanvasSource(
-  blob: Blob,
-  originalFileName = ''
-): Promise<DecodedCanvasSource> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(blob, {
-        imageOrientation: 'from-image',
-      });
-      return {
-        source: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        cleanup: () => bitmap.close(),
-      };
-    } catch {
-      // Fall through to HTMLImageElement loader
-    }
-  }
-
-  return new Promise<DecodedCanvasSource>((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(blob);
-    const img = new Image();
-    img.decoding = 'async';
-    const releaseImageObjectUrl = () => {
-      img.onload = null;
-      img.onerror = null;
-      try {
-        img.src = '';
-      } catch {
-        // Ignore readonly src teardown
-      }
-      URL.revokeObjectURL(objectUrl);
-    };
-    img.onload = () => {
-      resolve({
-        source: img,
-        width: img.naturalWidth || img.width || 1,
-        height: img.naturalHeight || img.height || 1,
-        cleanup: releaseImageObjectUrl,
-      });
-    };
-    img.onerror = () => {
-      releaseImageObjectUrl();
-      const isHeic =
-        /heic|heif/i.test(blob.type || '') || /\.(heic|heif)$/i.test(originalFileName);
-      reject(
-        new Error(
-          isHeic
-            ? `Cannot decode iPhone HEIC/HEIF photo "${originalFileName || 'image'}" in this browser. Change iPhone Camera Format to "Most Compatible" (JPEG) or export as JPG/PNG first.`
-            : `Unsupported or unreadable image format${originalFileName ? ` (${originalFileName})` : ''}. Try JPG, PNG, or WebP.`
-        )
-      );
-    };
-    img.src = objectUrl;
-  });
 }
 
 function renderToMainThreadCanvasDataUrl(
@@ -365,7 +277,17 @@ export async function optimizeImageBlob(
 
   const preset = resolveImageOptimizationPreset(presetId);
   const originalBytes = blob.size;
-  const decoded = await decodeBlobToCanvasSource(blob, originalFileName);
+  const decoded = await decodeBlobToCanvasSource(blob, {
+    buildError: () => {
+      const isHeic =
+        /heic|heif/i.test(blob.type || '') || /\.(heic|heif)$/i.test(originalFileName);
+      return new Error(
+        isHeic
+          ? `Cannot decode iPhone HEIC/HEIF photo "${originalFileName || 'image'}" in this browser. Change iPhone Camera Format to "Most Compatible" (JPEG) or export as JPG/PNG first.`
+          : `Unsupported or unreadable image format${originalFileName ? ` (${originalFileName})` : ''}. Try JPG, PNG, or WebP.`
+      );
+    },
+  });
 
   try {
     if (

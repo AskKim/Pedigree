@@ -5,7 +5,7 @@
 
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Animal } from '../../core/models';
+import { Animal } from '../../domain/models';
 
 vi.mock('sql.js/dist/sql-wasm.wasm?url', () => ({
   default: path.resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'),

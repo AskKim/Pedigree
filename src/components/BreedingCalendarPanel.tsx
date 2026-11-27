@@ -26,7 +26,7 @@ import {
   formatTemperatureForUnit,
   shiftMonthKey,
   WeatherForecastBundle,
-} from '../core/breedingCalendar';
+} from '../domain/breedingCalendar';
 import {
   Animal,
   BarnSettings,
@@ -40,7 +40,7 @@ import {
   TemperatureUnit,
   todayDateIso,
   WeatherForecastSettings,
-} from '../core/models';
+} from '../domain/models';
 import { useConnectivityStatus } from '../storage/storageProtection';
 import {
   fetchWeeklyWeatherForecast,

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_VET_PDF_PREVIEW_BYTES } from '../../core/healthReference';
+import { MAX_VET_PDF_PREVIEW_BYTES } from '../../domain/healthReference';
 import type { SyncDirectoryHandleLike, SyncFileHandleLike } from '../localSyncChannels';
 import {
   addCustomPreferredWikiSource,

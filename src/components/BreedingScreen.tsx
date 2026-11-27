@@ -14,10 +14,10 @@ import {
   findLitterOffspringTattooConflicts,
   isOverrideConfirmationValid,
   LitterOffspringDraft,
-} from '../core/animalConflicts';
-import { formatSystemTaskTitle } from '../core/calendarExport';
-import { analyzePairingCarrierRisks } from '../core/carrierGenetics';
-import { analyzeAlleleProvenance, simulatePairingGenetics } from '../core/geneticsEngine';
+} from '../domain/animalConflicts';
+import { formatSystemTaskTitle } from '../domain/calendarExport';
+import { analyzePairingCarrierRisks } from '../domain/carrierGenetics';
+import { analyzeAlleleProvenance, simulatePairingGenetics } from '../domain/geneticsEngine';
 import {
   addDaysIso,
   Animal,
@@ -48,14 +48,14 @@ import {
   todayDateIso,
   ULTRASOUND_RESULTS,
   UltrasoundResult,
-} from '../core/models';
-import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../core/pedigreeCalculator';
+} from '../domain/models';
+import { calculatePairingCoi, getPedigreeCompletenessSummary } from '../domain/pedigreeCalculator';
 import {
   evaluateStalePostBirthTasksForBreeding,
   generateCascadedTasksForBreeding,
   getPendingBreedingCleanupTasks,
   resolveEffectiveSpeciesProfileForBreeding,
-} from '../core/taskMaster';
+} from '../domain/taskMaster';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from '../utils/lazyRoute';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
@@ -64,7 +64,7 @@ import { useVirtualWindow } from '../utils/useVirtualWindow';
 import {
   buildBreedingCertificateFileName,
   generateBreedingCertificateHtml,
-} from '../core/alternativeCertificates';
+} from '../domain/alternativeCertificates';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 import { CoatExplorerSandbox } from './CoatExplorerSandbox';
 import { AlleleProvenanceLegend, ColoredGenotypeDisplay } from './ColoredGenotypeDisplay';
@@ -1057,7 +1057,14 @@ export function BreedingScreen({
                     <div className="font-mono text-3xl font-semibold tabular-nums mt-0.5">
                       {coiAnalysis.coiPercent.toFixed(2)}%
                     </div>
-                    <div className="text-xs text-[var(--barn-muted)] mt-1">
+                    <div
+                      role={coiAnalysis.hasPedigreeCycle ? 'alert' : undefined}
+                      className={`text-xs mt-1 ${
+                        coiAnalysis.hasPedigreeCycle
+                          ? 'text-[var(--barn-danger)] font-medium'
+                          : 'text-[var(--barn-muted)]'
+                      }`}
+                    >
                       {coiAnalysis.risk.label} — {coiAnalysis.risk.guidance}
                     </div>
                   </div>

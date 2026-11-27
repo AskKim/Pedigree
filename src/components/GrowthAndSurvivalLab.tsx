@@ -4,7 +4,7 @@
  *
  * Species-Isolated Rate of Gain, Comparative Weight Charts & Litter Survival Curves Lab.
  *
- * Consumes pure domain math from `src/core/growthAnalytics.ts` to chart:
+ * Consumes pure domain math from `src/domain/growthAnalytics.ts` to chart:
  * 1. Multi-select animal weight-at-age & Rate of Gain (ADG) on an age-in-days X-axis
  *    with user-configured target/goal weight overlays and native Barn Cohort Benchmarks.
  * 2. Maternal & sire litter survival rates (Live Birth %, Weaning Survival %) and seasonal
@@ -33,7 +33,7 @@ import {
   GROWTH_CHART_COLORS,
   LitterSurvivalMetrics,
   ParentSurvivalPerformanceSummary,
-} from '../core/growthAnalytics';
+} from '../domain/growthAnalytics';
 import {
   Animal,
   BarnSettings,
@@ -48,7 +48,7 @@ import {
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
   TargetWeightPoint,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 

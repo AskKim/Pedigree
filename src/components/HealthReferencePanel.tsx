@@ -47,11 +47,11 @@ import {
   RestrictedWikiSource,
   VetDocFileEntry,
   VetDocsReminderIntervalDays,
-} from '../core/healthReference';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
-import { validateUploadFileSize } from '../core/inputSanitization';
-import { APP_LOCALE } from '../core/models';
-import { pedigreeBridge } from '../native/pedigreeBridge';
+} from '../domain/healthReference';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
+import { validateUploadFileSize } from '../domain/inputSanitization';
+import { APP_LOCALE } from '../domain/models';
+import { usePlatformBridge } from '@app/PlatformBridgeContext';
 import { SyncFileHandleLike } from '../storage/localSyncChannels';
 import { useConnectivityStatus } from '../storage/storageProtection';
 import {
@@ -137,6 +137,7 @@ export function HealthReferencePanel({
   const [folderEntries, setFolderEntries] = useState<VetDocFileEntry[]>([]);
   const [pickedEntries, setPickedEntries] = useState<VetDocFileEntry[]>([]);
   const [scanTruncated, setScanTruncated] = useState(false);
+  const platformBridge = usePlatformBridge();
   const [pdfQuery, setPdfQuery] = useState('');
   const [locationNoteDraft, setLocationNoteDraft] = useState('');
   const [noteDirty, setNoteDirty] = useState(false);
@@ -271,7 +272,7 @@ export function HealthReferencePanel({
       );
       return;
     }
-    const opened = pedigreeBridge.openExternalUrl(ref.url, 'health_wiki');
+    const opened = Boolean(platformBridge.openExternalUrl?.(ref.url, 'health_wiki'));
     if (!opened) {
       setPanelError(`Could not open external link for "${ref.title}".`);
     }

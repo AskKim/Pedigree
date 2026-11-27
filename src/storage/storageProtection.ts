@@ -6,22 +6,22 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { getTierStoragePolicy } from '../core/deviceCapability';
+import { getTierStoragePolicy } from '../domain/deviceCapability';
 import {
   BarnDatabaseSnapshot,
   getCoreClockSkewMs,
   nowEpochMs,
   nowIsoUtc,
   setCoreClockSkewMs,
-} from '../core/models';
+} from '../domain/models';
 import {
   DiagnosticQuotaOperationKind,
   evaluateStorageQuotaForOperation,
   StorageQuotaEvaluationResult,
-} from '../core/techyStuffGuardrails';
+} from '../domain/techyStuffGuardrails';
+import type { IPlatformBridge, PlatformContainerInfo } from '@engine/bridge';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
-import { NativeContainerInfo, pedigreeBridge } from '../native/pedigreeBridge';
 import { isOpfsSupported } from './opfsTempStream';
 import { stripPhotoDataUrlsFromSnapshot } from './photoHydration';
 import {
@@ -32,6 +32,25 @@ import {
   trackActiveIdbTransaction,
   triggerIndexedDbOpfsDump,
 } from './storageProbes';
+
+export type NativeContainerInfo = PlatformContainerInfo;
+
+let activeStorageProtectionBridge: IPlatformBridge | null = null;
+
+export function configureStorageProtectionBridge(bridge: IPlatformBridge | null): void {
+  activeStorageProtectionBridge = bridge;
+}
+
+function isWrappedNativeContainer(): boolean {
+  return Boolean(activeStorageProtectionBridge?.getCapabilities().hasNativeBridge);
+}
+
+function queryNativeContainerInfo(timeoutMs = 400): Promise<PlatformContainerInfo | null> {
+  if (!isWrappedNativeContainer() || !activeStorageProtectionBridge?.getContainerInfo) {
+    return Promise.resolve(null);
+  }
+  return activeStorageProtectionBridge.getContainerInfo(timeoutMs);
+}
 
 const ROLLING_IDB_NAME = 'community_pedigree_rolling_backups';
 const ROLLING_STORE_NAME = 'snapshots';
@@ -106,9 +125,9 @@ export function isQuotaExceededError(err: unknown): boolean {
 
 export async function requestPersistentStorage(): Promise<StorageProtectionStatus> {
   const checkedAtIso = getAdjustedNowIsoUtc();
-  const isNativeWrapper = pedigreeBridge.isNativeWrapper();
+  const isNativeWrapper = isWrappedNativeContainer();
   const nativeInfoPromise = isNativeWrapper
-    ? pedigreeBridge.getNativeContainerInfo(400)
+    ? queryNativeContainerInfo(400)
     : Promise.resolve(null);
 
   const storage = getSafeStorageManager();
@@ -169,9 +188,9 @@ export async function requestPersistentStorage(): Promise<StorageProtectionStatu
 
 export async function checkStorageStatus(): Promise<StorageProtectionStatus> {
   const checkedAtIso = getAdjustedNowIsoUtc();
-  const isNativeWrapper = pedigreeBridge.isNativeWrapper();
+  const isNativeWrapper = isWrappedNativeContainer();
   const nativeInfoPromise = isNativeWrapper
-    ? pedigreeBridge.getNativeContainerInfo(400)
+    ? queryNativeContainerInfo(400)
     : Promise.resolve(null);
 
   const storage = getSafeStorageManager();
@@ -301,9 +320,13 @@ export async function saveRollingSnapshotBackup(
   options?: {
     maxRollingBackups?: number;
     dehydratePhotos?: boolean;
+    allowEmpty?: boolean;
   }
 ): Promise<void> {
   if (!getSafeIndexedDb()) return;
+  if (snapshot.animals.length === 0 && !options?.allowEmpty) {
+    return;
+  }
   try {
     const policy = getTierStoragePolicy(detectCurrentDeviceCapability().tier);
     const maxRollingCap = Math.max(
@@ -314,6 +337,10 @@ export async function saveRollingSnapshotBackup(
     const targetSnapshot = shouldDehydrate
       ? stripPhotoDataUrlsFromSnapshot(snapshot)
       : snapshot;
+
+    if (targetSnapshot.animals.length === 0 && !options?.allowEmpty) {
+      return;
+    }
 
     const entry: StoredRollingBackup = {
       key: `rolling-${getAdjustedNowMs()}`,
@@ -966,7 +993,7 @@ export function usePWAInstall() {
   }, [deferredPrompt]);
 
   return {
-    canPromptInstall: !pedigreeBridge.isNativeWrapper() && Boolean(deferredPrompt) && !isInstalled,
+    canPromptInstall: !isWrappedNativeContainer() && Boolean(deferredPrompt) && !isInstalled,
     isInstalled,
     isIos,
     promptInstall,

@@ -27,13 +27,13 @@ import {
   ImageOptimizationPresetId,
   OptimizedImagePayload,
   resolveImageOptimizationPreset,
-} from '../core/imageOptimizationSpec';
+} from '../domain/imageOptimizationSpec';
 import {
   MAX_PHOTO_BATCH_COUNT,
   MAX_PHOTO_UPLOAD_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
-import { Animal, AnimalPhoto } from '../core/models';
+} from '../domain/inputSanitization';
+import { Animal, AnimalPhoto } from '../domain/models';
 import { logDiagnosticEvent } from '../storage/crashLogger';
 import { revokeBlobUrlIfNeeded } from '../storage/photoHydration';
 import { optimizeImageFile } from '../storage/webImageOptimizer';

@@ -16,7 +16,7 @@
  * - Raw IndexedDB / SQLite migration failure dump to OPFS `/backups/recovery-pre-reset-*.json`
  */
 
-import { hasNonTestingBarnData } from '../core/backupStatus';
+import { hasNonTestingBarnData } from '../domain/backupStatus';
 import {
   APP_SCHEMA_BUILD_TAG,
   ArchivedHerdIndexEntry,
@@ -36,10 +36,10 @@ import {
   VaultBackupKind,
   VaultBackupMetadata,
   verifyExportCanaryRoundTrip,
-} from '../core/backupVault';
-import { getTierStoragePolicy, TierStoragePolicy } from '../core/deviceCapability';
-import { BarnDatabaseSnapshot, BarnSettings, generateUuid, nowIsoUtc } from '../core/models';
-import { isSampleTestingId } from '../core/sampleData';
+} from '../domain/backupVault';
+import { getTierStoragePolicy, TierStoragePolicy } from '../domain/deviceCapability';
+import { BarnDatabaseSnapshot, BarnSettings, generateUuid, nowIsoUtc } from '../domain/models';
+import { isSampleTestingId } from '../domain/sampleData';
 import { logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';
 import { pushBackupPayloadToSyncFolder } from './localSyncChannels';
@@ -85,7 +85,7 @@ import {
   trackActiveIdbConnection,
   trackActiveIdbTransaction,
 } from './storageProbes';
-import { isQuotaExceededError } from './storageProtection';
+import { isQuotaExceededError, listRollingSnapshotBackups } from './storageProtection';
 
 registerOpfsDiagnosticLogger((ev) => {
   logDiagnosticEvent(ev);
@@ -132,11 +132,19 @@ export interface PriorUseSentinel {
 
 export interface WipedStorageRecoveryContext {
   detected: boolean;
-  reason: 'sentinel' | 'opfs_backups' | 'opfs_archives' | 'none';
+  reason:
+    | 'sentinel'
+    | 'opfs_backups'
+    | 'opfs_archives'
+    | 'rolling_backups'
+    | 'corrupted_sqlite'
+    | 'none';
   sentinel: PriorUseSentinel | null;
   latestOpfsBackup: VaultBackupMetadata | null;
   opfsBackupsCount: number;
   opfsArchivesCount: number;
+  rollingBackupsCount?: number;
+  corruptionError?: string | null;
 }
 
 export const MAX_MONTHLY_OPFS_BACKUPS = 6;
@@ -986,10 +994,14 @@ export function clearPriorUseSentinel(): void {
 
 export async function detectReturningUserWipedStorage(): Promise<WipedStorageRecoveryContext> {
   const sentinel = readPriorUseSentinel();
-  const [backups, archives] = await Promise.all([
+  const [backups, archives, rollingBackups] = await Promise.all([
     listOpfsVaultBackups().catch(() => [] as VaultBackupMetadata[]),
     listOpfsHerdArchives().catch(() => [] as ArchivedHerdIndexEntry[]),
+    listRollingSnapshotBackups().catch(() => []),
   ]);
+  const nonEmptyRolling = rollingBackups.filter(
+    (item) => item.animalCount > 0 || item.speciesCount > 0
+  );
 
   const latestOpfsBackup = backups.length > 0 ? backups[0] : null;
   if (backups.length > 0) {
@@ -1000,6 +1012,7 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
       latestOpfsBackup,
       opfsBackupsCount: backups.length,
       opfsArchivesCount: archives.length,
+      rollingBackupsCount: nonEmptyRolling.length,
     };
   }
   if (archives.length > 0) {
@@ -1010,6 +1023,18 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
       latestOpfsBackup: null,
       opfsBackupsCount: 0,
       opfsArchivesCount: archives.length,
+      rollingBackupsCount: nonEmptyRolling.length,
+    };
+  }
+  if (nonEmptyRolling.length > 0) {
+    return {
+      detected: true,
+      reason: 'rolling_backups',
+      sentinel,
+      latestOpfsBackup: null,
+      opfsBackupsCount: 0,
+      opfsArchivesCount: 0,
+      rollingBackupsCount: nonEmptyRolling.length,
     };
   }
   if (sentinel && (sentinel.nonTestingCount > 0 || sentinel.animalCount > 0)) {
@@ -1020,6 +1045,7 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
       latestOpfsBackup: null,
       opfsBackupsCount: 0,
       opfsArchivesCount: 0,
+      rollingBackupsCount: 0,
     };
   }
   return {
@@ -1029,6 +1055,7 @@ export async function detectReturningUserWipedStorage(): Promise<WipedStorageRec
     latestOpfsBackup: null,
     opfsBackupsCount: 0,
     opfsArchivesCount: 0,
+    rollingBackupsCount: 0,
   };
 }
 

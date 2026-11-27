@@ -37,6 +37,15 @@ jobs:
         if: hashFiles('bun.lock', 'bun.lockb') != ''
         uses: oven-sh/setup-bun@v2
 
+      - name: Cache npm downloads
+        if: hashFiles('bun.lock', 'bun.lockb') == ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
       # Builds and verifies the TypeScript bridge + web bundle before packaging into Android assets.
       # Ensure Vite builds with `--base=/` so all asset URLs resolve cleanly from
       # https://appassets.androidplatform.net/index.html.
@@ -50,6 +59,9 @@ jobs:
             npm install --legacy-peer-deps --no-audit --no-fund
           fi
           npm run verify:improvements
+          npm run verify:layers
+          npm run verify:engine
+          npm run verify:extraction
           npm test
           npm run lint
 

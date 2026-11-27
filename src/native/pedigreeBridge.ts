@@ -872,3 +872,166 @@ export function createPedigreeBridge(): PedigreeBridge {
 }
 
 export const pedigreeBridge = createPedigreeBridge();
+
+export function createPedigreeBridgePlatformAdapter(
+  nativeBridge: PedigreeBridge = pedigreeBridge,
+  baseBridge?: import('@engine/bridge').IPlatformBridge
+): import('@engine/bridge').IPlatformBridge {
+  const resolveShellType = (): import('@engine/bridge').PlatformShellType => {
+    const platform = nativeBridge.getPlatform();
+    if (platform === 'android') return 'android-webview';
+    if (platform === 'ios') return 'ios-wkwebview';
+    return baseBridge ? baseBridge.shellType : 'web-browser';
+  };
+
+  const mergeCapabilities = (
+    base: import('@engine/bridge').PlatformCapabilities
+  ): import('@engine/bridge').PlatformCapabilities => {
+    const nativeWrapped = nativeBridge.isNativeWrapper();
+    const shell = nativeWrapped ? resolveShellType() : base.shell;
+    return {
+      ...base,
+      shell,
+      hasNativeBridge: nativeWrapped || base.hasNativeBridge,
+      hasPersistentStorage: nativeWrapped || base.hasPersistentStorage,
+      requiresIosStorageBridge: shell === 'ios-wkwebview' || base.requiresIosStorageBridge,
+      canPrintDirect: nativeWrapped || base.canPrintDirect,
+      canShareBinary: nativeWrapped || base.canShareBinary,
+      hasHardwareBackNavigation: shell === 'android-webview' || base.hasHardwareBackNavigation,
+    };
+  };
+
+  const fallbackCapabilities = (): import('@engine/bridge').PlatformCapabilities => {
+    const nativeWrapped = nativeBridge.isNativeWrapper();
+    const shell = resolveShellType();
+    return {
+      shell,
+      hasNativeBridge: nativeWrapped,
+      hasPersistentStorage: nativeWrapped,
+      requiresIosStorageBridge: shell === 'ios-wkwebview',
+      supportsOpfs: false,
+      supportsIndexedDb: typeof indexedDB !== 'undefined',
+      supportsWebSqlite: typeof WebAssembly !== 'undefined',
+      supportsWebWorkers: typeof Worker !== 'undefined',
+      canPrintDirect: nativeWrapped || (typeof window !== 'undefined' && typeof window.print === 'function'),
+      canShareBinary: nativeWrapped,
+      canAccessFileSystem: false,
+      hasHardwareBackNavigation: shell === 'android-webview',
+      hasNfc: false,
+    };
+  };
+
+  return {
+    get shellType() {
+      return resolveShellType();
+    },
+    async detectCapabilities() {
+      if (baseBridge) {
+        return mergeCapabilities(await baseBridge.detectCapabilities());
+      }
+      return fallbackCapabilities();
+    },
+    getCapabilities() {
+      if (baseBridge) {
+        return mergeCapabilities(baseBridge.getCapabilities());
+      }
+      return fallbackCapabilities();
+    },
+    async exportBinary(options) {
+      if (nativeBridge.isNativeWrapper() || !baseBridge) {
+        const res = await nativeBridge.exportOrShareBinary(options);
+        const handledBy: import('@engine/bridge').PlatformExportResult['handledBy'] =
+          res.handledBy === 'android'
+            ? 'native-android'
+            : res.handledBy === 'ios'
+              ? 'native-ios'
+              : res.handledBy;
+        return { ok: res.ok, handledBy, error: res.error };
+      }
+      return baseBridge.exportBinary(options);
+    },
+    async printDocument(options) {
+      if (nativeBridge.isNativeWrapper() || !baseBridge) {
+        return nativeBridge.requestPrint(options);
+      }
+      return baseBridge.printDocument(options);
+    },
+    openExternalUrl(url, purpose) {
+      if (nativeBridge.isNativeWrapper() || !baseBridge?.openExternalUrl) {
+        return nativeBridge.openExternalUrl(url, purpose);
+      }
+      return baseBridge.openExternalUrl(url, purpose);
+    },
+    registerBackHandler(handler, priority = 0) {
+      if (nativeBridge.isNativeWrapper() || !baseBridge) {
+        return nativeBridge.registerBackHandler(handler, priority);
+      }
+      return baseBridge.registerBackHandler(handler, priority);
+    },
+    async invokeStorageBridge(operation) {
+      if (operation.action === 'vaultSnapshot' && nativeBridge.isNativeWrapper()) {
+        const opts = operation.options || {};
+        const rawData = operation.data;
+        const bytes =
+          rawData instanceof Uint8Array
+            ? rawData
+            : typeof rawData === 'string' && typeof TextEncoder !== 'undefined'
+              ? new TextEncoder().encode(rawData)
+              : new Uint8Array(0);
+        const formatCandidate = opts.format;
+        const format: 'json' | 'sqlite' | 'zip' =
+          formatCandidate === 'sqlite' || formatCandidate === 'zip' ? formatCandidate : 'json';
+        const ok = await nativeBridge.syncBackupSnapshotToNative({
+          snapshotId:
+            typeof opts.snapshotId === 'string'
+              ? opts.snapshotId
+              : operation.key || `snapshot_${Date.now()}`,
+          createdAt:
+            typeof opts.createdAt === 'string' ? opts.createdAt : new Date().toISOString(),
+          format,
+          bytes,
+          metadata:
+            opts.metadata && typeof opts.metadata === 'object'
+              ? (opts.metadata as Record<string, unknown>)
+              : undefined,
+        });
+        return { ok, requestId: operation.requestId };
+      }
+      if (baseBridge?.invokeStorageBridge) {
+        return baseBridge.invokeStorageBridge(operation);
+      }
+      return {
+        ok: false,
+        error: 'Native storage bridge unavailable',
+        requestId: operation.requestId,
+      };
+    },
+    logDiagnostic(level, code, message, meta) {
+      baseBridge?.logDiagnostic(level, code, message, meta);
+    },
+    getDiagnosticEvents() {
+      return nativeBridge.getDiagnosticEvents().map((ev) => ({
+        timestamp: ev.timestamp,
+        level: ev.level,
+        code: ev.code,
+        message: ev.message,
+      }));
+    },
+    onDiagnostic(listener) {
+      return nativeBridge.onDiagnostic((ev) => {
+        listener({
+          timestamp: ev.timestamp,
+          level: ev.level,
+          code: ev.code,
+          message: ev.message,
+        });
+      });
+    },
+    openDevPanel() {
+      return nativeBridge.openDevPanel();
+    },
+    async getContainerInfo(timeoutMs) {
+      return nativeBridge.getNativeContainerInfo(timeoutMs);
+    },
+  };
+}

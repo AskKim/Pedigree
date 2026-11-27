@@ -13,7 +13,7 @@
  * - String.prototype.trimStart / trimEnd (Chrome 66+ / Safari 12+)
  */
 
-type MarkedShimFn = ((...args: unknown[]) => unknown) & { __pedigreeEs2018Shim?: boolean };
+type MarkedShimFn = ((...args: unknown[]) => unknown) & { __coreEs2018Shim?: boolean };
 
 export function isFileReaderSupported(): boolean {
   try {
@@ -31,7 +31,7 @@ export function isFileReaderSupported(): boolean {
  */
 export async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
   const candidate = (blob as unknown as { arrayBuffer?: MarkedShimFn })?.arrayBuffer;
-  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+  if (typeof candidate === 'function' && !candidate.__coreEs2018Shim) {
     try {
       return await Promise.resolve(candidate.call(blob) as PromiseLike<ArrayBuffer> | ArrayBuffer);
     } catch {
@@ -80,7 +80,7 @@ export async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
  */
 export async function readBlobAsText(blob: Blob): Promise<string> {
   const candidate = (blob as unknown as { text?: MarkedShimFn })?.text;
-  if (typeof candidate === 'function' && !candidate.__pedigreeEs2018Shim) {
+  if (typeof candidate === 'function' && !candidate.__coreEs2018Shim) {
     try {
       return await Promise.resolve(candidate.call(blob) as PromiseLike<string> | string);
     } catch {
@@ -152,6 +152,8 @@ function defineNonEnumerableMethod(
   }
 }
 
+declare const global: Record<string, unknown> | undefined;
+
 export function ensureEs2018Globals(host?: Record<string, unknown>): void {
   const g: Record<string, unknown> | undefined =
     host ??
@@ -162,7 +164,7 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
       : typeof self !== 'undefined'
       ? (self as unknown as Record<string, unknown>)
       : typeof global !== 'undefined'
-      ? (global as unknown as Record<string, unknown>)
+      ? global
       : undefined);
 
   if (!g) return;
@@ -222,13 +224,13 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     const arrayBufferShim: MarkedShimFn = function blobArrayBufferShim(this: Blob) {
       return readBlobAsArrayBuffer(this);
     };
-    arrayBufferShim.__pedigreeEs2018Shim = true;
+    arrayBufferShim.__coreEs2018Shim = true;
     defineNonEnumerableMethod(blobCtor.prototype, 'arrayBuffer', arrayBufferShim);
 
     const textShim: MarkedShimFn = function blobTextShim(this: Blob) {
       return readBlobAsText(this);
     };
-    textShim.__pedigreeEs2018Shim = true;
+    textShim.__coreEs2018Shim = true;
     defineNonEnumerableMethod(blobCtor.prototype, 'text', textShim);
   }
 
@@ -277,7 +279,7 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
       }
       return flatten(this, targetDepth);
     };
-    flatShim.__pedigreeEs2018Shim = true;
+    flatShim.__coreEs2018Shim = true;
     defineNonEnumerableMethod(arrayCtor.prototype, 'flat', flatShim);
 
     const flatMapShim: MarkedShimFn = function arrayFlatMapShim(this: unknown[], ...args: unknown[]): unknown[] {
@@ -300,7 +302,7 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
       }
       return out;
     };
-    flatMapShim.__pedigreeEs2018Shim = true;
+    flatMapShim.__coreEs2018Shim = true;
     defineNonEnumerableMethod(arrayCtor.prototype, 'flatMap', flatMapShim);
   }
 }

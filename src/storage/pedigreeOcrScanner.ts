@@ -25,20 +25,24 @@ import {
   OcrWordBox,
   parsePedigreeOcrResult,
   PedigreeOcrParseResult,
-} from '../core/importers/pedigreeOcrParser';
+} from '../domain/importers/pedigreeOcrParser';
 import {
   extractPedigreePdfPages,
   MAX_PDF_SCAN_BYTES,
-} from '../core/importers/pdfScanExtractor';
+} from '../domain/importers/pdfScanExtractor';
 import {
   isSvgImageInput,
   MAX_PHOTO_UPLOAD_BYTES,
   sanitizeSingleLineText,
   validateUploadFileSize,
-} from '../core/inputSanitization';
-import { WeightUnit } from '../core/models';
+} from '../domain/inputSanitization';
+import { WeightUnit } from '../domain/models';
 import { readBlobAsArrayBuffer } from '../utils/es2018Shims';
-import { enforceCanvasDimensions, releaseCanvas } from './webImageOptimizer';
+import {
+  buildContrastGrayscaleCanvas,
+  decodeBlobToCanvasSource,
+  releaseCanvas,
+} from '../utils/canvasUtils';
 
 export type PedigreeScanStatus =
   | 'detected'
@@ -120,107 +124,7 @@ function hasPdfMagicHeader(prefixBytes: Uint8Array): boolean {
   return head.includes('%PDF-');
 }
 
-async function decodeBlobToCanvasSource(blob: Blob): Promise<{
-  source: CanvasImageSource;
-  width: number;
-  height: number;
-  cleanup: () => void;
-}> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(blob, {
-        imageOrientation: 'from-image',
-      });
-      return {
-        source: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        cleanup: () => bitmap.close(),
-      };
-    } catch {
-      // Fallback to HTMLImageElement
-    }
-  }
 
-  return new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(blob);
-    const img = new Image();
-    img.decoding = 'async';
-    const releaseImageObjectUrl = () => {
-      img.onload = null;
-      img.onerror = null;
-      try {
-        img.src = '';
-      } catch {
-        // Ignore readonly src teardown
-      }
-      URL.revokeObjectURL(objectUrl);
-    };
-    img.onload = () => {
-      resolve({
-        source: img,
-        width: img.naturalWidth || img.width || 1,
-        height: img.naturalHeight || img.height || 1,
-        cleanup: releaseImageObjectUrl,
-      });
-    };
-    img.onerror = () => {
-      releaseImageObjectUrl();
-      reject(new Error('Could not decode pedigree scan image in this browser.'));
-    };
-    img.src = objectUrl;
-  });
-}
-
-function buildPreprocessedOcrCanvas(
-  source: CanvasImageSource,
-  srcWidth: number,
-  srcHeight: number,
-  maxDimensionPx: number
-): HTMLCanvasElement {
-  const longest = Math.max(srcWidth, srcHeight, 1);
-  const scale = longest > maxDimensionPx ? maxDimensionPx / longest : 1;
-  const safeDims = enforceCanvasDimensions(
-    Math.max(1, Math.round(srcWidth * scale)),
-    Math.max(1, Math.round(srcHeight * scale))
-  );
-  const targetWidth = safeDims.width;
-  const targetHeight = safeDims.height;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    releaseCanvas(canvas);
-    throw new Error('2D Canvas context is unavailable for pedigree OCR.');
-  }
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, targetWidth, targetHeight);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
-
-  // Convert to high-contrast grayscale to sharpen faded paper/inkjet pedigree typography
-  try {
-    const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-    const data = imgData.data;
-    const contrast = 1.32;
-    for (let i = 0; i < data.length; i += 4) {
-      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      const stretched = Math.max(0, Math.min(255, (lum - 128) * contrast + 128));
-      data[i] = stretched;
-      data[i + 1] = stretched;
-      data[i + 2] = stretched;
-    }
-    ctx.putImageData(imgData, 0, 0);
-  } catch {
-    // Non-fatal if canvas pixel access is blocked
-  }
-
-  return canvas;
-}
 
 async function tryNativeTextDetectorBoxes(canvas: HTMLCanvasElement): Promise<{
   rawText: string;
@@ -380,7 +284,9 @@ async function scanRasterBlobForPedigree(params: {
   offlineErrored: boolean;
   offlineReason?: string;
 }> {
-  const decoded = await decodeBlobToCanvasSource(params.blob);
+  const decoded = await decodeBlobToCanvasSource(params.blob, {
+    buildError: () => new Error('Could not decode pedigree scan image in this browser.'),
+  });
   let canvas: HTMLCanvasElement | null = null;
   let engine: PedigreeScanEngine = 'none';
   let rawText = '';
@@ -390,11 +296,15 @@ async function scanRasterBlobForPedigree(params: {
   let offlineReason: string | undefined;
 
   try {
-    canvas = buildPreprocessedOcrCanvas(
+    canvas = buildContrastGrayscaleCanvas(
       decoded.source,
       decoded.width,
       decoded.height,
-      params.maxDimensionPx
+      {
+        maxDimensionPx: params.maxDimensionPx,
+        contrast: 1.32,
+        contextErrorMessage: '2D Canvas context is unavailable for pedigree OCR.',
+      }
     );
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;

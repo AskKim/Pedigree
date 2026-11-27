@@ -42,14 +42,14 @@ import {
   formatFeedLedgerCsv,
   isFeedBatchLowStock,
   traceFeedLotToCagesAndLitters,
-} from '../core/feedInventory';
+} from '../domain/feedInventory';
 import {
   FEED_MANUFACTURER_DIRECTORY,
   FeedDirectoryCategory,
   filterFeedManufacturerDirectory,
   matchManufacturerForBrand,
-} from '../core/feedManufacturerDirectory';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+} from '../domain/feedManufacturerDirectory';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
 import {
   BarnDatabaseSnapshot,
   BarnSettings,
@@ -62,7 +62,7 @@ import {
   formatReadableDate,
   normalizeFeedPurgeWindowDays,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import {
   captureFeedTagWithPreCompressionOcr,

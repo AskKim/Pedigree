@@ -5,30 +5,107 @@
  * Web Browser File Download & Upload Wrappers.
  *
  * CROSS-PLATFORM MIGRATION NOTE:
- * Isolated from `src/core/` so React Native / Expo replaces only this file with
+ * Isolated from `src/domain/` so React Native / Expo replaces only this file with
  * `expo-file-system` + `expo-sharing` + `expo-document-picker`.
  */
 
-import { pedigreeBridge } from '../native/pedigreeBridge';
-import { logDiagnosticEvent } from '../storage/crashLogger';
-import {
-  isOpfsSupported,
-  markTempOpfsFileActive,
-  readTempOpfsFileAsBlob,
-  removeTempOpfsFile,
-  unmarkTempOpfsFileActive,
-  writeTempOpfsFile,
-  writeTempOpfsFileStreamed,
-} from '../storage/opfsStorage';
-import { acquireForegroundTransferLease } from '../storage/storageProbes';
-import { isIosBrowser, isStandalonePwa } from '../storage/storageProtection';
 import { readBlobAsArrayBuffer } from './es2018Shims';
+
+export interface NativeExportBridge {
+  isNativeWrapper(): boolean;
+  exportOrShareBinary(req: {
+    filename: string;
+    mimeType: string;
+    mode: 'save' | 'share';
+    bytes: Uint8Array;
+  }): Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface WebFileOpfsTempHooks {
+  isSupported(): boolean;
+  markActive(fileName: string): void;
+  unmarkActive(fileName: string): void;
+  readAsBlob(fileName: string): Promise<Blob | null>;
+  remove(fileName: string): Promise<void>;
+  write(
+    prefix: string,
+    payload: string | Uint8Array,
+    ext: string,
+    options?: { keepActiveAfterWrite?: boolean }
+  ): Promise<{ fileName: string } | null>;
+  writeStreamed(
+    prefix: string,
+    ext: string,
+    writer: (writeChunk: (chunk: string | Uint8Array) => Promise<void>) => Promise<void>,
+    options?: { keepActiveAfterWrite?: boolean }
+  ): Promise<{ fileName: string; blob: Blob } | null>;
+}
+
+export interface WebFileRuntimeHooks {
+  onDiagnosticEvent?: (entry: {
+    level: 'info' | 'warn' | 'error';
+    category: 'runtime' | 'storage' | 'memory';
+    message: string;
+    error?: unknown;
+  }) => void;
+  acquireForegroundTransferLease?: () => () => void;
+  isIosBrowser?: () => boolean;
+  isStandalonePwa?: () => boolean;
+  opfsTemp?: WebFileOpfsTempHooks;
+}
+
+const NOOP_WEB_EXPORT_BRIDGE: NativeExportBridge = {
+  isNativeWrapper: () => false,
+  exportOrShareBinary: async () => ({ ok: false, error: 'Native export bridge not configured.' }),
+};
+
+let activeWebFileBridge: NativeExportBridge = NOOP_WEB_EXPORT_BRIDGE;
+let activeWebFileRuntime: WebFileRuntimeHooks = {};
+
+export function configureWebFileBridge(bridge: NativeExportBridge): void {
+  activeWebFileBridge = bridge;
+}
+
+export function configureWebFileRuntime(hooks: WebFileRuntimeHooks): void {
+  activeWebFileRuntime = { ...activeWebFileRuntime, ...hooks };
+}
+
+function defaultIsIosBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  return navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1;
+}
+
+function defaultIsStandalonePwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.matchMedia?.('(display-mode: standalone)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireLease(): () => void {
+  return activeWebFileRuntime.acquireForegroundTransferLease?.() ?? (() => {});
+}
+
+function emitDiagnostic(entry: {
+  level: 'info' | 'warn' | 'error';
+  category: 'runtime' | 'storage' | 'memory';
+  message: string;
+  error?: unknown;
+}): void {
+  activeWebFileRuntime.onDiagnosticEvent?.(entry);
+}
 
 export type FileShareOutcome = 'shared' | 'downloaded' | 'cancelled';
 
 export function isInstalledIosPwa(): boolean {
-  if (!isIosBrowser()) return false;
-  if (isStandalonePwa()) return true;
+  const isIos = activeWebFileRuntime.isIosBrowser ?? defaultIsIosBrowser;
+  const isStandalone = activeWebFileRuntime.isStandalonePwa ?? defaultIsStandalonePwa;
+  if (!isIos()) return false;
+  if (isStandalone()) return true;
   if (typeof navigator !== 'undefined') {
     return (navigator as unknown as { standalone?: boolean }).standalone === true;
   }
@@ -107,26 +184,27 @@ async function stagePayloadInOpfsTmp(
   filename: string,
   payload: string | Uint8Array
 ): Promise<{ fileName: string; blob: Blob } | null> {
-  if (!isOpfsSupported()) return null;
+  const opfs = activeWebFileRuntime.opfsTemp;
+  if (!opfs || !opfs.isSupported()) return null;
   let stagedFileName: string | null = null;
   try {
     const ext = extractSafeExtension(filename);
-    const staged = await writeTempOpfsFile(prefix, payload, ext, {
+    const staged = await opfs.write(prefix, payload, ext, {
       keepActiveAfterWrite: true,
     });
     if (!staged) return null;
     stagedFileName = staged.fileName;
-    const opfsFile = await readTempOpfsFileAsBlob(staged.fileName);
+    const opfsFile = await opfs.readAsBlob(staged.fileName);
     if (!opfsFile) {
-      unmarkTempOpfsFileActive(staged.fileName);
-      await removeTempOpfsFile(staged.fileName);
+      opfs.unmarkActive(staged.fileName);
+      await opfs.remove(staged.fileName);
       return null;
     }
     return { fileName: staged.fileName, blob: opfsFile };
   } catch {
     if (stagedFileName) {
-      unmarkTempOpfsFileActive(stagedFileName);
-      await removeTempOpfsFile(stagedFileName);
+      opfs.unmarkActive(stagedFileName);
+      await opfs.remove(stagedFileName);
     }
     return null;
   }
@@ -143,7 +221,7 @@ async function tryShareFileViaWebShare(
   blob: Blob,
   fallbackMimeType?: string
 ): Promise<WebShareFileAttempt> {
-  const releaseLease = acquireForegroundTransferLease();
+  const releaseLease = acquireLease();
   try {
     const hasShareApi =
       typeof navigator !== 'undefined' &&
@@ -193,13 +271,14 @@ async function dispatchBlobDownloadAndCleanup(
   stagedFileName: string | null,
   fallbackMimeType?: string
 ): Promise<void> {
-  const releaseLease = acquireForegroundTransferLease();
+  const releaseLease = acquireLease();
+  const opfs = activeWebFileRuntime.opfsTemp;
   try {
-    if (pedigreeBridge.isNativeWrapper()) {
+    if (activeWebFileBridge.isNativeWrapper()) {
       try {
         const bytes = await blobToUint8Array(blob);
         const mimeType = blob.type || fallbackMimeType || 'application/octet-stream';
-        const res = await pedigreeBridge.exportOrShareBinary({
+        const res = await activeWebFileBridge.exportOrShareBinary({
           filename,
           mimeType,
           mode: 'save',
@@ -210,9 +289,9 @@ async function dispatchBlobDownloadAndCleanup(
         }
         return;
       } finally {
-        if (stagedFileName) {
-          unmarkTempOpfsFileActive(stagedFileName);
-          await removeTempOpfsFile(stagedFileName);
+        if (stagedFileName && opfs) {
+          opfs.unmarkActive(stagedFileName);
+          await opfs.remove(stagedFileName);
         }
       }
     }
@@ -228,7 +307,7 @@ async function dispatchBlobDownloadAndCleanup(
             shareResult.error instanceof Error && shareResult.error.message
               ? shareResult.error.message
               : 'Share sheet failed.';
-          logDiagnosticEvent({
+          emitDiagnostic({
             level: 'error',
             category: 'storage',
             message: `iOS standalone PWA file export failed for "${filename}": ${msg}`,
@@ -242,9 +321,9 @@ async function dispatchBlobDownloadAndCleanup(
           `Could not save "${filename}" because iOS Home Screen file sharing is unavailable here. Open this page in Safari to download or share files.`
         );
       } finally {
-        if (stagedFileName) {
-          unmarkTempOpfsFileActive(stagedFileName);
-          await removeTempOpfsFile(stagedFileName);
+        if (stagedFileName && opfs) {
+          opfs.unmarkActive(stagedFileName);
+          await opfs.remove(stagedFileName);
         }
       }
     }
@@ -273,9 +352,9 @@ async function dispatchBlobDownloadAndCleanup(
         try {
           URL.revokeObjectURL(activeUrl);
         } finally {
-          if (activeTempFile) {
-            unmarkTempOpfsFileActive(activeTempFile);
-            void removeTempOpfsFile(activeTempFile);
+          if (activeTempFile && opfs) {
+            opfs.unmarkActive(activeTempFile);
+            void opfs.remove(activeTempFile);
           }
         }
       }, BLOB_DOWNLOAD_CLEANUP_DELAY_MS);
@@ -284,9 +363,9 @@ async function dispatchBlobDownloadAndCleanup(
         if (url) {
           URL.revokeObjectURL(url);
         }
-        if (stagedFileName) {
-          unmarkTempOpfsFileActive(stagedFileName);
-          await removeTempOpfsFile(stagedFileName);
+        if (stagedFileName && opfs) {
+          opfs.unmarkActive(stagedFileName);
+          await opfs.remove(stagedFileName);
         }
       }
     }
@@ -312,18 +391,19 @@ export async function downloadTempOpfsExport(
   staged: { opfsTempFileName: string | null; blob?: Blob | null; bytes?: Uint8Array },
   mimeType: string = 'application/octet-stream'
 ): Promise<void> {
-  if (staged.opfsTempFileName) {
-    markTempOpfsFileActive(staged.opfsTempFileName);
+  const opfs = activeWebFileRuntime.opfsTemp;
+  if (staged.opfsTempFileName && opfs) {
+    opfs.markActive(staged.opfsTempFileName);
     let blob = staged.blob ?? null;
     if (!blob) {
-      blob = await readTempOpfsFileAsBlob(staged.opfsTempFileName);
+      blob = await opfs.readAsBlob(staged.opfsTempFileName);
     }
     if (blob) {
       await dispatchBlobDownloadAndCleanup(filename, blob, staged.opfsTempFileName, mimeType);
       return;
     }
-    unmarkTempOpfsFileActive(staged.opfsTempFileName);
-    await removeTempOpfsFile(staged.opfsTempFileName);
+    opfs.unmarkActive(staged.opfsTempFileName);
+    await opfs.remove(staged.opfsTempFileName);
   }
 
   if (staged.bytes) {
@@ -339,9 +419,9 @@ async function triggerBlobDownloadWithOpfsScratchpad(
   payload: string | Uint8Array,
   mimeType: string
 ): Promise<void> {
-  if (pedigreeBridge.isNativeWrapper()) {
+  if (activeWebFileBridge.isNativeWrapper()) {
     const bytes = await payloadToUint8Array(payload, mimeType);
-    const res = await pedigreeBridge.exportOrShareBinary({
+    const res = await activeWebFileBridge.exportOrShareBinary({
       filename,
       mimeType: mimeType || 'application/octet-stream',
       mode: 'save',
@@ -369,10 +449,11 @@ export async function downloadTextChunks(
   chunks: Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array>,
   mimeType: string
 ): Promise<void> {
-  if (isOpfsSupported()) {
+  const opfs = activeWebFileRuntime.opfsTemp;
+  if (opfs && opfs.isSupported()) {
     const ext = extractSafeExtension(filename);
     try {
-      const staged = await writeTempOpfsFileStreamed(
+      const staged = await opfs.writeStreamed(
         'export',
         ext,
         async (writeChunk) => {
@@ -421,10 +502,10 @@ async function sharePayloadOrDownload(params: {
   text?: string;
 }): Promise<FileShareOutcome> {
   const { filename, payload, mimeType } = params;
-  if (pedigreeBridge.isNativeWrapper()) {
+  if (activeWebFileBridge.isNativeWrapper()) {
     const bytes = await payloadToUint8Array(payload, mimeType);
     const resolvedMime = mimeType || 'application/octet-stream';
-    const res = await pedigreeBridge.exportOrShareBinary({
+    const res = await activeWebFileBridge.exportOrShareBinary({
       filename,
       mimeType: resolvedMime,
       mode: 'share',
@@ -433,7 +514,7 @@ async function sharePayloadOrDownload(params: {
     if (res.ok) {
       return 'shared';
     }
-    const saveRes = await pedigreeBridge.exportOrShareBinary({
+    const saveRes = await activeWebFileBridge.exportOrShareBinary({
       filename,
       mimeType: resolvedMime,
       mode: 'save',
@@ -484,7 +565,7 @@ async function sharePayloadOrDownload(params: {
         shareResult.error instanceof Error && shareResult.error.message
           ? shareResult.error.message
           : 'Web Share request failed.';
-      logDiagnosticEvent({
+      emitDiagnostic({
         level: 'warn',
         category: 'storage',
         message: `Web Share failed for "${filename}": ${msg}`,
@@ -507,9 +588,10 @@ async function sharePayloadOrDownload(params: {
     await dispatchBlobDownloadAndCleanup(filename, downloadBlob, stagedName, mimeType);
     return 'downloaded';
   } finally {
-    if (staged && !handedOffToDownload) {
-      unmarkTempOpfsFileActive(staged.fileName);
-      await removeTempOpfsFile(staged.fileName);
+    const opfs = activeWebFileRuntime.opfsTemp;
+    if (staged && !handedOffToDownload && opfs) {
+      opfs.unmarkActive(staged.fileName);
+      await opfs.remove(staged.fileName);
     }
   }
 }

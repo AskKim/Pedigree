@@ -9,8 +9,8 @@ import {
   recordServerDateHeaderSkew,
   resetConnectivityStateForTests,
 } from '../storageProtection';
-import { evaluateBackupStatus } from '../../core/backupStatus';
-import { makeEmptySnapshot } from '../../core/__tests__/testFixtures';
+import { evaluateBackupStatus } from '../../domain/backupStatus';
+import { makeEmptySnapshot } from '../../domain/__tests__/testFixtures';
 import {
   decryptBytesWithPassphrase,
   decryptTextWithPassphrase,
@@ -22,10 +22,10 @@ import {
   EncryptedSyncPassphraseError,
   parseDeltaFileTextAsync,
 } from '../localSyncChannels';
-import { createOutboxOperation } from '../../core/syncOutbox';
-import { BarnTask, getCoreClockSkewMs, nowIsoUtc } from '../../core/models';
-import { formatTimestampedBackupSlug } from '../../core/syncAndExports';
-import { pushTasksToGoogleCalendar } from '../../utils/googleCalendarClient';
+import { createOutboxOperation } from '../../domain/syncOutbox';
+import { BarnTask, getCoreClockSkewMs, nowIsoUtc } from '../../domain/models';
+import { formatTimestampedBackupSlug } from '../../domain/syncAndExports';
+import { pushTasksToGoogleCalendar } from '../../app/pedigreeCalendarClient';
 import { fetchUpgradeGateDecision, resetPwaUpdateManagerForTests } from '../pwaUpdateManager';
 
 describe('Stage B storage & network resilience (IMP-023)', () => {
@@ -75,7 +75,7 @@ describe('Stage B storage & network resilience (IMP-023)', () => {
             if (url.includes('version.json')) {
               return new Response(
                 JSON.stringify({
-                  appVersion: '0.1.0-alpha.2',
+                  appVersion: '0.1.0-alpha.3',
                   schemaVersion: 6,
                   minDirectUpgradeSchema: 1,
                 }),

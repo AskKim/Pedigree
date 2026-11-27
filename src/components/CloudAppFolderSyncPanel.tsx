@@ -26,8 +26,8 @@ import {
   CloudSyncSettings,
   NORMAL_DELTA_CHUNK_MAX_OPS,
   TIGHT_STORAGE_DELTA_CHUNK_MAX_OPS,
-} from '../core/cloudAppFolderSync';
-import type { DeviceCapabilityTierNumber } from '../core/deviceCapability';
+} from '../domain/cloudAppFolderSync';
+import type { DeviceCapabilityTierNumber } from '../domain/deviceCapability';
 import type {
   CloudSyncClientState,
   RunCloudAppFolderSyncResult,

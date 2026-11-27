@@ -5,7 +5,7 @@
  * Automated CLI Drift Verifier (`scripts/verify-improvements.ts`).
  *
  * Reads all tracked files from disk and runs `evaluateImprovementInvariants` from
- * `src/core/improvementRegistry.ts`. Exits non-zero if a GitHub sync or merge
+ * `src/domain/improvementRegistry.ts`. Exits non-zero if a GitHub sync or merge
  * accidentally removed or reverted any logged improvement.
  */
 
@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 import {
   evaluateImprovementInvariants,
   IMPROVEMENTS_REGISTRY,
-} from '../src/core/improvementRegistry';
+} from '../src/domain/improvementRegistry';
 
 async function main() {
   const rootDir = process.cwd();

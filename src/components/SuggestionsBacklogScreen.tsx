@@ -38,8 +38,8 @@ import {
   parseSuggestionsBacklogMarkdown,
   sanitizeIdeaInput,
   SUGGESTIONS_BACKLOG_PATH,
-} from '../core/suggestionsBacklog';
-import { formatTimestampedBackupSlug } from '../core/syncAndExports';
+} from '../domain/suggestionsBacklog';
+import { formatTimestampedBackupSlug } from '../domain/syncAndExports';
 import {
   clearCapturedIdeas,
   deleteCapturedIdea,

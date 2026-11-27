@@ -78,8 +78,8 @@ export class TechyStuffErrorBoundary extends React.Component<
     try {
       const [entries, { formatSupportReportText }, { formatTimestampedBackupSlug }] = await Promise.all([
         listDiagnosticLogs(),
-        import('../core/supportBundle'),
-        import('../core/syncAndExports'),
+        import('../domain/supportBundle'),
+        import('../domain/syncAndExports'),
       ]);
       const summary = await getDiagnosticSummary(entries);
       const report = formatSupportReportText(entries, summary, null);

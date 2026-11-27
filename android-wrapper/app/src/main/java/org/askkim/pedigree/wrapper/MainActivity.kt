@@ -822,15 +822,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val ASSET_HOST = "appassets.androidplatform.net"
-        private const val ASSET_ORIGIN = "https://$ASSET_HOST"
-        private const val ASSET_START_URL = "$ASSET_ORIGIN/index.html"
-        private const val DEBUG_PAGES_HOST = "askkim.github.io"
-        private const val DEBUG_PAGES_PATH_PREFIX = "/Pedigree"
-        private const val DEBUG_PREFS_NAME = "pedigree_wrapper_debug_prefs"
+        private val ASSET_HOST = BuildConfig.ASSET_HOST
+        private val ASSET_ORIGIN = "https://$ASSET_HOST"
+        private val ASSET_START_URL = "$ASSET_ORIGIN/index.html"
+        private val DEBUG_PAGES_HOST = BuildConfig.DEBUG_PAGES_HOST
+        private val DEBUG_PAGES_PATH_PREFIX = BuildConfig.DEBUG_PAGES_PATH_PREFIX
+        private val DEBUG_PREFS_NAME = BuildConfig.DEBUG_PREFS_NAME
         private const val KEY_DEBUG_TARGET_URL = "debug_target_url"
-        private const val BRIDGE_OBJECT_NAME = "pedigreeNative"
-        private const val ACTION_OPEN_DIAGNOSTICS = "org.askkim.pedigree.wrapper.action.OPEN_DIAGNOSTICS"
+        private val BRIDGE_OBJECT_NAME = BuildConfig.BRIDGE_OBJECT_NAME
+        private val ACTION_OPEN_DIAGNOSTICS = BuildConfig.ACTION_OPEN_DIAGNOSTICS
         private const val DEV_CORNER_DP = 80f
         private const val DEV_TAP_WINDOW_MS = 2_500L
         private const val DEV_TAP_THRESHOLD = 5

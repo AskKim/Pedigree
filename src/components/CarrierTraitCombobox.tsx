@@ -11,7 +11,7 @@
 
 import { Check, ChevronDown, Plus, X } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { normalizeCarrierTraitList } from '../core/carrierGenetics';
+import { normalizeCarrierTraitList } from '../domain/carrierGenetics';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 
 interface CarrierTraitComboboxProps {

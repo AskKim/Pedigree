@@ -192,7 +192,7 @@ class DeveloperPanelDialog(
             )
             val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             if (clipboard != null) {
-                clipboard.setPrimaryClip(ClipData.newPlainText("Pedigree Diagnostics", compactJson))
+                clipboard.setPrimaryClip(ClipData.newPlainText(BuildConfig.DIAGNOSTICS_CLIP_LABEL, compactJson))
                 Toast.makeText(activity, R.string.dev_panel_copied, Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(activity, R.string.dev_panel_copy_failed, Toast.LENGTH_SHORT).show()
@@ -220,7 +220,7 @@ class DeveloperPanelDialog(
                 setSingleLine(true)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 typeface = Typeface.MONOSPACE
-                hint = "https://askkim.github.io/Pedigree/"
+                hint = "https://${BuildConfig.DEBUG_PAGES_HOST}${BuildConfig.DEBUG_PAGES_PATH_PREFIX}/"
             }
             container.addView(urlInput)
 
@@ -499,7 +499,7 @@ class DeveloperPanelDialog(
             appendLine("navigator.storage.persisted(): $persistedText")
             appendLine("JS storage estimate: $quotaText")
             appendLine("app_webview (read-only): $appWebViewText")
-            appendLine("filesDir/pedigree-vault/: $vaultText")
+            appendLine("filesDir/${BuildConfig.VAULT_DIR_NAME}/: $vaultText")
             append("Last native backup: $lastBackup")
         }
     }
@@ -590,7 +590,7 @@ class DeveloperPanelDialog(
 
     companion object {
         private const val STORAGE_PROBE_TIMEOUT_MS = 500L
-        private const val DEBUG_ALLOWED_HOST = "askkim.github.io"
-        private const val DEBUG_ALLOWED_PATH_PREFIX = "/Pedigree"
+        private val DEBUG_ALLOWED_HOST = BuildConfig.DEBUG_PAGES_HOST
+        private val DEBUG_ALLOWED_PATH_PREFIX = BuildConfig.DEBUG_PAGES_PATH_PREFIX
     }
 }

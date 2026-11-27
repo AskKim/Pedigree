@@ -33,45 +33,45 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { readBlobAsArrayBuffer } from '../utils/es2018Shims';
-import { analyzeBarnAnimalConflicts } from '../core/animalConflicts';
+import { analyzeBarnAnimalConflicts } from '../domain/animalConflicts';
 import {
   DeviceCapabilityAssessment,
   evaluateBarnWorkloadForTier,
-} from '../core/deviceCapability';
+} from '../domain/deviceCapability';
 import {
   formatByteSizePure,
   IMAGE_OPTIMIZATION_PRESETS,
   ImageOptimizationPresetId,
-} from '../core/imageOptimizationSpec';
+} from '../domain/imageOptimizationSpec';
 import {
   AnimalConflictFieldKey,
   buildInitialConflictSelections,
   ConflictSelectionMap,
   FieldResolutionChoice,
   makeConflictSelectionKey,
-} from '../core/importers/conflictResolver';
+} from '../domain/importers/conflictResolver';
 import {
   CSV_TARGET_FIELD_OPTIONS,
   makeCsvColumnOverrideKey,
-} from '../core/importers/csvColumnMapper';
-import { buildStarterCsvTemplate } from '../core/importers/csvStarterTemplate';
+} from '../domain/importers/csvColumnMapper';
+import { buildStarterCsvTemplate } from '../domain/importers/csvStarterTemplate';
 import {
   CsvColumnMappingSelection,
   CustomSpeciesImportOverride,
   PlatformImportPreview,
   RawArchiveInput,
-} from '../core/importers/importerTypes';
+} from '../domain/importers/importerTypes';
 import {
   getPlatformImporterById,
   PLATFORM_IMPORTERS,
-} from '../core/importers/registry';
+} from '../domain/importers/registry';
 import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
   isAnimalArchived,
   isSameSpecies,
   PREDEFINED_SPECIES_PRESETS,
-} from '../core/models';
+} from '../domain/models';
 import {
   BatchImportPhotoProgress,
   optimizeStagedImporterPhotos,
@@ -84,7 +84,7 @@ import {
   MAX_EXTERNAL_IMPORT_TOTAL_BYTES,
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
+} from '../domain/inputSanitization';
 import { copyTextWithFallback, downloadTextFile } from '../utils/webFileActions';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';

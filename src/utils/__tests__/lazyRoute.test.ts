@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadWithSingleRetry } from '../lazyRoute';
+import {
+  attemptOneTimeChunkReload,
+  isRecoverableChunkError,
+  loadWithSingleRetry,
+} from '../lazyRoute';
 
 describe('lazyRoute chunk loader', () => {
   it('resolves named screen exports into default component wrappers', async () => {
@@ -38,5 +42,39 @@ describe('lazyRoute chunk loader', () => {
     await expect(
       loadWithSingleRetry(async () => ({}), 'ReportsScreen', 'Reports', 0)
     ).rejects.toThrow(/did not export "ReportsScreen"/);
+  });
+
+  it('classifies 504 Outdated Optimize Dep and dynamic import failures cleanly and enforces one-shot reload cooldown', () => {
+    expect(isRecoverableChunkError(new Error('504 (Outdated Optimize Dep)'))).toBe(true);
+    expect(isRecoverableChunkError(new Error('Failed to fetch dynamically imported module'))).toBe(true);
+    expect(isRecoverableChunkError(new Error('TypeError: Cannot read properties of null'))).toBe(false);
+
+    const store = new Map<string, string>([['app_pending_boot_ts', '12345']]);
+    const reloadSpy = vi.fn();
+    vi.stubGlobal('window', {
+      location: { reload: reloadSpy },
+      sessionStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          store.set(k, v);
+        },
+        removeItem: (k: string) => {
+          store.delete(k);
+        },
+      },
+    });
+    vi.stubGlobal('navigator', { onLine: true });
+
+    try {
+      expect(attemptOneTimeChunkReload('Dashboard')).toBe(true);
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+      expect(store.has('app_pending_boot_ts')).toBe(false);
+
+      // Immediate second failure inside cooldown must NOT loop reloads
+      expect(attemptOneTimeChunkReload('Dashboard')).toBe(false);
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

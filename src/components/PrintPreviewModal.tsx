@@ -27,13 +27,13 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import React, { ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { BarnBinderOptions } from '../core/barnBinder';
+import type { BarnBinderOptions } from '../domain/barnBinder';
 import {
   BATCH_PRINT_LAYOUTS,
   BatchPrintOptions,
   getBatchPrintLayoutSpec,
-} from '../core/batchPrint';
-import { sanitizeSafeRasterImageDataUrl } from '../core/inputSanitization';
+} from '../domain/batchPrint';
+import { sanitizeSafeRasterImageDataUrl } from '../domain/inputSanitization';
 import {
   PEDIGREE_BORDER_STYLES,
   PEDIGREE_COLOR_PRESETS,
@@ -42,9 +42,9 @@ import {
   PedigreeBorderStyleId,
   PedigreeColorPresetId,
   PedigreeLayoutPresetId,
-} from '../core/pedigreePrintStyles';
-import type { PedigreePrintOptions } from '../core/syncAndExports';
-import { pedigreeBridge } from '../native/pedigreeBridge';
+} from '../domain/pedigreePrintStyles';
+import type { PedigreePrintOptions } from '../domain/syncAndExports';
+import { usePlatformBridge } from '@app/PlatformBridgeContext';
 import {
   dismissAsyncErrorToast,
   emitAsyncErrorToast,
@@ -804,9 +804,10 @@ export function PrintPreviewModal({
     }
   };
 
+  const platformBridge = usePlatformBridge();
   const canShareHtml = useMemo(
-    () => canShareHtmlDocument(filename, pedigreeBridge.isNativeWrapper()),
-    [filename]
+    () => canShareHtmlDocument(filename, platformBridge.getCapabilities().hasNativeBridge),
+    [filename, platformBridge]
   );
 
   const handleShareHtm = () =>
@@ -877,17 +878,20 @@ export function PrintPreviewModal({
 
     const orientation = detectDocumentPrintOrientation(pageRules, htmlContent);
 
-    if (pedigreeBridge.getPlatform() === 'android') {
-      const dispatched = pedigreeBridge.requestPrint({
-        title: docTitle,
-        orientation,
-        htmlContent,
-      });
-      if (!dispatched) {
-        setPrintBlockedMessage(
-          'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
-        );
-      }
+    if (platformBridge.shellType === 'android-webview') {
+      void platformBridge
+        .printDocument({
+          title: docTitle,
+          orientation,
+          htmlContent,
+        })
+        .then((dispatched) => {
+          if (!dispatched) {
+            setPrintBlockedMessage(
+              'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
+            );
+          }
+        });
       return;
     }
 
@@ -1016,19 +1020,21 @@ export function PrintPreviewModal({
       document.title = docTitle;
     }
 
-    if (pedigreeBridge.isNativeWrapper()) {
-      const dispatched = pedigreeBridge.requestPrint({
-        title: docTitle,
-        orientation,
-        htmlContent,
-      });
-      if (!dispatched) {
-        cleanup();
-        setPrintBlockedMessage(
-          'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
-        );
-        return;
-      }
+    if (platformBridge.getCapabilities().hasNativeBridge) {
+      void platformBridge
+        .printDocument({
+          title: docTitle,
+          orientation,
+          htmlContent,
+        })
+        .then((dispatched) => {
+          if (!dispatched) {
+            cleanup();
+            setPrintBlockedMessage(
+              'Native print could not be started on this device. Use Download .HTM (or Share) below to save or export as PDF.'
+            );
+          }
+        });
       // Keep #barn-print-stage mounted while non-Android native PrintManager snapshots the WebView DOM.
       printSafetyTimerRef.current = window.setTimeout(cleanup, 120000);
       return;
@@ -1096,14 +1102,17 @@ export function PrintPreviewModal({
 
           <div className="flex flex-wrap items-center gap-2 min-w-0 w-full lg:w-auto lg:justify-end">
             {onToggleIncludePrimaryPhoto && (
-              <label className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium inline-flex items-center gap-2 cursor-pointer select-none whitespace-nowrap">
+              <label
+                title="Override whether the primary animal photo appears in this print/export without changing global Settings"
+                className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] text-xs font-medium inline-flex items-center gap-2 cursor-pointer select-none whitespace-nowrap"
+              >
                 <input
                   type="checkbox"
                   checked={Boolean(includePrimaryPhoto)}
                   onChange={(e) => onToggleIncludePrimaryPhoto(e.target.checked)}
                   className="rounded border-[var(--barn-border)] accent-[var(--barn-sage)]"
                 />
-                <span>Include Primary Photo</span>
+                <span>Include Primary Photo (This Export)</span>
               </label>
             )}
 

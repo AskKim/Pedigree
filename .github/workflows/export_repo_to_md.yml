@@ -89,6 +89,9 @@ jobs:
 
           ignore_dirs = {
               ".git",
+              ".vite",
+              ".idea",
+              ".vscode",
               "node_modules",
               "venv",
               ".venv",
@@ -98,6 +101,8 @@ jobs:
               "coverage",
               ".gradle",
               "export",
+              "import",
+              "upload",
               output_dir_top,
           }
 
@@ -113,7 +118,7 @@ jobs:
           ignore_extensions = {
               ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".tiff",
               ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
-              ".exe", ".dll", ".so", ".dylib", ".bin", ".wasm",
+              ".exe", ".dll", ".so", ".dylib", ".bin", ".wasm", ".map",
               ".lock", ".lockb",
               ".woff", ".woff2", ".ttf", ".otf", ".eot",
               ".apk", ".aab", ".jar", ".jks", ".keystore",

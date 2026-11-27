@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildArchivedAnimalsBundle,
   deserializeVaultBackupPayload,
-} from '../../core/backupVault';
-import { getTierStoragePolicy } from '../../core/deviceCapability';
-import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
+} from '../../domain/backupVault';
+import { getTierStoragePolicy } from '../../domain/deviceCapability';
+import { buildFullPredefinedSampleSnapshot } from '../../domain/sampleData';
 import {
   getPersistedBackupSyncStatus,
   setBackupSyncHandleForTest,

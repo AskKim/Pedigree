@@ -20,6 +20,30 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@engine/*": [
+        "./src/engine/*"
+      ],
+      "@engine": [
+        "./src/engine"
+      ],
+      "@features/*": [
+        "./src/features/*"
+      ],
+      "@features": [
+        "./src/features"
+      ],
+      "@domain/*": [
+        "./src/domain/*"
+      ],
+      "@domain": [
+        "./src/domain"
+      ],
+      "@app/*": [
+        "./src/app/*"
+      ],
+      "@app": [
+        "./src/app"
       ]
     },
     "allowImportingTsExtensions": true,

@@ -21,12 +21,12 @@ import {
   BarnDatabaseSnapshot,
   isSameSpecies,
   PREDEFINED_SPECIES_PRESETS,
-} from '../core/models';
+} from '../domain/models';
 import {
   expandPedigreeFamilyInSpecies,
   migrateAnimalsToSpecies,
   SpeciesMigrationOptions,
-} from '../core/speciesMigration';
+} from '../domain/speciesMigration';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 interface SpeciesMigrationModalProps {

@@ -45,8 +45,8 @@ import { useVirtualWindow } from '../utils/useVirtualWindow';
 import {
   AnimalWithdrawalEvaluation,
   buildWithdrawalByAnimalMap,
-} from '../core/barnAlerts';
-import { getConflictSortPriority } from '../core/animalConflicts';
+} from '../domain/barnAlerts';
+import { AnimalSaveDraft, getConflictSortPriority } from '../domain/animalConflicts';
 import {
   analyzeAnimalCarrierLineage,
   AnimalCarrierLineageAnalysis,
@@ -55,14 +55,14 @@ import {
   getAnimalCarrierDisclosures,
   getCarrierTraitSuggestionsForSpecies,
   HerdCarrierFilterMode,
-} from '../core/carrierGenetics';
+} from '../domain/carrierGenetics';
 import {
   analyzeAlleleProvenance,
   formatGenotypeArray,
   getGeneticsSpecForSpecies,
   inferHiddenAlleles,
-} from '../core/geneticsEngine';
-import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
+} from '../domain/geneticsEngine';
+import { OptimizedImagePayload } from '../domain/imageOptimizationSpec';
 import {
   addDaysIso,
   Animal,
@@ -89,16 +89,16 @@ import {
   ULTRASOUND_RESULTS,
   UltrasoundResult,
   WoolHarvest,
-} from '../core/models';
+} from '../domain/models';
 import {
   buildPetBirthCertificateFileName,
   generatePetBirthCertificateHtml,
-} from '../core/alternativeCertificates';
+} from '../domain/alternativeCertificates';
 import {
   createSpeciesCoiEvaluator,
   getPedigreeCompletenessSummary,
-} from '../core/pedigreeCalculator';
-import { SpeciesMigrationOptions } from '../core/speciesMigration';
+} from '../domain/pedigreeCalculator';
+import { SpeciesMigrationOptions } from '../domain/speciesMigration';
 import {
   BatchPrintOptions,
   buildBatchPrintFileName,
@@ -107,23 +107,24 @@ import {
   generateBatchPrintHtml,
   getBatchPrintLayoutSpec,
   resolveBatchPrintAnimals,
-} from '../core/batchPrint';
+} from '../domain/batchPrint';
 import {
   BreederShowcaseLayoutMode,
   buildBreederShowcaseFileName,
   generateBreederShowcaseHtml,
-} from '../core/breederShowcase';
+} from '../domain/breederShowcase';
 import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
-} from '../core/shareablePedigreeCard';
-import { computeAnimalShowSummary } from '../core/showResults';
+} from '../domain/shareablePedigreeCard';
+import { computeAnimalShowSummary } from '../domain/showResults';
 import {
+  buildDefaultBreederContactLine,
   generateEvansHtmPedigree,
   generateThermalCageCardHtml,
   PedigreePrintOptions,
-} from '../core/syncAndExports';
-import { ArchivedHerdIndexEntry } from '../core/backupVault';
+} from '../domain/syncAndExports';
+import { ArchivedHerdIndexEntry } from '../domain/backupVault';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { AnimalPhotoGallery } from './AnimalPhotoGallery';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
@@ -161,7 +162,7 @@ interface HerdScreenProps {
   onSelectAnimal: (id: string | null) => void;
   onOpenPedigreeForAnimal: (id: string) => void;
   onSaveAnimal: (
-    draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+    draft: AnimalSaveDraft,
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
   ) => Promise<string | null | void> | string | void;
   onAddAnimalPhotos: (
@@ -384,6 +385,9 @@ export function HerdScreen({
     Record<string, string>
   >({});
   const [includeThermalCageCardQr, setIncludeThermalCageCardQr] = useState(true);
+  const [pedigreeIncludePhotoOverride, setPedigreeIncludePhotoOverride] = useState<boolean>(
+    Boolean(settings.includePhotoOnPedigree)
+  );
   const [hydratedPedigreePhoto, setHydratedPedigreePhoto] = useState<{
     photoId: string;
     dataUrl: string;
@@ -398,7 +402,7 @@ export function HerdScreen({
   useEffect(() => {
     const photoSubject = previewDoc?.pedigreeSubject ?? previewDoc?.birthCertSubject;
     const shouldIncludePhoto = previewDoc?.pedigreeSubject
-      ? Boolean(settings.includePhotoOnPedigree)
+      ? pedigreeIncludePhotoOverride
       : previewDoc?.birthCertSubject
         ? birthCertOptions.includePrimaryPhoto
         : false;
@@ -422,7 +426,7 @@ export function HerdScreen({
     };
   }, [
     previewDoc,
-    settings.includePhotoOnPedigree,
+    pedigreeIncludePhotoOverride,
     birthCertOptions.includePrimaryPhoto,
     primaryPhotoByAnimalId,
     onLoadFullPhoto,
@@ -1028,7 +1032,17 @@ export function HerdScreen({
   };
 
   const openFormalPedigreePreview = (subject: Animal) => {
-    const primaryPhotoRecord = settings.includePhotoOnPedigree
+    const initialIncludePhoto = Boolean(settings.includePhotoOnPedigree);
+    setPedigreeIncludePhotoOverride(initialIncludePhoto);
+    const effectiveContactLine =
+      pedigreePrintOptions.breederContactLine || buildDefaultBreederContactLine(settings);
+    if (effectiveContactLine && !pedigreePrintOptions.breederContactLine) {
+      setPedigreePrintOptions((prev) => ({
+        ...prev,
+        breederContactLine: effectiveContactLine,
+      }));
+    }
+    const primaryPhotoRecord = initialIncludePhoto
       ? primaryPhotoByAnimalId.get(subject.id)
       : undefined;
     const primaryPhoto = primaryPhotoRecord
@@ -1054,6 +1068,7 @@ export function HerdScreen({
         primaryPhoto,
         {
           ...pedigreePrintOptions,
+          breederContactLine: effectiveContactLine,
           shows,
           careLogs,
           woolHarvests,
@@ -3167,7 +3182,7 @@ export function HerdScreen({
         const resolvedBirthCertSubject = previewDoc.birthCertSubject;
         const resolvedSubjectForPhoto = resolvedPedigreeSubject ?? resolvedBirthCertSubject;
         const shouldUseSubjectPhoto = resolvedPedigreeSubject
-          ? Boolean(settings.includePhotoOnPedigree)
+          ? pedigreeIncludePhotoOverride
           : resolvedBirthCertSubject
             ? birthCertOptions.includePrimaryPhoto
             : false;
@@ -3299,7 +3314,7 @@ export function HerdScreen({
               }
               includePrimaryPhoto={
                 previewDoc.isPedigree
-                  ? settings.includePhotoOnPedigree
+                  ? pedigreeIncludePhotoOverride
                   : resolvedBirthCertSubject
                     ? birthCertOptions.includePrimaryPhoto
                     : previewDoc.isShowcase
@@ -3308,7 +3323,7 @@ export function HerdScreen({
               }
               onToggleIncludePrimaryPhoto={
                 previewDoc.isPedigree
-                  ? onToggleIncludePhotoOnPedigree
+                  ? setPedigreeIncludePhotoOverride
                   : resolvedBirthCertSubject
                     ? (inc) => setBirthCertOptions((prev) => ({ ...prev, includePrimaryPhoto: inc }))
                     : previewDoc.isShowcase
@@ -3338,7 +3353,7 @@ export function HerdScreen({
               onDownloadPdf={
                 resolvedPedigreeSubject && !isShareableCard
                   ? async () => {
-                      const { buildAndDownloadPedigreePdf } = await import('../utils/webPdfActions');
+                      const { buildAndDownloadPedigreePdf } = await import('../app/pedigreePdfActions');
                       await buildAndDownloadPedigreePdf({
                         subject: resolvedPedigreeSubject,
                         allAnimals,

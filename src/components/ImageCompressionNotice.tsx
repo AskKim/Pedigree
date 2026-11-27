@@ -14,18 +14,23 @@ interface ImageCompressionNoticeProps {
 export function ImageCompressionNotice({ className = '' }: ImageCompressionNoticeProps) {
   return (
     <div
-      role="note"
-      className={`flex items-start gap-2 px-3 py-2 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-terracotta)]/60 text-[11px] text-[var(--barn-ink)] ${className}`}
+      role="alert"
+      className={`flex items-start gap-2.5 px-3.5 py-3 rounded-xl bg-[var(--barn-danger)]/10 border-2 border-[var(--barn-terracotta)] text-xs text-[var(--barn-ink)] shadow-xs ${className}`}
     >
       <AlertTriangle
-        className="w-3.5 h-3.5 text-[var(--barn-terracotta)] mt-0.5 shrink-0"
+        className="w-5 h-5 text-[var(--barn-danger)] mt-0.5 shrink-0"
         aria-hidden="true"
       />
-      <span>
-        <strong>Low-power devices:</strong> If any device using your farm or livestock data is
-        older or low-power, select the smallest, most compressed file size you can tolerate — excess
-        image size can cause memory trouble in stored data on those devices.
-      </span>
+      <div className="space-y-0.5 leading-snug">
+        <div className="font-bold uppercase tracking-wide text-[11px] text-[var(--barn-danger)]">
+          Low-Power Device &amp; Storage Warning
+        </div>
+        <p className="font-medium text-[var(--barn-ink)]">
+          If any device sharing or viewing your barn data is older or low-memory, choose the
+          smallest compressed preset (<strong>Compact · 960px</strong>) you can tolerate — oversized
+          photos can quickly fill browser storage or trigger mobile out-of-memory crashes.
+        </p>
+      </div>
     </div>
   );
 }

@@ -27,5 +27,12 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "pedigree-android-wrapper"
+val wrapperRootProjectName = providers
+    .gradleProperty("pedigree.wrapper.rootProjectName")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+    ?: "pedigree-android-wrapper"
+
+rootProject.name = wrapperRootProjectName
 include(":app")

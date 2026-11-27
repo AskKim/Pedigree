@@ -7,8 +7,8 @@
         android:shortcutShortLabel="@string/shortcut_diagnostics_short"
         android:shortcutLongLabel="@string/shortcut_diagnostics_long">
         <intent
-            android:action="org.askkim.pedigree.wrapper.action.OPEN_DIAGNOSTICS"
-            android:targetPackage="org.askkim.pedigree.wrapper.debug"
-            android:targetClass="org.askkim.pedigree.wrapper.MainActivity" />
+            android:action="@string/shortcut_action_open_diagnostics"
+            android:targetPackage="@string/shortcut_target_package"
+            android:targetClass="@string/shortcut_target_class" />
     </shortcut>
 </shortcuts>

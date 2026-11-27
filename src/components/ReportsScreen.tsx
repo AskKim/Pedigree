@@ -40,8 +40,8 @@ import {
   isAnimalActive,
   isSameSpecies,
   SpeciesProfile,
-} from '../core/models';
-import { buildReportCatalogForSpecies, ReportIconKey } from '../core/reportCatalog';
+} from '../domain/models';
+import { buildReportCatalogForSpecies, ReportIconKey } from '../domain/reportCatalog';
 import {
   buildPrintableReportHtml,
   buildReportFileName,
@@ -49,7 +49,7 @@ import {
   generateSpeciesReport,
   REPORT_AUDIENCE_FILTERS,
   ReportAudienceFilter,
-} from '../core/reportGenerators';
+} from '../domain/reportGenerators';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 import { downloadTextFile } from '../utils/webFileActions';
 import { PrintPreviewModal } from './PrintPreviewModal';

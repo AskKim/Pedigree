@@ -4,20 +4,22 @@
  *
  * Browser Raster-to-JPEG & Offline `.PDF` Download Adapter (`src/utils/webPdfActions.ts`).
  *
- * Converts locally stored WebP/PNG/JPEG raster data URLs (animal portrait & breeder logo)
- * into clean baseline JPEG bytes on an offscreen `<canvas>` (with immediate memory cleanup)
- * so `src/core/pdfExporter.ts` can embed them natively via `/DCTDecode` and download a
- * 100% offline `.pdf` file without external PDF libraries or network calls.
+ * Converts locally stored WebP/PNG/JPEG raster data URLs into clean baseline JPEG bytes
+ * on an offscreen `<canvas>` (with immediate memory cleanup) and dispatches pure PDF bytes
+ * for 100% offline download without external PDF libraries or network calls.
  */
 
-import { sanitizeSafeRasterImageDataUrl } from '../core/inputSanitization';
-import {
-  buildPedigreePdfBytes,
-  PedigreePdfExportParams,
-  PdfRasterImage,
-} from '../core/pdfExporter';
-import { enforceCanvasDimensions, releaseCanvas } from '../storage/webImageOptimizer';
+import { sanitizeSafeRasterImageDataUrl } from '@engine/primitives';
+import { clampCanvasDimensions, releaseCanvas } from './canvasUtils';
 import { downloadBinaryFile } from './webFileActions';
+
+export interface PdfRasterImageData {
+  bytes: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export type PdfDocumentBuilder<TParams> = (params: TParams) => Uint8Array;
 
 function base64DataUrlToBytes(dataUrl: string): Uint8Array | null {
   const commaIdx = dataUrl.indexOf(',');
@@ -42,13 +44,13 @@ function base64DataUrlToBytes(dataUrl: string): Uint8Array | null {
 export async function rasterDataUrlToPdfJpeg(
   rawDataUrl: string | undefined,
   maxDimension = 420
-): Promise<PdfRasterImage | undefined> {
+): Promise<PdfRasterImageData | undefined> {
   const safeUrl = sanitizeSafeRasterImageDataUrl(rawDataUrl);
   if (!safeUrl || typeof document === 'undefined' || typeof Image === 'undefined') {
     return undefined;
   }
 
-  return new Promise<PdfRasterImage | undefined>((resolve) => {
+  return new Promise<PdfRasterImageData | undefined>((resolve) => {
     const img = new Image();
     img.decoding = 'async';
     const clearImageRef = () => {
@@ -69,7 +71,7 @@ export async function rasterDataUrlToPdfJpeg(
         return;
       }
       const scale = Math.min(1, maxDimension / Math.max(srcW, srcH));
-      const safeDims = enforceCanvasDimensions(
+      const safeDims = clampCanvasDimensions(
         Math.max(1, Math.round(srcW * scale)),
         Math.max(1, Math.round(srcH * scale))
       );
@@ -112,40 +114,15 @@ export async function rasterDataUrlToPdfJpeg(
   });
 }
 
-export async function buildAndDownloadPedigreePdf(
-  params: Omit<PedigreePdfExportParams, 'subjectPhotoJpeg' | 'breederLogoJpeg'> & {
-    pdfFilename: string;
-    primaryPhotoDataUrl?: string;
-  }
+export async function buildAndDownloadPdfDocument<TParams>(
+  pdfFilename: string,
+  params: TParams,
+  buildBytes: PdfDocumentBuilder<TParams>
 ): Promise<void> {
-  const showLogo = params.printOptions?.showBreederLogo ?? true;
-  const rawLogoUrl = showLogo
-    ? params.printOptions?.breederLogoDataUrl !== undefined
-      ? params.printOptions.breederLogoDataUrl
-      : params.settings.breederLogoDataUrl
-    : undefined;
-
-  const subjectPhotoJpeg = params.primaryPhotoDataUrl
-    ? await rasterDataUrlToPdfJpeg(params.primaryPhotoDataUrl, 420)
-    : undefined;
-  const breederLogoJpeg = rawLogoUrl
-    ? await rasterDataUrlToPdfJpeg(rawLogoUrl, 360)
-    : undefined;
-
-  const pdfBytes = buildPedigreePdfBytes({
-    subject: params.subject,
-    allAnimals: params.allAnimals,
-    speciesProfiles: params.speciesProfiles,
-    settings: params.settings,
-    generations: params.generations,
-    printOptions: params.printOptions,
-    subjectPhotoJpeg,
-    breederLogoJpeg,
-  });
-
-  const safeFilename = params.pdfFilename.toLowerCase().endsWith('.pdf')
-    ? params.pdfFilename
-    : `${params.pdfFilename.replace(/\.html?$/i, '')}.pdf`;
+  const pdfBytes = buildBytes(params);
+  const safeFilename = pdfFilename.toLowerCase().endsWith('.pdf')
+    ? pdfFilename
+    : `${pdfFilename.replace(/\.html?$/i, '')}.pdf`;
 
   await downloadBinaryFile(safeFilename, pdfBytes, 'application/pdf');
 }

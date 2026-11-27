@@ -28,7 +28,7 @@ import {
   getAvailableMileageTaxYears,
   MILEAGE_RATE_PRESETS,
   normalizeMileageLog,
-} from '../core/mileageTaxLog';
+} from '../domain/mileageTaxLog';
 import {
   BarnSettings,
   DEFAULT_IRS_MILEAGE_RATE_CENTS,
@@ -39,7 +39,7 @@ import {
   MileageTripPurpose,
   normalizeCurrencyCode,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';

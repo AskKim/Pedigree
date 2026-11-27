@@ -28,7 +28,7 @@ import {
   CageAssignmentCapacityWarning,
   evaluateCageAssignmentCapacityWarning,
   normalizeCageLabelKey,
-} from '../core/barnAlerts';
+} from '../domain/barnAlerts';
 import {
   buildCageMaintenanceTaskDraft,
   FacilityBoardFilter,
@@ -36,7 +36,7 @@ import {
   FacilityPenCardModel,
   formatHousingUnitTypeLabel,
   matchesFacilityBoardFilter,
-} from '../core/facilityBoard';
+} from '../domain/facilityBoard';
 import {
   Animal,
   BarnTask,
@@ -46,7 +46,7 @@ import {
   HousingUnitType,
   SpeciesProfile,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock } from '../utils/useAsyncSubmitLock';
 

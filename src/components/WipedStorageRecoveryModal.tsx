@@ -16,22 +16,25 @@ import {
   Upload,
 } from 'lucide-react';
 import React, { useRef, useState } from 'react';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
 import {
   MAX_JSON_BACKUP_BYTES,
   MAX_SQLITE_DB_BYTES,
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
-import { ArchivedHerdIndexEntry, VAULT_KIND_LABELS } from '../core/backupVault';
+} from '../domain/inputSanitization';
+import { ArchivedHerdIndexEntry, VAULT_KIND_LABELS } from '../domain/backupVault';
 import { WipedStorageRecoveryContext } from '../storage/opfsStorage';
+import type { RollingBackupMeta } from '../storage/storageProtection';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 
 interface WipedStorageRecoveryModalProps {
   context: WipedStorageRecoveryContext | null;
   archivedHerdBundles?: ArchivedHerdIndexEntry[];
+  rollingBackups?: RollingBackupMeta[];
   onRestoreLatestOpfs: () => Promise<void>;
+  onRestoreRollingBackup?: (key: string) => Promise<void>;
   onRestoreArchivedBundle?: (archiveKey: string) => Promise<void>;
   onImportJsonReplace: (jsonText: string) => Promise<void>;
   onImportArchiveReplace: (bytes: Uint8Array, fileName: string) => Promise<void>;
@@ -42,7 +45,9 @@ interface WipedStorageRecoveryModalProps {
 export function WipedStorageRecoveryModal({
   context,
   archivedHerdBundles = [],
+  rollingBackups = [],
   onRestoreLatestOpfs,
+  onRestoreRollingBackup,
   onRestoreArchivedBundle,
   onImportJsonReplace,
   onImportArchiveReplace,
@@ -50,7 +55,7 @@ export function WipedStorageRecoveryModal({
   onStartFresh,
 }: WipedStorageRecoveryModalProps) {
   const isOpen = Boolean(context?.detected);
-  const [busyAction, setBusyAction] = useState<'opfs' | 'upload' | 'fresh' | null>(null);
+  const [busyAction, setBusyAction] = useState<'opfs' | 'rolling' | 'upload' | 'fresh' | null>(null);
   const [confirmStartFresh, setConfirmStartFresh] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -64,10 +69,18 @@ export function WipedStorageRecoveryModal({
   if (!isOpen || !context) return null;
 
   const latest = context.latestOpfsBackup;
+  const nonEmptyRollingBackups = rollingBackups.filter(
+    (item) => item.animalCount > 0 || item.speciesCount > 0
+  );
+  const isCorruptedSqlite =
+    context.reason === 'corrupted_sqlite' || Boolean(context.corruptionError);
   const priorBarnName =
     context.sentinel?.barnName || latest?.barnName || 'Your Barn';
   const priorAnimalCount =
-    context.sentinel?.animalCount ?? latest?.animalCount ?? 0;
+    context.sentinel?.animalCount ??
+    latest?.animalCount ??
+    nonEmptyRollingBackups[0]?.animalCount ??
+    0;
 
   const handleRestoreOpfs = async () => {
     setErrorMsg(null);
@@ -76,6 +89,21 @@ export function WipedStorageRecoveryModal({
       await onRestoreLatestOpfs();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not restore OPFS backup.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRestoreRolling = async (key: string) => {
+    if (!onRestoreRollingBackup) return;
+    setErrorMsg(null);
+    setBusyAction('rolling');
+    try {
+      await onRestoreRollingBackup(key);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Could not restore rolling snapshot backup.'
+      );
     } finally {
       setBusyAction(null);
     }
@@ -155,7 +183,7 @@ export function WipedStorageRecoveryModal({
       aria-labelledby="wiped-recovery-title"
       className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
     >
-      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg p-6 space-y-5 focus:outline-none">
+      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 space-y-5 focus:outline-none">
         <div className="flex items-start gap-3">
           <AlertTriangle
             className="w-5 h-5 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
@@ -163,18 +191,31 @@ export function WipedStorageRecoveryModal({
           />
           <div className="space-y-1">
             <h2 id="wiped-recovery-title" className="font-display text-lg font-semibold">
-              Browser Storage Cleared — Restore Your Herd?
+              {isCorruptedSqlite
+                ? 'Local Database Corrupted — Choose a Recovery Option'
+                : 'Browser Storage Cleared — Restore Your Herd?'}
             </h2>
             <p className="text-xs text-[var(--barn-muted)]">
-              The primary local database appears empty, but evidence of prior use was detected for{' '}
-              <strong className="text-[var(--barn-ink)]">{priorBarnName}</strong>
-              {priorAnimalCount > 0 ? ` (${priorAnimalCount} prior records)` : ''}. Sample herds
-              were paused so nothing is overwritten.
+              {isCorruptedSqlite ? (
+                <>
+                  The primary local SQLite database failed integrity checks
+                  {context.corruptionError ? ` (${context.corruptionError})` : ''}. Automatic
+                  starter seeding was paused so your stored backups or recovery options are not
+                  silently overwritten.
+                </>
+              ) : (
+                <>
+                  The primary local database appears empty, but evidence of prior use was detected
+                  for <strong className="text-[var(--barn-ink)]">{priorBarnName}</strong>
+                  {priorAnimalCount > 0 ? ` (${priorAnimalCount} prior records)` : ''}. Sample
+                  herds were paused so nothing is overwritten.
+                </>
+              )}
             </p>
           </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs space-y-1">
+        <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] text-xs space-y-1.5">
           {latest ? (
             <>
               <div className="font-semibold text-[var(--barn-ink)] flex items-center gap-1.5">
@@ -187,11 +228,26 @@ export function WipedStorageRecoveryModal({
                 {formatByteSizePure(latest.byteSize)}
               </div>
             </>
+          ) : nonEmptyRollingBackups.length > 0 ? (
+            <>
+              <div className="font-semibold text-[var(--barn-ink)] flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+                <span>
+                  {nonEmptyRollingBackups.length} Rolling IndexedDB Snapshot
+                  {nonEmptyRollingBackups.length === 1 ? '' : 's'} Found
+                </span>
+              </div>
+              <div className="text-[11px] font-mono tabular-nums text-[var(--barn-muted)]">
+                Latest: {new Date(nonEmptyRollingBackups[0].savedAtIso).toLocaleString()} ·{' '}
+                {nonEmptyRollingBackups[0].animalCount} animals ·{' '}
+                {nonEmptyRollingBackups[0].photoCount} photos
+              </div>
+            </>
           ) : (
             <div className="text-[11px] text-[var(--barn-muted)]">
               {context.opfsArchivesCount > 0
                 ? `Found ${context.opfsArchivesCount} archived bundle(s) in OPFS /archives, or upload an exported backup file below.`
-                : 'No OPFS /backups snapshot was found in this browser origin. Upload an exported .JSON, .ZIP, or .SQLITE backup file below.'}
+                : 'No OPFS /backups or rolling IndexedDB snapshot was found in this browser origin. Upload an exported .JSON, .ZIP, or .SQLITE backup file below, or explicitly choose Start Fresh.'}
             </div>
           )}
         </div>
@@ -219,6 +275,27 @@ export function WipedStorageRecoveryModal({
                 : `Restore Latest OPFS Backup (${latest.animalCount} animals)`}
             </button>
           )}
+
+          {nonEmptyRollingBackups.length > 0 &&
+            onRestoreRollingBackup &&
+            nonEmptyRollingBackups.slice(0, 3).map((rb, idx) => (
+              <button
+                key={rb.key}
+                type="button"
+                disabled={busyAction !== null}
+                onClick={() => void handleRestoreRolling(rb.key)}
+                className={`w-full min-h-[44px] px-4 py-2.5 rounded-xl text-xs font-semibold disabled:opacity-50 inline-flex items-center justify-center gap-2 ${
+                  !latest && idx === 0
+                    ? 'bg-[var(--barn-sage)] text-[var(--barn-on-sage)] hover:opacity-95'
+                    : 'border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)]'
+                }`}
+              >
+                <RotateCcw className="w-4 h-4" aria-hidden="true" />
+                {busyAction === 'rolling'
+                  ? 'Restoring Rolling Snapshot...'
+                  : `Restore Rolling Backup (${new Date(rb.savedAtIso).toLocaleString()} · ${rb.animalCount} animals)`}
+              </button>
+            ))}
 
           {!latest &&
             archivedHerdBundles.length > 0 &&
@@ -263,8 +340,8 @@ export function WipedStorageRecoveryModal({
           {confirmStartFresh ? (
             <div className="p-3 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-terracotta)] space-y-2">
               <div className="text-[11px] text-[var(--barn-ink)]">
-                Starting fresh clears the prior-use flag and loads clean sample starter herds. Any
-                existing OPFS backups/archives stay untouched until overwritten.
+                Starting fresh clears the corrupted/prior-use flag and loads clean sample starter
+                herds. Any existing OPFS backups/archives stay untouched until overwritten.
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -292,7 +369,7 @@ export function WipedStorageRecoveryModal({
               onClick={() => setConfirmStartFresh(true)}
               className="w-full min-h-[42px] px-4 py-2 rounded-xl text-xs font-medium text-[var(--barn-muted)] hover:text-[var(--barn-ink)] hover:bg-[var(--barn-subtle)]"
             >
-              Start Fresh (Load Sample Starter Herds)
+              Start Fresh (Reset &amp; Load Sample Starter Herds)
             </button>
           )}
         </div>

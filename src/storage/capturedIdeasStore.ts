@@ -14,13 +14,13 @@
  * - Bounded growth: Enforces `MAX_CAPTURED_IDEAS_COUNT` (`500` entries).
  */
 
-import { generateUuid, nowIsoUtc } from '../core/models';
+import { generateUuid, nowIsoUtc } from '../domain/models';
 import {
   CapturedIdeaEntry,
   isValidCapturedIdeaEntry,
   MAX_CAPTURED_IDEAS_COUNT,
   sanitizeIdeaInput,
-} from '../core/suggestionsBacklog';
+} from '../domain/suggestionsBacklog';
 import { logDiagnosticEvent } from './crashLogger';
 import { isOpfsSupported, purgeOpfsTmp } from './opfsStorage';
 import {
@@ -34,6 +34,7 @@ import {
   trackActiveIdbTransaction,
 } from './storageProbes';
 import { isQuotaExceededError } from './storageProtection';
+import type { IStorageAdapter } from '@engine/storage';
 import { readBlobAsText } from '../utils/es2018Shims';
 
 const IDEAS_IDB_NAME = 'community_pedigree_ideas_v1';
@@ -42,6 +43,17 @@ const IDEAS_STORE_NAME = 'captured_ideas';
 const IDEAS_LOCAL_STORAGE_KEY = 'pedigree.capturedIdeas.v1';
 const IDEAS_OPFS_DIR = 'ideas';
 const IDEAS_OPFS_FILE = 'captured-ideas.json';
+
+let activeCapturedIdeasBackingStore: IStorageAdapter | null = null;
+
+/**
+ * Configures an optional content-agnostic `IStorageAdapter` backing store (such as
+ * `NativeBridgeStorageAdapter` on iOS `WKWebView`) so user-authored captured ideas
+ * survive 7-day WebKit ITP eviction.
+ */
+export function configureCapturedIdeasBackingStore(adapter: IStorageAdapter | null): void {
+  activeCapturedIdeasBackingStore = adapter;
+}
 
 function sortIdeasNewestFirst(ideas: readonly CapturedIdeaEntry[]): CapturedIdeaEntry[] {
   return [...ideas].sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
@@ -314,6 +326,17 @@ async function withQuotaRetry<T>(task: () => Promise<T>): Promise<T> {
  * Loads all captured ideas from offline storage (IndexedDB primary, OPFS/localStorage fallback).
  */
 export async function loadCapturedIdeas(): Promise<CapturedIdeaEntry[]> {
+  if (activeCapturedIdeasBackingStore) {
+    try {
+      const raw = await activeCapturedIdeasBackingStore.getItem(IDEAS_LOCAL_STORAGE_KEY);
+      if (typeof raw === 'string' && raw.trim()) {
+        return parseIdeaList(JSON.parse(raw));
+      }
+    } catch {
+      // Fall through to browser stores if native backing store read fails
+    }
+  }
+
   const idbIdeas = await readAllFromIdb();
   if (idbIdeas !== null && idbIdeas.length > 0) {
     return idbIdeas;
@@ -364,6 +387,18 @@ export async function saveCapturedIdea(rawText: string): Promise<{
     let persistedAnywhere = false;
     let lastQuotaError: unknown = null;
 
+    if (activeCapturedIdeasBackingStore) {
+      try {
+        await activeCapturedIdeasBackingStore.setItem(
+          IDEAS_LOCAL_STORAGE_KEY,
+          JSON.stringify(nextIdeas)
+        );
+        persistedAnywhere = true;
+      } catch (err) {
+        if (isQuotaExceededError(err)) lastQuotaError = err;
+      }
+    }
+
     try {
       if (await putEntryInIdb(entry)) {
         persistedAnywhere = true;
@@ -410,6 +445,16 @@ export async function deleteCapturedIdea(id: string): Promise<CapturedIdeaEntry[
   const existing = await loadCapturedIdeas();
   const nextIdeas = existing.filter((item) => item.id !== id);
 
+  if (activeCapturedIdeasBackingStore) {
+    try {
+      await activeCapturedIdeasBackingStore.setItem(
+        IDEAS_LOCAL_STORAGE_KEY,
+        JSON.stringify(nextIdeas)
+      );
+    } catch {
+      // Non-fatal fallback
+    }
+  }
   try {
     await deleteEntryInIdb(id);
   } catch {
@@ -433,6 +478,13 @@ export async function deleteCapturedIdea(id: string): Promise<CapturedIdeaEntry[
  * Clears all pending captured ideas after the user has exported or copied them.
  */
 export async function clearCapturedIdeas(): Promise<CapturedIdeaEntry[]> {
+  if (activeCapturedIdeasBackingStore) {
+    try {
+      await activeCapturedIdeasBackingStore.setItem(IDEAS_LOCAL_STORAGE_KEY, '[]');
+    } catch {
+      // Non-fatal fallback
+    }
+  }
   try {
     await clearAllInIdb();
   } catch {

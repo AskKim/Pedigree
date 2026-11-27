@@ -16,9 +16,9 @@ import {
   normalizeWeatherForecastBundle,
   WeatherForecastBundle,
   WeatherForecastDay,
-} from '../core/breedingCalendar';
-import { sanitizeSingleLineText } from '../core/inputSanitization';
-import { nowIsoUtc } from '../core/models';
+} from '../domain/breedingCalendar';
+import { sanitizeSingleLineText } from '../domain/inputSanitization';
+import { nowIsoUtc } from '../domain/models';
 import { getConnectivitySnapshot } from './storageProtection';
 
 const WEATHER_CACHE_LS_KEY = 'pedigree.weatherForecast.cache.v1';

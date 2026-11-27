@@ -4,7 +4,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Animal } from '../../core/models';
+import type { Animal } from '../../domain/models';
 import { computeVirtualWindow } from '../useVirtualWindow';
 
 const reactHarness = vi.hoisted(() => {

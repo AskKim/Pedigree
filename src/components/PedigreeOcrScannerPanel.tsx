@@ -29,14 +29,14 @@ import {
   createEmptyPedigreeOcrSlots,
   PedigreeOcrSlotDraft,
   PedigreeOcrSlotKey,
-} from '../core/importers/pedigreeOcrParser';
-import type { PlatformImportPreview } from '../core/importers/importerTypes';
+} from '../domain/importers/pedigreeOcrParser';
+import type { PlatformImportPreview } from '../domain/importers/importerTypes';
 import {
   BarnDatabaseSnapshot,
   BiologicalSex,
   formatWeight,
   PREDEFINED_SPECIES_PRESETS,
-} from '../core/models';
+} from '../domain/models';
 import {
   PedigreeScanSessionResult,
   scanPedigreeDocumentFile,

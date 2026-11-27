@@ -24,7 +24,7 @@ Pedigree/
 │       └── android/
 ├── import/                                <-- Read-only staging folder (DO NOT execute, bundle, or boot without explicit confirmation; protected via .gitkeep)
 ├── upload/                                <-- Protected upload staging directory (keep even when empty via .gitkeep)
-├── prompts/                               <-- Do not remove prompts without confirmation (update src/components/PromptsDirectoryScreen.tsx, src/core/promptsCatalog.ts, and vite.config.ts if moved)
+├── prompts/                               <-- Do not remove prompts without confirmation (update src/components/PromptsDirectoryScreen.tsx, src/domain/promptsCatalog.ts, and vite.config.ts if moved)
 │   ├── fix_error_log_prompt.md            <-- Active crash & error log remediation prompt
 │   ├── master_system_prompt.md            <-- Active Master System Prompt
 │   ├── master_system_prompt_old_v1.md     <-- Archived v1 prompt (reference only)

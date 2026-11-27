@@ -73,3 +73,5 @@ jobs:
           fi
           test -f "src/App.tsx" && test -f "src/main.tsx" || { echo "Core React PWA entrypoints missing!" >&2; exit 1; }
           grep -q '"react"' package.json || { echo "Core PWA must depend on React!" >&2; exit 1; }
+          test -f "tsconfig.engine.json" || { echo "Missing tsconfig.engine.json!" >&2; exit 1; }
+          python3 -c 'import json; data = json.load(open("scripts/layer-allowlist.json")); assert isinstance(data, list)'

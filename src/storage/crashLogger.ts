@@ -18,7 +18,7 @@
  * - IndexedDB store for full verbose history with automatic pruning
  */
 
-import { generateUuid, nowIsoUtc } from '../core/models';
+import { generateUuid, nowIsoUtc } from '../domain/models';
 import type {
   DiagnosticCategory,
   DiagnosticConfig,
@@ -27,7 +27,7 @@ import type {
   DiagnosticSummary,
   LogRetentionDays,
   MemorySample,
-} from '../core/supportBundle';
+} from '../domain/supportBundle';
 import {
   BackgroundPausedError,
   notifyBackgroundTransition,
@@ -81,6 +81,7 @@ export interface AsyncErrorNotice {
   sticky: boolean;
   category: DiagnosticCategory;
   canOpenDiagnostics?: boolean;
+  canOpenBackups?: boolean;
   actionLabel?: string;
   actionJobId?: string;
 }
@@ -189,6 +190,7 @@ export function emitAsyncErrorToast(params: {
   sticky?: boolean;
   category?: DiagnosticCategory;
   canOpenDiagnostics?: boolean;
+  canOpenBackups?: boolean;
   actionLabel?: string;
   actionJobId?: string;
 }): AsyncErrorNotice | null {
@@ -220,6 +222,7 @@ export function emitAsyncErrorToast(params: {
     sticky,
     category: params.category || 'promise',
     canOpenDiagnostics: params.canOpenDiagnostics ?? params.severity === 'error',
+    canOpenBackups: params.canOpenBackups ?? false,
     actionLabel: params.actionLabel,
     actionJobId: params.actionJobId,
   };
@@ -1130,11 +1133,12 @@ export function handleUnhandledRejectionReason(reason: unknown): void {
     emitAsyncErrorToast({
       title: 'Device Storage Full',
       detail:
-        'A background save could not fit in browser storage. Open Backups to download a .JSON copy or free space.',
+        'A background save could not fit in browser storage. Open Recovery & Backups to download a .JSON copy or free space.',
       severity: 'error',
       sticky: true,
       category: 'storage',
-      canOpenDiagnostics: true,
+      canOpenDiagnostics: false,
+      canOpenBackups: true,
     });
   } else if (memoryLike) {
     emitAsyncErrorToast({

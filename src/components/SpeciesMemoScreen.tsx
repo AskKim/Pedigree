@@ -29,7 +29,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
-import { formatReadableDate, SpeciesProfile, todayDateIso } from '../core/models';
+import { formatReadableDate, SpeciesProfile, todayDateIso } from '../domain/models';
 import {
   applyMemoFormatAction,
   MAX_SPECIES_MEMO_CHARS,
@@ -39,7 +39,7 @@ import {
   parseMemoBlocks,
   sanitizeSpeciesMemo,
   toggleMemoChecklistLine,
-} from '../core/speciesMemo';
+} from '../domain/speciesMemo';
 
 interface SpeciesMemoScreenProps {
   speciesProfile: SpeciesProfile;

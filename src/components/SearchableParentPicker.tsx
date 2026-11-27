@@ -12,7 +12,7 @@
 
 import { Check, Search, X } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Animal, doesAnimalNeedAttention, isAnimalArchived } from '../core/models';
+import { Animal, doesAnimalNeedAttention, isAnimalArchived } from '../domain/models';
 import { clampComboboxIndex, stepEnabledComboboxIndex } from '../utils/comboboxNav';
 import { useVirtualWindow } from '../utils/useVirtualWindow';
 

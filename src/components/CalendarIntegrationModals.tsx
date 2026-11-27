@@ -12,9 +12,10 @@ import React from 'react';
 import {
   buildExternalCalendarWebUrls,
   CalendarExportContext,
+  formatCalendarAlarmSummary,
   formatExternalCalendarTaskSummary,
-} from '../core/calendarExport';
-import { BarnTask, CalendarSyncSettings, formatReadableDate } from '../core/models';
+} from '../domain/calendarExport';
+import { BarnTask, CalendarSyncSettings, formatReadableDate } from '../domain/models';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
 export function SignInWithGoogleButton({
@@ -141,8 +142,8 @@ export function CalendarSyncConfirmModal({
               <span className="font-semibold text-[var(--barn-ink)]">
                 {config.googleCalendarName || 'Primary Google Calendar'}
               </span>{' '}
-              · {config.reminderTimeLocal} local
-              {config.alarmEnabled ? ` · Alarm ${config.alarmMinutesBefore}m before` : ' · No alarm'}
+              · {config.reminderTimeLocal === 'VALUE=DATE' ? 'All Day' : `${config.reminderTimeLocal} local`}
+              {` · ${formatCalendarAlarmSummary(config)}`}
             </p>
           </div>
           <button

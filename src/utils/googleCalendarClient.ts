@@ -8,14 +8,21 @@
  * - Callers fall back cleanly to offline `.ics` generation and web calendar links.
  */
 
-import {
-  buildGoogleCalendarEventPayload,
-  CalendarExportContext,
-} from '../core/calendarExport';
-import { BarnTask, CalendarSyncSettings } from '../core/models';
+export interface GoogleCalendarClientHooks {
+  onDiagnosticEvent?: (entry: {
+    level: 'info' | 'warn' | 'error';
+    category: 'runtime' | 'storage' | 'memory';
+    message: string;
+    error?: unknown;
+  }) => void;
+  onServerDateHeader?: (dateHeader: string | null | undefined) => void;
+}
 
-import { logDiagnosticEvent } from '../storage/crashLogger';
-import { recordServerDateHeaderSkew } from '../storage/storageProtection';
+let calendarClientHooks: GoogleCalendarClientHooks = {};
+
+export function configureGoogleCalendarClient(hooks: GoogleCalendarClientHooks): void {
+  calendarClientHooks = { ...calendarClientHooks, ...hooks };
+}
 
 export const GOOGLE_CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -27,6 +34,21 @@ export interface GoogleCalendarUser {
   email?: string | null;
   displayName?: string | null;
 }
+
+export interface CalendarTaskRecord {
+  dueDateIso?: string;
+}
+
+export interface GenericGoogleCalendarEventPayload {
+  id?: string;
+}
+
+export type CalendarEventPayloadBuilder<TTask extends CalendarTaskRecord, TConfig> = (
+  task: TTask,
+  config: TConfig,
+  calendarLabel: string,
+  timeZone: string
+) => GenericGoogleCalendarEventPayload | null;
 
 let cachedAccessToken: string | null = null;
 const cachedUser: GoogleCalendarUser | null = null;
@@ -59,7 +81,7 @@ export async function signInGoogleCalendar(): Promise<{
   user: GoogleCalendarUser;
   accessToken: string;
 }> {
-  logDiagnosticEvent({
+  calendarClientHooks.onDiagnosticEvent?.({
     level: 'info',
     category: 'runtime',
     message:
@@ -93,7 +115,7 @@ export async function listWritableGoogleCalendars(
       },
     }
   );
-  recordServerDateHeaderSkew(res.headers?.get?.('date'));
+  calendarClientHooks.onServerDateHeader?.(res.headers?.get?.('date'));
   if (res.status === 401 || res.status === 403) {
     cachedAccessToken = null;
     throw new Error('GOOGLE_AUTH_EXPIRED');
@@ -120,15 +142,18 @@ export async function listWritableGoogleCalendars(
     }));
 }
 
-export async function pushTasksToGoogleCalendar(params: {
+export async function pushGenericTasksToGoogleCalendar<
+  TTask extends CalendarTaskRecord,
+  TConfig = Record<string, unknown>,
+>(params: {
   accessToken: string;
   calendarId: string;
-  tasks: BarnTask[];
-  config: Partial<CalendarSyncSettings>;
-  barnName: string;
-  context?: CalendarExportContext;
+  tasks: TTask[];
+  config: TConfig;
+  calendarLabel: string;
+  buildPayload: CalendarEventPayloadBuilder<TTask, TConfig>;
 }): Promise<GoogleCalendarPushResult> {
-  const { accessToken, calendarId, tasks, config, barnName, context } = params;
+  const { accessToken, calendarId, tasks, config, calendarLabel, buildPayload } = params;
   const timeZone =
     (typeof Intl !== 'undefined' &&
       Intl.DateTimeFormat().resolvedOptions().timeZone) ||
@@ -144,13 +169,7 @@ export async function pushTasksToGoogleCalendar(params: {
   const targetId = encodeURIComponent(calendarId || 'primary');
 
   for (const task of datedTasks) {
-    const payload = buildGoogleCalendarEventPayload(
-      task,
-      config,
-      barnName,
-      timeZone,
-      context
-    );
+    const payload = buildPayload(task, config, calendarLabel, timeZone);
     if (!payload) continue;
 
     try {
@@ -165,7 +184,7 @@ export async function pushTasksToGoogleCalendar(params: {
           body: JSON.stringify(payload),
         }
       );
-      recordServerDateHeaderSkew(res.headers?.get?.('date'));
+      calendarClientHooks.onServerDateHeader?.(res.headers?.get?.('date'));
 
       // Deterministic event ID already exists on Google Calendar -> update in place (prevents duplicates)
       if (res.status === 409 && payload.id) {
@@ -180,7 +199,7 @@ export async function pushTasksToGoogleCalendar(params: {
             body: JSON.stringify(payload),
           }
         );
-        recordServerDateHeaderSkew(res.headers?.get?.('date'));
+        calendarClientHooks.onServerDateHeader?.(res.headers?.get?.('date'));
       }
 
       if (res.status === 401 || res.status === 403) {

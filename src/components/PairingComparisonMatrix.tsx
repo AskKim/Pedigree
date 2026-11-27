@@ -21,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useState } from 'react';
-import { Animal, isAnimalArchived, SpeciesProfile } from '../core/models';
+import { Animal, isAnimalArchived, SpeciesProfile } from '../domain/models';
 import {
   buildPairingComparisonMatrix,
   DEFAULT_MATRIX_INITIAL_SELECTION,
@@ -30,7 +30,7 @@ import {
   PairingMatrixRow,
   PairingMatrixSortBy,
   selectDefaultMatrixCandidateIds,
-} from '../core/pairingMatrix';
+} from '../domain/pairingMatrix';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 const UI_MAX_SELECTABLE_CANDIDATES = Math.min(24, MAX_MATRIX_CANDIDATES);
@@ -255,7 +255,7 @@ export function PairingComparisonMatrix({
   );
 
   const renderCoiBadgeClass = (row: PairingMatrixRow): string => {
-    if (row.coiRisk.code === 'HIGH') {
+    if (row.coiRisk.code === 'HIGH' || row.coiRisk.code === 'CYCLE') {
       return 'bg-[var(--barn-danger)]/15 text-[var(--barn-danger)] border-[var(--barn-danger)]/60';
     }
     if (row.coiRisk.code === 'LINEBRED' || row.coiRisk.code === 'MODERATE') {

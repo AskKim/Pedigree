@@ -7,7 +7,7 @@
  * Documentation & Maintenance Note:
  * If the prompt files in `/prompts/` are ever moved or renamed in the repository,
  * update the `import.meta.glob('/prompts/*', ...)` glob below, the constants in
- * `src/core/promptsCatalog.ts`, and the `/prompts/` disk scanner in `vite.config.ts`.
+ * `src/domain/promptsCatalog.ts`, and the `/prompts/` disk scanner in `vite.config.ts`.
  */
 
 import {
@@ -24,7 +24,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { useCallback, useId, useMemo, useState } from 'react';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
 import {
   buildPromptsCatalogManifest,
   isValidPromptsManifest,
@@ -34,7 +34,7 @@ import {
   PROMPTS_MOVED_DOCUMENTATION_NOTE,
   PromptCatalogEntry,
   PromptsCatalogManifest,
-} from '../core/promptsCatalog';
+} from '../domain/promptsCatalog';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 
 const BUNDLED_PROMPT_FILES = import.meta.glob('/prompts/*', {

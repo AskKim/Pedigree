@@ -38,8 +38,8 @@ import {
   evaluateSpeciesDueTasksAlert,
   evaluateSpeciesMemoReminderAlert,
   evaluateSpeciesNeedsAttentionAlert,
-} from '../core/barnAlerts';
-import { buildMultiSpeciesAgenda, formatSystemTaskTitle } from '../core/calendarExport';
+} from '../domain/barnAlerts';
+import { buildMultiSpeciesAgenda, formatSystemTaskTitle } from '../domain/calendarExport';
 import {
   BarnDatabaseSnapshot,
   BarnSettings,
@@ -47,7 +47,7 @@ import {
   formatReadableDate,
   isAnimalArchived,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { WorkspaceRoute } from '../hooks/useBarnStore';
 import type { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
 import { DeviceCapabilityCard } from './DeviceCapabilityCard';

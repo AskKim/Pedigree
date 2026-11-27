@@ -198,7 +198,9 @@
       (function () {
         var CRASH_TS_KEY = 'pedigree_boot_crash_ts';
         var PENDING_BOOT_KEY = 'pedigree_pending_boot_ts';
+        var PREBOOT_RELOAD_KEY = 'pedigree_preboot_reload_ts';
         var CRASH_WINDOW_MS = 60000;
+        var PREBOOT_RELOAD_COOLDOWN_MS = 15000;
         var MAX_CRASHES = 3;
         var bootStartedAt = Date.now();
 
@@ -304,6 +306,7 @@
         window.__PEDIGREE_MARK_BOOT_STABLE__ = function () {
           writeSessionValue(CRASH_TS_KEY, null);
           writeSessionValue(PENDING_BOOT_KEY, null);
+          writeSessionValue(PREBOOT_RELOAD_KEY, null);
         };
 
         function escapeHtmlText(text) {
@@ -530,23 +533,109 @@
         window.__PEDIGREE_BOOT_OK__ = false;
 
         var preBootSyntaxHandled = false;
+        function attemptOneShotPreBootReload() {
+          try {
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+              return false;
+            }
+            var now = Date.now();
+            var prevRaw = readSessionValue(PREBOOT_RELOAD_KEY);
+            var prevTs = prevRaw ? Number(prevRaw) : 0;
+            if (isFinite(prevTs) && prevTs > 0 && now - prevTs < PREBOOT_RELOAD_COOLDOWN_MS) {
+              return false;
+            }
+            writeSessionValue(PREBOOT_RELOAD_KEY, String(now));
+            writeSessionValue(PENDING_BOOT_KEY, null);
+            window.location.reload();
+            return true;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function handlePreBootTransientFetchFailure(detailMsg) {
+          if (window.__PEDIGREE_BOOT_OK__ || preBootSyntaxHandled) return;
+          if (attemptOneShotPreBootReload()) {
+            preBootSyntaxHandled = true;
+            return;
+          }
+          preBootSyntaxHandled = true;
+          renderNoticeCard({
+            badge: 'App Script Reload Needed',
+            title: 'App Modules Could Not Finish Loading',
+            intro:
+              'A script module or updated asset could not finish downloading (often caused by a fresh update or momentary connection drop).',
+            bullets: [
+              detailMsg || 'One of the startup JavaScript modules failed to load cleanly.',
+              'Your saved offline herd database and photos remain safely intact.'
+            ],
+            footerHtml:
+              '<strong>Next step:</strong> Reload now, or open <a href="?emergency_reset=true">?emergency_reset=true</a> to clear stale browser caches.',
+            buttonLabel: 'Reload App',
+            onAction: function () {
+              writeSessionValue(PENDING_BOOT_KEY, null);
+              window.location.reload();
+            }
+          });
+        }
+
         window.addEventListener('error', function (ev) {
           if (window.__PEDIGREE_BOOT_OK__ || preBootSyntaxHandled) return;
+          var targetEl = ev && ev.target;
+          if (targetEl && targetEl.tagName === 'SCRIPT') {
+            var scriptSrc = targetEl.getAttribute ? targetEl.getAttribute('src') : '';
+            if (scriptSrc && /main\.tsx|\/src\/|\/assets\//i.test(scriptSrc)) {
+              handlePreBootTransientFetchFailure('Failed to load startup module: ' + scriptSrc);
+            }
+            return;
+          }
           var msg = ev && ev.message ? String(ev.message) : '';
-          if (/syntaxerror|unexpected token|cannot use import|import\.meta|module/i.test(msg)) {
+          if (
+            /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|loading module from|outdated optimize dep|\b504\b/i.test(
+              msg
+            )
+          ) {
+            handlePreBootTransientFetchFailure(msg);
+            return;
+          }
+          if (
+            /\bsyntaxerror\b|unexpected token|cannot use import|import\.meta|does not provide an export/i.test(
+              msg
+            )
+          ) {
             preBootSyntaxHandled = true;
             renderBlockedNotice(
               ['This browser could not parse modern app scripts (' + msg + ').'],
               true
             );
           }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function (ev) {
+          if (window.__PEDIGREE_BOOT_OK__ || preBootSyntaxHandled) return;
+          var reason = ev && ev.reason;
+          var msg =
+            reason && reason.message
+              ? String(reason.message)
+              : reason
+                ? String(reason)
+                : '';
+          if (
+            /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|loading chunk|outdated optimize dep|\b504\b/i.test(
+              msg
+            )
+          ) {
+            if (typeof ev.preventDefault === 'function') {
+              ev.preventDefault();
+            }
+            handlePreBootTransientFetchFailure(msg);
+          }
         });
 
         window.setTimeout(function () {
           if (!window.__PEDIGREE_BOOT_OK__ && !window.__PEDIGREE_PREFLIGHT_BLOCKED__) {
-            renderBlockedNotice(
-              ['Modern ES module startup did not complete cleanly on this browser or connection.'],
-              true
+            handlePreBootTransientFetchFailure(
+              'Modern ES module startup did not finish within 30 seconds on this browser or connection.'
             );
           }
         }, 30000);

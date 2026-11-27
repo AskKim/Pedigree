@@ -15,20 +15,20 @@
 
 import {
   tryParseEncryptedEnvelopeJson,
-} from '../core/encryptedExport';
+} from '../domain/encryptedExport';
 import {
   isValidSyncOperation,
   MAX_DELTA_BATCH_FILES,
   MAX_DELTA_JSON_BYTES,
   MAX_DELTA_OPERATIONS,
   validateUploadFileSize,
-} from '../core/inputSanitization';
-import { generateUuid } from '../core/models';
+} from '../domain/inputSanitization';
+import { generateUuid } from '../domain/models';
 import {
   DeltaExportFile,
   SyncConflictEntry,
   SyncOperation,
-} from '../core/syncOutbox';
+} from '../domain/syncOutbox';
 import { type FileShareOutcome, shareTextFileOrDownload } from '../utils/webFileActions';
 import { readBlobAsText } from '../utils/es2018Shims';
 import {

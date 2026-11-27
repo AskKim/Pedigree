@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { CURRENT_BACKUP_SCHEMA_VERSION } from '../core/backupVault';
+import { CURRENT_BACKUP_SCHEMA_VERSION } from '../domain/backupVault';
 import {
   CURRENT_APP_VERSION,
   evaluateUpgradeGate,
@@ -19,7 +19,7 @@ import {
   StatusManifest,
   UpgradeGateDecision,
   VersionManifest,
-} from '../core/upgradeGate';
+} from '../domain/upgradeGate';
 import { markCleanSessionExit } from './crashLogger';
 import { getSafeLocalStorage } from './storageProbes';
 import {

@@ -25,6 +25,16 @@
   --barn-slate-tint: #dde8ef;
   --barn-danger: #b5382b;
   --barn-on-danger: #fff8f0;
+  /* Domain-neutral UI token aliases for reusable utilities (e.g. src/utils/lazyRoute.tsx) */
+  --ui-surface: var(--barn-surface);
+  --ui-subtle: var(--barn-subtle);
+  --ui-border: var(--barn-border);
+  --ui-muted: var(--barn-muted);
+  --ui-primary: var(--barn-sage);
+  --ui-on-primary: var(--barn-on-sage);
+  --ui-accent: var(--barn-terracotta);
+  --ui-accent-tint: var(--barn-terracotta-tint);
+  --ui-danger: var(--barn-danger);
 }
 
 .dark {

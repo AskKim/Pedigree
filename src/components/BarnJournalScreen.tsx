@@ -48,7 +48,7 @@ import {
   groupJournalEntriesByMonthAndDate,
   normalizeJournalTags,
   summarizeJournalStats,
-} from '../core/barnJournal';
+} from '../domain/barnJournal';
 import {
   BarnJournalEntry,
   BarnSettings,
@@ -57,7 +57,7 @@ import {
   JournalColorCategory,
   JournalStarRating,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import {
   applyMemoFormatAction,
   MAX_SPECIES_MEMO_CHARS,
@@ -67,7 +67,7 @@ import {
   parseMemoBlocks,
   sanitizeSpeciesMemo,
   toggleMemoChecklistLine,
-} from '../core/speciesMemo';
+} from '../domain/speciesMemo';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';

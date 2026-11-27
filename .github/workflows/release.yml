@@ -63,7 +63,7 @@ jobs:
             const fs = require("fs");
             const pkgVer = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
             const manifestVer = JSON.parse(fs.readFileSync("public/version.json", "utf8")).appVersion;
-            const gateSrc = fs.readFileSync("src/core/upgradeGate.ts", "utf8");
+            const gateSrc = fs.readFileSync("src/domain/upgradeGate.ts", "utf8");
             const gateMatch = gateSrc.match(/CURRENT_APP_VERSION\s*=\s*[\x27"]([^\x27"]+)[\x27"]/);
             const gradleSrc = fs.readFileSync("android-wrapper/app/build.gradle.kts", "utf8");
             const gradleMatch = gradleSrc.match(/versionName\s*=\s*"([^"]+)"/);

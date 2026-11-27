@@ -1,4 +1,4 @@
-Community Pedigree v0.1.0-alpha.2 (Android WebView Wrapper):
+Community Pedigree v0.1.0-alpha.3 (Android WebView Wrapper):
 - Offline-first React PWA served via WebViewAssetLoader at https://appassets.androidplatform.net
 - Native Back navigation unwinding, SAF file import/export, Share Sheet & PrintManager support
 - Native Backup Vault mirror (5-snapshot rotation with SHA-256 deduplication)

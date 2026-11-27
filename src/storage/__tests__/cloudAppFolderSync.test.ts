@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CloudDeltaChunkBundle,
   CloudRemoteFileEntry,
-} from '../../core/cloudAppFolderSync';
-import { createOutboxOperation, SyncOperation } from '../../core/syncOutbox';
+} from '../../domain/cloudAppFolderSync';
+import { createOutboxOperation, SyncOperation } from '../../domain/syncOutbox';
 import {
   clearAllCloudSyncState,
   clearCloudSyncMemoryToken,
@@ -22,7 +22,7 @@ import {
   setCloudSyncMemoryToken,
   updatePersistedCloudSyncSettings,
 } from '../cloudAppFolderSync';
-import { makeEmptySnapshot } from '../../core/__tests__/testFixtures';
+import { makeEmptySnapshot } from '../../domain/__tests__/testFixtures';
 
 function createMemoryStorage(): Storage {
   const map = new Map<string, string>();

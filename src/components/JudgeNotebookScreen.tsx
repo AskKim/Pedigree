@@ -50,7 +50,7 @@ import {
   generateJudgeSummaryReportHtml,
   getAvailableJudgeYears,
   summarizeJudgeNotebook,
-} from '../core/judgeNotebook';
+} from '../domain/judgeNotebook';
 import {
   BarnSettings,
   DEFAULT_IRS_MILEAGE_RATE_CENTS,
@@ -67,7 +67,7 @@ import {
   JudgeExpenseCategory,
   normalizeCurrencyCode,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';

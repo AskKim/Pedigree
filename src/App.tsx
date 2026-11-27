@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   ArrowRight,
+  BookOpen,
   CalendarCheck,
   Clock,
   FileBarChart2,
@@ -37,20 +38,23 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { ComponentProps, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { ComponentProps, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getDefaultPedigreeBridge } from '@app/pedigreeAppWiring';
+import { PlatformBridgeProvider } from '@app/PlatformBridgeContext';
+import type { IPlatformBridge } from '@engine/bridge';
 import { AsyncErrorToastHost } from './components/AsyncErrorToastHost';
 import { HomeSpeciesScreen } from './components/HomeSpeciesScreen';
 import { TechyStuffErrorBoundary } from './components/TechyStuffErrorBoundary';
-import { formatSystemTaskTitle } from './core/calendarExport';
+import { formatSystemTaskTitle } from './domain/calendarExport';
 import {
   createDefaultVetDocsFolderMeta,
   evaluateVetDocsBackupReminder,
   normalizeVetDocsFolderMeta,
   VetDocsFolderMeta,
-} from './core/healthReference';
-import { isSameSpecies, normalizeCalendarSyncSettings } from './core/models';
+} from './domain/healthReference';
+import { isSameSpecies, normalizeCalendarSyncSettings } from './domain/models';
 import { useBarnStore, WorkspaceRoute } from './hooks/useBarnStore';
-import { pedigreeBridge } from './native/pedigreeBridge';
+import type { StorageAdapter } from './storage/storageAdapter';
 import { useDeviceCapability } from './storage/deviceCapabilityDetector';
 import { usePwaUpdateStatus } from './storage/pwaUpdateManager';
 import {
@@ -162,6 +166,14 @@ const HealthReferenceModal = lazyNamedRoute<
   'Health Reference Library'
 );
 
+const HelpDocumentationModal = lazyNamedRoute<
+  ComponentProps<typeof import('./components/HelpDocumentationModal')['HelpDocumentationModal']>
+>(
+  () => import('./components/HelpDocumentationModal'),
+  'HelpDocumentationModal',
+  'Documentation & Species Guides'
+);
+
 const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   home: 'All Species',
   dashboard: 'Species Dashboard',
@@ -183,8 +195,17 @@ const ROUTE_LABELS: Record<WorkspaceRoute, string> = {
   suggestions: 'Suggestion Backlog',
 };
 
-export default function App() {
-  const store = useBarnStore();
+export interface AppProps {
+  bridge?: IPlatformBridge;
+  storageAdapter?: StorageAdapter;
+}
+
+export default function App({ bridge, storageAdapter }: AppProps = {}) {
+  const activeBridge = useMemo<IPlatformBridge>(
+    () => bridge ?? getDefaultPedigreeBridge(),
+    [bridge]
+  );
+  const store = useBarnStore({ storageAdapter, bridge: activeBridge });
   const deviceCapability = useDeviceCapability();
   const connectivity = useConnectivityStatus();
   const isOnline = connectivity.isEffectivelyOnline;
@@ -194,6 +215,7 @@ export default function App() {
 
   const [showHerdSpeciesPicker, setShowHerdSpeciesPicker] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  const [showHelpDocs, setShowHelpDocs] = useState(false);
   const [dismissedInstallBanner, setDismissedInstallBanner] = useState(false);
   const [dismissedCompatBanner, setDismissedCompatBanner] = useState(false);
   const [dismissedClockDriftBanner, setDismissedClockDriftBanner] = useState(false);
@@ -203,6 +225,9 @@ export default function App() {
   const hasOpenModal = openDomModalCount > 0;
   const [importExportInitialSection, setImportExportInitialSection] =
     useState<ImportExportHubSection>('all');
+  const [returnRouteFromPrompts, setReturnRouteFromPrompts] = useState<'settings' | 'techyStuff'>(
+    'techyStuff'
+  );
   const [healthReferenceSection, setHealthReferenceSection] = useState<
     'all' | 'wikis' | 'pdfs' | null
   >(null);
@@ -271,32 +296,40 @@ export default function App() {
   // Register app-level modals at priority 10 (LIFO) before route back unwinding
   useEffect(() => {
     if (!showHerdSpeciesPicker) return;
-    return pedigreeBridge.registerBackHandler(() => {
+    return activeBridge.registerBackHandler(() => {
       setShowHerdSpeciesPicker(false);
       return true;
     }, 10);
-  }, [showHerdSpeciesPicker]);
+  }, [activeBridge, showHerdSpeciesPicker]);
 
   useEffect(() => {
     if (!showShortcutsHelp) return;
-    return pedigreeBridge.registerBackHandler(() => {
+    return activeBridge.registerBackHandler(() => {
       setShowShortcutsHelp(false);
       return true;
     }, 10);
-  }, [showShortcutsHelp]);
+  }, [activeBridge, showShortcutsHelp]);
+
+  useEffect(() => {
+    if (!showHelpDocs) return;
+    return activeBridge.registerBackHandler(() => {
+      setShowHelpDocs(false);
+      return true;
+    }, 10);
+  }, [activeBridge, showHelpDocs]);
 
   useEffect(() => {
     if (!store.pendingCalendarSync) return;
-    return pedigreeBridge.registerBackHandler(() => {
+    return activeBridge.registerBackHandler(() => {
       store.cancelPendingCalendarSync();
       return true;
     }, 10);
-  }, [store.pendingCalendarSync, store.cancelPendingCalendarSync]);
+  }, [activeBridge, store.pendingCalendarSync, store.cancelPendingCalendarSync]);
 
   // Fallback at priority 5 for child-screen [role="dialog"] modals using useAccessibleDialog
   useEffect(() => {
     if (!hasOpenModal) return;
-    return pedigreeBridge.registerBackHandler(() => {
+    return activeBridge.registerBackHandler(() => {
       if (typeof document === 'undefined') return false;
       const openDialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
       if (!openDialog) return false;
@@ -306,7 +339,7 @@ export default function App() {
       );
       return true;
     }, 5);
-  }, [hasOpenModal]);
+  }, [activeBridge, hasOpenModal]);
 
   // Lightweight browser history entries per open modal so stacked dialogs unwind cleanly on Back
   const modalHistoryDepthRef = useRef(0);
@@ -327,7 +360,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    if (typeof window === 'undefined' || activeBridge.getCapabilities().hasNativeBridge) return;
     const appModalCount =
       (showHerdSpeciesPicker ? 1 : 0) +
       (showShortcutsHelp ? 1 : 0) +
@@ -363,10 +396,10 @@ export default function App() {
         }
       }
     }
-  }, [openDomModalCount, showHerdSpeciesPicker, showShortcutsHelp, store.pendingCalendarSync]);
+  }, [activeBridge, openDomModalCount, showHerdSpeciesPicker, showShortcutsHelp, store.pendingCalendarSync]);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    if (typeof window === 'undefined' || activeBridge.getCapabilities().hasNativeBridge) return;
     const onModalPopState = () => {
       if (pendingProgrammaticBackRef.current > 0) {
         pendingProgrammaticBackRef.current -= 1;
@@ -395,7 +428,7 @@ export default function App() {
     };
     window.addEventListener('popstate', onModalPopState);
     return () => window.removeEventListener('popstate', onModalPopState);
-  }, []);
+  }, [activeBridge]);
 
   const bootStableMarkedRef = useRef(false);
   useEffect(() => {
@@ -562,7 +595,9 @@ export default function App() {
         </div>
         <AsyncErrorToastHost
           onOpenDiagnostics={() => store.setRoute('techyStuff')}
+          onOpenBackups={() => openImportExportHub('backup')}
           isOnSettingsRoute={store.route === 'techyStuff'}
+          isOnBackupsRoute={store.route === 'importExport'}
         />
       </main>
     );
@@ -593,12 +628,13 @@ export default function App() {
   ];
 
   const showInstallReminder =
-    !pedigreeBridge.isNativeWrapper() &&
+    !activeBridge.getCapabilities().hasNativeBridge &&
     !dismissedInstallBanner &&
     !isInstalled &&
     (canPromptInstall || isIos);
 
   return (
+    <PlatformBridgeProvider bridge={activeBridge}>
     <div className="min-h-screen overflow-x-clip bg-[var(--barn-canvas)] text-[var(--barn-ink)] flex flex-col pb-16 md:pb-8">
       <a
         href="#main-content"
@@ -707,6 +743,16 @@ export default function App() {
             ) : (
               <Moon className="w-4 h-4 text-[var(--barn-ink)]" aria-hidden="true" />
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowHelpDocs(true)}
+            title="Documentation & Species Guides"
+            aria-label="Open documentation and species guides"
+            className="min-h-[44px] min-w-[44px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border border-[var(--barn-border)] hover:bg-[var(--barn-subtle)] flex items-center justify-center transition-colors text-[var(--barn-muted)] hover:text-[var(--barn-ink)]"
+          >
+            <BookOpen className="w-4 h-4" aria-hidden="true" />
           </button>
 
           <button
@@ -1870,7 +1916,12 @@ export default function App() {
             rollingBackups={store.rollingBackups}
             onOpenImportExportHub={openImportExportHub}
             onOpenTechyStuff={() => setRoute('techyStuff')}
+            onOpenPromptsDirectory={() => {
+              setReturnRouteFromPrompts('settings');
+              setRoute('prompts');
+            }}
             onOpenHealthReference={(section) => setHealthReferenceSection(section || 'all')}
+            onOpenHelpDocs={() => setShowHelpDocs(true)}
             cloudSyncState={store.cloudSyncState}
             cloudSyncBusy={store.cloudSyncBusy}
             onResetAndRetryCloudSync={store.resetAndRetryCloudSync}
@@ -1898,7 +1949,10 @@ export default function App() {
               onSyncVaultToSyncFolderNow={store.syncVaultBackupsToSyncNow}
               onBackToSettings={() => setRoute('settings')}
               onOpenImportExportHub={openImportExportHub}
-              onOpenPromptsDirectory={() => setRoute('prompts')}
+              onOpenPromptsDirectory={() => {
+                setReturnRouteFromPrompts('techyStuff');
+                setRoute('prompts');
+              }}
               onOpenSuggestionsBacklog={() => setRoute('suggestions')}
               onRefreshStorageStatus={store.refreshStorageStatus}
               onRequestPersistentStorage={store.triggerPersistentStorageRequest}
@@ -1934,7 +1988,7 @@ export default function App() {
             onExitToSettings={() => setRoute('settings')}
             onExitToHome={() => setRoute('home')}
           >
-            <PromptsDirectoryScreen onBackToTechyStuff={() => setRoute('techyStuff')} />
+            <PromptsDirectoryScreen onBackToTechyStuff={() => setRoute(returnRouteFromPrompts)} />
           </TechyStuffErrorBoundary>
         )}
         {route === 'suggestions' && (
@@ -1971,14 +2025,24 @@ export default function App() {
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">I</kbd> Import/Export ·{' '}
               <kbd className="font-mono font-semibold text-[var(--barn-ink)]">S</kbd> Settings
             </span>
-            <button
-              type="button"
-              onClick={() => setShowShortcutsHelp(true)}
-              className="inline-flex items-center gap-1 hover:text-[var(--barn-ink)] underline underline-offset-2"
-            >
-              <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
-              Help &amp; Shortcuts (?)
-            </button>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowHelpDocs(true)}
+                className="inline-flex items-center gap-1 hover:text-[var(--barn-ink)] underline underline-offset-2"
+              >
+                <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
+                Docs &amp; Species Guides
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowShortcutsHelp(true)}
+                className="inline-flex items-center gap-1 hover:text-[var(--barn-ink)] underline underline-offset-2"
+              >
+                <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                Shortcuts (?)
+              </button>
+            </div>
           </footer>
         )}
       </main>
@@ -2044,7 +2108,9 @@ export default function App() {
             <WipedStorageRecoveryModal
               context={store.wipedRecoveryContext}
               archivedHerdBundles={store.archivedHerdBundles}
+              rollingBackups={store.rollingBackups}
               onRestoreLatestOpfs={store.restoreLatestOpfsOnWipedRecovery}
+              onRestoreRollingBackup={store.restoreRollingBackupByKey}
               onRestoreArchivedBundle={(archiveKey) =>
                 store.restoreArchivedHerdBundle(archiveKey)
               }
@@ -2079,6 +2145,31 @@ export default function App() {
               speciesName={activeSpeciesName}
               initialSection={healthReferenceSection}
               onClose={() => setHealthReferenceSection(null)}
+            />
+          </Suspense>
+        </RouteErrorBoundary>
+      )}
+
+      {/* Lazy-Loaded In-App Documentation & Per-Species Guide Modal */}
+      {showHelpDocs && (
+        <RouteErrorBoundary
+          routeKey={`help-docs:${activeSpeciesName}`}
+          routeLabel="Documentation & Species Guides"
+          onNavigateHome={() => setShowHelpDocs(false)}
+        >
+          <Suspense
+            fallback={
+              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="w-full max-w-md">
+                  <RouteLoadingFallback label="Documentation & Species Guides" />
+                </div>
+              </div>
+            }
+          >
+            <HelpDocumentationModal
+              speciesProfiles={snapshot.speciesProfiles}
+              activeSpeciesName={activeSpeciesName}
+              onClose={() => setShowHelpDocs(false)}
             />
           </Suspense>
         </RouteErrorBoundary>
@@ -2175,6 +2266,21 @@ export default function App() {
               </button>
             </div>
 
+            <button
+              type="button"
+              onClick={() => {
+                setShowShortcutsHelp(false);
+                setShowHelpDocs(true);
+              }}
+              className="w-full min-h-[38px] px-3 py-2 rounded-xl border border-[var(--barn-sage)]/55 bg-[var(--barn-sage-tint)] hover:opacity-90 text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center justify-between gap-2"
+            >
+              <span className="inline-flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+                Open Full Documentation &amp; Species Guides
+              </span>
+              <ArrowRight className="w-3.5 h-3.5 text-[var(--barn-sage)]" aria-hidden="true" />
+            </button>
+
             <div className="divide-y divide-[var(--barn-border)] border border-[var(--barn-border)] rounded-xl text-xs bg-[var(--barn-canvas)]">
               {[
                 { key: 'H', label: 'All Species Home', desc: 'View barn summary & species hub list' },
@@ -2232,7 +2338,9 @@ export default function App() {
 
       <AsyncErrorToastHost
         onOpenDiagnostics={() => setRoute('techyStuff')}
+        onOpenBackups={() => openImportExportHub('backup')}
         isOnSettingsRoute={route === 'techyStuff'}
+        isOnBackupsRoute={route === 'importExport'}
       />
 
       {/* Mobile Pocket-First Bottom Navigation Bar (< 768px) */}
@@ -2276,5 +2384,6 @@ export default function App() {
         })}
       </nav>
     </div>
+    </PlatformBridgeProvider>
   );
 }

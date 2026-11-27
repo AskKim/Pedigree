@@ -18,14 +18,15 @@
 import {
   extractFeedTagDetailsFromOcrText,
   FeedTagOcrParseResult,
-} from '../core/feedInventory';
-import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
-import { todayDateIso } from '../core/models';
+} from '../domain/feedInventory';
+import { OptimizedImagePayload } from '../domain/imageOptimizationSpec';
+import { todayDateIso } from '../domain/models';
 import {
-  enforceCanvasDimensions,
-  optimizeImageBlob,
+  buildContrastGrayscaleCanvas,
+  decodeBlobToCanvasSource,
   releaseCanvas,
-} from './webImageOptimizer';
+} from '../utils/canvasUtils';
+import { optimizeImageBlob } from './webImageOptimizer';
 
 export type FeedTagOcrStatus =
   | 'detected'
@@ -56,103 +57,6 @@ interface NativeTextDetectorConstructor {
 
 const OCR_MAX_DIMENSION_PX = 2200;
 const OCR_WORKER_TIMEOUT_MS = 18_000;
-
-async function decodeRawImageForOcr(
-  file: Blob
-): Promise<{ source: CanvasImageSource; width: number; height: number; cleanup: () => void }> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(file, {
-        imageOrientation: 'from-image',
-      });
-      return {
-        source: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        cleanup: () => bitmap.close(),
-      };
-    } catch {
-      // Fall back to HTMLImageElement
-    }
-  }
-
-  return new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.decoding = 'async';
-    const releaseImageObjectUrl = () => {
-      img.onload = null;
-      img.onerror = null;
-      try {
-        img.src = '';
-      } catch {
-        // Ignore readonly src teardown
-      }
-      URL.revokeObjectURL(objectUrl);
-    };
-    img.onload = () => {
-      resolve({
-        source: img,
-        width: img.naturalWidth || img.width || 1,
-        height: img.naturalHeight || img.height || 1,
-        cleanup: releaseImageObjectUrl,
-      });
-    };
-    img.onerror = () => {
-      releaseImageObjectUrl();
-      reject(new Error('Could not decode image file for feed tag OCR.'));
-    };
-    img.src = objectUrl;
-  });
-}
-
-function buildContrastOcrCanvas(
-  source: CanvasImageSource,
-  srcWidth: number,
-  srcHeight: number
-): HTMLCanvasElement {
-  const longest = Math.max(srcWidth, srcHeight, 1);
-  const scale = longest > OCR_MAX_DIMENSION_PX ? OCR_MAX_DIMENSION_PX / longest : 1;
-  const safeDims = enforceCanvasDimensions(
-    Math.max(1, Math.round(srcWidth * scale)),
-    Math.max(1, Math.round(srcHeight * scale))
-  );
-  const targetWidth = safeDims.width;
-  const targetHeight = safeDims.height;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    releaseCanvas(canvas);
-    throw new Error('2D Canvas context unavailable for feed tag OCR.');
-  }
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, targetWidth, targetHeight);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
-
-  // Convert to grayscale and boost contrast slightly to lift faded mill dot-matrix stamps
-  try {
-    const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-    const data = imgData.data;
-    const contrast = 1.38;
-    for (let i = 0; i < data.length; i += 4) {
-      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      const stretched = Math.max(0, Math.min(255, (lum - 128) * contrast + 128));
-      data[i] = stretched;
-      data[i + 1] = stretched;
-      data[i + 2] = stretched;
-    }
-    ctx.putImageData(imgData, 0, 0);
-  } catch {
-    // Non-fatal if browser restricts getImageData
-  }
-
-  return canvas;
-}
 
 async function tryNativeTextDetector(canvas: HTMLCanvasElement): Promise<string> {
   const win = typeof window !== 'undefined' ? (window as unknown as { TextDetector?: NativeTextDetectorConstructor }) : undefined;
@@ -233,11 +137,17 @@ export async function captureFeedTagWithPreCompressionOcr(
   let warningMessage: string | undefined;
   let ocrErroredOffline = false;
 
-  const decoded = await decodeRawImageForOcr(file);
+  const decoded = await decodeBlobToCanvasSource(file, {
+    buildError: () => new Error('Could not decode image file for feed tag OCR.'),
+  });
   let ocrCanvas: HTMLCanvasElement | null = null;
 
   try {
-    ocrCanvas = buildContrastOcrCanvas(decoded.source, decoded.width, decoded.height);
+    ocrCanvas = buildContrastGrayscaleCanvas(decoded.source, decoded.width, decoded.height, {
+      maxDimensionPx: OCR_MAX_DIMENSION_PX,
+      contrast: 1.38,
+      contextErrorMessage: '2D Canvas context unavailable for feed tag OCR.',
+    });
 
     // 1. Fast zero-network native TextDetector if available
     const nativeText = await tryNativeTextDetector(ocrCanvas);

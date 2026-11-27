@@ -19,8 +19,8 @@ import {
   Share2,
 } from 'lucide-react';
 import React from 'react';
-import type { BarnDatabaseSnapshot } from '../core/models';
-import type { buildSupportMailtoHref as BuildSupportMailtoHrefFn } from '../core/supportBundle';
+import type { BarnDatabaseSnapshot } from '../domain/models';
+import type { buildSupportMailtoHref as BuildSupportMailtoHrefFn } from '../domain/supportBundle';
 import {
   DiagnosticSummary,
   getDiagnosticSummary,
@@ -34,7 +34,8 @@ import {
   listRollingSnapshotBackups,
   loadRollingSnapshotBackup,
 } from '../storage/storageProtection';
-import { purgeStaleBrowserCaches, WebSqliteAdapter } from '../storage/webSqliteAdapter';
+import { createPedigreeDomainStorageAdapter } from '@app/pedigreeAppWiring';
+import { purgeStaleBrowserCaches } from '../storage/webSqliteAdapter';
 import {
   downloadTextFile,
   shareBinaryFileOrDownload,
@@ -66,7 +67,7 @@ async function loadBestAvailableSnapshotForSupport(
   includePhotos: boolean
 ): Promise<BarnDatabaseSnapshot | null> {
   try {
-    const adapter = new WebSqliteAdapter();
+    const adapter = createPedigreeDomainStorageAdapter();
     const initPromise = adapter.initialize({ lightweightPhotos: !includePhotos });
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Support snapshot adapter init timeout')), 8000)
@@ -132,8 +133,8 @@ export class CrashErrorBoundary extends React.Component<
     try {
       const [entries, supportMod, { formatTimestampedBackupSlug }] = await Promise.all([
         listDiagnosticLogs(),
-        import('../core/supportBundle'),
-        import('../core/syncAndExports'),
+        import('../domain/supportBundle'),
+        import('../domain/syncAndExports'),
       ]);
       const summary = await getDiagnosticSummary(entries);
       const snapshot = await loadBestAvailableSnapshotForSupport(false);
@@ -157,7 +158,7 @@ export class CrashErrorBoundary extends React.Component<
     try {
       const [entries, supportMod] = await Promise.all([
         listDiagnosticLogs(),
-        import('../core/supportBundle'),
+        import('../domain/supportBundle'),
       ]);
       this.buildMailtoHrefFn = supportMod.buildSupportMailtoHref;
       const summary = await getDiagnosticSummary(entries);

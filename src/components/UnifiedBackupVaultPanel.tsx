@@ -22,12 +22,12 @@ import {
   X,
 } from 'lucide-react';
 import React, { useState } from 'react';
-import { VAULT_KIND_LABELS, VaultBackupMetadata } from '../core/backupVault';
+import { VAULT_KIND_LABELS, VaultBackupMetadata } from '../domain/backupVault';
 import {
   DeviceCapabilityTierNumber,
   getTierStoragePolicy,
-} from '../core/deviceCapability';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
+} from '../domain/deviceCapability';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
 import { BackupSyncStatus } from '../storage/localSyncChannels';
 import { OpfsPruneSyncWarning } from '../storage/opfsStorage';
 import { RollingBackupMeta } from '../storage/storageProtection';

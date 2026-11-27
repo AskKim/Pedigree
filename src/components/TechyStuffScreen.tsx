@@ -50,28 +50,28 @@ import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   CURRENT_BACKUP_SCHEMA_VERSION,
   VaultBackupMetadata,
-} from '../core/backupVault';
+} from '../domain/backupVault';
 import type { CloudSyncClientState } from '../storage/cloudAppFolderSync';
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
-} from '../core/dataHealthCheck';
+} from '../domain/dataHealthCheck';
 import {
   DEVICE_CAPABILITY_TIER_LIST,
   evaluateBarnWorkloadForTier,
   getTierStoragePolicy,
-} from '../core/deviceCapability';
+} from '../domain/deviceCapability';
 import {
   formatByteSizePure,
   ImageOptimizationPresetId,
-} from '../core/imageOptimizationSpec';
-import { BarnDatabaseSnapshot } from '../core/models';
-import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
+} from '../domain/imageOptimizationSpec';
+import { BarnDatabaseSnapshot } from '../domain/models';
+import type { PhotoStorageFootprintReport } from '../domain/photoMaintenance';
 import {
   formatTimestampedBackupSlug,
   generateBarnBackupJsonChunks,
-} from '../core/syncAndExports';
-import type { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
+} from '../domain/syncAndExports';
+import type { SyncConflictEntry, SyncOperation } from '../domain/syncOutbox';
 import {
   computeSnapshotCollectionFootprint,
   createDefaultSubunitOpenMap,
@@ -85,12 +85,10 @@ import {
   isDestructiveActionConfirmationValid,
   validateDiagnosticTriggerInput,
   validatePwaUpdatePolicyOverride,
-} from '../core/techyStuffGuardrails';
-import { CURRENT_APP_VERSION } from '../core/upgradeGate';
-import {
-  BridgeDiagnosticEvent,
-  pedigreeBridge,
-} from '../native/pedigreeBridge';
+} from '../domain/techyStuffGuardrails';
+import { CURRENT_APP_VERSION } from '../domain/upgradeGate';
+import { usePlatformBridge } from '@app/PlatformBridgeContext';
+import type { PlatformDiagnosticEvent } from '@engine/bridge';
 import {
   getPausedBackgroundJobs,
   PausedBackgroundJob,
@@ -307,14 +305,15 @@ export function TechyStuffScreen({
   );
   const [resourceTick, setResourceTick] = useState(0);
   const [workerActionFeedback, setWorkerActionFeedback] = useState<string | null>(null);
+  const platformBridge = usePlatformBridge();
   const [liveSyncOps, setLiveSyncOps] = useState<SyncOperation[] | null>(
     syncOperationsProp ?? null
   );
   const [liveSyncConflicts, setLiveSyncConflicts] = useState<SyncConflictEntry[] | null>(
     syncConflictsProp ?? null
   );
-  const [nativeEvents, setNativeEvents] = useState<BridgeDiagnosticEvent[]>(() =>
-    pedigreeBridge.getDiagnosticEvents()
+  const [nativeEvents, setNativeEvents] = useState<PlatformDiagnosticEvent[]>(() =>
+    platformBridge.getDiagnosticEvents?.() ?? []
   );
 
   // Safeguard toggle & multi-step phrase states for destructive developer actions
@@ -372,9 +371,9 @@ export function TechyStuffScreen({
     ]);
     setLiveSyncOps(ops);
     setLiveSyncConflicts(conflicts);
-    setNativeEvents(pedigreeBridge.getDiagnosticEvents());
+    setNativeEvents(platformBridge.getDiagnosticEvents?.() ?? []);
     setResourceTick((n) => n + 1);
-  }, []);
+  }, [platformBridge]);
 
   useEffect(() => {
     void refreshOpfsInspector();
@@ -400,14 +399,14 @@ export function TechyStuffScreen({
 
   useEffect(() => {
     const unsubJobs = subscribePausedBackgroundJobs((jobs) => setPausedJobs(jobs));
-    const unsubNative = pedigreeBridge.onDiagnostic(() => {
-      setNativeEvents(pedigreeBridge.getDiagnosticEvents());
+    const unsubNative = platformBridge.onDiagnostic?.(() => {
+      setNativeEvents(platformBridge.getDiagnosticEvents?.() ?? []);
     });
     return () => {
       unsubJobs();
-      unsubNative();
+      unsubNative?.();
     };
-  }, []);
+  }, [platformBridge]);
 
   // Re-read live probe counters cleanly whenever resourceTick increments
   const liveResourceSnapshot = useMemo(() => {
@@ -780,9 +779,10 @@ export function TechyStuffScreen({
     {
       id: 'pwa',
       label: 'Standalone PWA Mode',
-      supported: liveResourceSnapshot.isStandalone || pedigreeBridge.isNativeWrapper(),
-      detail: pedigreeBridge.isNativeWrapper()
-        ? `Native ${pedigreeBridge.getPlatform()}`
+      supported:
+        liveResourceSnapshot.isStandalone || platformBridge.getCapabilities().hasNativeBridge,
+      detail: platformBridge.getCapabilities().hasNativeBridge
+        ? `Native ${platformBridge.shellType}`
         : liveResourceSnapshot.isStandalone
         ? 'Installed PWA'
         : 'Browser tab',
@@ -2487,7 +2487,7 @@ export function TechyStuffScreen({
                 {nativeEvents.length === 0 ? (
                   <p className="text-xs text-[var(--barn-muted)]">
                     No native WebView bridge events recorded in this session (platform:{' '}
-                    <span className="font-mono">{pedigreeBridge.getPlatform()}</span>).
+                    <span className="font-mono">{platformBridge.shellType}</span>).
                   </p>
                 ) : (
                   <div className="divide-y divide-[var(--barn-border)] max-h-40 overflow-y-auto border border-[var(--barn-border)] rounded-xl">

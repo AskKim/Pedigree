@@ -7,9 +7,14 @@
  * Keeps only lightweight `thumbnailDataUrl` previews inside the long-lived React
  * snapshot state while fetching full-resolution base64 `dataUrl` payloads from SQLite
  * on demand for galleries, lightboxes, formal pedigree prints, binders, and backups.
+ *
+ * INVARIANT (iOS WebKit Anti-Eviction Boundary):
+ * `BoundedPhotoDataCache` is strictly a transient, reconstructible in-memory LRU cache.
+ * Zero exclusive user photo data is stored outside the primary SQLite database (which
+ * routes through `NativeBridgeStorageAdapter` on iOS `WKWebView`).
  */
 
-import { AnimalPhoto, BarnDatabaseSnapshot, isSameSpecies } from '../core/models';
+import { AnimalPhoto, BarnDatabaseSnapshot, isSameSpecies } from '../domain/models';
 
 export class BoundedPhotoDataCache {
   private maxEntries: number;

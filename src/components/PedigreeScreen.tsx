@@ -17,6 +17,7 @@ import {
   ChevronRight,
   FileText,
   Plus,
+  Printer,
   RotateCcw,
   Search,
   Share2,
@@ -25,13 +26,14 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import React, { ComponentProps, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { formatCompactCarrierDisclosure } from '../core/carrierGenetics';
+import { AnimalSaveDraft } from '../domain/animalConflicts';
+import { formatCompactCarrierDisclosure } from '../domain/carrierGenetics';
 import {
   analyzeAlleleProvenance,
   AnimalAlleleProvenanceResult,
   formatGenotypeArray,
-} from '../core/geneticsEngine';
-import { OptimizedImagePayload } from '../core/imageOptimizationSpec';
+} from '../domain/geneticsEngine';
+import { OptimizedImagePayload } from '../domain/imageOptimizationSpec';
 import {
   Animal,
   AnimalConflictKind,
@@ -44,8 +46,8 @@ import {
   PedigreeGenerationDepth,
   resolveSpeciesWeightUnit,
   SpeciesProfile,
-} from '../core/models';
-import { analyzePedigreeTree } from '../core/pedigreeAnalysis';
+} from '../domain/models';
+import { analyzePedigreeTree } from '../domain/pedigreeAnalysis';
 import {
   buildPedigreeBranchViewport,
   buildPedigreeSlots,
@@ -53,13 +55,19 @@ import {
   getPedigreeCompletenessSummary,
   PedigreeSlot,
   wouldCreateCycle,
-} from '../core/pedigreeCalculator';
+} from '../domain/pedigreeCalculator';
 import {
   buildShareablePedigreeCardFileName,
   generateShareablePedigreeCardHtml,
-} from '../core/shareablePedigreeCard';
-import { computeAnimalShowSummary } from '../core/showResults';
-import { generateEvansHtmPedigree, PedigreePrintOptions } from '../core/syncAndExports';
+} from '../domain/shareablePedigreeCard';
+import { computeAnimalShowSummary } from '../domain/showResults';
+import {
+  buildBlankPedigreeTemplateFileName,
+  buildDefaultBreederContactLine,
+  generateBlankPedigreeHtml,
+  generateEvansHtmPedigree,
+  PedigreePrintOptions,
+} from '../domain/syncAndExports';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { lazyNamedRoute, RouteErrorBoundary, RouteLoadingFallback } from '../utils/lazyRoute';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
@@ -84,10 +92,10 @@ interface PedigreeScreenProps {
   onOpenAnimalInHerd: (id: string) => void;
   onToggleIncludePhotoOnPedigree: (include: boolean) => void;
   onSaveAnimal: (
-    draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+    draft: AnimalSaveDraft,
     linkParentTarget?: { childId: string; asSire: boolean },
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
-  ) => void;
+  ) => Promise<string | null | void> | string | void;
   onIgnoreConflicts?: (animalId: string, kinds: AnimalConflictKind[]) => void;
   onRestoreConflictAlert?: (animalId: string, kinds?: AnimalConflictKind[]) => void;
   onLoadFullPhoto?: (photoId: string) => Promise<string | null>;
@@ -155,6 +163,17 @@ export function PedigreeScreen({
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
   const [creatingParentSlot, setCreatingParentSlot] = useState<PedigreeSlot | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [printIncludePhoto, setPrintIncludePhoto] = useState<boolean>(
+    Boolean(settings.includePhotoOnPedigree)
+  );
+  const [showBlankTemplateModal, setShowBlankTemplateModal] = useState<boolean>(false);
+  const [blankTemplateOptions, setBlankTemplateOptions] = useState<{
+    generations: 3 | 4 | 5 | 6;
+    includeFarmHeader: boolean;
+  }>({
+    generations: settings.defaultGenerations,
+    includeFarmHeader: true,
+  });
   const [pedigreeDocMode, setPedigreeDocMode] = useState<'formal_certificate' | 'shareable_card'>('formal_certificate');
   const [hydratedSubjectPhoto, setHydratedSubjectPhoto] = useState<{
     photoId: string;
@@ -214,7 +233,7 @@ export function PedigreeScreen({
   useEffect(() => {
     if (
       !showPrintModal ||
-      !settings.includePhotoOnPedigree ||
+      !printIncludePhoto ||
       !subjectPrimaryPhoto ||
       subjectPrimaryPhoto.dataUrl ||
       !onLoadFullPhoto
@@ -236,7 +255,7 @@ export function PedigreeScreen({
     };
   }, [
     showPrintModal,
-    settings.includePhotoOnPedigree,
+    printIncludePhoto,
     subjectPrimaryPhoto,
     onLoadFullPhoto,
     hydratedSubjectPhoto,
@@ -606,6 +625,11 @@ export function PedigreeScreen({
     async (docMode: 'formal_certificate' | 'shareable_card' = 'formal_certificate') => {
       if (!subject) return;
       setPedigreeDocMode(docMode);
+      setPrintIncludePhoto(Boolean(settings.includePhotoOnPedigree));
+      setPedigreePrintOptions((prev) => ({
+        ...prev,
+        breederContactLine: prev.breederContactLine || buildDefaultBreederContactLine(settings),
+      }));
       if (onLoadPedigreeNeighborhood && generations >= 4) {
         setPrintHydrating(true);
         try {
@@ -621,8 +645,21 @@ export function PedigreeScreen({
       }
       setShowPrintModal(true);
     },
-    [subject, onLoadPedigreeNeighborhood, generations]
+    [subject, onLoadPedigreeNeighborhood, generations, settings]
   );
+
+  const handleOpenBlankTemplateModal = useCallback(() => {
+    const clampedGens = Math.min(6, Math.max(3, generations)) as 3 | 4 | 5 | 6;
+    setBlankTemplateOptions({
+      generations: clampedGens,
+      includeFarmHeader: true,
+    });
+    setPedigreePrintOptions((prev) => ({
+      ...prev,
+      breederContactLine: prev.breederContactLine || buildDefaultBreederContactLine(settings),
+    }));
+    setShowBlankTemplateModal(true);
+  }, [generations, settings]);
 
   const coi = subject ? coiByAnimalId.get(subject.id) : null;
 
@@ -1124,12 +1161,108 @@ export function PedigreeScreen({
     }
   };
 
+  const blankTemplateModalEl = showBlankTemplateModal ? (() => {
+    const effectiveContactLine =
+      pedigreePrintOptions.breederContactLine || buildDefaultBreederContactLine(settings);
+    const blankOptionsPayload = {
+      generations: blankTemplateOptions.generations,
+      includeFarmHeader: blankTemplateOptions.includeFarmHeader,
+      orientation: pedigreePrintOptions.orientation,
+      colorPreset: pedigreePrintOptions.colorPreset,
+      borderStyle: pedigreePrintOptions.borderStyle,
+      breederContactLine: effectiveContactLine,
+      showBreederLogo: pedigreePrintOptions.showBreederLogo,
+      breederLogoDataUrl: pedigreePrintOptions.breederLogoDataUrl,
+      speciesName: speciesProfile.name,
+    };
+    const blankFilename = buildBlankPedigreeTemplateFileName(
+      blankTemplateOptions.generations,
+      speciesProfile.name
+    );
+    return (
+      <PrintPreviewModal
+        title={`Blank ${blankTemplateOptions.generations}-Generation Pedigree Template — ${speciesProfile.name}`}
+        filename={blankFilename}
+        htmlContent={generateBlankPedigreeHtml(settings, blankOptionsPayload, speciesProfile)}
+        pedigreePrintOptions={pedigreePrintOptions}
+        onChangePedigreePrintOptions={setPedigreePrintOptions}
+        breederLogoDataUrl={settings.breederLogoDataUrl}
+        onUpdateBreederLogo={onUpdateBreederLogo}
+        onDownloadPdf={async () => {
+          const { buildAndDownloadBlankPedigreePdf } = await import('../app/pedigreePdfActions');
+          await buildAndDownloadBlankPedigreePdf({
+            settings,
+            speciesProfile,
+            options: blankOptionsPayload,
+            pdfFilename: `${blankFilename.replace(/\.html?$/i, '')}.pdf`,
+          });
+        }}
+        extraToolbarContent={
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[var(--barn-muted)] font-medium">Generations:</span>
+              <div className="inline-flex items-center p-0.5 rounded-lg bg-[var(--barn-surface)] border border-[var(--barn-border)]">
+                {([3, 4, 5, 6] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    aria-pressed={blankTemplateOptions.generations === g}
+                    onClick={() =>
+                      setBlankTemplateOptions((prev) => ({ ...prev, generations: g }))
+                    }
+                    className={`min-h-[28px] px-2 py-0.5 rounded-md text-xs font-medium ${
+                      blankTemplateOptions.generations === g
+                        ? 'bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)]'
+                        : 'text-[var(--barn-muted)] hover:text-[var(--barn-ink)]'
+                    }`}
+                  >
+                    {g}G
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--barn-ink)] font-medium">
+              <input
+                type="checkbox"
+                checked={blankTemplateOptions.includeFarmHeader}
+                onChange={(e) =>
+                  setBlankTemplateOptions((prev) => ({
+                    ...prev,
+                    includeFarmHeader: e.target.checked,
+                  }))
+                }
+                className="accent-[var(--barn-sage)]"
+              />
+              <span>Include farm / breeder header</span>
+            </label>
+          </div>
+        }
+        onClose={() => setShowBlankTemplateModal(false)}
+      />
+    );
+  })() : null;
+
   if (!subject) {
     return (
-      <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)]">
-        Add a {speciesProfile.name.toLowerCase()} in the Herd tab to explore multi-generation
-        pedigree charts.
-      </div>
+      <>
+        <div className="bg-[var(--barn-surface)] border border-[var(--barn-border)] rounded-2xl p-8 text-center text-sm text-[var(--barn-muted)] space-y-4">
+          <p>
+            Add a {speciesProfile.name.toLowerCase()} in the Herd tab to explore multi-generation
+            pedigree charts.
+          </p>
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={handleOpenBlankTemplateModal}
+              className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-semibold text-[var(--barn-ink)] inline-flex items-center gap-2"
+            >
+              <Printer className="w-4 h-4 text-[var(--barn-sage)]" aria-hidden="true" />
+              Print / Export Blank Pedigree Template
+            </button>
+          </div>
+        </div>
+        {blankTemplateModalEl}
+      </>
     );
   }
 
@@ -1168,9 +1301,17 @@ export function PedigreeScreen({
                       <strong className="text-[var(--barn-ink)]">
                         {(coi?.coiPercent ?? 0).toFixed(2)}%
                       </strong>{' '}
-                      ({coi?.risk.label || 'Outcross'}) · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
+                      <span className={coi?.hasPedigreeCycle ? 'text-[var(--barn-danger)] font-semibold' : ''}>
+                        ({coi?.risk.label || 'Outcross'})
+                      </span>{' '}
+                      · Known 3-Gen: {coi?.knownAncestorsIn3Gen ?? 0}/14
                       {comp ? ` (${comp.percent3Gen}%)` : ''}
                     </div>
+                    {coi?.hasPedigreeCycle && (
+                      <div role="alert" className="text-[11px] font-medium text-[var(--barn-danger)]">
+                        {coi.risk.guidance}
+                      </div>
+                    )}
                     {comp?.isIncompleteZeroOutcross && (
                       <div className="text-[11px] text-[var(--barn-muted)]">
                         Incomplete pedigree ({comp.known3Gen}/{comp.max3Gen} 3-gen ancestors recorded) — 0.00% reflects missing ancestry.
@@ -1267,6 +1408,15 @@ export function PedigreeScreen({
             >
               <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
               Share Card
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenBlankTemplateModal}
+              title="Generate a clean blank write-in pedigree template for printing or .HTM / PDF export"
+              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-canvas)] hover:bg-[var(--barn-subtle)] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+              Blank Template
             </button>
             <ColorGeneticsNotice compact />
           </div>
@@ -2207,7 +2357,7 @@ export function PedigreeScreen({
             ...allAnimals.map((a): [string, Animal] => [a.id, a]),
           ]).values()
         );
-        const resolvedSubjectPhotoForPrint = settings.includePhotoOnPedigree
+        const resolvedSubjectPhotoForPrint = printIncludePhoto
           ? subjectPrimaryPhoto?.dataUrl ||
               (hydratedSubjectPhoto &&
               hydratedSubjectPhoto.photoId === subjectPrimaryPhoto?.id
@@ -2266,8 +2416,8 @@ export function PedigreeScreen({
                     effectivePrintOptions
                   )
             }
-            includePrimaryPhoto={settings.includePhotoOnPedigree}
-            onToggleIncludePrimaryPhoto={onToggleIncludePhotoOnPedigree}
+            includePrimaryPhoto={printIncludePhoto}
+            onToggleIncludePrimaryPhoto={setPrintIncludePhoto}
             pedigreePrintOptions={pedigreePrintOptions}
             onChangePedigreePrintOptions={setPedigreePrintOptions}
             pedigreeDocMode={pedigreeDocMode}
@@ -2278,7 +2428,7 @@ export function PedigreeScreen({
               isShareableCard
                 ? undefined
                 : async () => {
-                    const { buildAndDownloadPedigreePdf } = await import('../utils/webPdfActions');
+                    const { buildAndDownloadPedigreePdf } = await import('../app/pedigreePdfActions');
                     await buildAndDownloadPedigreePdf({
                       subject,
                       allAnimals: mergedPrintAnimals,
@@ -2299,6 +2449,8 @@ export function PedigreeScreen({
           />
         );
       })()}
+
+      {blankTemplateModalEl}
     </div>
   );
 }

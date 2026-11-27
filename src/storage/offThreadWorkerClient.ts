@@ -10,27 +10,27 @@
  * or restricted environments where `Worker` is unavailable.
  */
 
-import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
+import type { PreRestoreArchiveInspection } from '../domain/archiveInspector';
 import type {
   BackupArchiveBuildResult,
   ParsedBackupArchive,
   StreamingZipArchiveSummary,
-} from '../core/backupArchive';
+} from '../domain/backupArchive';
 import type {
   ImporterRunOptions,
   PlatformImportPreview,
   RawArchiveInput,
-} from '../core/importers/importerTypes';
+} from '../domain/importers/importerTypes';
 import {
   type BarnDatabaseSnapshot,
   type BarnSettings,
   getCoreClockSkewMs,
-} from '../core/models';
+} from '../domain/models';
 import type {
   SupportBundleBuildParams,
   SupportBundleBuildResult,
-} from '../core/supportBundle';
-import type { SpeciesBackupReason } from '../core/syncAndExports';
+} from '../domain/supportBundle';
+import type { SpeciesBackupReason } from '../domain/syncAndExports';
 import type {
   ArchiveWorkerRequest,
   ArchiveWorkerResponse,
@@ -323,7 +323,7 @@ export async function buildCompleteBackupZipToOpfsTmpOffThread(
     }
     return res;
   }
-  const { streamCompleteBackupZipArchive } = await import('../core/backupArchive');
+  const { streamCompleteBackupZipArchive } = await import('../domain/backupArchive');
   return runStreamedZipMainThreadFallback('archive', (onChunk) =>
     streamCompleteBackupZipArchive(snapshot, onChunk, filterSpecies, extraMeta)
   );
@@ -346,7 +346,7 @@ export async function buildPhotosOnlyZipToOpfsTmpOffThread(
     }
     return res;
   }
-  const { streamPhotosOnlyZipArchive } = await import('../core/backupArchive');
+  const { streamPhotosOnlyZipArchive } = await import('../domain/backupArchive');
   return runStreamedZipMainThreadFallback('photos-archive', (onChunk) =>
     streamPhotosOnlyZipArchive(snapshot, onChunk, filterSpecies)
   );
@@ -372,7 +372,7 @@ export async function buildCompleteBackupZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildCompleteBackupZipArchive } = await import('../core/backupArchive');
+  const { buildCompleteBackupZipArchive } = await import('../domain/backupArchive');
   return buildCompleteBackupZipArchive(snapshot, filterSpecies, extraMeta);
 }
 
@@ -390,7 +390,7 @@ export async function buildPhotosOnlyZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildPhotosOnlyZipArchive } = await import('../core/backupArchive');
+  const { buildPhotosOnlyZipArchive } = await import('../domain/backupArchive');
   return buildPhotosOnlyZipArchive(snapshot, filterSpecies);
 }
 
@@ -410,7 +410,7 @@ export async function parseBackupArchiveOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { parseBackupArchiveInput } = await import('../core/backupArchive');
+  const { parseBackupArchiveInput } = await import('../domain/backupArchive');
   return parseBackupArchiveInput(bytes, fileName, fallbackSettings);
 }
 
@@ -433,7 +433,7 @@ export async function parseExternalImportOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { getPlatformImporterById } = await import('../core/importers/registry');
+  const { getPlatformImporterById } = await import('../domain/importers/registry');
   const importer = getPlatformImporterById(platformId);
   return importer.parse(inputs, lightSnapshot, options);
 }
@@ -450,7 +450,7 @@ export async function buildSupportBundleZipOffThread(
     return workerPromise;
   }
   await yieldToUiFrame();
-  const { buildSupportBundleZipArchive } = await import('../core/supportBundle');
+  const { buildSupportBundleZipArchive } = await import('../domain/supportBundle');
   return buildSupportBundleZipArchive(params);
 }
 
@@ -481,8 +481,8 @@ export async function inspectBackupArchiveOffThread(
   await yieldToUiFrame();
   const [{ parseBackupArchiveInput }, { inspectParsedArchiveBeforeRestorePure }] =
     await Promise.all([
-      import('../core/backupArchive'),
-      import('../core/archiveInspector'),
+      import('../domain/backupArchive'),
+      import('../domain/archiveInspector'),
     ]);
   const parsed = parseBackupArchiveInput(
     bytes,

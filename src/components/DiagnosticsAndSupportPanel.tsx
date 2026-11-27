@@ -36,25 +36,25 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   BarnHealthRepairResult,
   BarnHealthReport,
-} from '../core/dataHealthCheck';
+} from '../domain/dataHealthCheck';
 import {
   formatByteSizePure,
   ImageOptimizationPresetId,
-} from '../core/imageOptimizationSpec';
-import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
+} from '../domain/imageOptimizationSpec';
+import type { PhotoStorageFootprintReport } from '../domain/photoMaintenance';
 import type {
   ImprovementCategory,
   ImprovementEntry,
   ImprovementRelease,
-} from '../core/improvementRegistry';
-import { BarnDatabaseSnapshot } from '../core/models';
+} from '../domain/improvementRegistry';
+import { BarnDatabaseSnapshot } from '../domain/models';
 import {
   buildErrorLogsJson,
   buildSupportMailtoHref,
   formatSupportReportText,
-} from '../core/supportBundle';
+} from '../domain/supportBundle';
 import { buildSupportBundleZipOffThread } from '../storage/offThreadWorkerClient';
-import { formatTimestampedBackupSlug } from '../core/syncAndExports';
+import { formatTimestampedBackupSlug } from '../domain/syncAndExports';
 import {
   clearAllDiagnosticLogs,
   DiagnosticLogEntry,
@@ -68,14 +68,14 @@ import {
   subscribeDiagnosticLogs,
   updateDiagnosticConfig,
 } from '../storage/crashLogger';
-import { getHeavyZipExportGate } from '../core/deviceCapability';
+import { getHeavyZipExportGate } from '../domain/deviceCapability';
 import {
   DESTRUCTIVE_CONFIRM_PHRASES,
   isDestructiveActionConfirmationValid,
   validateLogRetentionDaysOverride,
   validateSupportRecipientEmail,
-} from '../core/techyStuffGuardrails';
-import { pedigreeBridge } from '../native/pedigreeBridge';
+} from '../domain/techyStuffGuardrails';
+import { usePlatformBridge } from '@app/PlatformBridgeContext';
 import {
   checkStorageStatus,
   DiagnosticQuotaPreflightResult,
@@ -188,7 +188,7 @@ export function DiagnosticsAndSupportPanel({
   const [loadingImprovementsLog, setLoadingImprovementsLog] = useState(false);
 
   const loadImprovementRegistryModule = useCallback(async () => {
-    const mod = await import('../core/improvementRegistry');
+    const mod = await import('../domain/improvementRegistry');
     setLoadedImprovements((prev) =>
       prev ?? {
         entries: mod.IMPROVEMENTS_REGISTRY,
@@ -222,6 +222,7 @@ export function DiagnosticsAndSupportPanel({
   const [healthReport, setHealthReport] = useState<BarnHealthReport | null>(null);
   const [healthRepairsList, setHealthRepairsList] = useState<string[] | null>(null);
   const [photoFootprint, setPhotoFootprint] = useState<PhotoStorageFootprintReport | null>(null);
+  const platformBridge = usePlatformBridge();
   const [confirmPruneFullRes, setConfirmPruneFullRes] = useState(false);
   const [photoMaintenanceFeedback, setPhotoMaintenanceFeedback] = useState<string | null>(null);
   const [localStorageStatus, setLocalStorageStatus] = useState<StorageProtectionStatus | null>(null);
@@ -657,7 +658,7 @@ export function DiagnosticsAndSupportPanel({
           {resolvedStorageStatus.isNativeWrapper ? (
             <div className="space-y-1 text-[11px] text-[var(--barn-muted)]">
               <p>
-                Running inside native wrapper container ({pedigreeBridge.getPlatform()}). Browser{' '}
+                Running inside native wrapper container ({platformBridge.shellType}). Browser{' '}
                 <span className="font-mono">navigator.storage.persisted()</span> honestly reports{' '}
                 <span className="font-mono">{String(resolvedStorageStatus.persisted)}</span> in WebView;
                 data stays isolated inside the app&apos;s private sandbox.
@@ -708,7 +709,7 @@ export function DiagnosticsAndSupportPanel({
         </div>
       )}
 
-      {pedigreeBridge.isNativeWrapper() && (
+      {platformBridge.getCapabilities().hasNativeBridge && (
         <div className="p-3.5 rounded-xl bg-[var(--barn-canvas)] border border-[var(--barn-border)] flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="space-y-0.5 min-w-0 flex-1">
             <div className="font-semibold text-[var(--barn-ink)]">
@@ -723,7 +724,7 @@ export function DiagnosticsAndSupportPanel({
             type="button"
             aria-describedby={nativeDiagDescId}
             onClick={() => {
-              pedigreeBridge.openDevPanel();
+              platformBridge.openDevPanel?.();
             }}
             className="min-h-[44px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0"
           >
@@ -983,9 +984,9 @@ export function DiagnosticsAndSupportPanel({
                 <a
                   href={mailtoHref}
                   onClick={(e) => {
-                    if (pedigreeBridge.isNativeWrapper()) {
+                    if (platformBridge.getCapabilities().hasNativeBridge) {
                       e.preventDefault();
-                      pedigreeBridge.openExternalUrl(mailtoHref, 'support_email');
+                      platformBridge.openExternalUrl?.(mailtoHref, 'support_email');
                     }
                   }}
                   className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] font-semibold inline-flex items-center gap-1.5"

@@ -28,11 +28,15 @@ import {
 interface AsyncErrorToastHostProps {
   onOpenDiagnostics: () => void;
   isOnSettingsRoute: boolean;
+  onOpenBackups?: () => void;
+  isOnBackupsRoute?: boolean;
 }
 
 export function AsyncErrorToastHost({
   onOpenDiagnostics,
   isOnSettingsRoute,
+  onOpenBackups,
+  isOnBackupsRoute = false,
 }: AsyncErrorToastHostProps) {
   const [notices, setNotices] = useState<AsyncErrorNotice[]>(() => getActiveAsyncErrorToasts());
   const [pausedJobs, setPausedJobs] = useState<PausedBackgroundJob[]>(() =>
@@ -151,8 +155,22 @@ export function AsyncErrorToastHost({
               </button>
             </div>
 
-            {(notice.canOpenDiagnostics && !isOnSettingsRoute) || notice.sticky ? (
+            {(notice.canOpenBackups && onOpenBackups && !isOnBackupsRoute) ||
+            (notice.canOpenDiagnostics && !isOnSettingsRoute) ||
+            notice.sticky ? (
               <div className="flex flex-wrap items-center justify-end gap-2 pt-0.5">
+                {notice.canOpenBackups && onOpenBackups && !isOnBackupsRoute && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dismissAsyncErrorToast(notice.id);
+                      onOpenBackups();
+                    }}
+                    className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-lg bg-[var(--barn-sage)] text-[var(--barn-on-sage)] text-[11px] font-semibold hover:opacity-95"
+                  >
+                    Open Recovery &amp; Backups
+                  </button>
+                )}
                 {notice.canOpenDiagnostics && !isOnSettingsRoute && (
                   <button
                     type="button"

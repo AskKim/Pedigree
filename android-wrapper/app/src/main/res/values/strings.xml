@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Pedigree</string>
     <string name="render_crash_title">WebView Renderer Interrupted</string>
     <string name="render_crash_body">The offline page renderer stopped unexpectedly. Your local barn data remains safely stored.</string>
     <string name="render_crash_retry">Reload App</string>
@@ -16,5 +15,4 @@
     <string name="dev_panel_title">Developer &amp; Diagnostics Panel</string>
     <string name="dev_panel_copied">Diagnostic JSON copied to clipboard</string>
     <string name="dev_panel_copy_failed">Clipboard unavailable</string>
-    <string name="dev_panel_debug_url_invalid">Debug URL must use https://askkim.github.io/Pedigree/</string>
 </resources>

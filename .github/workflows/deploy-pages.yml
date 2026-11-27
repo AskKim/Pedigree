@@ -43,6 +43,12 @@ jobs:
       - name: Verify App Improvements Registry
         run: bun run verify:improvements
 
+      - name: Verify layer boundaries and engine typecheck
+        run: |
+          bun run verify:layers
+          bun run verify:engine
+          bun run verify:extraction
+
       - name: Run TypeScript typecheck (lint)
         run: bun run lint
 

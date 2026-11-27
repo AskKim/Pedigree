@@ -9,14 +9,14 @@
  * outbox logs directly over an ordered `RTCDataChannel`.
  */
 
-import { nowIsoUtc } from '../core/models';
+import { nowIsoUtc } from '../domain/models';
 import {
   decodeP2pSignalToken,
   encodeP2pSignalToken,
   P2pWireMessage,
   parseP2pWireOrDeltaPayload,
-} from '../core/p2pSyncProtocol';
-import { SyncOperation } from '../core/syncOutbox';
+} from '../domain/p2pSyncProtocol';
+import { SyncOperation } from '../domain/syncOutbox';
 import {
   resumePersistedDirectorySyncIfGranted,
   syncWithPickedDirectory,

@@ -18,7 +18,7 @@ import {
   classifyDeviceCapability,
   DeviceCapabilityAssessment,
   DeviceHardwareSignals,
-} from '../core/deviceCapability';
+} from '../domain/deviceCapability';
 import { logDiagnosticEvent } from './crashLogger';
 import { isArchiveWorkerDisabled } from './offThreadWorkerClient';
 import {

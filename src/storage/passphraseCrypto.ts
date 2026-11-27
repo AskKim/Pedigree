@@ -14,14 +14,14 @@ import {
   bytesToBase64Pure,
   bytesToUtf8String,
   utf8StringToBytes,
-} from '../core/binaryEncoding';
+} from '@engine/binaryEncoding';
 import {
   DEFAULT_PBKDF2_ITERATIONS,
   ENCRYPTED_ENVELOPE_FORMAT,
   EncryptedPayloadEnvelope,
   EncryptedPayloadKind,
-} from '../core/encryptedExport';
-import { nowIsoUtc } from '../core/models';
+} from '../domain/encryptedExport';
+import { nowIsoUtc } from '../domain/models';
 
 export function supportsPassphraseCrypto(): boolean {
   return (

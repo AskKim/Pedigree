@@ -542,7 +542,7 @@ class NativeBackupVault(
     }
 
     companion object {
-        const val VAULT_DIR_NAME = "pedigree-vault"
+        val VAULT_DIR_NAME = BuildConfig.VAULT_DIR_NAME
         private const val APP_WEBVIEW_DIR_NAME = "app_webview"
         private const val TMP_SUFFIX = ".tmp"
         private const val MAX_RETAINED_SNAPSHOTS = 5

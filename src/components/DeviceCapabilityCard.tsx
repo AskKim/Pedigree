@@ -29,8 +29,8 @@ import {
   DEVICE_CAPABILITY_TIER_LIST,
   evaluateBarnWorkloadForTier,
   getTierStoragePolicy,
-} from '../core/deviceCapability';
-import { BarnSettings } from '../core/models';
+} from '../domain/deviceCapability';
+import { BarnSettings } from '../domain/models';
 import { DeviceCapabilityController } from '../storage/deviceCapabilityDetector';
 
 interface DeviceCapabilityCardProps {

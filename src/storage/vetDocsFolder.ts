@@ -34,9 +34,9 @@ import {
   VetDocsBackupReminderEvaluation,
   VetDocsFolderMeta,
   VetDocsReminderIntervalDays,
-} from '../core/healthReference';
-import { sanitizeSingleLineText, validateUploadFileSize } from '../core/inputSanitization';
-import { nowEpochMs } from '../core/models';
+} from '../domain/healthReference';
+import { sanitizeSingleLineText, validateUploadFileSize } from '../domain/inputSanitization';
+import { nowEpochMs } from '../domain/models';
 import {
   deleteNamedDirectoryHandleFromIdb,
   loadNamedDirectoryHandleFromIdb,

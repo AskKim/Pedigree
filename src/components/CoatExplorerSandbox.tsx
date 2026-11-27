@@ -31,8 +31,8 @@ import {
   SingleGenotypeEvaluation,
   SpeciesGeneticsSpec,
   VarietyPresetDefinition,
-} from '../core/geneticsEngine';
-import { Animal, BiologicalSex, SpeciesProfile } from '../core/models';
+} from '../domain/geneticsEngine';
+import { Animal, BiologicalSex, SpeciesProfile } from '../domain/models';
 import { ColorGeneticsNotice } from './ColorGeneticsNotice';
 
 type SandboxMode = 'single' | 'cross';

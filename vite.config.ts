@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
-import { buildPromptsCatalogManifest } from './src/core/promptsCatalog.ts';
+import { buildPromptsCatalogManifest } from './src/domain/promptsCatalog.ts';
 
 async function scanPromptsFolderOnDisk(rootDir: string) {
   const promptsDir = path.resolve(rootDir, 'prompts');
@@ -66,18 +66,28 @@ function promptsDirectoryPlugin(): Plugin {
   };
 }
 
-function stripDevSourceMapTrailer(text: string): string {
+export function stripDevSourceMapTrailer(text: string): string {
   let out = text;
   const inlineJsIdx = out.lastIndexOf('//# sourceMappingURL=data:');
   if (inlineJsIdx !== -1) {
-    out = out.slice(0, inlineJsIdx).trimEnd();
+    const nextNl = out.indexOf('\n', inlineJsIdx);
+    if (nextNl === -1 || !/\S/.test(out.slice(nextNl))) {
+      out = out.slice(0, inlineJsIdx).trimEnd();
+    }
   }
   const inlineCssIdx = out.lastIndexOf('/*# sourceMappingURL=data:');
   if (inlineCssIdx !== -1) {
-    out = out.slice(0, inlineCssIdx).trimEnd();
+    const closeIdx = out.indexOf('*/', inlineCssIdx + 2);
+    const tail = closeIdx === -1 ? '' : out.slice(closeIdx + 2);
+    if (!/\S/.test(tail)) {
+      out = out.slice(0, inlineCssIdx).trimEnd();
+    }
   }
   const extMapIdx = out.lastIndexOf('//# sourceMappingURL=');
-  if (extMapIdx !== -1 && out.indexOf('\n', extMapIdx) === -1) {
+  if (
+    extMapIdx !== -1 &&
+    (out.indexOf('\n', extMapIdx) === -1 || !/\S/.test(out.slice(out.indexOf('\n', extMapIdx))))
+  ) {
     out = out.slice(0, extMapIdx).trimEnd();
   }
   return out;
@@ -98,23 +108,28 @@ function devInlineSourcemapStripPlugin(): Plugin {
           cb?: unknown
         ) {
           const contentType = String(res.getHeader('content-type') || '');
+          const hasEncoding = Boolean(
+            res.getHeader('content-encoding') || res.getHeader('transfer-encoding')
+          );
           const isJsOrCss =
             contentType.includes('javascript') || contentType.includes('text/css');
-          if (isJsOrCss && (typeof chunk === 'string' || Buffer.isBuffer(chunk))) {
+          if (!hasEncoding && isJsOrCss && (typeof chunk === 'string' || Buffer.isBuffer(chunk))) {
             const rawText = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
             if (rawText.includes('sourceMappingURL=')) {
               const stripped = stripDevSourceMapTrailer(rawText);
-              const byteLen = Buffer.byteLength(stripped, 'utf8');
-              if (!res.headersSent) {
-                res.setHeader('Content-Length', String(byteLen));
+              if (stripped !== rawText) {
+                const byteLen = Buffer.byteLength(stripped, 'utf8');
+                if (!res.headersSent) {
+                  res.setHeader('Content-Length', String(byteLen));
+                }
+                if (typeof encoding === 'function') {
+                  return origEnd(stripped, encoding as () => void);
+                }
+                if (typeof cb === 'function') {
+                  return origEnd(stripped, (encoding as BufferEncoding) || 'utf8', cb as () => void);
+                }
+                return origEnd(stripped, 'utf8');
               }
-              if (typeof encoding === 'function') {
-                return origEnd(stripped, encoding as () => void);
-              }
-              if (typeof cb === 'function') {
-                return origEnd(stripped, (encoding as BufferEncoding) || 'utf8', cb as () => void);
-              }
-              return origEnd(stripped, 'utf8');
             }
           }
           if (typeof encoding === 'function') {
@@ -393,6 +408,10 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, '.'),
+        '@engine': path.resolve(import.meta.dirname, 'src/engine'),
+        '@features': path.resolve(import.meta.dirname, 'src/features'),
+        '@app': path.resolve(import.meta.dirname, 'src/app'),
+        '@domain': path.resolve(import.meta.dirname, 'src/domain'),
       },
     },
     optimizeDeps: {
@@ -406,10 +425,10 @@ export default defineConfig(() => {
         'react/jsx-runtime',
         'fflate',
         'sql.js',
-        'tesseract.js',
       ],
     },
     build: {
+      reportCompressedSize: false,
       target: ['es2018', 'chrome68', 'safari12', 'firefox63', 'edge79'],
       cssTarget: ['chrome68', 'safari12', 'firefox63', 'edge79'],
       rolldownOptions: {
@@ -450,19 +469,19 @@ export default defineConfig(() => {
               },
               {
                 name: 'core-backups',
-                test: /[\\/]src[\\/]core[\\/](syncAndExports|backupVault)\.ts$/,
+                test: /[\\/]src[\\/]domain[\\/](syncAndExports|backupVault)\.ts$/,
                 includeDependenciesRecursively: false,
                 priority: 12,
               },
               {
                 name: 'core-domain',
-                test: /[\\/]src[\\/]core[\\/](models|sampleData|geneticsEngine|pedigreeCalculator|dataHealthCheck)\.ts$/,
+                test: /[\\/]src[\\/]domain[\\/](models|sampleData|geneticsEngine|pedigreeCalculator|dataHealthCheck)\.ts$/,
                 includeDependenciesRecursively: false,
                 priority: 11,
               },
               {
                 name: 'improvement-registry',
-                test: /[\\/]src[\\/]core[\\/]improvementRegistry\.ts$/,
+                test: /[\\/]src[\\/]domain[\\/]improvementRegistry\.ts$/,
                 includeDependenciesRecursively: false,
                 priority: 10,
               },

@@ -17,21 +17,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeBarnAnimalConflicts,
   AnimalConflictSummary,
+  AnimalSaveDraft,
   applyImportConflictAttentionFlags,
+  ConcurrentEditConflictError,
   LitterOffspringDraft,
-} from '../core/animalConflicts';
-import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
-import type { BarnBenchBatchEntryDraft } from '../core/barnBench';
-import type { CloudSyncProvider, CloudSyncSettings } from '../core/cloudAppFolderSync';
-import type { P2pReconciliationSummary } from '../core/p2pSyncProtocol';
-import type { PhotoStorageFootprintReport } from '../core/photoMaintenance';
-import { reconcileCarrierTraitLists } from '../core/carrierGenetics';
+  mergeConcurrentAnimalEdit,
+} from '../domain/animalConflicts';
+import type { PreRestoreArchiveInspection } from '../domain/archiveInspector';
+import type { BarnBenchBatchEntryDraft } from '../domain/barnBench';
+import type { CloudSyncProvider, CloudSyncSettings } from '../domain/cloudAppFolderSync';
+import type { P2pReconciliationSummary } from '../domain/p2pSyncProtocol';
+import type { PhotoStorageFootprintReport } from '../domain/photoMaintenance';
+import { reconcileCarrierTraitLists } from '../domain/carrierGenetics';
 import {
   calculateSavingsPercent,
   formatByteSizePure,
   ImageOptimizationPresetId,
   OptimizedImagePayload,
-} from '../core/imageOptimizationSpec';
+} from '../domain/imageOptimizationSpec';
 import {
   addDaysIso,
   Animal,
@@ -95,47 +98,48 @@ import {
   WaitlistEntry,
   WoolHarvest,
   YouthProjectBook,
-} from '../core/models';
-import { normalizeBarnJournalEntry } from '../core/barnJournal';
+} from '../domain/models';
+import { normalizeBarnJournalEntry } from '../domain/barnJournal';
+import { PEDIGREE_APP_CONFIG } from '../app/pedigreeAppConfig';
 import {
   normalizeJudgeAssignment,
   normalizeJudgeClubContact,
   normalizeJudgeExpense,
-} from '../core/judgeNotebook';
-import { normalizeMileageLog } from '../core/mileageTaxLog';
-import { normalizeWoolHarvest } from '../core/woolFiber';
-import type { CrmFollowUpReminder } from '../core/clientCrm';
+} from '../domain/judgeNotebook';
+import { normalizeMileageLog } from '../domain/mileageTaxLog';
+import { normalizeWoolHarvest } from '../domain/woolFiber';
+import type { CrmFollowUpReminder } from '../domain/clientCrm';
 import {
   buildIcsCalendarForTasks,
   buildTaskAppDeepLink,
   formatSystemTaskTitle,
-} from '../core/calendarExport';
+} from '../domain/calendarExport';
 import {
   BackupStatusEvaluation,
   evaluateBackupStatus,
   hasNonTestingBarnData,
   LastBackupMeta,
-} from '../core/backupStatus';
+} from '../domain/backupStatus';
 import {
   ArchivedHerdIndexEntry,
   buildArchivedAnimalsBundle,
   buildVerifiedPreUpgradeJsonBackup,
   mergeRestoredArchiveIntoSnapshot,
   VaultBackupMetadata,
-} from '../core/backupVault';
-import { CURRENT_APP_VERSION } from '../core/upgradeGate';
+} from '../domain/backupVault';
+import { CURRENT_APP_VERSION } from '../domain/upgradeGate';
 import {
   buildSpeciesHerdMap,
   calculatePairingCoi,
   CoiAnalysis,
   createSpeciesCoiEvaluator,
-} from '../core/pedigreeCalculator';
-import { parseAppDeepLinkParams } from '../core/qrCode';
+} from '../domain/pedigreeCalculator';
+import { parseAppDeepLinkParams } from '../domain/qrCode';
 import {
   computeShowLegDeltas,
   mergeEnteredAnimalIdsWithResults,
   normalizeShowResults,
-} from '../core/showResults';
+} from '../domain/showResults';
 import {
   buildFullPredefinedSampleSnapshot,
   buildSampleDataForSpecies,
@@ -146,14 +150,14 @@ import {
   purgeAllSpeciesRecordsPure,
   purgeSpeciesNonTestingDataPure,
   purgeSpeciesTestingDataPure,
-} from '../core/sampleData';
-import type { ConflictSelectionMap } from '../core/importers/conflictResolver';
-import { PlatformImportPreview } from '../core/importers/importerTypes';
-import type { SpeciesBackupReason } from '../core/syncAndExports';
+} from '../domain/sampleData';
+import type { ConflictSelectionMap } from '../domain/importers/conflictResolver';
+import { PlatformImportPreview } from '../domain/importers/importerTypes';
+import type { SpeciesBackupReason } from '../domain/syncAndExports';
 import type {
   SpeciesMigrationOptions,
   SpeciesMigrationResult,
-} from '../core/speciesMigration';
+} from '../domain/speciesMigration';
 import {
   bumpRecordRevision,
   createOutboxOperation,
@@ -164,15 +168,15 @@ import {
   SyncConflictEntry,
   SyncEntityType,
   SyncOperation,
-} from '../core/syncOutbox';
+} from '../domain/syncOutbox';
 import {
   generateCascadedTasksForBreeding,
   getPendingBreedingCleanupTasks,
   recalculatePostBirthTasksForBreeding,
   resolveEffectiveSpeciesProfileForBreeding,
-} from '../core/taskMaster';
-import { sanitizeSpeciesMemo } from '../core/speciesMemo';
-import { resolveThemeCssVariables } from '../core/themePalette';
+} from '../domain/taskMaster';
+import { sanitizeSpeciesMemo } from '../domain/speciesMemo';
+import { resolveThemeCssVariables } from '../domain/themePalette';
 import {
   allocateNextLogicalCounter,
   appendSyncConflictsToIdb,
@@ -232,7 +236,7 @@ import {
   BarnHealthRepairResult,
   BarnHealthReport,
   repairBarnDataHealth,
-} from '../core/dataHealthCheck';
+} from '../domain/dataHealthCheck';
 import {
   checkStorageStatus,
   deleteRollingSnapshotBackup,
@@ -275,7 +279,7 @@ import {
   WipedStorageRecoveryContext,
 } from '../storage/opfsStorage';
 import { purgeOpfsTmp } from '../storage/opfsTempStream';
-import { purgeStaleBrowserCaches, WebSqliteAdapter } from '../storage/webSqliteAdapter';
+import { purgeStaleBrowserCaches } from '../storage/webSqliteAdapter';
 import {
   getGoogleCalendarAccessToken,
   GoogleCalendarOption,
@@ -284,7 +288,7 @@ import {
   pushTasksToGoogleCalendar,
   signInGoogleCalendar,
   signOutGoogleCalendar,
-} from '../utils/googleCalendarClient';
+} from '../app/pedigreeCalendarClient';
 import {
   copyTextWithFallback,
   downloadBlobDirect,
@@ -292,7 +296,11 @@ import {
   downloadTextFile,
   shareTextFileOrDownload,
 } from '../utils/webFileActions';
-import { pedigreeBridge } from '../native/pedigreeBridge';
+import {
+  createPedigreeDomainStorageAdapter,
+  getDefaultPedigreeBridge,
+} from '../app/pedigreeAppWiring';
+import type { IPlatformBridge } from '@engine/bridge';
 import type { PendingGoogleCalendarSync } from '../components/CalendarIntegrationModals';
 
 function getPhotoCacheBudgetForTier(tier: number): { maxEntries: number; maxBytes: number } {
@@ -381,10 +389,19 @@ const NON_SPECIES_ROUTES = new Set<WorkspaceRoute>([
   'suggestions',
 ]);
 
-export function useBarnStore() {
-  const adapterRef = useRef<StorageAdapter | null>(null);
+export interface UseBarnStoreOptions {
+  storageAdapter?: StorageAdapter;
+  bridge?: IPlatformBridge;
+}
+
+export function useBarnStore(options?: UseBarnStoreOptions) {
+  const activeBridge = useMemo<IPlatformBridge>(
+    () => options?.bridge ?? getDefaultPedigreeBridge(),
+    [options?.bridge]
+  );
+  const adapterRef = useRef<StorageAdapter | null>(options?.storageAdapter ?? null);
   if (!adapterRef.current) {
-    adapterRef.current = new WebSqliteAdapter();
+    adapterRef.current = createPedigreeDomainStorageAdapter({ bridge: activeBridge });
   }
   const [initialPhotoCache] = useState<BoundedPhotoDataCache>(() => {
     const cap = detectCurrentDeviceCapability();
@@ -596,40 +613,17 @@ export function useBarnStore() {
       message: `${actionLabel} failed`,
       error: err,
     });
+    setStatusMessage(null);
     if (quotaHit) {
-      const msg = `Device storage is full while trying to ${actionLabel}. Open Import & Settings to download a backup, switch photos to Compact (960px), or free device space.`;
+      const msg = `Device storage is full while trying to ${actionLabel}. Open Recovery & Backups to download a backup, switch photos to Compact (960px), or free device space.`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: 'Device Storage Full',
-        detail: msg,
-        severity: 'error',
-        sticky: true,
-        category: 'storage',
-        canOpenDiagnostics: true,
-      });
     } else if (memoryHit) {
       const msg = `Low device memory while trying to ${actionLabel}. Close other browser tabs or use Compact photos in Import & Settings.`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: 'Low Memory Warning',
-        detail: msg,
-        severity: 'error',
-        sticky: true,
-        category: 'memory',
-        canOpenDiagnostics: true,
-      });
     } else {
       const detail = err instanceof Error ? err.message : 'Local storage write failed.';
       const msg = `Could not ${actionLabel}: ${detail}`;
       setErrorMessage(msg);
-      emitAsyncErrorToast({
-        title: `Could Not ${actionLabel}`,
-        detail,
-        severity: 'error',
-        sticky: true,
-        category: 'storage',
-        canOpenDiagnostics: true,
-      });
     }
   }, []);
 
@@ -739,7 +733,7 @@ export function useBarnStore() {
   useEffect(() => {
     if (isLoading || typeof window === 'undefined') return;
     const stack = routeHistoryRef.current;
-    const isWrapped = pedigreeBridge.isNativeWrapper();
+    const isWrapped = activeBridge.getCapabilities().hasNativeBridge;
 
     if (isApplyingHistoryStepRef.current) {
       isApplyingHistoryStepRef.current = false;
@@ -792,10 +786,10 @@ export function useBarnStore() {
         }
       }
     }
-  }, [route, isLoading]);
+  }, [activeBridge, route, isLoading]);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || pedigreeBridge.isNativeWrapper()) return;
+    if (typeof window === 'undefined' || activeBridge.getCapabilities().hasNativeBridge) return;
     const onPopState = (event: PopStateEvent) => {
       if (isLoading) return;
       const state = event.state as { pedigreeRoute?: WorkspaceRoute; pedigreeModal?: boolean } | null;
@@ -819,11 +813,11 @@ export function useBarnStore() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [isLoading]);
+  }, [activeBridge, isLoading]);
 
   // Priority 0 LIFO route step-back handler (modals register at priority >= 5 so they unwind first)
   useEffect(() => {
-    return pedigreeBridge.registerBackHandler(() => {
+    return activeBridge.registerBackHandler(() => {
       if (route === 'home') {
         routeHistoryRef.current = ['home'];
         return false;
@@ -851,7 +845,7 @@ export function useBarnStore() {
       }
       return true;
     }, 0);
-  }, [route]);
+  }, [activeBridge, route]);
 
   // Monitor Google Calendar auth state only when direct Google Calendar mode is enabled
   const calendarDeliveryMode = snapshot?.settings.calendarSync?.deliveryMode;
@@ -882,15 +876,21 @@ export function useBarnStore() {
         const adapter = adapterRef.current!;
         const initial = await adapter.initialize({ lightweightPhotos: true });
         const detectedWiped = adapter.getWipedRecoveryContext?.() ?? null;
+        const corruptionNotice = adapter.getCorruptionRecoveryNotice?.() ?? null;
         if (!detectedWiped?.detected) {
           void sweepOrphanedOpfsTmpOnBoot();
           markPriorUseSentinelFromSnapshot(initial);
+        } else {
+          void refreshVaultAndArchives();
         }
 
         if (!mounted) return;
         snapshotRef.current = initial;
         setSnapshot(initial);
         setWipedRecoveryContext(detectedWiped && detectedWiped.detected ? detectedWiped : null);
+        if (corruptionNotice) {
+          setErrorMessage(corruptionNotice);
+        }
         setPedigreeGenerations(initial.settings.defaultGenerations);
 
         const deepTarget = parseAppDeepLinkParams(
@@ -1626,7 +1626,15 @@ export function useBarnStore() {
       targetSnapshot?: BarnDatabaseSnapshot,
       filterSpecies?: string
     ): Promise<BarnDatabaseSnapshot> => {
-      const base = targetSnapshot ?? snapshotRef.current;
+      if (!targetSnapshot) {
+        await writeQueueRef.current.catch(() => undefined);
+      }
+      const liveSnap = snapshotRef.current;
+      const base =
+        targetSnapshot &&
+        !(targetSnapshot.animals.length === 0 && liveSnap && liveSnap.animals.length > 0)
+          ? targetSnapshot
+          : liveSnap;
       if (!base) {
         throw new Error('Local database is not loaded yet.');
       }
@@ -1652,7 +1660,11 @@ export function useBarnStore() {
       hydratedSnapshot: BarnDatabaseSnapshot,
       kind: 'manual' | 'monthly' | 'pre_reset' | 'pre_upgrade'
     ): Promise<boolean> => {
-      if (!pedigreeBridge.isNativeWrapper() || typeof TextEncoder === 'undefined') {
+      if (
+        !activeBridge.getCapabilities().hasNativeBridge ||
+        !activeBridge.invokeStorageBridge ||
+        typeof TextEncoder === 'undefined'
+      ) {
         return false;
       }
       try {
@@ -1675,23 +1687,28 @@ export function useBarnStore() {
         if (encoded.byteLength > 15.5 * 1024 * 1024) {
           return false;
         }
-        const ok = await pedigreeBridge.syncBackupSnapshotToNative({
-          snapshotId: `${kind}_${Date.now()}`,
-          createdAt: getAdjustedNowIsoUtc(),
-          format: 'json',
-          bytes: encoded,
-          metadata: {
-            kind,
-            animalCount: payloadSnapshot.animals.length,
-            photosDehydrated,
+        const snapshotId = `${kind}_${Date.now()}`;
+        const result = await activeBridge.invokeStorageBridge({
+          action: 'vaultSnapshot',
+          key: snapshotId,
+          data: encoded,
+          options: {
+            snapshotId,
+            createdAt: getAdjustedNowIsoUtc(),
+            format: 'json',
+            metadata: {
+              kind,
+              animalCount: payloadSnapshot.animals.length,
+              photosDehydrated,
+            },
           },
         });
-        return ok;
+        return result.ok;
       } catch {
         return false;
       }
     },
-    []
+    [activeBridge]
   );
 
   const saveSafetyRollingBackup = useCallback(
@@ -2736,7 +2753,7 @@ export function useBarnStore() {
   const exportTimestampedSpeciesBackup = useCallback(
     async (speciesName: string, reason: SpeciesBackupReason = 'manual') => {
       if (!snapshot) return;
-      const { buildSpeciesZipBackupFileName } = await import('../core/syncAndExports');
+      const { buildSpeciesZipBackupFileName } = await import('../domain/syncAndExports');
       const filename = buildSpeciesZipBackupFileName(
         snapshot.settings.barnName,
         speciesName,
@@ -2759,73 +2776,110 @@ export function useBarnStore() {
 
   const saveAnimal = useCallback(
     async (
-      draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+      draft: AnimalSaveDraft,
       linkParentTarget?: { childId: string; asSire: boolean },
       initialPhotos?: Array<OptimizedImagePayload & { caption?: string }>
     ): Promise<string | null> => {
       return enqueueStoreMutation(async () => {
+        const adapter = adapterRef.current!;
+        if (adapter.syncFromPersistedStorageIfStale) {
+          const synced = await adapter.syncFromPersistedStorageIfStale().catch(() => false);
+          if (synced) {
+            await reloadFromAdapterSilently();
+          }
+        }
+        const {
+          _concurrentBase,
+          _forceConcurrentOverwrite,
+          ...cleanDraft
+        } = draft;
         const latestSnapshot = snapshotRef.current ?? snapshot;
-        const previous = draft.id
-          ? latestSnapshot?.animals.find((a) => a.id === draft.id)
+        const previous = cleanDraft.id
+          ? latestSnapshot?.animals.find((a) => a.id === cleanDraft.id)
           : undefined;
-        const hasExplicitRaw = typeof draft.genotypeRaw === 'string';
-        const trimmedRaw = (draft.genotypeRaw || '').trim();
+        const hasExplicitRaw = typeof cleanDraft.genotypeRaw === 'string';
+        const trimmedRaw = (cleanDraft.genotypeRaw || '').trim();
         const needsGeneticsEngine =
           (hasExplicitRaw && Boolean(trimmedRaw)) ||
-          (!hasExplicitRaw && Boolean(draft.genotype && draft.genotype.length > 0));
+          (!hasExplicitRaw && Boolean(cleanDraft.genotype && cleanDraft.genotype.length > 0));
         let parsedGeno =
-          !hasExplicitRaw && draft.genotype && draft.genotype.length > 0 ? draft.genotype : [];
+          !hasExplicitRaw && cleanDraft.genotype && cleanDraft.genotype.length > 0
+            ? cleanDraft.genotype
+            : [];
         let normalizedRaw = trimmedRaw;
         if (needsGeneticsEngine) {
           const { formatGenotypeArray, parseGenotypeString } = await import(
-            '../core/geneticsEngine'
+            '../domain/geneticsEngine'
           );
           if (hasExplicitRaw && trimmedRaw) {
             parsedGeno =
-              draft.genotype &&
-              draft.genotype.length > 0 &&
-              formatGenotypeArray(draft.genotype) === trimmedRaw
-                ? draft.genotype
-                : parseGenotypeString(trimmedRaw, draft.species);
+              cleanDraft.genotype &&
+              cleanDraft.genotype.length > 0 &&
+              formatGenotypeArray(cleanDraft.genotype) === trimmedRaw
+                ? cleanDraft.genotype
+                : parseGenotypeString(trimmedRaw, cleanDraft.species);
           }
           normalizedRaw = trimmedRaw || (hasExplicitRaw ? '' : formatGenotypeArray(parsedGeno));
         }
 
         const carriers = reconcileCarrierTraitLists(
-          draft.suspectedCarrierOf,
-          draft.confirmedCarrierOf,
-          draft.clearedCarrierOf
+          cleanDraft.suspectedCarrierOf,
+          cleanDraft.confirmedCarrierOf,
+          cleanDraft.clearedCarrierOf
         );
 
         const resolvedIgnored = normalizeIgnoredConflicts(
-          draft.ignoredConflicts ?? previous?.ignoredConflicts
+          cleanDraft.ignoredConflicts ?? previous?.ignoredConflicts
         );
 
-        const animalId = draft.id || generateUuid();
+        const animalId = cleanDraft.id || generateUuid();
         const rev = nextEntityRev(animalId, previous?._rev);
-        const adjustedTs = getAdjustedNowIsoUtc();
+        let adjustedTs = getAdjustedNowIsoUtc();
+        if (previous?.updatedAt && adjustedTs <= previous.updatedAt) {
+          const prevMs = Date.parse(previous.updatedAt);
+          if (Number.isFinite(prevMs)) {
+            adjustedTs = new Date(prevMs + 1).toISOString();
+          }
+        }
 
-        const animal: Animal = {
-          ...draft,
+        const candidateAnimal: Animal = {
+          ...cleanDraft,
           id: animalId,
-          tattoo: draft.tattoo.trim(),
-          name: draft.name.trim(),
-          archived: Boolean(draft.archived),
-          needsAttention: Boolean(draft.needsAttention),
+          tattoo: cleanDraft.tattoo.trim(),
+          name: cleanDraft.name.trim(),
+          archived: Boolean(cleanDraft.archived),
+          needsAttention: Boolean(cleanDraft.needsAttention),
           ignoredConflicts: resolvedIgnored,
           genotype: parsedGeno,
           genotypeRaw: normalizedRaw,
-          rufusLevel: normalizeRufusLevel(draft.rufusLevel),
+          rufusLevel: normalizeRufusLevel(cleanDraft.rufusLevel),
           suspectedCarrierOf: carriers.suspectedCarrierOf,
           confirmedCarrierOf: carriers.confirmedCarrierOf,
           clearedCarrierOf: carriers.clearedCarrierOf,
           _rev: rev,
-          createdAt: draft.createdAt || adjustedTs,
+          createdAt: cleanDraft.createdAt || previous?.createdAt || adjustedTs,
           updatedAt: adjustedTs,
         };
 
+        let animal = candidateAnimal;
+        let mergedRemoteLabels: string[] = [];
+        if (previous && _concurrentBase && !_forceConcurrentOverwrite) {
+          const mergeResult = mergeConcurrentAnimalEdit({
+            base: _concurrentBase,
+            remote: previous,
+            local: candidateAnimal,
+          });
+          if (mergeResult.status === 'conflict') {
+            throw new ConcurrentEditConflictError(mergeResult.conflictingFields, previous);
+          }
+          if (mergeResult.status === 'merged') {
+            animal = mergeResult.mergedAnimal;
+            mergedRemoteLabels = mergeResult.mergedRemoteFields.map((f) => f.label);
+          }
+        }
+
         try {
-          await adapterRef.current!.saveAnimal(animal);
+          await adapter.saveAnimal(animal);
           await recordOutboxOps(
             diffEntityFieldsToOperations({
               entityType: 'animal',
@@ -2861,7 +2915,7 @@ export function useBarnStore() {
               createdAt: adjustedTs,
               updatedAt: adjustedTs,
             }));
-            await adapterRef.current!.saveAnimalPhotosBatch(newPhotoRecords);
+            await adapter.saveAnimalPhotosBatch(newPhotoRecords);
             for (const rec of newPhotoRecords) {
               photoCacheRef.current.set(rec.id, rec.dataUrl);
             }
@@ -2888,7 +2942,7 @@ export function useBarnStore() {
                   _rev: childRev,
                   updatedAt: adjustedTs,
                 };
-                await adapterRef.current!.saveAnimal(updatedChild);
+                await adapter.saveAnimal(updatedChild);
                 await recordOutboxOps(
                   diffEntityFieldsToOperations({
                     entityType: 'animal',
@@ -2905,10 +2959,14 @@ export function useBarnStore() {
           }
 
           await reloadFromAdapter();
-          notify(
+          const baseNotify =
             initialPhotos && initialPhotos.length > 0
               ? `${animal.name} saved with ${initialPhotos.length} optimized photo(s).`
-              : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`
+              : `${animal.name} (${animal.tattoo || 'No ID'}) saved.`;
+          notify(
+            mergedRemoteLabels.length > 0
+              ? `${baseNotify} Merged concurrent updates (${mergedRemoteLabels.join(', ')}).`
+              : baseNotify
           );
           return animal.id;
         } catch (err) {
@@ -2924,6 +2982,7 @@ export function useBarnStore() {
       enqueueStoreMutation,
       recordOutboxOps,
       reloadFromAdapter,
+      reloadFromAdapterSilently,
       notify,
       reportPersistenceFailure,
     ]
@@ -3213,7 +3272,7 @@ export function useBarnStore() {
 
         try {
           await saveSafetyRollingBackup(currentSnapshot);
-          const { migrateAnimalsToSpecies } = await import('../core/speciesMigration');
+          const { migrateAnimalsToSpecies } = await import('../domain/speciesMigration');
           const result = migrateAnimalsToSpecies(
             currentSnapshot,
             animalIds,
@@ -4930,7 +4989,7 @@ export function useBarnStore() {
         if (!currentSnapshot) return 0;
         const sourceTasks = tasksToEscalate ?? currentSnapshot.tasks;
         const ts = getAdjustedNowIsoUtc();
-        const { buildPriorityEscalationUpdates } = await import('../core/barnScheduler');
+        const { buildPriorityEscalationUpdates } = await import('../domain/barnScheduler');
         const rawUpdates = buildPriorityEscalationUpdates(sourceTasks, todayDateIso(), ts);
         if (rawUpdates.length === 0) return 0;
 
@@ -5096,7 +5155,7 @@ export function useBarnStore() {
         }
 
         const ts = getAdjustedNowIsoUtc();
-        const { buildBarnBenchCommitPlan } = await import('../core/barnBench');
+        const { buildBarnBenchCommitPlan } = await import('../domain/barnBench');
         const plan = buildBarnBenchCommitPlan(animal, draft, ts);
         if (!plan.hasChanges) {
           return { ok: false, animalId: animal.id, summary: [] };
@@ -5529,7 +5588,7 @@ export function useBarnStore() {
           );
 
           if (!prevAlloc && allocation.quantity > 0) {
-            const { applyFeedAllocationToBatch } = await import('../core/feedInventory');
+            const { applyFeedAllocationToBatch } = await import('../domain/feedInventory');
             const batchRev = nextEntityRev(batch.id, batch._rev);
             const updatedBatch: FeedBatch = {
               ...applyFeedAllocationToBatch(batch, allocation.quantity, ts),
@@ -5635,7 +5694,7 @@ export function useBarnStore() {
             (b) => b.id === target.feedBatchId
           );
           if (batch && target.quantity > 0) {
-            const { reverseFeedAllocationFromBatch } = await import('../core/feedInventory');
+            const { reverseFeedAllocationFromBatch } = await import('../domain/feedInventory');
             const batchRev = nextEntityRev(batch.id, batch._rev);
             const restoredBatch: FeedBatch = {
               ...reverseFeedAllocationFromBatch(batch, target.quantity, ts),
@@ -5693,7 +5752,7 @@ export function useBarnStore() {
           return { purgedCount: 0, reclaimedBytes: 0 };
         }
         const ts = getAdjustedNowIsoUtc();
-        const { purgeExpiredFeedTagPhotosPure } = await import('../core/feedInventory');
+        const { purgeExpiredFeedTagPhotosPure } = await import('../domain/feedInventory');
         const result = purgeExpiredFeedTagPhotosPure(
           currentSnapshot.feedBatches ?? [],
           effectiveWindow,
@@ -5906,7 +5965,7 @@ export function useBarnStore() {
         const rev = nextEntityRev(id, prev?._rev);
         const liveGrams = Math.max(0, Math.round(Number(draft.liveWeightGrams) || 0));
         const dressedGrams = Math.max(0, Math.round(Number(draft.dressedWeightGrams) || 0));
-        const { calculateDressOutPercent } = await import('../core/economicsLedger');
+        const { calculateDressOutPercent } = await import('../domain/economicsLedger');
         const computedDressPct = calculateDressOutPercent(liveGrams, dressedGrams);
         const log: ProcessingLog = {
           ...draft,
@@ -6355,7 +6414,7 @@ export function useBarnStore() {
           isSameSpecies(r.species, draft.species)
         );
         const { buildSuggestedAgreementNumber, evaluateReservationFinancials } =
-          await import('../core/clientCrm');
+          await import('../domain/clientCrm');
         const agreementNumber =
           (draft.agreementNumber || '').trim() ||
           prev?.agreementNumber ||
@@ -7306,7 +7365,7 @@ export function useBarnStore() {
             dismissedTaskGroupKeys: nextDismissed,
             updatedAt: getAdjustedNowIsoUtc(),
           };
-          const { mergeBarnSnapshots } = await import('../core/syncAndExports');
+          const { mergeBarnSnapshots } = await import('../domain/syncAndExports');
           const report = mergeBarnSnapshots(
             { ...currentSnapshot, settings: refreshedSettings },
             {
@@ -7594,7 +7653,7 @@ export function useBarnStore() {
         if (!currentSnapshot) return;
         try {
           const { mergeBarnSnapshots, parseBarnBackupJson } = await import(
-            '../core/syncAndExports'
+            '../domain/syncAndExports'
           );
           const incoming = parseBarnBackupJson(jsonText, currentSnapshot.settings);
           if (mode === 'replace') {
@@ -7706,7 +7765,7 @@ export function useBarnStore() {
                 'This ZIP contains only animal photos (photos/manifest.json without herd tables). Use "Merge (.JSON / .ZIP)" to restore photos without wiping your records.'
               );
             }
-            const { mergePhotosOnlyIntoSnapshot } = await import('../core/backupArchive');
+            const { mergePhotosOnlyIntoSnapshot } = await import('../domain/backupArchive');
             const photoMerge = mergePhotosOnlyIntoSnapshot(
               currentSnapshot,
               parsed.photos,
@@ -7778,7 +7837,7 @@ export function useBarnStore() {
               }`
             );
           } else {
-            const { mergeBarnSnapshots } = await import('../core/syncAndExports');
+            const { mergeBarnSnapshots } = await import('../domain/syncAndExports');
             const merged = mergeBarnSnapshots(currentSnapshot, parsed.snapshot);
             const importedIds = new Set(parsed.snapshot.animals.map((a) => a.id));
             const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
@@ -7896,7 +7955,7 @@ export function useBarnStore() {
     ): Promise<P2pReconciliationSummary> => {
       return enqueueStoreMutation(async () => {
         const currentSnapshot = snapshotRef.current ?? snapshot;
-        const { summarizeTaskReconciliation } = await import('../core/p2pSyncProtocol');
+        const { summarizeTaskReconciliation } = await import('../domain/p2pSyncProtocol');
         if (!currentSnapshot) {
           return summarizeTaskReconciliation({
             peerDeviceId: peerDeviceId || 'peer',
@@ -8317,7 +8376,7 @@ export function useBarnStore() {
         hydrated,
         CURRENT_APP_VERSION
       );
-      const { formatTimestampedBackupSlug } = await import('../core/syncAndExports');
+      const { formatTimestampedBackupSlug } = await import('../domain/syncAndExports');
       const stampSlug = formatTimestampedBackupSlug();
       const fileName = `pedigree-pre-upgrade-backup-${stampSlug}.json`;
       await downloadTextFile(fileName, jsonText, 'application/json');
@@ -8724,7 +8783,7 @@ export function useBarnStore() {
 
         try {
           const { resolveAnimalsWithConflictChoices } =
-            await import('../core/importers/conflictResolver');
+            await import('../domain/importers/conflictResolver');
           const resolvedAnimals = resolveAnimalsWithConflictChoices(
             preview.animals,
             currentSnapshot,
@@ -8775,7 +8834,7 @@ export function useBarnStore() {
             judgeAssignments: [],
             judgeExpenses: [],
           };
-          const { mergeBarnSnapshots } = await import('../core/syncAndExports');
+          const { mergeBarnSnapshots } = await import('../domain/syncAndExports');
           const merged = mergeBarnSnapshots(localAdjustedSnapshot, incoming);
           const importedIds = new Set(resolvedAnimals.map((a) => a.id));
           const flagRes = applyImportConflictAttentionFlags(merged.snapshot.animals, importedIds);
@@ -8838,7 +8897,19 @@ export function useBarnStore() {
   );
 
   const exportSqliteBytes = useCallback(async () => {
-    return adapterRef.current!.exportRawSqliteBytes();
+    await writeQueueRef.current.catch(() => undefined);
+    const adapter = adapterRef.current!;
+    const bytes = await adapter.exportRawSqliteBytes();
+    const liveAnimalCount = snapshotRef.current?.animals.length ?? 0;
+    if (bytes && liveAnimalCount > 0 && adapter.inspectRawSqliteBytes) {
+      const inspected = await adapter.inspectRawSqliteBytes(bytes, { lightweightPhotos: true });
+      if (inspected.animals.length === 0) {
+        throw new Error(
+          `Blocked empty SQLite export: serialized database has 0 animals while ${liveAnimalCount} animal(s) are loaded in memory. Please wait for pending saves or export a JSON backup.`
+        );
+      }
+    }
+    return bytes;
   }, []);
 
   const inspectSqliteRestoreBytes = useCallback(
@@ -8849,7 +8920,7 @@ export function useBarnStore() {
       }
       const incomingSnap = await adapter.inspectRawSqliteBytes(bytes, { lightweightPhotos: true });
       const baseSnap = snapshotRef.current ?? snapshot ?? incomingSnap;
-      const { inspectSnapshotBeforeRestorePure } = await import('../core/archiveInspector');
+      const { inspectSnapshotBeforeRestorePure } = await import('../domain/archiveInspector');
       return inspectSnapshotBeforeRestorePure(incomingSnap, baseSnap, {
         fileName,
         sourceFormat: 'sqlite',
@@ -8922,7 +8993,7 @@ export function useBarnStore() {
           ),
         };
       }
-      const { analyzePhotoStorageFootprintPure } = await import('../core/photoMaintenance');
+      const { analyzePhotoStorageFootprintPure } = await import('../domain/photoMaintenance');
       return analyzePhotoStorageFootprintPure(
         scanSnapshot,
         presetId ?? scanSnapshot.settings.imageOptimizationPreset
@@ -8938,7 +9009,7 @@ export function useBarnStore() {
     return enqueueStoreMutation(async () => {
       const base = snapshotRef.current ?? snapshot;
       if (!base) return { removedCount: 0, reclaimedBytes: 0 };
-      const { removeOrphanPhotosFromSnapshotPure } = await import('../core/photoMaintenance');
+      const { removeOrphanPhotosFromSnapshotPure } = await import('../domain/photoMaintenance');
       const preCheck = removeOrphanPhotosFromSnapshotPure(base);
       if (preCheck.removedCount === 0) {
         notify('Photo check finished — zero orphan attachments found.');
@@ -8974,7 +9045,7 @@ export function useBarnStore() {
         const targetPreset = presetId ?? base.settings.imageOptimizationPreset ?? 'balanced';
         const [{ analyzePhotoStorageFootprintPure }, { reoptimizeAnimalPhotoRecord }] =
           await Promise.all([
-            import('../core/photoMaintenance'),
+            import('../domain/photoMaintenance'),
             import('../storage/webImageOptimizer'),
           ]);
         const preReport = analyzePhotoStorageFootprintPure(base, targetPreset);
@@ -9046,7 +9117,7 @@ export function useBarnStore() {
       const {
         analyzePhotoStorageFootprintPure,
         pruneFullResPayloadsFromSnapshotPure,
-      } = await import('../core/photoMaintenance');
+      } = await import('../domain/photoMaintenance');
       const preReport = analyzePhotoStorageFootprintPure(base);
       if (preReport.fullResPrunableIds.length === 0) {
         notify('No full-resolution photo payloads needed compacting.');
@@ -9149,7 +9220,7 @@ export function useBarnStore() {
           try {
             const hydrated = await hydrateSnapshotForExport(currentSnapshot);
             const zip = await buildCompleteBackupZipToOpfsTmpOffThread(hydrated);
-            const { formatTimestampedBackupSlug } = await import('../core/syncAndExports');
+            const { formatTimestampedBackupSlug } = await import('../domain/syncAndExports');
             backupFilename = `pedigree-recovery-backup-${formatTimestampedBackupSlug()}.zip`;
             await downloadTempOpfsExport(backupFilename, zip, 'application/zip');
           } catch (err) {
@@ -9214,6 +9285,7 @@ export function useBarnStore() {
   );
 
   return {
+    appConfig: PEDIGREE_APP_CONFIG,
     deviceId,
     isLoading,
     engineName: adapterRef.current?.engineName ?? 'SQLite WASM + IndexedDB',

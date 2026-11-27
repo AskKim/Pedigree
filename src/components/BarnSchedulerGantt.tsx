@@ -30,8 +30,8 @@ import {
   GanttWindowDays,
   resizeTaskStartDateByDays,
   shiftTaskDatesByDays,
-} from '../core/barnScheduler';
-import { formatSystemTaskTitle } from '../core/calendarExport';
+} from '../domain/barnScheduler';
+import { formatSystemTaskTitle } from '../domain/calendarExport';
 import {
   addDaysIso,
   Animal,
@@ -41,15 +41,15 @@ import {
   formatReadableDate,
   SpeciesProfile,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import {
   createP2pAckWireMessage,
   createP2pDeltaWireMessage,
   P2pReconciliationSummary,
   P2pWireMessage,
   parseP2pWireOrDeltaPayload,
-} from '../core/p2pSyncProtocol';
-import { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
+} from '../domain/p2pSyncProtocol';
+import { SyncConflictEntry, SyncOperation } from '../domain/syncOutbox';
 import { BackupSyncStatus } from '../storage/localSyncChannels';
 import {
   createLanP2pSession,

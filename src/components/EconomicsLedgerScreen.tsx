@@ -6,7 +6,7 @@
  * (`src/components/EconomicsLedgerScreen.tsx`).
  *
  * Strictly species-isolated financial, processing harvest, and youth project record-book
- * workspace powered by pure analytics in `src/core/economicsLedger.ts` and persisted
+ * workspace powered by pure analytics in `src/domain/economicsLedger.ts` and persisted
  * offline-first via SQLite/IndexedDB + delta sync.
  */
 
@@ -46,9 +46,9 @@ import {
   formatProcessingLogsCsv,
   generateYouthProjectReportHtml,
   getLedgerCategoryLabel,
-} from '../core/economicsLedger';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
-import { sanitizeSafeRasterImageDataUrl } from '../core/inputSanitization';
+} from '../domain/economicsLedger';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
+import { sanitizeSafeRasterImageDataUrl } from '../domain/inputSanitization';
 import {
   BarnSettings,
   formatCurrencyCents,
@@ -74,7 +74,7 @@ import {
   YouthOrgType,
   YouthProjectBook,
   YouthProjectFeedLogEntry,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';

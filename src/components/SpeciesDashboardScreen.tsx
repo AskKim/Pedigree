@@ -70,20 +70,20 @@ import {
   isCageOccupyingAnimal,
   normalizeCageLabelKey,
   ShowWithdrawalConflictEvaluation,
-} from '../core/barnAlerts';
+} from '../domain/barnAlerts';
 import {
   BatchPrintOptions,
   buildBatchPrintFileName,
   buildDefaultBatchPrintOptions,
   generateBatchPrintHtml,
-} from '../core/batchPrint';
-import { formatSystemTaskTitle } from '../core/calendarExport';
-import { evaluateCrmFollowUpReminders } from '../core/clientCrm';
-import { buildFacilityBoardModel } from '../core/facilityBoard';
+} from '../domain/batchPrint';
+import { formatSystemTaskTitle } from '../domain/calendarExport';
+import { evaluateCrmFollowUpReminders } from '../domain/clientCrm';
+import { buildFacilityBoardModel } from '../domain/facilityBoard';
 import {
   evaluateFeedInventorySummary,
   isFeedBatchLowStock,
-} from '../core/feedInventory';
+} from '../domain/feedInventory';
 import {
   Animal,
   BarnDatabaseSnapshot,
@@ -110,12 +110,12 @@ import {
   TaskCategory,
   TaskPriority,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import {
   MAX_SHOW_ELEG_ATTACHMENTS_PER_RESULT,
   mergeEnteredAnimalIdsWithResults,
   normalizeShowResults,
-} from '../core/showResults';
+} from '../domain/showResults';
 import {
   buildShowDocumentFileName,
   buildShowEntryMailtoUrl,
@@ -124,10 +124,10 @@ import {
   generateShowRemarkCardsHtml,
   RemarkCardLayoutMode,
   ShowEntryDivision,
-} from '../core/showDocuments';
+} from '../domain/showDocuments';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
-import { countSpeciesNonTestingRecords } from '../core/sampleData';
-import { SpeciesMigrationOptions } from '../core/speciesMigration';
+import { countSpeciesNonTestingRecords } from '../domain/sampleData';
+import { SpeciesMigrationOptions } from '../domain/speciesMigration';
 import {
   BarnBinderOptions,
   buildBarnBinderFileName,
@@ -135,20 +135,20 @@ import {
   generateSpeciesBarnBinderHtml,
   generateThermalCageCardHtml,
   SpeciesBackupReason,
-} from '../core/syncAndExports';
+} from '../domain/syncAndExports';
 import {
   evaluateStalePostBirthTasksForBreeding,
   isBirthCheckTask,
   isPalpationTask,
   resolveEffectiveSpeciesProfileForBreeding,
-} from '../core/taskMaster';
+} from '../domain/taskMaster';
 import {
   ActiveSpeciesData,
   BreedingTaskCheckoffAction,
   WorkspaceRoute,
 } from '../hooks/useBarnStore';
-import { P2pReconciliationSummary } from '../core/p2pSyncProtocol';
-import { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
+import { P2pReconciliationSummary } from '../domain/p2pSyncProtocol';
+import { SyncConflictEntry, SyncOperation } from '../domain/syncOutbox';
 import { BackupSyncStatus } from '../storage/localSyncChannels';
 import { FacilityPenBoard } from './FacilityPenBoard';
 import { PrintPreviewModal } from './PrintPreviewModal';
@@ -621,7 +621,7 @@ export function SpeciesDashboardScreen({
     setCageViewMode('board');
   }, [highlightedCageId]);
 
-  const activeBreedingStock = animals.filter((a) => a.status === 'Active' && !a.archived).length;
+  const activeHerdCount = activeData.activeAnimals.length;
   const activeGestations = useMemo(
     () =>
       breedings.filter((b) =>
@@ -1504,7 +1504,7 @@ export function SpeciesDashboardScreen({
                   {speciesProfile.name} Herd
                 </span>
                 <span className="font-mono text-xs font-semibold tabular-nums whitespace-nowrap">
-                  {animals.length} ({activeBreedingStock} active)
+                  {animals.length} ({activeHerdCount} active)
                 </span>
               </button>
 

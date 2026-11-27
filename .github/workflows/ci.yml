@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     name: Test, Typecheck & Build
@@ -18,6 +22,14 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
@@ -31,6 +43,12 @@ jobs:
 
       - name: Verify App Improvements Registry
         run: npm run verify:improvements
+
+      - name: Verify layer boundaries and engine typecheck
+        run: |
+          npm run verify:layers
+          npm run verify:engine
+          npm run verify:extraction
 
       - name: Run TypeScript typecheck (lint)
         run: npm run lint

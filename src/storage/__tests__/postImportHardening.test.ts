@@ -21,7 +21,7 @@ import {
   bytesToUtf8String,
   dataUrlToBinary,
   utf8StringToBytes,
-} from '../../core/binaryEncoding';
+} from '../../domain/binaryEncoding';
 import { getOpenDialogCount, subscribeOpenDialogCount } from '../../utils/useAccessibleDialog';
 import {
   OPFS_SCRATCHPAD_THRESHOLD_BYTES,

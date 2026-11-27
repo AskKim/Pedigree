@@ -9,7 +9,7 @@
  * straight to OPFS `/tmp` without pulling UI dependencies into the worker bundle.
  */
 
-import { generateUuid } from '../core/models';
+import { generateUuid } from '../domain/models';
 import { readBlobAsArrayBuffer, readBlobAsText } from '../utils/es2018Shims';
 import {
   acquireForegroundTransferLease,

@@ -12,11 +12,14 @@
 import { AlertCircle, AlertTriangle, Camera, Loader2, ShieldAlert, Trash2, X } from 'lucide-react';
 import React, { useId, useMemo, useRef, useState } from 'react';
 import {
+  AnimalConcurrentConflictField,
+  AnimalSaveDraft,
+  ConcurrentEditConflictError,
   findAllSpeciesDuplicateTattooPeers,
   findOffspringRequiringParentSex,
   findSameSexDuplicateTattooCollisions,
   isOverrideConfirmationValid,
-} from '../core/animalConflicts';
+} from '../domain/animalConflicts';
 import {
   CageAssignmentCapacityWarning,
   evaluateAnimalActiveWithdrawal,
@@ -26,14 +29,14 @@ import {
   isCageOccupyingAnimal,
   normalizeCageLabelKey,
   WithdrawalDispositionWarning,
-} from '../core/barnAlerts';
+} from '../domain/barnAlerts';
 import {
   extractHomozygousCoatClearances,
   getAnimalCarrierDisclosures,
   getCarrierTraitSuggestionsForSpecies,
   normalizeCarrierTraitList,
   reconcileCarrierTraitLists,
-} from '../core/carrierGenetics';
+} from '../domain/carrierGenetics';
 import {
   buildPresetGenotypeWithConfirmations,
   getGeneticsSpecForSpecies,
@@ -41,14 +44,14 @@ import {
   parseGenotypeString,
   setLocusInGenotypeString,
   VarietyPresetDefinition,
-} from '../core/geneticsEngine';
+} from '../domain/geneticsEngine';
 import {
   calculateSavingsPercent,
   formatByteSizePure,
   ImageOptimizationPresetId,
   OptimizedImagePayload,
   resolveImageOptimizationPreset,
-} from '../core/imageOptimizationSpec';
+} from '../domain/imageOptimizationSpec';
 import {
   ANIMAL_STATUSES,
   Animal,
@@ -78,18 +81,18 @@ import {
   SpeciesProfile,
   todayDateIso,
   WeightUnit,
-} from '../core/models';
+} from '../domain/models';
 import {
   buildSpeciesHerdMap,
   calculatePairingCoi,
   getPedigreeCompletenessSummary,
   wouldCreateCycle,
-} from '../core/pedigreeCalculator';
+} from '../domain/pedigreeCalculator';
 import {
   MAX_PHOTO_BATCH_COUNT,
   MAX_PHOTO_UPLOAD_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
+} from '../domain/inputSanitization';
 import { optimizeImageFile } from '../storage/webImageOptimizer';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
@@ -112,7 +115,7 @@ interface AnimalEditorModalProps {
   opfsSupported?: boolean;
   autoOffloadRetiredToOpfs?: boolean;
   onSave: (
-    draft: Omit<Animal, 'id' | 'createdAt' | 'updatedAt'> & { id?: string; createdAt?: string },
+    draft: AnimalSaveDraft,
     pendingPhotos?: Array<OptimizedImagePayload & { caption?: string }>
   ) => Promise<string | null | void> | string | void;
   onOffloadRetiredAnimal?: (animalId: string) => Promise<void> | void;
@@ -272,7 +275,94 @@ export function AnimalEditorModal({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [duplicateOverrideInput, setDuplicateOverrideInput] = useState('');
   const [submitGuardError, setSubmitGuardError] = useState<string | null>(null);
+  const [concurrentConflict, setConcurrentConflict] = useState<{
+    conflictingFields: AnimalConcurrentConflictField[];
+    remoteAnimal: Animal;
+    message: string;
+  } | null>(null);
   const overrideInputRef = useRef<HTMLInputElement | null>(null);
+
+  const openedAnimalBaseRef = useRef<Animal | null>(initialAnimal);
+  const prevInitialAnimalIdRef = useRef<string | undefined>(initialAnimal?.id);
+  if (prevInitialAnimalIdRef.current !== initialAnimal?.id) {
+    prevInitialAnimalIdRef.current = initialAnimal?.id;
+    openedAnimalBaseRef.current = initialAnimal;
+  }
+
+  const remoteUpdatedWhileOpen = useMemo(() => {
+    const base = openedAnimalBaseRef.current;
+    if (!base || !initialAnimal || base.id !== initialAnimal.id) return false;
+    return (
+      initialAnimal.updatedAt !== base.updatedAt ||
+      (typeof base._rev === 'number' &&
+        typeof initialAnimal._rev === 'number' &&
+        initialAnimal._rev !== base._rev)
+    );
+  }, [initialAnimal]);
+
+  const applyLatestRemoteAnimalToForm = (remote: Animal) => {
+    openedAnimalBaseRef.current = remote;
+    setTattoo(remote.tattoo || '');
+    setName(remote.name || '');
+    setBreed(remote.breed || '');
+    setVariety(remote.variety || '');
+    setSex(forcedSex || remote.sex || 'Female');
+    setStatus(remote.status || 'Active');
+    setArchived(isAnimalArchived(remote));
+    setNeedsAttention(doesAnimalNeedAttention(remote));
+    setBirthDateIso(remote.birthDateIso || '');
+    setWeightInput(formatWeightInputValue(remote.weightGrams || 0, preferredUnit));
+    setGenotypeRaw(remote.genotypeRaw || '');
+    setRufusLevel(normalizeRufusLevel(remote.rufusLevel));
+    const latestCarriers = getAnimalCarrierDisclosures(remote);
+    setSuspectedCarrierOf(latestCarriers.suspected);
+    setConfirmedCarrierOf(latestCarriers.confirmed);
+    setClearedCarrierOf(latestCarriers.cleared);
+    setRegistrationNumber(remote.registrationNumber || '');
+    setGrandChampionNumber(remote.grandChampionNumber || '');
+    setLegsCount(String(remote.legsCount || 0));
+    setCageLocation(remote.cageLocation || '');
+    setBreederName(remote.breederName ?? defaultBreederName);
+    setOwnerName(remote.ownerName ?? defaultOwnerName);
+    setOwnershipType(normalizeOwnershipType(remote.ownershipType, 'Owned'));
+    setCulled(Boolean(remote.culled));
+    setCullDateIso(remote.cullDateIso || '');
+    setCullReason(remote.cullReason || '');
+    setDeceasedDateIso(remote.deceasedDateIso || '');
+    setDeathCause(remote.deathCause || '');
+    setSoldDateIso(remote.soldDateIso || '');
+    setSalePriceInput(
+      remote.salePriceCents && remote.salePriceCents > 0
+        ? (remote.salePriceCents / 100).toFixed(2)
+        : ''
+    );
+    setPurchaseCostInput(
+      remote.purchaseCostCents && remote.purchaseCostCents > 0
+        ? (remote.purchaseCostCents / 100).toFixed(2)
+        : ''
+    );
+    setBuyerName(remote.buyerName || '');
+    setForSale(
+      Boolean(
+        remote.forSale &&
+          remote.status !== 'Sold' &&
+          remote.status !== 'Deceased' &&
+          remote.status !== 'Archived' &&
+          !remote.archived
+      )
+    );
+    setAskingPriceInput(
+      remote.askingPriceCents && remote.askingPriceCents > 0
+        ? (remote.askingPriceCents / 100).toFixed(2)
+        : ''
+    );
+    setSaleNotes(remote.saleNotes || '');
+    setSireId(remote.sireId || '');
+    setDamId(remote.damId || '');
+    setNotes(remote.notes || '');
+    setConcurrentConflict(null);
+    setSubmitGuardError(null);
+  };
 
   const [stagedPhotos, setStagedPhotos] = useState<OptimizedImagePayload[]>([]);
   const [isOptimizingPhotos, setIsOptimizingPhotos] = useState(false);
@@ -610,8 +700,9 @@ export function AnimalEditorModal({
     return Math.round(parsed * 100);
   };
 
-  const executeSave = async () => {
+  const executeSave = async (forceConcurrentOverwrite = false) => {
     setSubmitGuardError(null);
+    setConcurrentConflict(null);
     setPendingWithdrawalWarning(null);
     setPendingCapacityWarning(null);
     await submitLock.runLocked(async () => {
@@ -628,64 +719,84 @@ export function AnimalEditorModal({
         !wasRetired &&
         !initialAnimal?.offloadedArchiveKey;
 
-      const savedResult = await onSave(
-        {
-          id: initialAnimal?.id,
-          createdAt: initialAnimal?.createdAt,
-          tattoo: tattoo.trim(),
-          name: name.trim(),
-          species: speciesProfile.name, // Strictly locked to active species
-          breed: breed.trim(),
-          variety: variety.trim(),
-          sex,
-          status,
-          archived,
-          needsAttention,
-          birthDateIso,
-          weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
-          genotype: parseGenotypeString(genotypeRaw, speciesProfile.name),
-          genotypeRaw: genotypeRaw.trim(),
-          rufusLevel,
-          suspectedCarrierOf: reconciled.suspectedCarrierOf,
-          confirmedCarrierOf: reconciled.confirmedCarrierOf,
-          clearedCarrierOf: reconciled.clearedCarrierOf,
-          registrationNumber: registrationNumber.trim(),
-          grandChampionNumber: grandChampionNumber.trim(),
-          legsCount: Math.max(0, Number(legsCount) || 0),
-          cageLocation: cageLocation.trim(),
-          breederName: breederName.trim(),
-          ownerName: ownerName.trim(),
-          ownershipType,
-          culled,
-          cullDateIso: culled ? cullDateIso : '',
-          cullReason: culled ? cullReason.trim() : '',
-          deceasedDateIso: status === 'Deceased' ? deceasedDateIso : initialAnimal?.deceasedDateIso || '',
-          deathCause: status === 'Deceased' ? deathCause.trim() : initialAnimal?.deathCause || '',
-          soldDateIso: status === 'Sold' ? soldDateIso : initialAnimal?.soldDateIso || '',
-          salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
-          purchaseCostCents: parseMoneyToCents(purchaseCostInput),
-          buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
-          forSale:
-            forSale &&
-            status !== 'Sold' &&
-            status !== 'Deceased' &&
-            status !== 'Archived' &&
-            !archived &&
-            ownershipType !== 'Reference',
-          askingPriceCents: parseMoneyToCents(askingPriceInput),
-          saleNotes: saleNotes.trim(),
-          sireId,
-          damId,
-          notes: notes.trim(),
-          offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
-          offloadedAtIso: initialAnimal?.offloadedAtIso,
-        },
-        stagedPhotos.length > 0 ? stagedPhotos : undefined
-      );
+      let savedResult: string | null | void = undefined;
+      try {
+        savedResult = await onSave(
+          {
+            id: initialAnimal?.id,
+            createdAt: initialAnimal?.createdAt,
+            _concurrentBase: openedAnimalBaseRef.current ?? undefined,
+            _forceConcurrentOverwrite: forceConcurrentOverwrite || undefined,
+            tattoo: tattoo.trim(),
+            name: name.trim(),
+            species: speciesProfile.name, // Strictly locked to active species
+            breed: breed.trim(),
+            variety: variety.trim(),
+            sex,
+            status,
+            archived,
+            needsAttention,
+            birthDateIso,
+            weightGrams: parseWeightInputToGrams(weightInput, preferredUnit),
+            genotype: parseGenotypeString(genotypeRaw, speciesProfile.name),
+            genotypeRaw: genotypeRaw.trim(),
+            rufusLevel,
+            suspectedCarrierOf: reconciled.suspectedCarrierOf,
+            confirmedCarrierOf: reconciled.confirmedCarrierOf,
+            clearedCarrierOf: reconciled.clearedCarrierOf,
+            registrationNumber: registrationNumber.trim(),
+            grandChampionNumber: grandChampionNumber.trim(),
+            legsCount: Math.max(0, Number(legsCount) || 0),
+            cageLocation: cageLocation.trim(),
+            breederName: breederName.trim(),
+            ownerName: ownerName.trim(),
+            ownershipType,
+            culled,
+            cullDateIso: culled ? cullDateIso : '',
+            cullReason: culled ? cullReason.trim() : '',
+            deceasedDateIso: status === 'Deceased' ? deceasedDateIso : initialAnimal?.deceasedDateIso || '',
+            deathCause: status === 'Deceased' ? deathCause.trim() : initialAnimal?.deathCause || '',
+            soldDateIso: status === 'Sold' ? soldDateIso : initialAnimal?.soldDateIso || '',
+            salePriceCents: status === 'Sold' ? parseMoneyToCents(salePriceInput) : initialAnimal?.salePriceCents || 0,
+            purchaseCostCents: parseMoneyToCents(purchaseCostInput),
+            buyerName: status === 'Sold' ? buyerName.trim() : initialAnimal?.buyerName || '',
+            forSale:
+              forSale &&
+              status !== 'Sold' &&
+              status !== 'Deceased' &&
+              status !== 'Archived' &&
+              !archived &&
+              ownershipType !== 'Reference',
+            askingPriceCents: parseMoneyToCents(askingPriceInput),
+            saleNotes: saleNotes.trim(),
+            sireId,
+            damId,
+            notes: notes.trim(),
+            offloadedArchiveKey: initialAnimal?.offloadedArchiveKey,
+            offloadedAtIso: initialAnimal?.offloadedAtIso,
+          },
+          stagedPhotos.length > 0 ? stagedPhotos : undefined
+        );
+      } catch (err) {
+        if (err instanceof ConcurrentEditConflictError) {
+          setConcurrentConflict({
+            conflictingFields: err.conflictingFields,
+            remoteAnimal: err.remoteAnimal,
+            message: err.message,
+          });
+          return;
+        }
+        setSubmitGuardError(
+          err instanceof Error
+            ? err.message
+            : 'Could not save record — your typed entries have been kept intact.'
+        );
+        return;
+      }
 
       if (savedResult === null) {
         setSubmitGuardError(
-          'Could not save record to browser storage — your typed entries have been kept intact. Check available storage and try again.'
+          'Could not save record to browser storage — your typed entries have been kept intact. Open Recovery & Backups to export or free space, then try again.'
         );
         return;
       }
@@ -865,6 +976,30 @@ export function AnimalEditorModal({
           </div>
         ) : (
         <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 overflow-y-auto p-6 space-y-5">
+          {remoteUpdatedWhileOpen && initialAnimal && !concurrentConflict && (
+            <div
+              role="status"
+              className="p-3 rounded-xl bg-[var(--barn-terracotta-tint)]/75 border border-[var(--barn-terracotta)]/70 flex flex-wrap items-center justify-between gap-2 text-xs"
+            >
+              <div className="flex items-start gap-2 min-w-0">
+                <AlertTriangle
+                  className="w-4 h-4 text-[var(--barn-terracotta)] shrink-0 mt-0.5"
+                  aria-hidden="true"
+                />
+                <span>
+                  Another tab saved newer changes to <strong>{initialAnimal.name}</strong> while
+                  this editor was open. Disjoint edits will merge automatically on save.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => applyLatestRemoteAnimalToForm(initialAnimal)}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-[11px] font-semibold hover:bg-[var(--barn-subtle)] shrink-0"
+              >
+                Load Latest From Other Tab
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-2">
               <label
@@ -2379,6 +2514,51 @@ export function AnimalEditorModal({
                   className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-accent-fill)] text-[var(--barn-accent-on-fill)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
                 >
                   {submitLock.isSubmitting ? 'Saving...' : 'Confirm Over-Capacity & Save'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {concurrentConflict && (
+            <div
+              role="alert"
+              className="p-4 rounded-xl bg-[var(--barn-terracotta-tint)] border border-[var(--barn-danger)] space-y-3 text-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertCircle
+                  className="w-5 h-5 text-[var(--barn-danger)] mt-0.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <div className="space-y-1">
+                  <div className="font-semibold text-[var(--barn-ink)]">
+                    Concurrent Edit Conflict Detected
+                  </div>
+                  <p className="text-[var(--barn-ink)] leading-relaxed">
+                    {concurrentConflict.message} Your typed entries have been kept intact.
+                    Conflicting field(s):{' '}
+                    <strong>
+                      {concurrentConflict.conflictingFields.map((f) => f.label).join(', ')}
+                    </strong>
+                    .
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => applyLatestRemoteAnimalToForm(concurrentConflict.remoteAnimal)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--barn-border)] bg-[var(--barn-surface)] text-xs font-medium hover:bg-[var(--barn-subtle)] disabled:opacity-55"
+                >
+                  Load Latest From Other Tab
+                </button>
+                <button
+                  type="button"
+                  disabled={submitLock.isSubmitting}
+                  onClick={() => void executeSave(true)}
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[var(--barn-danger)] text-[var(--barn-on-danger)] text-xs font-semibold hover:opacity-95 disabled:opacity-55"
+                >
+                  {submitLock.isSubmitting ? 'Saving...' : 'Overwrite With My Edits'}
                 </button>
               </div>
             </div>

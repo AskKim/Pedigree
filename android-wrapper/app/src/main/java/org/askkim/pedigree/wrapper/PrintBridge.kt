@@ -154,7 +154,7 @@ class PrintBridge(
             }
 
             printWv.loadDataWithBaseURL(
-                "https://appassets.androidplatform.net/",
+                "https://${BuildConfig.ASSET_HOST}/",
                 htmlContent,
                 "text/html",
                 "UTF-8",
@@ -186,6 +186,6 @@ class PrintBridge(
     }
 
     companion object {
-        private const val PRINT_DOCUMENT_NAME = "Pedigree"
+        private val PRINT_DOCUMENT_NAME = BuildConfig.PRINT_DOCUMENT_NAME
     }
 }

@@ -15,17 +15,71 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun wrapperProp(name: String, defaultValue: String): String {
+    return (project.findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() } ?: defaultValue
+}
+
+fun escapeBuildConfigString(value: String): String {
+    val escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+    return "\"$escaped\""
+}
+
+val wrapperApplicationId = wrapperProp("pedigree.wrapper.applicationId", "org.askkim.pedigree.wrapper")
+val wrapperVersionCode = wrapperProp("pedigree.wrapper.versionCode", "1").toIntOrNull() ?: 1
+val wrapperVersionNameOverride = (project.findProperty("pedigree.wrapper.versionName") as String?)
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+val wrapperAssetHost = wrapperProp("pedigree.wrapper.assetHost", "appassets.androidplatform.net")
+val wrapperBridgeObjectName = wrapperProp("pedigree.wrapper.bridgeObjectName", "pedigreeNative")
+val wrapperDebugPagesHost = wrapperProp("pedigree.wrapper.debugPagesHost", "askkim.github.io")
+val wrapperDebugPagesPathPrefix = wrapperProp("pedigree.wrapper.debugPagesPathPrefix", "/Pedigree")
+val wrapperVaultDirName = wrapperProp("pedigree.wrapper.vaultDirName", "pedigree-vault")
+val wrapperPrintDocumentName = wrapperProp("pedigree.wrapper.printDocumentName", "Pedigree")
+val wrapperAppName = wrapperProp("pedigree.wrapper.appName", "Pedigree")
+val wrapperDebugAppName = wrapperProp("pedigree.wrapper.debugAppName", "$wrapperAppName (Debug)")
+val wrapperDebugPrefsName = wrapperProp("pedigree.wrapper.debugPrefsName", "pedigree_wrapper_debug_prefs")
+val wrapperDiagnosticsClipLabel = wrapperProp("pedigree.wrapper.diagnosticsClipLabel", "$wrapperAppName Diagnostics")
+val wrapperDefaultExportFilename = wrapperProp("pedigree.wrapper.defaultExportFilename", "pedigree-export.bin")
+
 android {
     namespace = "org.askkim.pedigree.wrapper"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "org.askkim.pedigree.wrapper"
+        applicationId = wrapperApplicationId
         // Android 8.0+ (API 26) supports WebViewAssetLoader, Safe Browsing, and modern WebMessageCompat.
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-alpha.2"
+        versionCode = wrapperVersionCode
+        versionName = "0.1.0-alpha.3"
+        if (wrapperVersionNameOverride != null) {
+            versionName = wrapperVersionNameOverride
+        }
+
+        buildConfigField("String", "ASSET_HOST", escapeBuildConfigString(wrapperAssetHost))
+        buildConfigField("String", "BRIDGE_OBJECT_NAME", escapeBuildConfigString(wrapperBridgeObjectName))
+        buildConfigField("String", "DEBUG_PAGES_HOST", escapeBuildConfigString(wrapperDebugPagesHost))
+        buildConfigField("String", "DEBUG_PAGES_PATH_PREFIX", escapeBuildConfigString(wrapperDebugPagesPathPrefix))
+        buildConfigField("String", "VAULT_DIR_NAME", escapeBuildConfigString(wrapperVaultDirName))
+        buildConfigField("String", "PRINT_DOCUMENT_NAME", escapeBuildConfigString(wrapperPrintDocumentName))
+        buildConfigField("String", "DEBUG_PREFS_NAME", escapeBuildConfigString(wrapperDebugPrefsName))
+        buildConfigField("String", "DIAGNOSTICS_CLIP_LABEL", escapeBuildConfigString(wrapperDiagnosticsClipLabel))
+        buildConfigField("String", "DEFAULT_EXPORT_FILENAME", escapeBuildConfigString(wrapperDefaultExportFilename))
+        buildConfigField(
+            "String",
+            "ACTION_OPEN_DIAGNOSTICS",
+            escapeBuildConfigString("$wrapperApplicationId.action.OPEN_DIAGNOSTICS")
+        )
+
+        resValue("string", "app_name", wrapperAppName)
+        resValue(
+            "string",
+            "dev_panel_debug_url_invalid",
+            "Debug URL must use https://$wrapperDebugPagesHost$wrapperDebugPagesPathPrefix/"
+        )
+        resValue("string", "shortcut_action_open_diagnostics", "$wrapperApplicationId.action.OPEN_DIAGNOSTICS")
+        resValue("string", "shortcut_target_package", wrapperApplicationId)
+        resValue("string", "shortcut_target_class", "org.askkim.pedigree.wrapper.MainActivity")
     }
 
     buildFeatures {
@@ -65,6 +119,8 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
             isMinifyEnabled = false
+            resValue("string", "app_name", wrapperDebugAppName)
+            resValue("string", "shortcut_target_package", "$wrapperApplicationId.debug")
         }
         release {
             isMinifyEnabled = true

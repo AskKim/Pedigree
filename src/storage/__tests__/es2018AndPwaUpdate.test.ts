@@ -117,13 +117,13 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
       public onerror: (() => void) | null = null;
       public onabort: (() => void) | null = null;
 
-      readAsArrayBuffer(blob: any) {
+      readAsArrayBuffer(blob: { _bytes?: number[] }) {
         const bytes: number[] = blob._bytes || [];
         this.result = new Uint8Array(bytes).buffer;
         queueMicrotask(() => this.onload?.());
       }
 
-      readAsText(blob: any) {
+      readAsText(blob: { _bytes?: number[] }) {
         const bytes: number[] = blob._bytes || [];
         this.result = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
         queueMicrotask(() => this.onload?.());
@@ -132,7 +132,13 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
 
     vi.stubGlobal('FileReader', MockFileReader);
     try {
-      const legacyBlob = new (FakeBlob as any)([72, 105, 33]); // "Hi!"
+      const FakeBlobCtor = FakeBlob as unknown as new (
+        bytes: number[]
+      ) => Blob & {
+        arrayBuffer(): Promise<ArrayBuffer>;
+        text(): Promise<string>;
+      };
+      const legacyBlob = new FakeBlobCtor([72, 105, 33]); // "Hi!"
       const buf = await readBlobAsArrayBuffer(legacyBlob);
       expect(Array.from(new Uint8Array(buf))).toEqual([72, 105, 33]);
 
@@ -332,7 +338,7 @@ describe('storageProtection — manual offline toggle & captive-portal connectiv
 
     // Valid live version.json clears captive failure and captures Date clock skew
     const liveJsonFetch = vi.fn(async () => {
-      return new Response(JSON.stringify({ appVersion: '0.1.0-alpha.2' }), {
+      return new Response(JSON.stringify({ appVersion: '0.1.0-alpha.3' }), {
         status: 200,
         headers: {
           'content-type': 'application/json',
@@ -355,7 +361,7 @@ describe('deviceCapabilityDetector — browser feature signal probing', () => {
     const { detectCurrentBrowserCompatibility, readBrowserFeatureSignals } = await import(
       '../deviceCapabilityDetector'
     );
-    const { classifyDeviceCapability } = await import('../../core/deviceCapability');
+    const { classifyDeviceCapability } = await import('../../domain/deviceCapability');
 
     const originalWindow = globalThis.window;
     const originalNav = globalThis.navigator;

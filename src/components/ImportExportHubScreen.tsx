@@ -41,38 +41,38 @@ import {
   Upload,
 } from 'lucide-react';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { PreRestoreArchiveInspection } from '../core/archiveInspector';
-import type { BackupStatusEvaluation } from '../core/backupStatus';
+import type { PreRestoreArchiveInspection } from '../domain/archiveInspector';
+import type { BackupStatusEvaluation } from '../domain/backupStatus';
 import {
   ArchivedHerdIndexEntry,
   VaultBackupMetadata,
-} from '../core/backupVault';
+} from '../domain/backupVault';
 import {
   getHeavyZipExportGate,
   getTierStoragePolicy,
-} from '../core/deviceCapability';
+} from '../domain/deviceCapability';
 import {
   wrapEncryptedZipContainer,
   tryExtractEncryptedEnvelopeFromZip,
   tryParseEncryptedEnvelopeJson,
   EncryptedPayloadEnvelope,
-} from '../core/encryptedExport';
+} from '../domain/encryptedExport';
 import type {
   ExporterCategory,
   ExternalExporterDescriptor,
-} from '../core/exporters/exporterTypes';
+} from '../domain/exporters/exporterTypes';
 import {
   normalizePedigreeGenerationDepth,
   PedigreeGenerationDepth,
-} from '../core/models';
+} from '../domain/models';
 import {
   BUILTIN_NON_NATIVE_EXPORTERS,
   PLANNED_EXTERNAL_SCHEMA_TARGETS,
   runExternalExporter,
-} from '../core/exporters/registry';
-import { formatByteSizePure } from '../core/imageOptimizationSpec';
-import type { ConflictSelectionMap } from '../core/importers/conflictResolver';
-import type { PlatformImportPreview } from '../core/importers/importerTypes';
+} from '../domain/exporters/registry';
+import { formatByteSizePure } from '../domain/imageOptimizationSpec';
+import type { ConflictSelectionMap } from '../domain/importers/conflictResolver';
+import type { PlatformImportPreview } from '../domain/importers/importerTypes';
 import {
   formatReadableByteLimit,
   MAX_DELTA_BATCH_FILES,
@@ -82,20 +82,20 @@ import {
   MAX_SQLITE_DB_BYTES,
   MAX_ZIP_ARCHIVE_BYTES,
   validateUploadFileSize,
-} from '../core/inputSanitization';
+} from '../domain/inputSanitization';
 import {
   AnimalPhoto,
   BarnDatabaseSnapshot,
   BarnSettings,
   isAnimalArchived,
   isSameSpecies,
-} from '../core/models';
+} from '../domain/models';
 import {
   exportBarnBackupJson,
   formatTimestampedBackupSlug,
   generateBarnBackupJsonChunks,
-} from '../core/syncAndExports';
-import type { SyncConflictEntry, SyncOperation } from '../core/syncOutbox';
+} from '../domain/syncAndExports';
+import type { SyncConflictEntry, SyncOperation } from '../domain/syncOutbox';
 import {
   BackgroundPausedError,
   clearPausedBackgroundJob,
@@ -132,7 +132,7 @@ import {
   supportsPassphraseCrypto,
 } from '../storage/passphraseCrypto';
 import { stripPhotoDataUrlsFromSnapshot } from '../storage/photoHydration';
-import type { CloudSyncProvider, CloudSyncSettings } from '../core/cloudAppFolderSync';
+import type { CloudSyncProvider, CloudSyncSettings } from '../domain/cloudAppFolderSync';
 import type {
   CloudSyncClientState,
   RunCloudAppFolderSyncResult,
@@ -484,8 +484,14 @@ export function ImportExportHubScreen({
       setZipExportBusy('json');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
+        if (snapshot.animals.length > 0 && exportSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty backup export: serialized snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory. Please wait for pending saves or reload the page.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-full-backup-${stampSlug}.json`;
         if (encryptBackupExport) {
@@ -534,7 +540,16 @@ export function ImportExportHubScreen({
       }
       setZipExportBusy('json-light');
       try {
-        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(snapshot);
+        const flushedSnapshot = onHydrateSnapshotForExport
+          ? await onHydrateSnapshotForExport()
+          : snapshot;
+        const lightSnapshot = stripPhotoDataUrlsFromSnapshot(flushedSnapshot);
+        if (snapshot.animals.length > 0 && lightSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty backup export: records-only snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-records-only-${stampSlug}.json`;
         if (encryptBackupExport) {
@@ -592,8 +607,14 @@ export function ImportExportHubScreen({
       setZipExportBusy('complete');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
+        if (snapshot.animals.length > 0 && exportSnapshot.animals.length === 0) {
+          setBackupError(
+            `Blocked empty archive export: snapshot contained 0 animals while ${snapshot.animals.length} animal(s) are loaded in memory.`
+          );
+          return;
+        }
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-archive-${stampSlug}.zip`;
         if (encryptBackupExport) {
@@ -653,7 +674,7 @@ export function ImportExportHubScreen({
       setZipExportBusy('photos');
       try {
         const exportSnapshot = onHydrateSnapshotForExport
-          ? await onHydrateSnapshotForExport(snapshot)
+          ? await onHydrateSnapshotForExport()
           : snapshot;
         const stampSlug = formatTimestampedBackupSlug();
         const baseFilename = `pedigree-photos-${stampSlug}.zip`;
@@ -693,16 +714,20 @@ export function ImportExportHubScreen({
   const handleDownloadSqlite = async () => {
     await sqliteExportLock.runLocked(async () => {
       setBackupError(null);
-      const bytes = await onExportSqliteBytes();
-      if (!bytes) {
-        setBackupError('Raw SQLite binary export is unavailable in fallback mode.');
-        return;
+      try {
+        const bytes = await onExportSqliteBytes();
+        if (!bytes) {
+          setBackupError('Raw SQLite binary export is unavailable in fallback mode.');
+          return;
+        }
+        const stampSlug = formatTimestampedBackupSlug();
+        const filename = `pedigree-${stampSlug}.sqlite`;
+        await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
+        void recordBackupExport('sqlite', filename);
+        setBackupFeedback(`Downloaded raw SQLite database (${filename}).`);
+      } catch (err: unknown) {
+        setBackupError(err instanceof Error ? err.message : 'Could not export SQLite database.');
       }
-      const stampSlug = formatTimestampedBackupSlug();
-      const filename = `pedigree-${stampSlug}.sqlite`;
-      await downloadBinaryFile(filename, bytes, 'application/x-sqlite3');
-      void recordBackupExport('sqlite', filename);
-      setBackupFeedback(`Downloaded raw SQLite database (${filename}).`);
     });
   };
 
@@ -2868,7 +2893,7 @@ export function ImportExportHubScreen({
                 </h3>
                 <p className="text-[11px] text-[var(--barn-muted)]">
                   Pure TypeScript descriptors in{' '}
-                  <code className="font-mono">src/core/exporters/registry.ts</code> allow future
+                  <code className="font-mono">src/domain/exporters/registry.ts</code> allow future
                   external platform templates to drop in with zero UI rewrites.
                 </p>
               </div>

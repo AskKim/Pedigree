@@ -4,7 +4,7 @@
  *
  * Client CRM, Buyer Waitlist, Reservations & Deposit Reminders (`src/components/ClientCrmScreen.tsx`).
  *
- * Strictly species-isolated local-first breeder CRM powered by `src/core/clientCrm.ts`
+ * Strictly species-isolated local-first breeder CRM powered by `src/domain/clientCrm.ts`
  * and persisted offline via SQLite/IndexedDB + delta outbox sync.
  */
 
@@ -34,7 +34,7 @@ import {
   X,
 } from 'lucide-react';
 import { FormEvent, useMemo, useState } from 'react';
-import { evaluateAnimalActiveWithdrawal } from '../core/barnAlerts';
+import { evaluateAnimalActiveWithdrawal } from '../domain/barnAlerts';
 import {
   buildSuggestedAgreementNumber,
   CrmFollowUpReminder,
@@ -48,7 +48,7 @@ import {
   formatWaitlistCsv,
   generateSalesAgreementHtml,
   WaitlistMatchCandidate,
-} from '../core/clientCrm';
+} from '../domain/clientCrm';
 import {
   AnimalReservation,
   BarnSettings,
@@ -69,7 +69,7 @@ import {
   WaitlistEntry,
   WaitlistIntent,
   WaitlistStatus,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 import { useAsyncKeyedLock, useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';

@@ -6,7 +6,7 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 
 # Master System Prompt: Offline-First Pedigree PWA
 
-**Last-Edited Timestamp:** 2026-11-22
+**Last-Edited Timestamp:** 2026-11-24
 > **Protection Flag (`DO_NOT_REMOVE_WITHOUT_CONFIRMATION`):** Do not delete, move, or remove this file from `/prompts/` without explicit user confirmation.
 
 ## 0. Minimal-Output Alignment Check
@@ -30,8 +30,8 @@ YOU MUST FOLLOW EVERY CONSTRAINT BELOW FOR THE DURATION OF THIS SESSION.
 - **CRITICAL RULE — Never Convert PWA Away From React:** The PWA portion of this project MUST NEVER be converted, rewritten, or migrated away from React. It must always remain a React + Vite + TypeScript application—even during build-crash recovery, emergency fixes, or refactoring.
 - **Stack & Target:** Unified React + Vite + strict TypeScript PWA (iOS, Android, Desktop), transpiled to ES2018 (`browserslist > 0.5%`). Offline-first, zero mandatory cloud/accounts.
 - **Strict Types:** Never silence TypeScript errors with `as any`, `@ts-ignore`, or `@ts-expect-error`; fix root types.
-- **Modularity & Sync:** Keep strict separation across `components/` (UI), `hooks/` (state), `storage/` (adapters/OPFS), and `core/` (pure TS domain logic, zero DOM/window). Preserve unit tests, run validation scripts after edits, and keep docs synced with code.
-- **Mandatory Improvement Logging (`IMPROVEMENTS.md` & `src/core/improvementRegistry.ts`):** Register *every* significant change to the app in `src/core/improvementRegistry.ts` and `IMPROVEMENTS.md` with automated drift invariants—even when it is not a full large-scale build-out—especially anything affecting bootability, loading speed, storage, memory management, or release packaging.
+- **Modularity & Sync:** Keep strict separation across `components/` (UI), `hooks/` (state), `storage/` (adapters/OPFS), and `domain/` (pure TS domain logic, zero DOM/window). Preserve unit tests, run validation scripts after edits, and keep docs synced with code.
+- **Mandatory Improvement Logging (`IMPROVEMENTS.md` & `src/domain/improvementRegistry.ts`):** Register *every* significant change to the app in `src/domain/improvementRegistry.ts` and `IMPROVEMENTS.md` with automated drift invariants—even when it is not a full large-scale build-out—especially anything affecting bootability, loading speed, storage, memory management, or release packaging.
 
 ## 3. Coding Invariants
 - **IndexedDB:** Keep transactions atomic/short (`readonly` preferred). Wrap schema migrations in `try/catch` with graceful fallback (dump raw stores to OPFS before reset) to prevent `VersionError` locks.

@@ -4,21 +4,21 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnimalPhoto, BarnDatabaseSnapshot } from '../../core/models';
+import { AnimalPhoto, BarnDatabaseSnapshot } from '../../domain/models';
 import {
   analyzePhotoStorageFootprintPure,
   OVERSIZED_PHOTO_BYTES_THRESHOLD,
   pruneFullResPayloadsFromSnapshotPure,
-} from '../../core/photoMaintenance';
-import { buildFullPredefinedSampleSnapshot } from '../../core/sampleData';
+} from '../../domain/photoMaintenance';
+import { buildFullPredefinedSampleSnapshot } from '../../domain/sampleData';
 import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
   parseBackupArchiveInput,
   streamCompleteBackupZipArchive,
   streamPhotosOnlyZipArchive,
-} from '../../core/backupArchive';
-import { generateBarnBackupJsonChunks } from '../../core/syncAndExports';
+} from '../../domain/backupArchive';
+import { generateBarnBackupJsonChunks } from '../../domain/syncAndExports';
 import {
   BoundedPhotoDataCache,
   hydrateSnapshotWithPhotoDataUrls,
@@ -722,6 +722,8 @@ describe('Low-RAM export streaming & OPFS /tmp staging for all exports', () => {
     });
 
     try {
+      const { initializePedigreeRuntimeDefaults } = await import('@app/pedigreeAppWiring');
+      initializePedigreeRuntimeDefaults();
       // 1. Small (< 512 KB) Printable .HTM pedigree should still stage through OPFS /tmp
       await downloadTextFile('clover-pedigree.htm', '<html><body>Small 12 KB Pedigree</body></html>', 'text/html');
       expect(clickedAnchors).toHaveLength(1);

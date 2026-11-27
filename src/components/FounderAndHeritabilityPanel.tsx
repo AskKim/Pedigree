@@ -16,14 +16,14 @@ import {
   formatWeight,
   SpeciesProfile,
   WeightUnit,
-} from '../core/models';
+} from '../domain/models';
 import {
   analyzeAnimalFounderContributions,
   analyzePairingFounderShift,
   analyzeSpeciesFounderLoss,
   analyzeSpeciesHeritabilityTrends,
   FounderStatusCode,
-} from '../core/pedigreeAnalytics';
+} from '../domain/pedigreeAnalytics';
 
 interface FounderAndHeritabilityPanelProps {
   mode: 'pedigree' | 'breeding';

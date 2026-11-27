@@ -139,7 +139,7 @@ class FileAndExportBridge(
             return false
         }
 
-        val rawFilename = if (payload.isNull("filename")) "pedigree-export.bin" else payload.optString("filename", "pedigree-export.bin")
+        val rawFilename = if (payload.isNull("filename")) BuildConfig.DEFAULT_EXPORT_FILENAME else payload.optString("filename", BuildConfig.DEFAULT_EXPORT_FILENAME)
         val filename = sanitizeFilename(rawFilename)
         val rawMimeType = if (payload.isNull("mimeType")) "application/octet-stream" else payload.optString("mimeType", "application/octet-stream")
         val mimeType = sanitizeMimeType(rawMimeType)
@@ -452,7 +452,7 @@ class FileAndExportBridge(
             .replace(Regex("[\\u0000-\\u001F<>:\"|?*]"), "_")
             .trim()
         if (base.isEmpty() || base == "." || base == "..") {
-            return "pedigree-export.bin"
+            return BuildConfig.DEFAULT_EXPORT_FILENAME
         }
         return base.take(128)
     }

@@ -37,11 +37,11 @@ import {
   selectRollingCloudBackupsToPrune,
   shouldRunAutomatedCloudSync,
   tripCloudQuotaCircuitBreaker,
-} from '../core/cloudAppFolderSync';
-import type { DeviceCapabilityTierNumber } from '../core/deviceCapability';
-import { isValidSyncOperation } from '../core/inputSanitization';
-import { BarnDatabaseSnapshot } from '../core/models';
-import { SyncOperation } from '../core/syncOutbox';
+} from '../domain/cloudAppFolderSync';
+import type { DeviceCapabilityTierNumber } from '../domain/deviceCapability';
+import { isValidSyncOperation } from '../domain/inputSanitization';
+import { BarnDatabaseSnapshot } from '../domain/models';
+import { SyncOperation } from '../domain/syncOutbox';
 import { isDocumentHidden } from './backgroundFreezeCoordinator';
 import { emitAsyncErrorToast, logDiagnosticEvent } from './crashLogger';
 import { detectCurrentDeviceCapability } from './deviceCapabilityDetector';

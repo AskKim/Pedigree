@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Zero-dependency ES2018-compatible scroll window virtualizer for large
- * Herd, Breeding, and Reports lists/tables.
+ * lists and data tables.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -126,7 +126,7 @@ export interface UseVirtualWindowOptions {
   estimateSize: number;
   overscan?: number;
   initialFallbackCount?: number;
-  /** Change this key (e.g. search query, filter, species) to reset scrollTop to 0 and clear stale row heights. */
+  /** Change this key (e.g. search query, filter, category) to reset scrollTop to 0 and clear stale row heights. */
   resetKey?: string;
 }
 
@@ -192,7 +192,7 @@ export function useVirtualWindow(options: UseVirtualWindowOptions): UseVirtualWi
     }));
   }, []);
 
-  // Reset cached row measurements & scroll offset when filter/species/query changes
+  // Reset cached row measurements & scroll offset when filter/category/query changes
   useEffect(() => {
     measuredHeightsRef.current.clear();
     setMeasureVersion((v) => v + 1);

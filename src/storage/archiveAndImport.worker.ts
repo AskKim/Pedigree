@@ -12,7 +12,7 @@
 import '../utils/es2018Shims';
 import {
   inspectParsedArchiveBeforeRestorePure,
-} from '../core/archiveInspector';
+} from '../domain/archiveInspector';
 import {
   buildCompleteBackupZipArchive,
   buildPhotosOnlyZipArchive,
@@ -20,19 +20,19 @@ import {
   streamCompleteBackupZipArchive,
   streamPhotosOnlyZipArchive,
   StreamingZipArchiveSummary,
-} from '../core/backupArchive';
-import type { ImporterRunOptions, RawArchiveInput } from '../core/importers/importerTypes';
-import { getPlatformImporterById } from '../core/importers/registry';
+} from '../domain/backupArchive';
+import type { ImporterRunOptions, RawArchiveInput } from '../domain/importers/importerTypes';
+import { getPlatformImporterById } from '../domain/importers/registry';
 import {
   type BarnDatabaseSnapshot,
   type BarnSettings,
   setCoreClockSkewMs,
-} from '../core/models';
+} from '../domain/models';
 import {
   buildSupportBundleZipArchive,
   type SupportBundleBuildParams,
-} from '../core/supportBundle';
-import type { SpeciesBackupReason } from '../core/syncAndExports';
+} from '../domain/supportBundle';
+import type { SpeciesBackupReason } from '../domain/syncAndExports';
 import { isOpfsSupported, writeTempOpfsFileStreamed } from './opfsTempStream';
 
 export interface OpfsTempZipBuildResult {

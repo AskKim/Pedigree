@@ -34,7 +34,7 @@ import {
   buildWithdrawalByAnimalMap,
   evaluateCageAssignmentCapacityWarning,
   evaluateSpeciesCagesOccupancy,
-} from '../core/barnAlerts';
+} from '../domain/barnAlerts';
 import {
   BARN_BENCH_BCS_PRESETS,
   BARN_BENCH_SECTION_ALL,
@@ -45,7 +45,7 @@ import {
   buildBarnBenchQueue,
   extractSpeciesCageSections,
   findNextBarnBenchIndex,
-} from '../core/barnBench';
+} from '../domain/barnBench';
 import {
   BarnSettings,
   formatReadableDate,
@@ -57,7 +57,7 @@ import {
   parseWeightInputToGrams,
   resolveSpeciesWeightUnit,
   todayDateIso,
-} from '../core/models';
+} from '../domain/models';
 import { ActiveSpeciesData } from '../hooks/useBarnStore';
 import { useAsyncSubmitLock } from '../utils/useAsyncSubmitLock';
 
