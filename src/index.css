@@ -109,6 +109,7 @@ body {
 
   /* Give flexible text columns inside wrapping rows a minimum threshold before buttons crowd/overflow */
   .flex-wrap > div.flex-1.min-w-0 {
+    flex-basis: 15rem;
     flex-basis: min(100%, 15rem);
   }
 
@@ -117,6 +118,55 @@ body {
   .flex-wrap a.whitespace-nowrap {
     max-width: 100%;
     white-space: normal;
+  }
+}
+
+/* Legacy viewport-unit fallbacks for Chrome 68-107, Safari 12-15.3, Firefox 63-100 without dvh support */
+@supports not (height: 1dvh) {
+  .h-\[92dvh\] {
+    height: 92vh;
+  }
+  .h-\[56dvh\] {
+    height: 56vh;
+  }
+  .max-h-\[92dvh\] {
+    max-height: 92vh;
+  }
+  .max-h-\[88dvh\] {
+    max-height: 88vh;
+  }
+  .max-h-\[76dvh\] {
+    max-height: 76vh;
+  }
+  .max-h-\[70dvh\] {
+    max-height: 70vh;
+  }
+}
+
+/* Reduce GPU compositing & VRAM pressure on older/low-RAM devices and reduced-transparency preferences */
+html.pedigree-low-power [class*='backdrop-blur'],
+html.pedigree-low-power .backdrop-blur-xs,
+html.pedigree-low-power .backdrop-blur-sm,
+html.pedigree-low-power .backdrop-blur-md {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  [class*='backdrop-blur'] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 

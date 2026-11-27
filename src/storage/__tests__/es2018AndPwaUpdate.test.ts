@@ -83,6 +83,62 @@ describe('ES2018 runtime shims (es2018Shims)', () => {
     expect(flatMapFn.call(items, (x) => (Number(x) === 2 ? [20, 21] : Number(x)))).toEqual([1, 20, 21, 3]);
   });
 
+  it('installs queueMicrotask, Object.hasOwn, String.prototype.replaceAll, and Array/String .at shims when missing and fails gracefully on frozen hosts', async () => {
+    const fakePromise: any = function FakePromise(this: any) {};
+    fakePromise.all = Promise.all.bind(Promise);
+    fakePromise.resolve = Promise.resolve.bind(Promise);
+
+    const fakeObject: Record<string, unknown> = {};
+    const fakeArrayProto: Record<string, unknown> = {};
+    const FakeArray = function () {};
+    FakeArray.prototype = fakeArrayProto;
+
+    const fakeStringProto: Record<string, unknown> = {};
+    const FakeString = function () {};
+    FakeString.prototype = fakeStringProto;
+
+    const mockHost: Record<string, any> = {
+      Promise: fakePromise,
+      Object: fakeObject,
+      Array: FakeArray,
+      String: FakeString,
+    };
+
+    ensureEs2018Globals(mockHost);
+
+    expect(typeof mockHost.queueMicrotask).toBe('function');
+    let ranMicrotask = false;
+    await new Promise<void>((resolve) => {
+      mockHost.queueMicrotask(() => {
+        ranMicrotask = true;
+        resolve();
+      });
+    });
+    expect(ranMicrotask).toBe(true);
+
+    const hasOwn = fakeObject.hasOwn as (obj: unknown, prop: PropertyKey) => boolean;
+    expect(typeof hasOwn).toBe('function');
+    expect(hasOwn({ a: 1 }, 'a')).toBe(true);
+    expect(hasOwn({ a: 1 }, 'toString')).toBe(false);
+
+    const replaceAll = fakeStringProto.replaceAll as (search: string | RegExp, rep: string) => string;
+    expect(typeof replaceAll).toBe('function');
+    expect(replaceAll.call('a-b-a', 'a', 'z')).toBe('z-b-z');
+    expect(() => replaceAll.call('abc', /a/, 'z')).toThrow(TypeError);
+
+    const arrAt = fakeArrayProto.at as (idx: number) => unknown;
+    expect(arrAt.call([10, 20, 30], -1)).toBe(30);
+    expect(arrAt.call([10, 20, 30], 5)).toBeUndefined();
+
+    const strAt = fakeStringProto.at as (idx: number) => string | undefined;
+    expect(strAt.call('barn', -1)).toBe('n');
+    expect(strAt.call('barn', 9)).toBeUndefined();
+
+    // Frozen host must fail gracefully without throwing
+    const frozenHost = Object.freeze({ Object: Object.freeze({}) }) as Record<string, unknown>;
+    expect(() => ensureEs2018Globals(frozenHost)).not.toThrow();
+  });
+
   it('installs non-enumerable Blob.prototype.arrayBuffer/text and String.prototype.trimStart/trimEnd shims and reads via FileReader when native methods are absent', async () => {
     function FakeBlob(this: any, bytes: number[]) {
       this._bytes = bytes;

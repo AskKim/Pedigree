@@ -528,7 +528,7 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
         return safeAwaitOpfsGetSize(syncHandle);
       },
     };
-  
+  }
 
   throw new Error('OPFS file handle supports neither createWritable nor createSyncAccessHandle.');
 }

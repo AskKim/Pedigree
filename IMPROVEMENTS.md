@@ -8,7 +8,7 @@ and follow the restoration playbook below.
 ## Release Milestone Classification
 
 - **Alpha 2 (v0.1.0-alpha.2 — Released Baseline):** `IMP-001` through `IMP-064` (64 improvements).
-- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (11 improvements).
+- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (12 improvements).
 
 ## Quick Verification & Recovery Commands
 
@@ -25,7 +25,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (75)
+## Logged Improvements (76)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -1689,3 +1689,24 @@ npm run lint && npm run build
 2. Keep `experimentalDecorators`, `useDefineForClassFields`, and `allowJs` out of `tsconfig.json`, and keep `node:path` in `vite.config.ts`.
 3. Keep `<meta name="mobile-web-app-capable" content="yes" />` in `index.html`.
 4. Preserve pure RFC 3629 UTF-8 fallback in `src/engine/binaryEncoding.ts` (no `escape`/`unescape`), `userAgentData?.platform` check in `src/storage/storageProtection.ts`, React 19 function components in `src/components/PWAInstallButton.tsx`, and `bg-linear-to-br` in `src/components/ImportExportHubScreen.tsx`.
+
+### IMP-076: Older-Browser Performance, Zero-Dep ES2018+ Shims & Graceful CSS/API Fallbacks
+
+- **Release Milestone:** Alpha 3 (`alpha-3`)
+- **Category:** Stability & Mobile PWA (`stability-pwa`)
+- **Origin:** Session Improvement
+- **User Goal:** Improve performance and runtime compatibility in older ES2018-era browsers while preserving memory management, strict modularity, and graceful degradation when APIs or CSS features are unavailable.
+- **Summary:** Extends zero-dependency `src/utils/es2018Shims.ts` with non-enumerable, frozen-host-safe shims for `queueMicrotask`, `Object.hasOwn`, `String.prototype.replaceAll`, `Array.prototype.at`, and `String.prototype.at` (covered in `es2018AndPwaUpdate.test.ts`); guards `AbortController` and timeout cleanup in `src/storage/weatherForecast.ts` so older browsers without `AbortController` degrade gracefully; adds `flex-basis` and `@supports not (height: 1dvh)` viewport fallbacks plus `html.pedigree-low-power` / `prefers-reduced-transparency` / `prefers-reduced-motion` GPU compositing reductions in `src/index.css` wired via `useDeviceCapability` with unmount cleanup in `src/storage/deviceCapabilityDetector.ts` (preserving boot-locked `src/App.tsx`); and adds `loading="lazy" decoding="async"` to list/gallery thumbnails in `HerdScreen.tsx`, `SpeciesDashboardScreen.tsx`, `FeedLedgerScreen.tsx`, and `AnimalPhotoGallery.tsx`.
+- **Tracked Files:** `src/utils/es2018Shims.ts`, `src/storage/weatherForecast.ts`, `src/storage/deviceCapabilityDetector.ts`, `src/index.css`, `src/components/HerdScreen.tsx`, `src/components/SpeciesDashboardScreen.tsx`, `src/components/FeedLedgerScreen.tsx`, `src/components/AnimalPhotoGallery.tsx`, `src/storage/__tests__/es2018AndPwaUpdate.test.ts`
+
+**Automated Invariants Checked:**
+- `src/utils/es2018Shims.ts` must contain `queueMicrotaskShim`, `objectHasOwnShim`, `stringReplaceAllShim`, `arrayAtShim`, `stringAtShim` — *Zero-dependency ES2018 runtime shims must cover queueMicrotask, Object.hasOwn, replaceAll, and .at() with graceful frozen-host handling.*
+- `src/storage/weatherForecast.ts` must contain `typeof AbortController === 'function' ? new AbortController() : null`, `if (timer !== null) clearTimeout(timer);` — *Weather forecast fetches must guard AbortController on legacy browsers and always clear timers in finally blocks.*
+- `src/index.css` must contain `@supports not (height: 1dvh)`, `html.pedigree-low-power`, `prefers-reduced-transparency: reduce`, `prefers-reduced-motion: reduce` — *Legacy browsers must receive vh viewport fallbacks and reduced backdrop-filter/motion GPU load.*
+- `src/storage/deviceCapabilityDetector.ts` must contain `isLegacyOrLowPowerDevice`, `classList.toggle('pedigree-low-power'`, `classList.remove('pedigree-low-power')` — *useDeviceCapability must toggle pedigree-low-power for constrained/outdated browsers with unmount cleanup.*
+
+**Restoration Playbook if Overwritten:**
+1. Keep `queueMicrotask`, `Object.hasOwn`, `String.prototype.replaceAll`, `Array.prototype.at`, and `String.prototype.at` shims in `src/utils/es2018Shims.ts`.
+2. Keep guarded `AbortController` and `if (timer !== null) clearTimeout(timer)` in `src/storage/weatherForecast.ts`.
+3. Keep `@supports not (height: 1dvh)` and `html.pedigree-low-power` / reduced-motion rules in `src/index.css` and the cleanup `useEffect` in `src/storage/deviceCapabilityDetector.ts`.
+4. Keep `loading="lazy" decoding="async"` on list/gallery thumbnail `<img>` tags.

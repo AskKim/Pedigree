@@ -670,6 +670,8 @@ export function AnimalPhotoGallery({
                             <img
                               src={p.thumbnailDataUrl || p.dataUrl}
                               alt={p.caption || `Photo ${idx + 1}`}
+                              loading="lazy"
+                              decoding="async"
                               className="w-full h-full object-cover"
                             />
                           ) : (

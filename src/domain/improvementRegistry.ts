@@ -5572,6 +5572,78 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Preserve pure RFC 3629 UTF-8 fallback in `src/engine/binaryEncoding.ts` (no `escape`/`unescape`), `userAgentData?.platform` check in `src/storage/storageProtection.ts`, React 19 function components in `src/components/PWAInstallButton.tsx`, and `bg-linear-to-br` in `src/components/ImportExportHubScreen.tsx`.',
     ],
   },
+  {
+    id: 'IMP-076',
+    title: 'Older-Browser Performance, Zero-Dep ES2018+ Shims & Graceful CSS/API Fallbacks',
+    category: 'stability-pwa',
+    source: 'session',
+    release: 'alpha-3',
+    userIntent:
+      'Improve performance and runtime compatibility in older ES2018-era browsers while preserving memory management, strict modularity, and graceful degradation when APIs or CSS features are unavailable.',
+    summary:
+      'Extends zero-dependency `src/utils/es2018Shims.ts` with non-enumerable, frozen-host-safe shims for `queueMicrotask`, `Object.hasOwn`, `String.prototype.replaceAll`, `Array.prototype.at`, and `String.prototype.at` (covered in `es2018AndPwaUpdate.test.ts`); guards `AbortController` and timeout cleanup in `src/storage/weatherForecast.ts` so older browsers without `AbortController` degrade gracefully; adds `flex-basis` and `@supports not (height: 1dvh)` viewport fallbacks plus `html.pedigree-low-power` / `prefers-reduced-transparency` / `prefers-reduced-motion` GPU compositing reductions in `src/index.css` wired via `useDeviceCapability` with unmount cleanup in `src/storage/deviceCapabilityDetector.ts` (preserving boot-locked `src/App.tsx`); and adds `loading="lazy" decoding="async"` to list/gallery thumbnails in `HerdScreen.tsx`, `SpeciesDashboardScreen.tsx`, `FeedLedgerScreen.tsx`, and `AnimalPhotoGallery.tsx`.',
+    files: [
+      'src/utils/es2018Shims.ts',
+      'src/storage/weatherForecast.ts',
+      'src/storage/deviceCapabilityDetector.ts',
+      'src/index.css',
+      'src/components/HerdScreen.tsx',
+      'src/components/SpeciesDashboardScreen.tsx',
+      'src/components/FeedLedgerScreen.tsx',
+      'src/components/AnimalPhotoGallery.tsx',
+      'src/storage/__tests__/es2018AndPwaUpdate.test.ts',
+    ],
+    invariants: [
+      {
+        filePath: 'src/utils/es2018Shims.ts',
+        requiredSubstrings: [
+          'queueMicrotaskShim',
+          'objectHasOwnShim',
+          'stringReplaceAllShim',
+          'arrayAtShim',
+          'stringAtShim',
+        ],
+        rationale:
+          'Zero-dependency ES2018 runtime shims must cover queueMicrotask, Object.hasOwn, replaceAll, and .at() with graceful frozen-host handling.',
+      },
+      {
+        filePath: 'src/storage/weatherForecast.ts',
+        requiredSubstrings: [
+          "typeof AbortController === 'function' ? new AbortController() : null",
+          'if (timer !== null) clearTimeout(timer);',
+        ],
+        rationale:
+          'Weather forecast fetches must guard AbortController on legacy browsers and always clear timers in finally blocks.',
+      },
+      {
+        filePath: 'src/index.css',
+        requiredSubstrings: [
+          '@supports not (height: 1dvh)',
+          'html.pedigree-low-power',
+          'prefers-reduced-transparency: reduce',
+          'prefers-reduced-motion: reduce',
+        ],
+        rationale:
+          'Legacy browsers must receive vh viewport fallbacks and reduced backdrop-filter/motion GPU load.',
+      },
+      {
+        filePath: 'src/storage/deviceCapabilityDetector.ts',
+        requiredSubstrings: [
+          'isLegacyOrLowPowerDevice',
+          "classList.toggle('pedigree-low-power'",
+          "classList.remove('pedigree-low-power')",
+        ],
+        rationale:
+          'useDeviceCapability must toggle pedigree-low-power for constrained/outdated browsers with unmount cleanup.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `queueMicrotask`, `Object.hasOwn`, `String.prototype.replaceAll`, `Array.prototype.at`, and `String.prototype.at` shims in `src/utils/es2018Shims.ts`.',
+      'Keep guarded `AbortController` and `if (timer !== null) clearTimeout(timer)` in `src/storage/weatherForecast.ts`.',
+      'Keep `@supports not (height: 1dvh)` and `html.pedigree-low-power` / reduced-motion rules in `src/index.css` and the cleanup `useEffect` in `src/storage/deviceCapabilityDetector.ts`.',
+      'Keep `loading="lazy" decoding="async"` on list/gallery thumbnail `<img>` tags.',
+    ],
+  },
 ];
 
 /**

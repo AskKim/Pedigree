@@ -118,13 +118,15 @@ export async function searchWeatherLocations(
     };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WEATHER_REQUEST_TIMEOUT_MS);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), WEATHER_REQUEST_TIMEOUT_MS)
+    : null;
   try {
     const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
       clean
     )}&count=6&language=en&format=json`;
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
     if (!res.ok) {
       return { results: [], offline: false, error: `Location lookup failed (HTTP ${res.status}).` };
     }
@@ -168,7 +170,7 @@ export async function searchWeatherLocations(
         : 'Could not look up weather location.',
     };
   } finally {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
@@ -208,15 +210,17 @@ export async function fetchWeeklyWeatherForecast(params: {
     };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WEATHER_REQUEST_TIMEOUT_MS);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), WEATHER_REQUEST_TIMEOUT_MS)
+    : null;
   try {
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat.toFixed(4))}` +
       `&longitude=${encodeURIComponent(lon.toFixed(4))}` +
       `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
       `&timezone=auto&forecast_days=7`;
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
     if (!res.ok) {
       return {
         bundle: cached,
@@ -300,6 +304,6 @@ export async function fetchWeeklyWeatherForecast(params: {
         : 'Could not reach Open-Meteo weather service.',
     };
   } finally {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
   }
 }

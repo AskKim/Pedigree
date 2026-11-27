@@ -188,33 +188,41 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     | undefined;
 
   if (promiseObj && typeof promiseObj.allSettled !== 'function') {
-    promiseObj.allSettled = function allSettledShim(values: Iterable<unknown>): Promise<unknown[]> {
-      const items = Array.from(values);
-      return promiseObj.all(
-        items.map((item) =>
-          promiseObj.resolve(item).then(
-            (value: unknown) => ({ status: 'fulfilled' as const, value }),
-            (reason: unknown) => ({ status: 'rejected' as const, reason })
+    try {
+      promiseObj.allSettled = function allSettledShim(values: Iterable<unknown>): Promise<unknown[]> {
+        const items = Array.from(values);
+        return promiseObj.all(
+          items.map((item) =>
+            promiseObj.resolve(item).then(
+              (value: unknown) => ({ status: 'fulfilled' as const, value }),
+              (reason: unknown) => ({ status: 'rejected' as const, reason })
+            )
           )
-        )
-      );
-    };
+        );
+      };
+    } catch {
+      // Ignore read-only Promise hosts
+    }
   }
 
   const objectObj = (g.Object ?? Object) as unknown as Record<string, unknown>;
   if (objectObj && typeof objectObj['fromEntries'] !== 'function') {
-    objectObj['fromEntries'] = function fromEntriesShim(
-      entries: Iterable<readonly [PropertyKey, unknown]>
-    ): Record<string, unknown> {
-      const out: Record<string, unknown> = {};
-      if (!entries) return out;
-      for (const pair of entries) {
-        if (pair != null) {
-          out[String(pair[0])] = pair[1];
+    try {
+      objectObj['fromEntries'] = function fromEntriesShim(
+        entries: Iterable<readonly [PropertyKey, unknown]>
+      ): Record<string, unknown> {
+        const out: Record<string, unknown> = {};
+        if (!entries) return out;
+        for (const pair of entries) {
+          if (pair != null) {
+            out[String(pair[0])] = pair[1];
+          }
         }
-      }
-      return out;
-    };
+        return out;
+      };
+    } catch {
+      // Ignore read-only Object hosts
+    }
   }
 
   const blobCtor = (g.Blob ?? (typeof Blob === 'function' ? Blob : undefined)) as
@@ -304,6 +312,115 @@ export function ensureEs2018Globals(host?: Record<string, unknown>): void {
     };
     flatMapShim.__coreEs2018Shim = true;
     defineNonEnumerableMethod(arrayCtor.prototype, 'flatMap', flatMapShim);
+
+    const arrayAtShim: MarkedShimFn = function arrayAtShim(this: unknown[], ...args: unknown[]): unknown {
+      const len = this.length >>> 0;
+      const raw = Number(args[0]);
+      const relativeIndex = Number.isNaN(raw) ? 0 : Math.trunc(raw);
+      const k = relativeIndex >= 0 ? relativeIndex : len + relativeIndex;
+      if (k < 0 || k >= len) return undefined;
+      return this[k];
+    };
+    arrayAtShim.__coreEs2018Shim = true;
+    defineNonEnumerableMethod(arrayCtor.prototype, 'at', arrayAtShim);
+  }
+
+  if (typeof g.queueMicrotask !== 'function') {
+    const queueMicrotaskShim: MarkedShimFn = function queueMicrotaskShim(cb: unknown): void {
+      if (typeof cb !== 'function') {
+        throw new TypeError('queueMicrotask callback must be a function');
+      }
+      const fn = cb as () => void;
+      if (promiseObj && typeof promiseObj.resolve === 'function') {
+        promiseObj.resolve(undefined).then(fn, (err: unknown) => {
+          setTimeout(() => {
+            throw err;
+          }, 0);
+        });
+      } else {
+        setTimeout(fn, 0);
+      }
+    };
+    queueMicrotaskShim.__coreEs2018Shim = true;
+    try {
+      g.queueMicrotask = queueMicrotaskShim;
+    } catch {
+      // Ignore read-only global hosts
+    }
+  }
+
+  if (objectObj && typeof objectObj['hasOwn'] !== 'function') {
+    const hasOwnShim: MarkedShimFn = function objectHasOwnShim(
+      obj: unknown,
+      prop: unknown
+    ): boolean {
+      if (obj == null) {
+        throw new TypeError('Cannot convert undefined or null to object');
+      }
+      return Object.prototype.hasOwnProperty.call(Object(obj), prop as PropertyKey);
+    };
+    hasOwnShim.__coreEs2018Shim = true;
+    try {
+      objectObj['hasOwn'] = hasOwnShim;
+    } catch {
+      // Ignore read-only Object hosts
+    }
+  }
+
+  if (stringCtor?.prototype) {
+    const replaceAllShim: MarkedShimFn = function stringReplaceAllShim(
+      this: string,
+      ...args: unknown[]
+    ): string {
+      const searchValue = args[0];
+      const replaceValue = args[1];
+      const str = String(this);
+      if (searchValue instanceof RegExp) {
+        if (!searchValue.global) {
+          throw new TypeError('String.prototype.replaceAll called with a non-global RegExp argument');
+        }
+        return str.replace(searchValue, replaceValue as string);
+      }
+      const searchStr = String(searchValue);
+      if (typeof replaceValue === 'function') {
+        const replacer = replaceValue as (match: string, offset: number, full: string) => string;
+        if (searchStr === '') {
+          let result = '';
+          for (let i = 0; i <= str.length; i += 1) {
+            result += String(replacer('', i, str));
+            if (i < str.length) result += str[i];
+          }
+          return result;
+        }
+        let result = '';
+        let pos = 0;
+        let idx = str.indexOf(searchStr, pos);
+        while (idx !== -1) {
+          result += str.slice(pos, idx) + String(replacer(searchStr, idx, str));
+          pos = idx + searchStr.length;
+          idx = str.indexOf(searchStr, pos);
+        }
+        return result + str.slice(pos);
+      }
+      const replaceStr = String(replaceValue);
+      if (searchStr === '') {
+        return replaceStr + str.split('').join(replaceStr) + replaceStr;
+      }
+      return str.split(searchStr).join(replaceStr);
+    };
+    replaceAllShim.__coreEs2018Shim = true;
+    defineNonEnumerableMethod(stringCtor.prototype, 'replaceAll', replaceAllShim);
+
+    const stringAtShim: MarkedShimFn = function stringAtShim(this: string, ...args: unknown[]): string | undefined {
+      const str = String(this);
+      const raw = Number(args[0]);
+      const relativeIndex = Number.isNaN(raw) ? 0 : Math.trunc(raw);
+      const k = relativeIndex >= 0 ? relativeIndex : str.length + relativeIndex;
+      if (k < 0 || k >= str.length) return undefined;
+      return str.charAt(k);
+    };
+    stringAtShim.__coreEs2018Shim = true;
+    defineNonEnumerableMethod(stringCtor.prototype, 'at', stringAtShim);
   }
 }
 

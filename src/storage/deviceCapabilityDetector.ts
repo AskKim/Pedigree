@@ -347,6 +347,25 @@ export function useDeviceCapability(): DeviceCapabilityController {
     });
   }, [assessment, browserCompatibility]);
 
+  const isLegacyOrLowPowerDevice =
+    assessment.shouldApplyLowMemoryHandling || browserCompatibility.isOutdatedBrowser;
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.documentElement) return;
+    try {
+      document.documentElement.classList.toggle('pedigree-low-power', isLegacyOrLowPowerDevice);
+    } catch {
+      // Fail gracefully on restricted DOM environments
+    }
+    return () => {
+      try {
+        document.documentElement?.classList.remove('pedigree-low-power');
+      } catch {
+        // Ignore teardown error
+      }
+    };
+  }, [isLegacyOrLowPowerDevice]);
+
   const canCloseOnHome = assessment.definition.homeClosable;
   const canCloseInSettings = assessment.definition.settingsClosable;
 

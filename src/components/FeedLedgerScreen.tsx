@@ -1048,6 +1048,8 @@ export function FeedLedgerScreen({
                           <img
                             src={batch.tagPhotoThumbnailDataUrl || batch.tagPhotoDataUrl}
                             alt={`Feed tag ${batch.lotNumber || batch.productName}`}
+                            loading="lazy"
+                            decoding="async"
                             className="w-full h-full object-cover"
                           />
                         </button>

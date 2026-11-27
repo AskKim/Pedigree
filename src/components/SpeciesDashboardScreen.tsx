@@ -3704,6 +3704,8 @@ export function SpeciesDashboardScreen({
                                             <img
                                               src={att.thumbnailDataUrl || att.dataUrl}
                                               alt={att.caption || att.fileName}
+                                              loading="lazy"
+                                              decoding="async"
                                               className="w-full h-full object-cover"
                                             />
                                           </button>
