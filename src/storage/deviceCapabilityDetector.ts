@@ -200,7 +200,7 @@ export function readBrowserFeatureSignals(): BrowserFeatureSignals {
 
   // If IndexedDB is unavailable (e.g., Safari Private Browsing), treat it as unsupported
   // to avoid downstream code assuming persistence.
-  const wasmSupported = false; // default to false when no storage fallback
+  let wasmSupported = false; // default to false when no storage fallback
 
   try {
     wasmSupported =

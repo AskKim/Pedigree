@@ -108,12 +108,17 @@ function renderToMainThreadCanvasDataUrl(
   const canvas = document.createElement('canvas');
   let jpegCanvas: HTMLCanvasElement | null = null;
   try {
-    canvas.width = safeDims.width;
-    canvas.height = safeDims.height;
+    const dpr = getEffectiveCanvasDevicePixelRatio(isConstrained);
+    // Apply DPR scaling to backing store dimensions
+    canvas.width = Math.max(1, Math.round(safeDims.width * dpr));
+    canvas.height = Math.max(1, Math.round(safeDims.height * dpr));
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       throw new Error('2D Canvas context unavailable for image optimization.');
     }
+    // Scale drawing to logical size
+    ctx.scale(dpr, dpr);
+
 
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
