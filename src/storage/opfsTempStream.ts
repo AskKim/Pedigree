@@ -506,6 +506,7 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
     };
   }
 
+
   if (typeof fh.createSyncAccessHandle === 'function') {
     // Standard Worker OPFS access (no Chromium-only { mode: 'readwrite-unsafe' })
     const syncHandle = await fh.createSyncAccessHandle();

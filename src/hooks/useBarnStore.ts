@@ -409,7 +409,26 @@ export function useBarnStore(options?: UseBarnStoreOptions) {
     return new BoundedPhotoDataCache(budget.maxEntries, budget.maxBytes);
   });
   const photoCacheRef = useRef<BoundedPhotoDataCache>(initialPhotoCache);
+  // Ancestor cache for pedigree lookup (originally removed)
   const pedigreeAncestorCacheRef = useRef<Map<string, Animal>>(new Map());
+  // Monitor memory pressure and clear cache if needed
+  useEffect(() => {
+    // Only run in browsers supporting performance.memory
+    if (typeof performance !== 'undefined' && (performance as any).memory) {
+      const mem = performance as any;
+      const interval = setInterval(() => {
+        const used = mem.memory?.usedJSHeapSize ?? 0;
+        const limit = mem.memory?.jsHeapSizeLimit ?? Number.MAX_SAFE_INTEGER;
+        // If usage exceeds 80% of limit, clear photo cache to free memory
+        if (limit > 0 && used / limit > 0.8) {
+          console.warn('High memory usage detected, clearing photo cache');
+          photoCacheRef.current.clear();
+        }
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, []);
+
   const loadedPedigreeArchiveKeysRef = useRef<Set<string>>(new Set());
   const snapshotRef = useRef<BarnDatabaseSnapshot | null>(null);
   const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
