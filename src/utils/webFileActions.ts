@@ -118,7 +118,7 @@ export function isFileShareAbortError(err: unknown): boolean {
 }
 
 export const OPFS_SCRATCHPAD_THRESHOLD_BYTES = 512 * 1024;
-const BLOB_DOWNLOAD_CLEANUP_DELAY_MS = 4000;
+const BLOB_DOWNLOAD_CLEANUP_DELAY_MS = 35000; // 35 seconds to accommodate iOS download handling
 
 function estimatePayloadByteLength(payload: string | Uint8Array): number {
   if (typeof payload !== 'string') {

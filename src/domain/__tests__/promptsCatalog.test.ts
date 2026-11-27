@@ -21,7 +21,15 @@ describe('promptsCatalog — /prompts/ inventory, protection flags & active/arch
     const promptsDir = path.resolve(process.cwd(), 'prompts');
     const filenames = fs
       .readdirSync(promptsDir)
-      .filter((name) => !name.startsWith('.'))
+            .filter((name) => {
+        if (name.startsWith('.')) return false;
+        const fullPath = path.join(promptsDir, name);
+        try {
+          return fs.lstatSync(fullPath).isFile();
+        } catch {
+          return false;
+        }
+      })
       .sort();
 
     expect(filenames).toEqual([

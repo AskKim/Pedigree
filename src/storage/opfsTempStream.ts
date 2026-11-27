@@ -505,9 +505,6 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
       },
     };
   }
-      },
-    };
-  }
 
   if (typeof fh.createSyncAccessHandle === 'function') {
     // Standard Worker OPFS access (no Chromium-only { mode: 'readwrite-unsafe' })
@@ -530,7 +527,7 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
         return safeAwaitOpfsGetSize(syncHandle);
       },
     };
-  }
+  
 
   throw new Error('OPFS file handle supports neither createWritable nor createSyncAccessHandle.');
 }
@@ -778,3 +775,5 @@ export async function removeTempOpfsFile(fileName: string): Promise<void> {
   if (!tmpDir) return;
   await removeOpfsEntrySafe(tmpDir, fileName);
 }
+
+

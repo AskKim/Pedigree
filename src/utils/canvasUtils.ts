@@ -10,8 +10,8 @@
 
 export type ReleasableCanvas = HTMLCanvasElement | OffscreenCanvas;
 
-export const DEFAULT_STANDARD_CANVAS_AREA_CEILING = 4_096 * 4_096;
-export const DEFAULT_CONSTRAINED_CANVAS_AREA_CEILING = 2_048 * 2_048;
+export const DEFAULT_STANDARD_CANVAS_AREA_CEILING = 16_000_000; // Strict Safari limit
+export const DEFAULT_CONSTRAINED_CANVAS_AREA_CEILING = 3_000_000; // Low‑memory tier
 
 /**
  * Releases canvas GPU/RAM backing memory promptly in `finally` blocks across Safari/WebKit/Chromium.

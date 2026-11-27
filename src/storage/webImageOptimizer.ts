@@ -461,9 +461,8 @@ export async function optimizeStagedImporterPhotos(
 
   const detectedTier = detectCurrentDeviceCapability().tier;
   // Default sequential (1) to avoid concurrent decoded-bitmap memory spikes across devices
-  const requestedConcurrency = options?.concurrency ?? 1;
-  const CHUNK_SIZE =
-    detectedTier <= 2 ? 1 : Math.max(1, Math.min(4, Math.round(requestedConcurrency)));
+  // const requestedConcurrency = options?.concurrency ?? 1; // Sequential processing enforced
+  const CHUNK_SIZE = 1; // Enforced sequential processing
   for (let i = 0; i < staged.length; i += CHUNK_SIZE) {
     const slice = staged.slice(i, i + CHUNK_SIZE);
     const chunkResults = await Promise.all(
