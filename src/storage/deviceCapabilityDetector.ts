@@ -195,9 +195,13 @@ export function readBrowserFeatureSignals(): BrowserFeatureSignals {
     };
   }
 
+  // Detect true IndexedDB availability; default to false if unavailable (e.g., Safari Private Browsing)
   const indexedDbSupported = getSafeIndexedDb() !== null;
 
-  let wasmSupported = false;
+  // If IndexedDB is unavailable (e.g., Safari Private Browsing), treat it as unsupported
+  // to avoid downstream code assuming persistence.
+  const wasmSupported = false; // default to false when no storage fallback
+
   try {
     wasmSupported =
       typeof WebAssembly === 'object' &&
