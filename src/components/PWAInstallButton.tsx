@@ -6,13 +6,15 @@
  */
 
 import { Download, Smartphone, WifiOff, X } from 'lucide-react';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useOnlineStatus, usePWAInstall } from '../storage/storageProtection';
 import { useAccessibleDialog } from '../utils/useAccessibleDialog';
 
-export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
+export function PWAInstallButton({
   variant = 'header',
-}) => {
+}: {
+  variant?: 'header' | 'card';
+}) {
   const { canPromptInstall, isInstalled, isIos, promptInstall } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
   const iosDialogRef = useAccessibleDialog({
@@ -110,9 +112,9 @@ export const PWAInstallButton: React.FC<{ variant?: 'header' | 'card' }> = ({
   }
 
   return null;
-};
+}
 
-export const OfflineIndicator: React.FC = () => {
+export function OfflineIndicator() {
   const isOnline = useOnlineStatus();
 
   if (isOnline) return null;
@@ -126,4 +128,4 @@ export const OfflineIndicator: React.FC = () => {
       <span>Offline Mode — Local SQLite database active</span>
     </div>
   );
-};
+}

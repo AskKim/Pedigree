@@ -5505,6 +5505,73 @@ export const IMPROVEMENTS_REGISTRY: ImprovementEntry[] = [
       'Keep `returnRouteFromPrompts` and `onOpenPromptsDirectory` wired in `src/App.tsx`.',
     ],
   },
+  {
+    id: 'IMP-075',
+    title: 'Dependency Reduction, Deprecated API & Legacy Config Remediation',
+    category: 'ci-tooling',
+    source: 'session',
+    release: 'alpha-3',
+    userIntent:
+      'Remove unused/deprecated dependencies, replace outdated runtime/API calls and legacy syntax, and clean up unsupported or obsolete configurations across the app without feature loss.',
+    summary:
+      'Removes unused `autoprefixer` (and its unused transitive PostCSS helpers) since Tailwind CSS v4 (`@tailwindcss/vite`) handles prefixing natively via Lightning CSS; moves `@types/sql.js` from `dependencies` to `devDependencies` (`^1.16.1`) with strict peer-dependency resolution verified; strips obsolete `experimentalDecorators`, `useDefineForClassFields`, and `allowJs` from `tsconfig.json`; uses `node:path` in `vite.config.ts`; adds standard `<meta name="mobile-web-app-capable" content="yes" />` alongside iOS meta tags in `index.html`; replaces deprecated Annex B `escape()`/`unescape()` fallbacks in `src/engine/binaryEncoding.ts` with pure RFC 3629 UTF-8 encode/decode loops (covered by `binaryEncoding.test.ts`); prefers `navigator.userAgentData?.platform` before `navigator.platform` in `src/storage/storageProtection.ts`; migrates `PWAInstallButton.tsx` off legacy `React.FC`; and updates `bg-gradient-to-br` to Tailwind v4 `bg-linear-to-br` in `ImportExportHubScreen.tsx`.',
+    files: [
+      'package.json',
+      'tsconfig.json',
+      'vite.config.ts',
+      'index.html',
+      'src/engine/binaryEncoding.ts',
+      'src/domain/__tests__/binaryEncoding.test.ts',
+      'src/storage/storageProtection.ts',
+      'src/components/PWAInstallButton.tsx',
+      'src/components/ImportExportHubScreen.tsx',
+    ],
+    invariants: [
+      {
+        filePath: 'package.json',
+        requiredSubstrings: ['"@types/sql.js"'],
+        forbiddenSubstrings: ['"autoprefixer"'],
+        rationale:
+          'Unused autoprefixer must not be re-introduced under Tailwind CSS v4 (@tailwindcss/vite).',
+      },
+      {
+        filePath: 'tsconfig.json',
+        requiredSubstrings: ['"target": "ES2018"', '"jsx": "react-jsx"'],
+        forbiddenSubstrings: ['"experimentalDecorators"', '"allowJs"'],
+        rationale:
+          'Obsolete decorator and JS-interop compiler flags must stay removed from strict TS config.',
+      },
+      {
+        filePath: 'vite.config.ts',
+        requiredSubstrings: ["import path from 'node:path';"],
+        rationale: 'Vite config must use explicit Node built-in protocol imports (node:path).',
+      },
+      {
+        filePath: 'index.html',
+        requiredSubstrings: ['<meta name="mobile-web-app-capable" content="yes" />'],
+        rationale: 'index.html must include the standard mobile-web-app-capable meta tag.',
+      },
+      {
+        filePath: 'src/engine/binaryEncoding.ts',
+        requiredSubstrings: ['RFC 3629 UTF-8 fallback'],
+        forbiddenSubstrings: ['unescape(', 'escape(raw)'],
+        rationale:
+          'binaryEncoding.ts must use pure RFC 3629 UTF-8 fallbacks instead of deprecated Annex B escape/unescape globals.',
+      },
+      {
+        filePath: 'src/components/PWAInstallButton.tsx',
+        requiredSubstrings: ['export function PWAInstallButton(', 'export function OfflineIndicator()'],
+        forbiddenSubstrings: ['React.FC'],
+        rationale: 'PWAInstallButton.tsx must use standard React 19 function component signatures.',
+      },
+    ],
+    restorePlaybook: [
+      'Keep `autoprefixer` removed from `package.json` and `@types/sql.js` in `devDependencies`.',
+      'Keep `experimentalDecorators`, `useDefineForClassFields`, and `allowJs` out of `tsconfig.json`, and keep `node:path` in `vite.config.ts`.',
+      'Keep `<meta name="mobile-web-app-capable" content="yes" />` in `index.html`.',
+      'Preserve pure RFC 3629 UTF-8 fallback in `src/engine/binaryEncoding.ts` (no `escape`/`unescape`), `userAgentData?.platform` check in `src/storage/storageProtection.ts`, React 19 function components in `src/components/PWAInstallButton.tsx`, and `bg-linear-to-br` in `src/components/ImportExportHubScreen.tsx`.',
+    ],
+  },
 ];
 
 /**

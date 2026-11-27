@@ -896,8 +896,12 @@ export function isIosBrowser(): boolean {
     typeof window !== 'undefined' &&
     Boolean((window as unknown as { MSStream?: unknown }).MSStream);
   const isTraditionalIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !hasMsStream;
+  const uaPlatform =
+    (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    '';
   const isIpadOsDesktopUa =
-    navigator.platform === 'MacIntel' &&
+    (uaPlatform === 'MacIntel' || uaPlatform === 'macOS') &&
     typeof navigator.maxTouchPoints === 'number' &&
     navigator.maxTouchPoints > 1;
   return isTraditionalIos || isIpadOsDesktopUa;

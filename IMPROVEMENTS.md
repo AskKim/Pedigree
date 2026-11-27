@@ -8,7 +8,7 @@ and follow the restoration playbook below.
 ## Release Milestone Classification
 
 - **Alpha 2 (v0.1.0-alpha.2 — Released Baseline):** `IMP-001` through `IMP-064` (64 improvements).
-- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (6 improvements).
+- **Alpha 3 (v0.1.0-alpha.3 — Active Deliverables):** `IMP-065` onwards (11 improvements).
 
 ## Quick Verification & Recovery Commands
 
@@ -25,7 +25,7 @@ npm run lint && npm run build
 
 ---
 
-## Logged Improvements (70)
+## Logged Improvements (75)
 
 ### IMP-001: Backup Freshness Tracking, Reminders & Clean Human-Readable Exports
 
@@ -270,18 +270,18 @@ npm run lint && npm run build
 - **Origin:** Session Improvement
 - **User Goal:** Optimize memory for mobile-first usage, improve cross-device accessibility, and import heterogeneous pedigree files gracefully without crashing.
 - **Summary:** Adds UniversalPedigreeImporter for Evans .HTM rowspan trees, multi-gen CSV/TSV/pipe spreadsheets (UTF-8/UTF-16/Windows-1252, Excel serial dates), and nested JSON trees; hardens mobile memory/recursion bounds; and enforces dialog focus traps, label bindings, live regions, and keyboard accessibility across screens.
-- **Tracked Files:** `src/domain/importers/universalPedigreeImporter.ts`, `src/domain/importers/archiveAndCsvUtils.ts`, `src/domain/importers/registry.ts`, `src/domain/pedigreeCalculator.ts`, `src/domain/dataHealthCheck.ts`, `src/components/ExternalImporterPanel.tsx`, `src/components/SettingsAndSyncScreen.tsx`, `src/domain/__tests__/resilienceAndUniversalImport.test.ts`
+- **Tracked Files:** `src/domain/importers/universalPedigreeImporter.ts`, `src/engine/codecs/archiveAndCsvUtils.ts`, `src/domain/importers/registry.ts`, `src/domain/pedigreeCalculator.ts`, `src/domain/dataHealthCheck.ts`, `src/components/ExternalImporterPanel.tsx`, `src/components/SettingsAndSyncScreen.tsx`, `src/domain/__tests__/resilienceAndUniversalImport.test.ts`
 
 **Automated Invariants Checked:**
 - `src/domain/importers/universalPedigreeImporter.ts` must contain `UniversalPedigreeImporter`, `parseEvansHtmlEntry`, `MULTI_GEN_COLUMN_SPECS` — *Universal importer handles Evans HTML, multi-generation spreadsheets, nested JSON, and unsupported binary warnings.*
-- `src/domain/importers/archiveAndCsvUtils.ts` must contain `decodeTextBytes`, `detectUnbommedUtf16`, `validateAndFormatYmd` — *Handles UTF-16LE/BE, Windows-1252, Excel serial dates, and calendar validation without crashing.*
+- `src/engine/codecs/archiveAndCsvUtils.ts` must contain `decodeTextBytes`, `detectUnbommedUtf16`, `validateAndFormatYmd` — *Handles UTF-16LE/BE, Windows-1252, Excel serial dates, and calendar validation without crashing.*
 - `src/domain/importers/registry.ts` must contain `UniversalPedigreeImporter` — *Registers the Universal Pedigree importer alongside HerdBoss.*
 - `src/domain/pedigreeCalculator.ts` must contain `visitedPath: Set<string> = new Set()` — *Direct ancestor counting guards against circular ancestry loops.*
 - `src/components/ExternalImporterPanel.tsx` must contain `effectiveParseError`, `role="progressbar"` — *Keeps parse error calculation pure and exposes accessible alert/progress semantics.*
 
 **Restoration Playbook if Overwritten:**
 1. Restore `UniversalPedigreeImporter` and register it in `src/domain/importers/registry.ts`.
-2. Keep `decodeTextBytes` UTF-16/Windows-1252 decoding and `validateAndFormatYmd` in `src/domain/importers/archiveAndCsvUtils.ts`.
+2. Keep `decodeTextBytes` UTF-16/Windows-1252 decoding and `validateAndFormatYmd` in `src/engine/codecs/archiveAndCsvUtils.ts`.
 3. Preserve `visitedPath` cycle guard on `countDirectAncestors` in `src/domain/pedigreeCalculator.ts` and accessibility attributes across modal/form components.
 
 ### IMP-014: Species Tattoo/Sex Conflict Guardrails, Override & Import Conflict Alerts
@@ -1151,15 +1151,15 @@ npm run lint && npm run build
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Harden post-import booting stability, first-paint loading speed, bundle footprint, and mobile memory management without breaking offline-first guarantees.
-- **Summary:** Restores `.env.example` (IMP-008), archives 3.6 MB AI Studio dumps out of `public/` into `docs/archive/aistudio-exports/`, enforces `NODE_ENV=production` in Android APK CI, removes explicit `: any` annotations (fixing a silent `AFTER_BRED` backup-parser bug), makes `index.html` preflight treat missing `indexedDB` as advisory so Safari Lockdown / Private Mode can enter Ephemeral Mode, loads Google Fonts asynchronously, arms boot-stability completion only after React store hydration (`!store.isLoading`), upgrades SQLite migrations to version-gated atomic `BEGIN`/`COMMIT`/`ROLLBACK` transactions with `PRAGMA table_info` checks and `{ lightweightPhotos: true }` pre-upgrade backups, bypasses OPFS `/tmp` staging for `<512 KB` iOS standalone PWA shares to preserve user activation, extracts pure `src/domain/binaryEncoding.ts` + eliminates all 3 Vite `[INEFFECTIVE_DYNAMIC_IMPORT]` warnings + configures vendor/icon Rolldown code-splitting, defers non-critical startup probes/auto-repair off first paint, scopes `syncOperations` React state to sync-consuming routes, replaces `document.body` `MutationObserver` with `subscribeOpenDialogCount`, stabilizes `AnimalPhotoGallery` lazy hydration, and dehydrates Tier 3 mirror photos.
-- **Tracked Files:** `.env.example`, `.github/workflows/build-android-apk.yml`, `index.html`, `vite.config.ts`, `src/main.tsx`, `src/App.tsx`, `src/domain/binaryEncoding.ts`, `src/domain/deviceCapability.ts`, `src/domain/syncAndExports.ts`, `src/storage/storageProbes.ts`, `src/storage/opfsStorage.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/utils/webFileActions.ts`, `src/utils/useAccessibleDialog.ts`, `src/components/AnimalPhotoGallery.tsx`, `src/components/CrashErrorBoundary.tsx`, `src/components/TechyStuffErrorBoundary.tsx`, `src/storage/__tests__/postImportHardening.test.ts`
+- **Summary:** Restores `.env.example` (IMP-008), archives 3.6 MB AI Studio dumps out of `public/` into `docs/archive/aistudio-exports/`, enforces `NODE_ENV=production` in Android APK CI, removes explicit `: any` annotations (fixing a silent `AFTER_BRED` backup-parser bug), makes `index.html` preflight treat missing `indexedDB` as advisory so Safari Lockdown / Private Mode can enter Ephemeral Mode, loads Google Fonts asynchronously, arms boot-stability completion only after React store hydration (`!store.isLoading`), upgrades SQLite migrations to version-gated atomic `BEGIN`/`COMMIT`/`ROLLBACK` transactions with `PRAGMA table_info` checks and `{ lightweightPhotos: true }` pre-upgrade backups, bypasses OPFS `/tmp` staging for `<512 KB` iOS standalone PWA shares to preserve user activation, extracts pure `src/engine/binaryEncoding.ts` + eliminates all 3 Vite `[INEFFECTIVE_DYNAMIC_IMPORT]` warnings + configures vendor/icon Rolldown code-splitting, defers non-critical startup probes/auto-repair off first paint, scopes `syncOperations` React state to sync-consuming routes, replaces `document.body` `MutationObserver` with `subscribeOpenDialogCount`, stabilizes `AnimalPhotoGallery` lazy hydration, and dehydrates Tier 3 mirror photos.
+- **Tracked Files:** `.env.example`, `.github/workflows/build-android-apk.yml`, `index.html`, `vite.config.ts`, `src/main.tsx`, `src/App.tsx`, `src/engine/binaryEncoding.ts`, `src/domain/deviceCapability.ts`, `src/domain/syncAndExports.ts`, `src/storage/storageProbes.ts`, `src/storage/opfsStorage.ts`, `src/storage/webSqliteAdapter.ts`, `src/hooks/useBarnStore.ts`, `src/utils/webFileActions.ts`, `src/utils/useAccessibleDialog.ts`, `src/components/AnimalPhotoGallery.tsx`, `src/components/CrashErrorBoundary.tsx`, `src/components/TechyStuffErrorBoundary.tsx`, `src/storage/__tests__/postImportHardening.test.ts`
 
 **Automated Invariants Checked:**
 - `.env.example` must contain `# No required environment variables.` — *Keep .env.example present with zero secret placeholders to satisfy IMP-008.*
 - `.github/workflows/build-android-apk.yml` must contain `NODE_ENV: production` — *Android APK CI must force NODE_ENV=production so jsx-dev-runtime never ships in APK assets.*
 - `index.html` must contain `indexedDbAvailable`, `media="print"`, `this.media='all'` — *Preflight must allow Safari Lockdown/Private Ephemeral Mode and keep Google Fonts non-render-blocking.*
 - `vite.config.ts` must contain `codeSplitting`, `vendor-react`, `vendor-icons`, `vendor-sql` — *Rolldown code-splitting must isolate vendor chunks and consolidate lucide-react micro-chunks.*
-- `src/domain/binaryEncoding.ts` must contain `utf8StringToBytes`, `bytesToUtf8String`, `bytesToBase64Pure`, `base64ToBytesPure`, `dataUrlToBinary`, `binaryToDataUrl` — *Pure TS binary/base64/dataURL encoding helpers must stay decoupled from fflate and DOM.*
+- `src/engine/binaryEncoding.ts` must contain `utf8StringToBytes`, `bytesToUtf8String`, `bytesToBase64Pure`, `base64ToBytesPure`, `dataUrlToBinary`, `binaryToDataUrl` — *Pure TS binary/base64/dataURL encoding helpers must stay decoupled from fflate and DOM.*
 - `src/storage/webSqliteAdapter.ts` must contain `PRAGMA table_info(`, `BEGIN TRANSACTION;`, `ROLLBACK;`, `this.loadSnapshotUnlocked({ lightweightPhotos: true })` — *SQLite migrations must be version-gated, PRAGMA-checked, atomic, and memory-bounded during pre-upgrade backups.*
 - `src/storage/storageProbes.ts` must contain `registerIndexedDbOpfsDumper`, `triggerIndexedDbOpfsDump` — *Shared callback registry avoids circular dynamic import warnings for opfsStorage.*
 - `src/utils/webFileActions.ts` must contain `shouldBypassOpfsForIosGesture` — *Small (<512 KB) iOS standalone PWA shares must bypass OPFS /tmp staging to preserve tap gesture activation.*
@@ -1171,7 +1171,7 @@ npm run lint && npm run build
 **Restoration Playbook if Overwritten:**
 1. Keep `.env.example` clean, keep AI Studio dumps archived in `docs/archive/aistudio-exports/` (never under `public/`), and preserve `NODE_ENV: production` in `.github/workflows/build-android-apk.yml`.
 2. Preserve advisory `indexedDbAvailable` preflight & async Google Fonts in `index.html`, post-hydration `__PEDIGREE_MARK_BOOT_STABLE__` in `src/App.tsx`, and atomic `PRAGMA table_info` migrations in `src/storage/webSqliteAdapter.ts`.
-3. Keep `src/domain/binaryEncoding.ts`, `triggerIndexedDbOpfsDump` in `storageProbes.ts`, `shouldBypassOpfsForIosGesture` in `webFileActions.ts`, `subscribeOpenDialogCount` in `useAccessibleDialog.ts`, Rolldown `codeSplitting` in `vite.config.ts`, and route-scoped `syncOperations` + deferred startup work in `useBarnStore.ts`.
+3. Keep `src/engine/binaryEncoding.ts`, `triggerIndexedDbOpfsDump` in `storageProbes.ts`, `shouldBypassOpfsForIosGesture` in `webFileActions.ts`, `subscribeOpenDialogCount` in `useAccessibleDialog.ts`, Rolldown `codeSplitting` in `vite.config.ts`, and route-scoped `syncOperations` + deferred startup work in `useBarnStore.ts`.
 
 ### IMP-053: v0.1.0-alpha.2 Release Readiness: Targeted Strict TS, Cold-Start Splits, Worker Freeze Trim, Unified PWA+APK Release CI & Prompt Governance
 
@@ -1179,19 +1179,19 @@ npm run lint && npm run build
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Prepare Community Pedigree cleanly for its v0.1.0-alpha.2 GitHub release tag with zero new features—optimizing cold-start payload, compiler strictness, mobile worker memory cleanup, unified PWA+Android APK release packaging, plan deletion on wrap-up, and mandatory improvement logging for significant changes.
-- **Summary:** Enables 7 targeted strict TypeScript compiler checks in `tsconfig.json` (`alwaysStrict`, `noImplicitAny`, `noImplicitThis`, `strictBindCallApply`, `strictFunctionTypes`, `useUnknownInCatchVariables`, `noFallthroughCasesInSwitch`), converts Excel serial date parsing in `src/domain/importers/archiveAndCsvUtils.ts` to calendar-safe `Date.UTC(1899, 11, 30 + serial)`, splits 7 cold domain modules (`barnBench`, `barnScheduler`, `p2pSyncProtocol`, `clientCrm`, `economicsLedger`, `feedInventory`, `importers/conflictResolver`) out of the initial entry bundle in `src/hooks/useBarnStore.ts`, hooks `src/storage/offThreadWorkerClient.ts` into `registerFreezeLifecycleListener` to terminate idle Web Workers immediately on mobile background hide/`pagehide`, upgrades `.github/workflows/release.yml` to verify cross-file version alignment (`0.1.0-alpha.2`), verify root + subpath builds, and attach both PWA `.zip` + `.sha256` and Android WebView `.apk` + `.sha256` artifacts to GitHub Releases, syncs `public/version.json`, Fastlane changelog, and release guides, updates `prompts/master_system_prompt.md` (and backlog/crash prompts) to delete wrapped-up plans and log every significant boot/load/memory change in `IMPROVEMENTS.md`, and removes completed crash-era plan files from `docs/archive/`.
-- **Tracked Files:** `tsconfig.json`, `src/domain/importers/archiveAndCsvUtils.ts`, `src/hooks/useBarnStore.ts`, `src/storage/offThreadWorkerClient.ts`, `.github/workflows/release.yml`, `public/version.json`, `fastlane/metadata/android/en-US/changelogs/1.txt`, `docs/HOW_TO_CREATE_A_RELEASE.md`, `.github/WORKFLOWS_GUIDE.md`, `README.md`, `prompts/master_system_prompt.md`, `prompts/start_new_backlog_prompt.md`, `prompts/resume_backlog_plan_prompt.md`, `prompts/fix_error_log_prompt.md`, `src/domain/__tests__/releaseReadiness.test.ts`
+- **Summary:** Enables 7 targeted strict TypeScript compiler checks in `tsconfig.json` (`alwaysStrict`, `noImplicitAny`, `noImplicitThis`, `strictBindCallApply`, `strictFunctionTypes`, `useUnknownInCatchVariables`, `noFallthroughCasesInSwitch`), converts Excel serial date parsing in `src/engine/codecs/archiveAndCsvUtils.ts` to calendar-safe `Date.UTC(1899, 11, 30 + serial)`, splits 7 cold domain modules (`barnBench`, `barnScheduler`, `p2pSyncProtocol`, `clientCrm`, `economicsLedger`, `feedInventory`, `importers/conflictResolver`) out of the initial entry bundle in `src/hooks/useBarnStore.ts`, hooks `src/storage/offThreadWorkerClient.ts` into `registerFreezeLifecycleListener` to terminate idle Web Workers immediately on mobile background hide/`pagehide`, upgrades `.github/workflows/release.yml` to verify cross-file version alignment (`0.1.0-alpha.2`), verify root + subpath builds, and attach both PWA `.zip` + `.sha256` and Android WebView `.apk` + `.sha256` artifacts to GitHub Releases, syncs `public/version.json`, Fastlane changelog, and release guides, updates `prompts/master_system_prompt.md` (and backlog/crash prompts) to delete wrapped-up plans and log every significant boot/load/memory change in `IMPROVEMENTS.md`, and removes completed crash-era plan files from `docs/archive/`.
+- **Tracked Files:** `tsconfig.json`, `src/engine/codecs/archiveAndCsvUtils.ts`, `src/hooks/useBarnStore.ts`, `src/storage/offThreadWorkerClient.ts`, `.github/workflows/release.yml`, `public/version.json`, `fastlane/metadata/android/en-US/changelogs/1.txt`, `docs/HOW_TO_CREATE_A_RELEASE.md`, `.github/WORKFLOWS_GUIDE.md`, `README.md`, `prompts/master_system_prompt.md`, `prompts/start_new_backlog_prompt.md`, `prompts/resume_backlog_plan_prompt.md`, `prompts/fix_error_log_prompt.md`, `src/domain/__tests__/releaseReadiness.test.ts`
 
 **Automated Invariants Checked:**
 - `tsconfig.json` must contain `"noImplicitAny": true`, `"strictFunctionTypes": true`, `"useUnknownInCatchVariables": true`, `"noFallthroughCasesInSwitch": true` — *Targeted strict TypeScript checks must remain enabled to catch implicit-any and untyped catch regressions before release.*
-- `src/domain/importers/archiveAndCsvUtils.ts` must contain `Date.UTC(1899, 11, 30 + serial)` — *Excel serial date decoding must use explicit Date.UTC calendar offset math instead of raw millisecond addition.*
+- `src/engine/codecs/archiveAndCsvUtils.ts` must contain `Date.UTC(1899, 11, 30 + serial)` — *Excel serial date decoding must use explicit Date.UTC calendar offset math instead of raw millisecond addition.*
 - `src/hooks/useBarnStore.ts` must contain `import('../domain/economicsLedger')`, `import('../domain/clientCrm')`, `import('../domain/barnBench')`, `import('../domain/barnScheduler')`, `import('../domain/p2pSyncProtocol')`, `import('../domain/feedInventory')`, `import('../domain/importers/conflictResolver')` — *Cold domain modules must remain dynamically imported inside async store handlers to keep the initial entry bundle lean.*
 - `src/storage/offThreadWorkerClient.ts` must contain `terminateIdleArchiveWorker`, `archive-worker-freeze-trim`, `registerFreezeLifecycleListener` — *Idle archive/import Web Workers must terminate promptly on background hide/pagehide to release mobile RAM.*
 - `.github/workflows/release.yml` must contain `Verify cross-file version alignment`, `release-android-apk:`, `publish-github-release:`, `release-pwa-dist` — *GitHub tag releases must verify version sync and package + attach both the PWA ZIP and Android WebView APKs with SHA-256 checksums.*
 - `prompts/master_system_prompt.md` must contain `Plan Lifecycle (Delete on Wrap-Up)`, `Mandatory Improvement Logging (`IMPROVEMENTS.md` & `src/domain/improvementRegistry.ts`)` — *Master System Prompt must enforce deleting wrapped-up plan files and logging every significant boot/load/memory change in IMPROVEMENTS.md.*
 
 **Restoration Playbook if Overwritten:**
-1. Keep targeted strict TypeScript flags in `tsconfig.json` and calendar-safe `Date.UTC(1899, 11, 30 + serial)` in `src/domain/importers/archiveAndCsvUtils.ts`.
+1. Keep targeted strict TypeScript flags in `tsconfig.json` and calendar-safe `Date.UTC(1899, 11, 30 + serial)` in `src/engine/codecs/archiveAndCsvUtils.ts`.
 2. Preserve dynamic `import(...)` lazy splits for the 7 cold modules in `src/hooks/useBarnStore.ts` and `terminateIdleArchiveWorker` background-freeze cleanup in `src/storage/offThreadWorkerClient.ts`.
 3. Keep unified PWA ZIP + Android WebView APK + SHA-256 packaging and version-alignment checks in `.github/workflows/release.yml`, and retain the Plan Lifecycle and Mandatory Improvement Logging rules in `prompts/master_system_prompt.md`.
 
@@ -1503,13 +1503,13 @@ npm run lint && npm run build
 - **Origin:** Session Improvement
 - **User Goal:** Lock boot/entry stability, classify 100% of shared vs domain modules, and extract pure content-agnostic primitives from remaining shared src/domain and src/utils modules without breaking Alpha 2 exports.
 - **Summary:** Establishes immutable boot-entry SHA-256 lock checksums (`BOOT_ENTRY_LOCK_CHECKSUMS`) for `src/main.tsx`, `src/App.tsx`, and `index.html`; classifies 100% of non-test modules across `src/domain/`, `src/features/`, `src/app/`, `src/storage/`, and `src/utils/` in `EXTRACTION_INVENTORY.md` (recording `FLASH_HYGIENE_PLAN.md` absorption and ES2018/`import/` config parity); extracts pure content-agnostic primitives (`themeColor.ts`, `qrCodec.ts`, `genericSync.ts`, `genericRegistries.ts`, `deviceCapabilityCore.ts`, `pdfDocumentExtractor.ts`, plus expanded `crypto.ts` and `sanitization.ts`) behind thin Alpha 2 compatibility facades; decouples `archiveAndCsvUtils.ts` and reusable `src/utils/*` (`es2018Shims.ts`, `useVirtualWindow.ts`, `lazyRoute.tsx`); wires domain factories in `@app/pedigreeAppWiring.ts`; and enforces automated zero-domain-term, import-direction, and boot-lock tests while deferring standalone `core` extraction until Phase 7.
-- **Tracked Files:** `EXTRACTION_INVENTORY.md`, `ROADMAP.md`, `src/domain/improvementRegistry.ts`, `src/engine/primitives/index.ts`, `src/engine/primitives/crypto.ts`, `src/engine/primitives/sanitization.ts`, `src/engine/primitives/themeColor.ts`, `src/engine/primitives/qrCodec.ts`, `src/engine/primitives/genericSync.ts`, `src/engine/primitives/genericRegistries.ts`, `src/engine/primitives/deviceCapabilityCore.ts`, `src/engine/primitives/pdfDocumentExtractor.ts`, `src/domain/importers/archiveAndCsvUtils.ts`, `src/domain/importers/pdfScanExtractor.ts`, `src/app/pedigreeAppWiring.ts`, `src/utils/es2018Shims.ts`, `src/utils/useVirtualWindow.ts`, `src/utils/lazyRoute.tsx`, `src/domain/__tests__/modularLayerArchitecture.test.ts`
+- **Tracked Files:** `EXTRACTION_INVENTORY.md`, `ROADMAP.md`, `src/domain/improvementRegistry.ts`, `src/engine/primitives/index.ts`, `src/engine/primitives/crypto.ts`, `src/engine/primitives/sanitization.ts`, `src/engine/primitives/themeColor.ts`, `src/engine/primitives/qrCodec.ts`, `src/engine/primitives/genericSync.ts`, `src/engine/primitives/genericRegistries.ts`, `src/engine/primitives/deviceCapabilityCore.ts`, `src/engine/primitives/pdfDocumentExtractor.ts`, `src/engine/codecs/archiveAndCsvUtils.ts`, `src/domain/importers/pdfScanExtractor.ts`, `src/app/pedigreeAppWiring.ts`, `src/utils/es2018Shims.ts`, `src/utils/useVirtualWindow.ts`, `src/utils/lazyRoute.tsx`, `src/domain/__tests__/modularLayerArchitecture.test.ts`
 
 **Automated Invariants Checked:**
 - `EXTRACTION_INVENTORY.md` must contain `FLASH_HYGIENE_PLAN.md`, `extractable-core`, `extractable-feature`, `extractable-ui-util`, `pedigree-domain` — *Extraction inventory must document FLASH_HYGIENE_PLAN.md absorption and classify 100% of non-test source files.*
 - `src/domain/improvementRegistry.ts` must contain `export const BOOT_ENTRY_LOCK_CHECKSUMS`, `src/main.tsx`, `src/App.tsx`, `index.html` — *Boot-entry SHA-256 lock checksums must remain registered to protect active boot stability.*
 - `src/engine/primitives/index.ts` must contain `./themeColor`, `./qrCodec`, `./genericSync`, `./genericRegistries`, `./deviceCapabilityCore`, `./pdfDocumentExtractor` — *Pure content-agnostic Phase 2 primitives must stay exported from @engine/primitives.*
-- `src/domain/importers/archiveAndCsvUtils.ts` must contain `@engine/primitives/sanitization`, `@engine/primitives/genericRegistries` — *archiveAndCsvUtils.ts must depend solely on content-agnostic @engine/primitives contracts.*
+- `src/engine/codecs/archiveAndCsvUtils.ts` must contain `@engine/primitives/sanitization`, `@engine/primitives/genericRegistries` — *archiveAndCsvUtils.ts must depend solely on content-agnostic @engine/primitives contracts.*
 - `src/app/pedigreeAppWiring.ts` must contain `wrapPedigreeEncryptedZip`, `PEDIGREE_P2P_WIRE_CONFIG`, `buildPedigreeRecordDeepLink`, `getPedigreeHeavyZipGate` — *@app/pedigreeAppWiring.ts must inject Pedigree defaults into pure @engine/primitives helpers.*
 - `src/utils/es2018Shims.ts` must contain `__coreEs2018Shim` — *Reusable ES2018 shims must stay free of domain-specific internal marker names.*
   - Forbidden regression: `__pedigreeEs2018Shim`
@@ -1611,8 +1611,8 @@ npm run lint && npm run build
 - **Release Milestone:** Alpha 3 (`alpha-3`)
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
-- **User Goal:** Add an automated temp-directory extraction rehearsal proving `@engine`, `@features`, and `src/utils` compile standalone without domain/app/storage files, and add direct engine codec unit tests.
-- **Summary:** Adds `scripts/rehearse-engine-extraction.ts` (`npm run verify:extraction`) wired into `.github/workflows/ci.yml`, plus `src/engine/__tests__/textFormats.test.ts`.
+- **User Goal:** Add an automated temp-directory extraction rehearsal proving @engine, @features, and src/utils compile standalone without domain/app/storage files, and add direct engine codec unit tests.
+- **Summary:** Adds `scripts/rehearse-engine-extraction.ts` (`npm run verify:extraction`) which copies `src/engine`, `src/features`, `src/utils`, `tsconfig.json`, and `tsconfig.engine.json` into an isolated temp directory and runs `tsc -p tsconfig.engine.json --noEmit` with zero `src/domain`, `src/app`, `src/storage`, `src/hooks`, or `src/components` files present; wires `verify:extraction` into `.github/workflows/ci.yml`; and adds `src/engine/__tests__/textFormats.test.ts` covering CSV cell escaping, `.map(escapeCsvCell)` safety, and RFC-5545 ICS formatting.
 - **Tracked Files:** `scripts/rehearse-engine-extraction.ts`, `package.json`, `.github/workflows/ci.yml`, `src/engine/__tests__/textFormats.test.ts`
 
 **Automated Invariants Checked:**
@@ -1630,24 +1630,24 @@ npm run lint && npm run build
 - **Category:** Stability & Mobile PWA (`stability-pwa`)
 - **Origin:** Session Improvement
 - **User Goal:** Improve modularity and workflows, verify boot and loading, optimize memory management, and reduce token use.
-- **Summary:** Consolidates duplicated image-blob decoding, ObjectURL/bitmap teardown, and contrast-grayscale OCR canvas preprocessing into `src/utils/canvasUtils.ts` across `pedigreeOcrScanner.ts`, `feedTagOcr.ts`, and `webImageOptimizer.ts`; wraps `queryObjectsFromDb` prepared-statement stepping in `try/finally { stmt.free(); }` in `src/storage/webSqliteAdapter.ts`; adds npm caching, concurrency cancellation, and `verify:layers`/`verify:engine`/`verify:extraction` gates across `ci.yml`, `deploy-pages.yml`, `build-android-apk.yml`, and `guardrails.yml`; and excludes cache/staging/sourcemap artifacts in `export_repo_to_md.yml`.
+- **Summary:** Consolidates duplicated image-blob decoding, ObjectURL/bitmap teardown, and contrast-grayscale OCR canvas preprocessing into `src/utils/canvasUtils.ts` (`decodeBlobToCanvasSource`, `buildContrastGrayscaleCanvas`, `releaseCanvas`) across `pedigreeOcrScanner.ts`, `feedTagOcr.ts`, and `webImageOptimizer.ts`; wraps `queryObjectsFromDb` prepared-statement stepping in `try/finally { stmt.free(); }` in `src/storage/webSqliteAdapter.ts`; adds npm download caching, concurrency cancellation, and `verify:layers`/`verify:engine`/`verify:extraction` gates across `.github/workflows/ci.yml`, `deploy-pages.yml`, `build-android-apk.yml`, and `guardrails.yml`; and excludes `.vite`, `.idea`, `.vscode`, `import`, `upload`, and `.map` artifacts in `export_repo_to_md.yml`.
 - **Tracked Files:** `src/utils/canvasUtils.ts`, `src/storage/pedigreeOcrScanner.ts`, `src/storage/feedTagOcr.ts`, `src/storage/webImageOptimizer.ts`, `src/storage/webSqliteAdapter.ts`, `.github/workflows/ci.yml`, `.github/workflows/deploy-pages.yml`, `.github/workflows/build-android-apk.yml`, `.github/workflows/guardrails.yml`, `.github/workflows/export_repo_to_md.yml`
 
 **Automated Invariants Checked:**
-- `src/utils/canvasUtils.ts` must contain `decodeBlobToCanvasSource`, `buildContrastGrayscaleCanvas`, `releaseCanvas` — *Shared canvas/blob decode and OCR preprocessing helpers must remain centralized.*
+- `src/utils/canvasUtils.ts` must contain `decodeBlobToCanvasSource`, `buildContrastGrayscaleCanvas`, `releaseCanvas` — *Shared canvas/blob decode and OCR preprocessing helpers must remain centralized in src/utils/canvasUtils.ts.*
 - `src/storage/webSqliteAdapter.ts` must contain `try {`, `stmt.free();`, `} finally {` — *SQLite WASM prepared statements in queryObjectsFromDb must always be freed in a finally block.*
 - `.github/workflows/deploy-pages.yml` must contain `bun run verify:layers`, `bun run verify:engine`, `bun run verify:extraction` — *GitHub Pages deployment workflow must enforce layer boundary and engine extraction gates.*
 - `.github/workflows/build-android-apk.yml` must contain `npm run verify:layers`, `npm run verify:engine`, `npm run verify:extraction` — *Android APK workflow must enforce layer boundary and engine extraction gates.*
 
 **Restoration Playbook if Overwritten:**
-1. Keep `decodeBlobToCanvasSource`, `buildContrastGrayscaleCanvas`, and `releaseCanvas` centralized in `src/utils/canvasUtils.ts`.
+1. Keep `decodeBlobToCanvasSource`, `buildContrastGrayscaleCanvas`, and `releaseCanvas` centralized in `src/utils/canvasUtils.ts` and imported by `pedigreeOcrScanner.ts`, `feedTagOcr.ts`, and `webImageOptimizer.ts`.
 2. Keep `try/finally { stmt.free(); }` in `queryObjectsFromDb` inside `src/storage/webSqliteAdapter.ts`.
 3. Keep `verify:layers`, `verify:engine`, and `verify:extraction` active in `ci.yml`, `deploy-pages.yml`, and `build-android-apk.yml`.
 
 ### IMP-074: Settings UI/UX Modernization, Logical Subunits, Title Header & System Links
 
 - **Release Milestone:** Alpha 3 (`alpha-3`)
-- **Category:** Workflow Polish (`workflow-polish`)
+- **Category:** Workflow & UI Polish (`workflow-polish`)
 - **Origin:** Session Improvement
 - **User Goal:** Improve the UI/UX of the settings page by condensing logically related items into shared subunits in logical order, adding title text, and providing links to prompts, about, developer, and help pages.
 - **Summary:** Reorganizes `SettingsAndSyncScreen.tsx` into 8 clean, logically ordered subunits beneath a prominent page header and quick-jump navigation bar linking to Prompts (`onOpenPromptsDirectory`), About (`AboutModal.tsx`), Developer (`onOpenTechyStuff`), and Help & Husbandry Guides (`onOpenHelpDocs`); groups Farm Identity, Species Setup, Measurement Units, Appearance Studio, Calendar Alarms, Storage & Image Compression, Backup & Installation, and System Resources; and coordinates return routing from `PromptsDirectoryScreen` in `src/App.tsx`.
@@ -1663,3 +1663,29 @@ npm run lint && npm run build
 2. Keep `AboutModal.tsx` accessible modal showing offline guarantees and AGPL license.
 3. Keep `returnRouteFromPrompts` and `onOpenPromptsDirectory` wired in `src/App.tsx`.
 
+### IMP-075: Dependency Reduction, Deprecated API & Legacy Config Remediation
+
+- **Release Milestone:** Alpha 3 (`alpha-3`)
+- **Category:** CI & Tooling (`ci-tooling`)
+- **Origin:** Session Improvement
+- **User Goal:** Remove unused/deprecated dependencies, replace outdated runtime/API calls and legacy syntax, and clean up unsupported or obsolete configurations across the app without feature loss.
+- **Summary:** Removes unused `autoprefixer` (and its unused transitive PostCSS helpers) since Tailwind CSS v4 (`@tailwindcss/vite`) handles prefixing natively via Lightning CSS; moves `@types/sql.js` from `dependencies` to `devDependencies` (`^1.16.1`) with strict peer-dependency resolution verified; strips obsolete `experimentalDecorators`, `useDefineForClassFields`, and `allowJs` from `tsconfig.json`; uses `node:path` in `vite.config.ts`; adds standard `<meta name="mobile-web-app-capable" content="yes" />` alongside iOS meta tags in `index.html`; replaces deprecated Annex B `escape()`/`unescape()` fallbacks in `src/engine/binaryEncoding.ts` with pure RFC 3629 UTF-8 encode/decode loops (covered by `binaryEncoding.test.ts`); prefers `navigator.userAgentData?.platform` before `navigator.platform` in `src/storage/storageProtection.ts`; migrates `PWAInstallButton.tsx` off legacy `React.FC`; and updates `bg-gradient-to-br` to Tailwind v4 `bg-linear-to-br` in `ImportExportHubScreen.tsx`.
+- **Tracked Files:** `package.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `src/engine/binaryEncoding.ts`, `src/domain/__tests__/binaryEncoding.test.ts`, `src/storage/storageProtection.ts`, `src/components/PWAInstallButton.tsx`, `src/components/ImportExportHubScreen.tsx`
+
+**Automated Invariants Checked:**
+- `package.json` must contain `"@types/sql.js"` — *Unused autoprefixer must not be re-introduced under Tailwind CSS v4 (@tailwindcss/vite).*
+  - Forbidden regression: `"autoprefixer"`
+- `tsconfig.json` must contain `"target": "ES2018"`, `"jsx": "react-jsx"` — *Obsolete decorator and JS-interop compiler flags must stay removed from strict TS config.*
+  - Forbidden regression: `"experimentalDecorators"`, `"allowJs"`
+- `vite.config.ts` must contain `import path from 'node:path';` — *Vite config must use explicit Node built-in protocol imports (node:path).*
+- `index.html` must contain `<meta name="mobile-web-app-capable" content="yes" />` — *index.html must include the standard mobile-web-app-capable meta tag.*
+- `src/engine/binaryEncoding.ts` must contain `RFC 3629 UTF-8 fallback` — *binaryEncoding.ts must use pure RFC 3629 UTF-8 fallbacks instead of deprecated Annex B escape/unescape globals.*
+  - Forbidden regression: `unescape(`, `escape(raw)`
+- `src/components/PWAInstallButton.tsx` must contain `export function PWAInstallButton(`, `export function OfflineIndicator()` — *PWAInstallButton.tsx must use standard React 19 function component signatures.*
+  - Forbidden regression: `React.FC`
+
+**Restoration Playbook if Overwritten:**
+1. Keep `autoprefixer` removed from `package.json` and `@types/sql.js` in `devDependencies`.
+2. Keep `experimentalDecorators`, `useDefineForClassFields`, and `allowJs` out of `tsconfig.json`, and keep `node:path` in `vite.config.ts`.
+3. Keep `<meta name="mobile-web-app-capable" content="yes" />` in `index.html`.
+4. Preserve pure RFC 3629 UTF-8 fallback in `src/engine/binaryEncoding.ts` (no `escape`/`unescape`), `userAgentData?.platform` check in `src/storage/storageProtection.ts`, React 19 function components in `src/components/PWAInstallButton.tsx`, and `bg-linear-to-br` in `src/components/ImportExportHubScreen.tsx`.

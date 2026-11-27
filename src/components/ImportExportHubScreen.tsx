@@ -1420,7 +1420,7 @@ export function ImportExportHubScreen({
         <section
           id="hub-section-sync"
           aria-labelledby={`${baseId}-sync-heading`}
-          className="rounded-2xl border border-[var(--barn-sage)]/55 ring-1 ring-[var(--barn-sage)]/20 bg-gradient-to-br from-[var(--barn-sage-tint)]/55 via-[var(--barn-surface)] to-[var(--barn-slate-tint)]/35 p-5 sm:p-6 space-y-5 shadow-sm"
+          className="rounded-2xl border border-[var(--barn-sage)]/55 ring-1 ring-[var(--barn-sage)]/20 bg-linear-to-br from-[var(--barn-sage-tint)]/55 via-[var(--barn-surface)] to-[var(--barn-slate-tint)]/35 p-5 sm:p-6 space-y-5 shadow-sm"
         >
           <div className="flex items-start justify-between gap-4 border-b border-[var(--barn-sage)]/25 pb-4">
             <div className="space-y-2 min-w-0 max-w-3xl">

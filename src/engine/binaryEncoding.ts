@@ -25,33 +25,89 @@ const BASE64_LOOKUP = (() => {
 
 /**
  * Encodes a UTF-8 JavaScript string into bytes using `TextEncoder` when available,
- * with a pure UTF-8 fallback.
+ * with a pure RFC 3629 UTF-8 fallback (zero deprecated Annex B globals).
  */
 export function utf8StringToBytes(text: string): Uint8Array {
   if (typeof TextEncoder === 'function') {
     return new TextEncoder().encode(text);
   }
-  const encoded = unescape(encodeURIComponent(text));
-  const out = new Uint8Array(encoded.length);
-  for (let i = 0; i < encoded.length; i++) {
-    out[i] = encoded.charCodeAt(i);
+  const bytes: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    let codePoint = text.charCodeAt(i);
+    if (codePoint >= 0xd800 && codePoint <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
+        i++;
+      } else {
+        codePoint = 0xfffd;
+      }
+    } else if (codePoint >= 0xdc00 && codePoint <= 0xdfff) {
+      codePoint = 0xfffd;
+    }
+
+    if (codePoint <= 0x7f) {
+      bytes.push(codePoint);
+    } else if (codePoint <= 0x7ff) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint <= 0xffff) {
+      bytes.push(
+        0xe0 | (codePoint >> 12),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f)
+      );
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f)
+      );
+    }
   }
-  return out;
+  return new Uint8Array(bytes);
 }
 
 /**
  * Decodes UTF-8 bytes into a JavaScript string using `TextDecoder` when available,
- * with a pure fallback.
+ * with a pure RFC 3629 UTF-8 fallback (zero deprecated Annex B globals).
  */
 export function bytesToUtf8String(bytes: Uint8Array): string {
   if (typeof TextDecoder === 'function') {
     return new TextDecoder('utf-8').decode(bytes);
   }
-  let raw = '';
-  for (let i = 0; i < bytes.length; i++) {
-    raw += String.fromCharCode(bytes[i]);
+  const chars: string[] = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const b0 = bytes[i++];
+    if (b0 <= 0x7f) {
+      chars.push(String.fromCharCode(b0));
+    } else if ((b0 & 0xe0) === 0xc0 && i < bytes.length) {
+      const b1 = bytes[i++];
+      const cp = ((b0 & 0x1f) << 6) | (b1 & 0x3f);
+      chars.push(cp >= 0x80 ? String.fromCharCode(cp) : '\ufffd');
+    } else if ((b0 & 0xf0) === 0xe0 && i + 1 < bytes.length) {
+      const b1 = bytes[i++];
+      const b2 = bytes[i++];
+      const cp = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+      chars.push(cp >= 0x800 ? String.fromCharCode(cp) : '\ufffd');
+    } else if ((b0 & 0xf8) === 0xf0 && i + 2 < bytes.length) {
+      const b1 = bytes[i++];
+      const b2 = bytes[i++];
+      const b3 = bytes[i++];
+      const cp =
+        ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+      if (cp >= 0x10000 && cp <= 0x10ffff) {
+        const offset = cp - 0x10000;
+        chars.push(String.fromCharCode(0xd800 + (offset >> 10), 0xdc00 + (offset & 0x3ff)));
+      } else {
+        chars.push('\ufffd');
+      }
+    } else {
+      chars.push('\ufffd');
+    }
   }
-  return decodeURIComponent(escape(raw));
+  return chars.join('');
 }
 
 /**
