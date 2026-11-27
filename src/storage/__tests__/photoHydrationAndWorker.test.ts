@@ -730,7 +730,7 @@ describe('Low-RAM export streaming & OPFS /tmp staging for all exports', () => {
       expect(clickedAnchors[0].download).toBe('clover-pedigree.htm');
       expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
 
-      await vi.advanceTimersByTimeAsync(4500);
+      await vi.advanceTimersByTimeAsync(35500);
       expect(revokedUrls).toHaveLength(1);
       expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
 
@@ -769,7 +769,7 @@ describe('Low-RAM export streaming & OPFS /tmp staging for all exports', () => {
       expect(opfsMock.getWriteCount()).toBe(writesBeforeFallback + 1);
       expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
 
-      await vi.advanceTimersByTimeAsync(4500);
+      await vi.advanceTimersByTimeAsync(35500);
       expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
 
       // 4. downloadTextChunks streams JSON backup chunks directly into OPFS /tmp
@@ -781,7 +781,7 @@ describe('Low-RAM export streaming & OPFS /tmp staging for all exports', () => {
       );
       expect(clickedAnchors.some((a) => a.download === 'streamed-backup.json')).toBe(true);
       expect(opfsMock.dirs.get('tmp')?.size).toBe(1);
-      await vi.advanceTimersByTimeAsync(4500);
+      await vi.advanceTimersByTimeAsync(35500);
       expect(opfsMock.dirs.get('tmp')?.size).toBe(0);
     } finally {
       URL.createObjectURL = origCreateObjectURL;

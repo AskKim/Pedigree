@@ -257,6 +257,81 @@ describe('opfsStorage handles, QuotaExceededError recovery & /tmp sweeps', () =>
     }
   });
 
+  it('falls back to createSyncAccessHandle when createWritable rejects in openOpfsHandleSink', async () => {
+    installLocalStorageShim();
+    let writtenBytes = new Uint8Array(0);
+    const syncCloseSpy = vi.fn();
+    const syncFlushSpy = vi.fn();
+    const syncTruncateSpy = vi.fn();
+
+    const fileHandle: OpfsFileHandle = {
+      kind: 'file',
+      name: 'fallback.txt',
+      async getFile(): Promise<Blob> {
+        return new Blob([writtenBytes]);
+      },
+      async createWritable(): Promise<OpfsWritableStream> {
+        throw new Error('NotAllowedError: createWritable unavailable in this context');
+      },
+      async createSyncAccessHandle() {
+        return {
+          write(buf: Uint8Array) {
+            const copy = new Uint8Array(writtenBytes.byteLength + buf.byteLength);
+            copy.set(writtenBytes, 0);
+            copy.set(buf, writtenBytes.byteLength);
+            writtenBytes = copy;
+            return buf.byteLength;
+          },
+          flush() {
+            syncFlushSpy();
+          },
+          close() {
+            syncCloseSpy();
+          },
+          truncate(size: number) {
+            syncTruncateSpy(size);
+            writtenBytes = writtenBytes.slice(0, size);
+          },
+          getSize() {
+            return writtenBytes.byteLength;
+          },
+        };
+      },
+    };
+
+    const tmpDir: OpfsDirectoryHandle = {
+      kind: 'directory',
+      name: 'tmp',
+      async getDirectoryHandle() {
+        return tmpDir;
+      },
+      async getFileHandle() {
+        return fileHandle;
+      },
+      async removeEntry() {},
+    };
+
+    const rootHandle: OpfsDirectoryHandle = {
+      kind: 'directory',
+      name: '',
+      async getDirectoryHandle() {
+        return tmpDir;
+      },
+      async getFileHandle() {
+        return fileHandle;
+      },
+      async removeEntry() {},
+    };
+
+    setOpfsRootResolverForTest(async () => rootHandle);
+    const result = await writeTempOpfsFile('fallback', 'sync-fallback-ok', 'txt');
+    expect(result).not.toBeNull();
+    expect(new TextDecoder().decode(writtenBytes)).toBe('sync-fallback-ok');
+    expect(syncTruncateSpy).toHaveBeenCalledWith(0);
+    expect(syncFlushSpy).toHaveBeenCalledTimes(1);
+    expect(syncCloseSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('closes writable handle even on non-quota hard write error and sweeps leftover /tmp on boot', async () => {
     const closeSpy = vi.fn<() => void>();
     const mock = createInMemoryOpfsMock({

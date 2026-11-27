@@ -514,8 +514,14 @@ export default defineConfig(() => {
                 priority: 12,
               },
               {
+                name: 'core-models',
+                test: /[\\/]src[\\/]domain[\\/]models\.ts$/,
+                includeDependenciesRecursively: false,
+                priority: 12,
+              },
+              {
                 name: 'core-domain',
-                test: /[\\/]src[\\/]domain[\\/](models|sampleData|geneticsEngine|pedigreeCalculator|dataHealthCheck)\.ts$/,
+                test: /[\\/]src[\\/]domain[\\/](sampleData|geneticsEngine|pedigreeCalculator|dataHealthCheck)\.ts$/,
                 includeDependenciesRecursively: false,
                 priority: 11,
               },

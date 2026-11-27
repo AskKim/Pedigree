@@ -484,26 +484,31 @@ async function openOpfsHandleSink(fh: OpfsFileHandle): Promise<{
   flushAndSize: () => Promise<number | null>;
 }> {
   if (typeof fh.createWritable === 'function') {
-    // SAFELY acquire a writable OPFS handle; any error here means the file
-    // cannot be written, so we fall back to sync‑access handling.
-    const writable = await fh.createWritable().catch((err) => {
+    try {
+      const writable = await fh.createWritable();
+      trackActiveOpfsHandle(writable);
+      return {
+        handle: writable,
+        writeChunk: (chunk) => writeChunkedDataToWritable(writable, chunk),
+        flushAndSize: async () => {
+          await safeAwaitOpfsFlush(writable);
+          return null;
+        },
+      };
+    } catch (err) {
+      const hasSyncFallback = typeof fh.createSyncAccessHandle === 'function';
       emitOpfsLog({
-        level: 'error',
+        level: hasSyncFallback ? 'warn' : 'error',
         category: 'storage',
-        message: 'Failed to create OPFS writable stream – falling back to sync handle',
+        message: hasSyncFallback
+          ? 'Failed to create OPFS writable stream – falling back to sync handle'
+          : 'Failed to create OPFS writable stream and no sync handle fallback is available',
         error: err,
       });
-      throw err;
-    });
-    trackActiveOpfsHandle(writable);
-    return {
-      handle: writable,
-      writeChunk: (chunk) => writeChunkedDataToWritable(writable, chunk),
-      flushAndSize: async () => {
-        await safeAwaitOpfsFlush(writable);
-        return null;
-      },
-    };
+      if (!hasSyncFallback) {
+        throw err;
+      }
+    }
   }
 
 

@@ -25,6 +25,7 @@ import {
 import {
   MemoryStorageAdapter,
   NativeBridgeStorageAdapter,
+  OpfsStorageAdapter,
   SqliteWasmStorageAdapter,
 } from '@engine/storage';
 import { createBackupVaultFeatureModule } from '@features/backup-vault';
@@ -305,6 +306,91 @@ describe('Decoupled Storage Engine Transaction & Bridge Operations', () => {
 
     await adapter.clear();
     expect(await adapter.keys()).toEqual([]);
+  });
+
+  it('aborts failed writes and purges /tmp before retrying on QuotaExceededError in OpfsStorageAdapter', async () => {
+    const files = new Map<string, Uint8Array>();
+    let attempts = 0;
+    const abortSpy = vi.fn(async () => {
+      throw new Error('Abort failure must not mask QuotaExceededError');
+    });
+    const removeTmpSpy = vi.fn(async () => {});
+
+    const nsDir = {
+      async getDirectoryHandle() {
+        return nsDir;
+      },
+      async getFileHandle(name: string) {
+        return {
+          async getFile() {
+            const bytes = files.get(name) ?? new Uint8Array(0);
+            return new Blob([bytes.slice().buffer]) as unknown as File;
+          },
+          async createWritable() {
+            attempts += 1;
+            const currentAttempt = attempts;
+            let staged = new Uint8Array(0);
+            return {
+              async write(data: BufferSource | string) {
+                if (currentAttempt === 1) {
+                  const err = new Error('Quota full');
+                  err.name = 'QuotaExceededError';
+                  throw err;
+                }
+                staged =
+                  typeof data === 'string'
+                    ? new TextEncoder().encode(data)
+                    : data instanceof ArrayBuffer
+                      ? new Uint8Array(data.slice(0))
+                      : new Uint8Array(
+                          data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+                        );
+              },
+              async abort() {
+                await abortSpy();
+              },
+              async close() {
+                files.set(name, staged);
+              },
+            };
+          },
+        };
+      },
+      async removeEntry() {},
+    };
+
+    const opfsRoot = {
+      async getDirectoryHandle() {
+        return nsDir;
+      },
+      async getFileHandle() {
+        throw new Error('unused');
+      },
+      async removeEntry(name: string) {
+        if (name === 'tmp') {
+          await removeTmpSpy();
+        }
+      },
+    };
+
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: async () => opfsRoot,
+      },
+    });
+
+    try {
+      const adapter = new OpfsStorageAdapter({ namespace: 'quota_test' });
+      await adapter.initialize();
+      await adapter.setItem('record-1', 'hello-opfs');
+
+      expect(attempts).toBe(2);
+      expect(abortSpy).toHaveBeenCalledTimes(1);
+      expect(removeTmpSpy).toHaveBeenCalledTimes(1);
+      expect(await adapter.getItem('record-1')).toBe('hello-opfs');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

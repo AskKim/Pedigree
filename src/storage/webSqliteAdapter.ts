@@ -1752,16 +1752,31 @@ export class WebSqliteAdapter implements StorageAdapter {
 
     try {
       if (this.backingStore) {
+        const writeEntries: Array<{ type: 'put'; key: string; value: Uint8Array | string }> = [];
         if (this.db) {
           const bytes = this.db.export();
-          await this.backingStore.setItem(IDB_PRIMARY_KEY, bytes);
-          await this.backingStore.setItem(IDB_WRITE_EPOCH_KEY, JSON.stringify(epochMeta));
-        } else if (this.fallbackSnapshot) {
-          await this.backingStore.setItem(
-            IDB_FALLBACK_SNAPSHOT_KEY,
-            JSON.stringify(this.fallbackSnapshot)
+          writeEntries.push(
+            { type: 'put', key: IDB_PRIMARY_KEY, value: bytes },
+            { type: 'put', key: IDB_WRITE_EPOCH_KEY, value: JSON.stringify(epochMeta) }
           );
-          await this.backingStore.setItem(IDB_WRITE_EPOCH_KEY, JSON.stringify(epochMeta));
+        } else if (this.fallbackSnapshot) {
+          writeEntries.push(
+            {
+              type: 'put',
+              key: IDB_FALLBACK_SNAPSHOT_KEY,
+              value: JSON.stringify(this.fallbackSnapshot),
+            },
+            { type: 'put', key: IDB_WRITE_EPOCH_KEY, value: JSON.stringify(epochMeta) }
+          );
+        }
+        if (writeEntries.length > 0) {
+          if (typeof this.backingStore.batch === 'function') {
+            await this.backingStore.batch(writeEntries);
+          } else {
+            for (const entry of writeEntries) {
+              await this.backingStore.setItem(entry.key, entry.value);
+            }
+          }
         }
         if (this.backingStore.flush) {
           await this.backingStore.flush();

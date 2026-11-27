@@ -450,6 +450,7 @@ export class IndexedDbStorageAdapter implements IStorageAdapter {
 interface OpfsWritableLike {
   write: (data: BufferSource | string) => Promise<void>;
   close: () => Promise<void>;
+  abort?: () => Promise<void>;
 }
 
 interface OpfsFileHandleLike {
@@ -590,11 +591,28 @@ export class OpfsStorageAdapter implements IStorageAdapter {
 
     const writeOnce = async () => {
       const handle = await dir.getFileHandle(encodeKeyToFilename(key), { create: true });
+      if (typeof handle.createWritable !== 'function') {
+        throw new Error('OPFS file handle does not support createWritable in this runtime');
+      }
       const writable = await handle.createWritable();
+      let writeSucceeded = false;
       try {
         await writable.write(framed);
+        writeSucceeded = true;
       } finally {
-        await writable.close();
+        if (writeSucceeded) {
+          await writable.close();
+        } else {
+          try {
+            if (typeof writable.abort === 'function') {
+              await writable.abort();
+            } else {
+              await writable.close();
+            }
+          } catch {
+            // Preserve original write error (e.g. QuotaExceededError)
+          }
+        }
       }
     };
 
